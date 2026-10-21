@@ -1173,3 +1173,26 @@ the model remains valid. Presentation invariants live in SaveDestination.lean. -
 /- 2026-10-19: serverSessionLines reads cached configuration and the existing
 primary outbox projection. It does not probe, route, deliver or mutate memory.
 These transition invariants still hold; status precedence is in SaveDestination. -/
+
+/- 2026-10-19: Read-only server diagnostics add bounded /me and write-check
+requests, strict permission evidence, and explicit missing-evidence failures.
+They do not change grants, memory, queue delivery or file permissions. Existing
+write/routing invariants hold; ServerDiagnostics models report aggregation.
+The discovery clock-skew constant is exported without changing its value. -/
+
+/- 2026-10-19: Multi-root disagreement now refuses unscoped MCP writes before
+core admission; the legacy workspaceFolderScope result is unchanged. Explicit
+choices retain routing and authorization. Recall adds the admitted root orgs
+to dialing context, without widening the authorization filter or remote-only
+binding. WorkspaceChoice models this adapter admission and context selection. -/
+
+/-! 2026-10-19: Core re-exports the existing server-entry schema so legacy
+project cleanup can validate a raw explicit enterprise registration without
+inventing authorization through normalization. No engine behavior changes. -/
+
+/-! 2026-10-19: Explicit primary upload reuses the locked queue and guarded
+flush with a selected-id filter. Existing route, sensitivity, binding and
+retirement invariants remain in force. UploadLocal models the new admission,
+selection, dry-run and receipt rules. Held receipts are never cached as live. -/
+
+/- 2026-10-20: Resolver selection, scope conflicts and discovery are unchanged. Flush still uses the resolved authorized destination; only its retry eligibility and acknowledgment of the original queued write changed, as modeled in Outbox.lean. -/

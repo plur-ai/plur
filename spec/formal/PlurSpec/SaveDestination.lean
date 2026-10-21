@@ -128,6 +128,45 @@ across all editor roots before status can advertise a shared destination.
 The adapter preserves remote-only precedence and caller-explicit defaults.
 The conflicting-map-roots stdio regression exercises this boundary. -/
 
+/-! Checked 2026-10-19 for credential-change retry: Outbox section 8c models
+known-key backoff bypass and the local-path takeover hold. Other write guards,
+claims, idempotency and merge-back remain unchanged; the extra queue field is
+an attempted credential fingerprint only. Enterprise recovery text changes no
+recall, authorization or adapter admission rule. -/
+
+/- 2026-10-19: Read-only server diagnostics add bounded /me and write-check
+requests, strict permission evidence, and explicit missing-evidence failures.
+They do not change grants, memory, queue delivery or file permissions. Existing
+write/routing invariants hold; ServerDiagnostics models report aggregation.
+The discovery clock-skew constant is exported without changing its value. -/
 /- 2026-10-19: Hook-run timestamps now respect off and unreadable-map refusal.
 The cached server line and admitted workspace scope selection are unchanged;
 the timestamp is diagnostic only and is never written on those refused paths. -/
+
+/- 2026-10-19: Multi-root disagreement now refuses unscoped MCP writes before
+core admission; the legacy workspaceFolderScope result is unchanged. Explicit
+choices retain routing and authorization. Recall adds the admitted root orgs
+to dialing context, without widening the authorization filter or remote-only
+binding. WorkspaceChoice models this adapter admission and context selection. -/
+
+/-! 2026-10-19: Legacy project token cleanup runs only in working session-start
+paths, requires an enterprise registration and preserves hook failure behavior.
+Private backup, tracking and snapshot guards are modeled in LegacyProjectCleanup;
+existing injection, routing and status invariants remain unchanged. -/
+
+/-! 2026-10-19: Core re-exports the existing server-entry schema so legacy
+project cleanup can validate a raw explicit enterprise registration without
+inventing authorization through normalization. No engine behavior changes. -/
+
+/- 2026-10-19: Doctor surfaces core server evidence and requires post-install
+hook-run timestamps for wired supported editors. Init records installation only
+after successful writes; diagnostics do not grant access or send queued saves.
+Existing adapter routing and config-preservation invariants are unchanged;
+ServerDiagnostics models missing-evidence and hook-time aggregation. -/
+
+/-! 2026-10-19: Explicit primary upload reuses the locked queue and guarded
+flush with a selected-id filter. Existing route, sensitivity, binding and
+retirement invariants remain in force. UploadLocal models the new admission,
+selection, dry-run and receipt rules. Held receipts are never cached as live. -/
+
+/- 2026-10-20: Delivery classification and presentation remain unchanged. Successful flush acknowledgment now matches the original queued write while the receipt retains the actual accepting endpoint; Outbox.lean models that distinction. -/

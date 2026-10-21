@@ -30,6 +30,8 @@ import { codexHome, missingNodeEntryPaths, readCodexPlurMcpCommand, isOwnWin32Cm
 import { opencodeConfigDir, opencodeConfigPath, readOpencodeConfig, PLUR_OPENCODE_PLUGIN } from '../opencode-config.js'
 import { computeContentHash, detectPlurStorage, loadEngrams, resolveBackendTier, loadConfig, describeNeedsAction, describeHeld, classifyStoreDuplicates, folderMapProblem, tokenFromEnv, tokenEnvUnsetDetail, tokenEnvUnsetFix, offlineByEnv } from '@plur-ai/core'
 import { plurRoot } from '../lib/folder-gate.js'
+import { readHookInstalls, readHookRuns, type HookTool } from '../lib/hook-runs.js'
+import type { ServerStoreCheck } from '@plur-ai/core'
 import { repairAdvice, repairCommandFor } from './folders.js'
 import { codexInstalled } from '../lib/codex-binary.js'
 import { commandSpawn } from '../lib/command-spawn.js'
@@ -84,6 +86,8 @@ export interface ClaudeCodeMcpReport {
 }
 
 interface DoctorReport {
+  serverStores?: ServerStoreCheck[]
+  hookTrust?: Array<{ tool: HookTool; label: string; ok: boolean; detail: string; fix?: string }>
   configs: ConfigFileReport[]
   hooksInstalled: boolean
   /** A plur MCP server is registered somewhere a harness reads it (settings.json never counts, #1561). */
@@ -533,6 +537,16 @@ async function checkOutbox(flags: GlobalFlags): Promise<DoctorReport['outbox']> 
   } catch {
     return null
   }
+}
+
+async function checkServers(flags: GlobalFlags): Promise<ServerStoreCheck[]> {
+  let plur: ReturnType<typeof createPlur> | undefined
+  try {
+    plur = createPlur(flags, { readonly: true, autoDiscover: false })
+    return await plur.checkServerStores()
+  } catch {
+    return [{ url: 'configuration', ok: false, checks: [{ name: 'reachable', result: 'could-not-check', detail: 'server diagnostics could not be completed' }] }]
+  } finally { plur?.close() }
 }
 
 /**
@@ -1449,6 +1463,20 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
     // the overall doctor check (BM25 still works); it just signals semantic
     // recall is disabled until the model loads.
     const outbox = await checkOutbox(flags)
+    const serverStores = await checkServers(flags)
+    const installs = readHookInstalls(plurRoot(flags)), runs = readHookRuns(plurRoot(flags))
+    const hookTrust: NonNullable<DoctorReport['hookTrust']> = []
+    for (const [tool, label, wired] of [
+      ['claude', 'Claude Code', claudeCodeHooks && claudeCodeMcp.registered],
+      ['codex', 'Codex', !!codexHooksReport?.hasPlurHooks && configs.some(c => c.label.startsWith('Codex') && c.hasPlurMcp)],
+      ['cursor', 'Cursor', !!cursorHooksConfigReport?.hasPlurHooks && configs.some(c => c.label.startsWith('Cursor') && c.hasPlurMcp)],
+    ] as const) {
+      if (!wired) continue
+      const installed = Date.parse(installs[tool] ?? ''), ran = Date.parse(runs[tool] ?? '')
+      const ok = Number.isFinite(installed) && Number.isFinite(ran) && ran > installed && ran <= Date.now()
+      hookTrust.push({ tool, label, ok, detail: ok ? `hooks ran ${runs[tool]}` : 'hooks have not run yet after installation',
+        ...(!ok ? { fix: tool === 'codex' ? 'run /hooks and trust PLUR, then start a new session in Codex' : `start a new session in ${label}` } : {}) })
+    }
     // #1526: a broken folders.yaml pauses memory everywhere — a real failure.
     let folderMap: NonNullable<DoctorReport['folderMap']> | null = null
     try {
@@ -1470,6 +1498,7 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
     // connection the doctor did not check is never reported as ok.
     const staticChecksPass =
       folderMap === null &&
+      serverStores.every(s => s.ok) && hookTrust.every(h => h.ok) &&
       hooksInstalled && mcpRegistered &&
       (!claudeCodeHooks || claudeCodeMcp.registered) &&
       brokenNodeMcp.length === 0 &&
@@ -1537,7 +1566,7 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
       configs, hooksInstalled, mcpRegistered, claudeCodeMcp, datacoreCollision, staleNpxHooks, staleNpxMcp, brokenNodeMcp,
       hookShim, mcpShim, handshake, cursorHandshake, embedder,
       cursorProjectDetected, cursorWired, codexDetected, codexWired, codexCmdShimMcp, windowsHookFallback, agyDetected, agyWired,
-      pgliteGemmaReembedNeeded, staleContentHashes, pgliteOrphan, ignoredDuplicateStores, skippedProjectStores, tokenEnvUnset, tokenEnvFound, opencode, outbox, folderMap, overall,
+      pgliteGemmaReembedNeeded, staleContentHashes, pgliteOrphan, ignoredDuplicateStores, skippedProjectStores, tokenEnvUnset, tokenEnvFound, opencode, outbox, folderMap, overall, serverStores, hookTrust,
     }
   })
 }
@@ -1580,6 +1609,13 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
     if (m.repair_summary) outputText(`  The repair changes ${m.repair_summary}.`)
   }
   outputText(`${tick(report.hooksInstalled)} Hooks installed`)
+  for (const h of report.hookTrust ?? []) {
+    outputText(`${tick(h.ok)} hooks — ${h.label}: ${h.detail}`)
+    if (h.fix) outputText(`  ${h.fix}`)
+  }
+  for (const server of report.serverStores ?? []) for (const c of server.checks) {
+    outputText(`${tick(c.result === 'ok')} ${server.url} — ${c.name}: ${c.result === 'could-not-check' ? 'could not check: ' : ''}${c.detail}`)
+  }
   // #1299
   if (report.outbox && report.outbox.pending > 0) {
     const o = report.outbox

@@ -4,6 +4,38 @@ libraries: [PlurSpec]
 allowed_axioms: [propext, Classical.choice, Quot.sound]
 strict_drift: false   # true: a stale model fails CI instead of warning
 models:
+  - model: PlurSpec/UploadCommand.lean
+    covers:
+      - packages/cli/src/commands/upload.ts
+      - packages/cli/src/index.ts
+  - model: PlurSpec/UploadLocal.lean
+    covers:
+      - packages/core/src/index.ts
+      - packages/core/src/types.ts
+      - packages/core/src/store/remote-store.ts
+  - model: PlurSpec/LegacyProjectCleanup.lean
+    covers:
+      - packages/cli/src/lib/legacy-plur-yaml.ts
+      - packages/cli/src/commands/hook-inject.ts
+      - packages/cli/src/commands/hook-codex-session-start.ts
+      - packages/cli/src/commands/hook-cursor-session-start.ts
+  - model: PlurSpec/WorkspaceChoice.lean
+    covers:
+      - packages/cli/src/lib/folder-gate.ts
+      - packages/core/src/folders.ts
+      - packages/core/src/index.ts
+      - packages/core/src/types.ts
+      - packages/mcp/src/folder-gate.ts
+      - packages/mcp/src/server.ts
+      - packages/mcp/src/tools.ts
+  - model: PlurSpec/ServerDiagnostics.lean
+    covers:
+      - packages/core/src/index.ts
+      - packages/core/src/store/remote-store.ts
+      - packages/cli/src/commands/doctor.ts
+      - packages/cli/src/commands/init.ts
+      - packages/cli/src/lib/hook-runs.ts
+      - packages/mcp/src/tools.ts
   - model: PlurSpec/WritePath.lean
     covers:
       - packages/core/src/session-scopes.ts

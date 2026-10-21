@@ -20,7 +20,7 @@
  * State is per Plur instance (a WeakMap), so the many servers the test suite
  * creates do not share it.
  */
-import { normalizeEndpointUrl, type Plur, type DiscoveryStatus, type ServerDiscoveryOutcome } from '@plur-ai/core'
+import { normalizeEndpointUrl, enterpriseRecoveryHint, type Plur, type DiscoveryStatus, type ServerDiscoveryOutcome } from '@plur-ai/core'
 
 /** The /me budget of one background refresh. */
 export const BACKGROUND_DISCOVERY_TIMEOUT_MS = 5000
@@ -221,7 +221,7 @@ export function discoveryWarnings(rows: DiscoveryRow[]): string[] {
     const when = r.status === 'pending' ? ' (at the last check; a new check is running)' : ''
     if (s === 'auth_failed') {
       out.push(`⚠️ COMPANY SERVER REFUSED THIS DEVICE'S KEY${when}: ${r.url}. Its scope list cannot be refreshed and ` +
-        `team-scoped saves queue in the outbox until the key is replaced: sign in to the server again.`)
+        `team-scoped saves queue in the outbox until the key is replaced: ${enterpriseRecoveryHint(r.url)}.`)
     } else if (s === 'failed') {
       out.push(`⚠️ COMPANY SERVER SCOPE CHECK FAILED${when}: ${r.url}. The cached scope list stays in use; ` +
         `check connectivity/VPN.`)

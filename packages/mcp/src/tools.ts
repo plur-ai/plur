@@ -5,6 +5,7 @@ import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateP
 import { folderMapAdvice } from './folder-map-advice.js'
 import type { LlmFunction, MetaField, TensionStatus, RerankerEvalResult, HistoryEvent, Receipt, RemoteStoreStatusEntry, RecallRemoteReport, RemoteOnlyStatus } from '@plur-ai/core'
 import { RemoteOnlyWriteError, remoteOnlySessionLine, remoteOnlyUnservedNotice } from '@plur-ai/core'
+import { enterpriseRecoveryHint } from '@plur-ai/core'
 import { recordTelemetry } from './telemetry.js'
 import { VERSION } from './version.js'
 import { startBackgroundDiscovery, discoverySummary, discoveryWarnings, serverEndpointKeys, isDiscoveryEnabled } from './background-discovery.js'
@@ -162,6 +163,7 @@ const recallHandler: ToolDefinition['handler'] = async (args, plur) => {
       // slot the last-started session owns. #1566: with no session default
       // of its own, the workspace's scope — the one resolver writes use.
       session: await _readSession(args, plur),
+      context_scopes: await _readContextScopes(args),
     })
     const results = kwMeta.engrams
     const response: Record<string, unknown> = {
@@ -225,6 +227,7 @@ const recallHandler: ToolDefinition['handler'] = async (args, plur) => {
     // scope filter is passed. Same rule as writes (E7, formal R2), and the
     // same workspace scope when the session has no default (#1566).
     session: await _readSession(args, plur),
+    context_scopes: await _readContextScopes(args),
   })
   // Opt-in, content-free engagement counter (default-off; no query text).
   recordTelemetry('recall')
@@ -910,7 +913,7 @@ export const FOLDER_SCOPE: unique symbol = Symbol('plur.folderScope')
  * also means no scope.
  */
 export interface FolderScopeContext {
-  resolve(): Promise<{ scope: string | null; key: string } | null>
+  resolve(): Promise<{ scope: string | null; key: string; roots?: Array<{ root: string; scope: string | null }> } | null>
   /** Cached status for the policy admitted by the gate, never process cwd. */
   serverStatus?(explicitScope?: string): Promise<string[]>
   /**
@@ -919,7 +922,26 @@ export interface FolderScopeContext {
    * which re-reads the roots at the moment the write is admitted. Absent
    * when the call was not gated: reads then use resolve().
    */
-  admitted?(): { scope: string | null; key: string } | null
+  admitted?(): { scope: string | null; key: string; roots?: Array<{ root: string; scope: string | null }> } | null
+}
+
+class RootsDisagreeError extends Error {
+  readonly refusal: { saved: false; refused: 'roots-disagree'; choices: string[]; message: string }
+  constructor(roots: Array<{ root: string; scope: string | null }>) {
+    const choices = [...new Set([...roots.flatMap(r => r.scope ? [r.scope] : []), ...(roots.some(r => !r.scope) ? ['global'] : [])])]
+    const message = `This window has folders that save to different places: ${roots.map(r => `${JSON.stringify(r.root)} → ${r.scope ? JSON.stringify(r.scope) : 'this laptop only'}`).join('; ')}. Pass scope to choose: ${choices.map(c => JSON.stringify(c) + (c === 'global' ? ' (this laptop only)' : '')).join(' or ')}. Nothing was saved.`
+    super(message)
+    this.refusal = { saved: false, refused: 'roots-disagree', choices, message }
+  }
+}
+
+async function _readContextScopes(args: Record<string, unknown>): Promise<string[] | undefined> {
+  if (args.scope !== undefined) return undefined
+  const ctx = _folderContext(args)
+  try {
+    const ws = ctx?.admitted ? ctx.admitted() : await ctx?.resolve()
+    return ws?.roots ? [...new Set(ws.roots.flatMap(r => r.scope ? [r.scope] : []))] : undefined
+  } catch { return undefined }
 }
 
 function _folderContext(args: Record<string, unknown>): FolderScopeContext | null {
@@ -1045,15 +1067,16 @@ function _knownSession(id: string, plur: Plur, viaServer: boolean): boolean {
  * Without a FolderScopeContext (the tools used outside the server) the
  * session alone decides, as before.
  */
-async function _writeSession(args: Record<string, unknown>, plur: Plur, base?: string | undefined, read = false): Promise<string> {
+async function _writeSession(args: Record<string, unknown>, plur: Plur, base?: string | undefined, read = false, explicitDestinations = false): Promise<string> {
   const explicit = typeof args.session_id === 'string' && args.session_id.length > 0 ? args.session_id : undefined
   const chosen = base !== undefined ? base : (explicit ?? _implicitSessionId())
   const ctx = _folderContext(args)
   if (!ctx) return chosen ?? NO_SESSION
   // An id this process never registered has no default (Codex path 6).
   const session = chosen !== undefined && _knownSession(chosen, plur, true) ? chosen : NO_SESSION
-  let ws: { scope: string | null; key: string } | null = null
+  let ws: Awaited<ReturnType<FolderScopeContext['resolve']>> = null
   try { ws = read && ctx.admitted ? ctx.admitted() : await ctx.resolve() } catch { ws = null }
+  if (!read && args.scope === undefined && !explicitDestinations && ws?.roots) throw new RootsDisagreeError(ws.roots)
   if (session !== NO_SESSION) {
     const record = _sessionTelemetry.get(session)
     const own = plur.getSessionScope({ session })
@@ -1588,6 +1611,9 @@ function getAllToolDefinitions(): ToolDefinition[] {
         required: ['statement'],
       },
       handler: async (args, plur) => {
+        let session: string
+        try { session = await _writeSession(args, plur) }
+        catch (err) { if (err instanceof RootsDisagreeError) return err.refusal; throw err }
         const llm = getLlmFunction()
         // LLM-facing context. Fields not in inputSchema (knowledge_anchors,
         // dual_coding, abstract, derived_from, memory_class,
@@ -1631,7 +1657,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
           // persisted on the engram (LearnContext.session selects a scope, it
           // is not part of one). The workspace's answer where the session
           // gives none, or its roots changed (#1562, #1563 review round 2).
-          session: await _writeSession(args, plur),
+          session,
           llm,
         }
         // Route through learnRouted FIRST so remote-scope writes get
@@ -1962,7 +1988,9 @@ function getAllToolDefinitions(): ToolDefinition[] {
         // Same context derivation as plur_learn (formal Adapters #1): the
         // session is resolved once for the whole call, the .plur.yaml domain
         // is the default when an item names none, and an explicit value wins.
-        const batchSession = await _writeSession(args, plur)
+        let batchSession: string
+        try { batchSession = await _writeSession({ ...args, scope: undefined }, plur, undefined, false, raw.every(e => typeof e.scope === 'string' && e.scope.length > 0)) }
+        catch (err) { if (err instanceof RootsDisagreeError) return err.refusal; throw err }
         const projectDomain = readTrustedProjectConfig(plur).domain ?? undefined
         const items = raw.map((e) => ({
           statement: sanitizeStatement(e.statement as string),
@@ -3541,7 +3569,9 @@ function getAllToolDefinitions(): ToolDefinition[] {
                   ? `Reachable, but token expires in ${h.tokenExpiresInDays}d — reauth soon`
                   : `Reachable, auth valid${expiresNote}`,
               })
-              if (soon) remediation.push(`Remote ${h.url}: token expires in ${h.tokenExpiresInDays}d — mint a new token (<host>/me/api-keys), update ~/.plur/config.yaml, restart.`)
+              if (soon) remediation.push(h.enterprise
+                ? `Remote ${h.url}: token expires in ${h.tokenExpiresInDays}d — ${enterpriseRecoveryHint(h.url)}.`
+                : `Remote ${h.url}: token expires in ${h.tokenExpiresInDays}d — mint a new token (<host>/me/api-keys), update ~/.plur/config.yaml, restart.`)
             } else if (h.tokenEnvUnset) {
               // #1564 review M2: nothing was sent; the token's variable is unset.
               // One wording with the CLI's `plur doctor` (#1572 review M2).
@@ -3549,7 +3579,9 @@ function getAllToolDefinitions(): ToolDefinition[] {
               remediation.push(tokenEnvUnsetFix(h.url, h.tokenEnvUnset))
             } else if (h.status === 'auth_expired') {
               checks.push({ check: `remote store: ${h.url}`, ok: false, detail: `AUTH FAILED${expiresNote} — team-scoped writes are queuing to the outbox, not syncing. (${h.reason ?? ''})` })
-              remediation.push(`Remote ${h.url}: re-authenticate — open <host>/auth/github (or <host>/me/api-keys) in a browser, paste the token into ~/.plur/config.yaml, then restart Claude/MCP so it reloads. Queued engrams flush on next session_start.`)
+              remediation.push(h.enterprise
+                ? `Remote ${h.url}: re-authenticate — ${enterpriseRecoveryHint(h.url)}.`
+                : `Remote ${h.url}: re-authenticate — open <host>/auth/github (or <host>/me/api-keys) in a browser, paste the token into ~/.plur/config.yaml, then restart Claude/MCP so it reloads. Queued engrams flush on next session_start.`)
             } else {
               checks.push({ check: `remote store: ${h.url}`, ok: false, detail: `Unreachable (${h.reason ?? 'network error'}) — writes queue locally until it recovers.` })
               remediation.push(`Remote ${h.url}: unreachable — check connectivity/VPN. Reads fall back to local; writes queue in the outbox.`)
@@ -3627,9 +3659,19 @@ function getAllToolDefinitions(): ToolDefinition[] {
         } else {
           checks.push({ check: 'folder map', ok: true, detail: 'folders.yaml is readable (or absent: no decisions yet)' })
         }
+        const server_stores = await plur.checkServerStores().catch(() => [{
+          url: 'configuration', ok: false,
+          checks: [{ name: 'reachable', result: 'could-not-check', detail: 'server diagnostics could not be completed' }],
+        }])
+        for (const server of server_stores) for (const c of server.checks) {
+          checks.push({ check: `server ${server.url}: ${c.name}`, ok: c.result === 'ok', result: c.result,
+            detail: `${c.result === 'could-not-check' ? 'could not check: ' : ''}${c.detail}` })
+        }
+        if (server_stores.some(s => !s.ok)) remediation.push('Resolve the failed or unavailable server checks above; run plur-enterprise init to repair sign-in or refresh setup.')
         return {
           ok: checks.every(c => c.ok),
           checks,
+          server_stores,
           ...folderMap,
           embedder: {
             before_probe: before,
@@ -3637,7 +3679,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
           },
           capabilities: canaryStatuses,
           tool_surface,
-          remediation: remediation.length > 0 ? remediation : ['All checks passed — PLUR is healthy.'],
+          remediation: remediation.length > 0 ? remediation : [checks.every(c => c.ok) ? 'All checks passed — PLUR is healthy.' : 'Resolve the failed checks above.'],
         }
       },
     },
@@ -4073,10 +4115,15 @@ function getAllToolDefinitions(): ToolDefinition[] {
           // network round-trip. Catches the 30-day silent-expiry before it bites.
           try {
             for (const t of plur.remoteTokenExpiries()) {
+              const recovery = t.enterprise ? enterpriseRecoveryHint(t.url) : null
               if (t.expired) {
-                guide += `\n\n⚠️ Enterprise token for ${t.url} EXPIRED ${t.expiresAt ?? ''}. Reauth and restart to resume team sync.`
+                guide += recovery
+                  ? `\n\n⚠️ Enterprise token for ${t.url} EXPIRED ${t.expiresAt ?? ''}. ${recovery}.`
+                  : `\n\n⚠️ Enterprise token for ${t.url} EXPIRED ${t.expiresAt ?? ''}. Reauth and restart to resume team sync.`
               } else if (typeof t.expiresInDays === 'number' && t.expiresInDays <= 7) {
-                guide += `\n\n⏳ Enterprise token for ${t.url} expires in ${t.expiresInDays}d. Mint a fresh one (<host>/me/api-keys) before it lapses.`
+                guide += recovery
+                  ? `\n\n⏳ Enterprise token for ${t.url} expires in ${t.expiresInDays}d. ${recovery}.`
+                  : `\n\n⏳ Enterprise token for ${t.url} expires in ${t.expiresInDays}d. Mint a fresh one (<host>/me/api-keys) before it lapses.`
               }
             }
           } catch { /* best-effort */ }
@@ -4360,7 +4407,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
           engram_suggestions: {
             type: 'array',
             items: {
-              // Prefer {statement, type} objects. Bare strings are tolerated
+              // Prefer {statement, type, scope} objects. Bare strings are tolerated
               // and treated as {statement: <string>} (issue #231).
               anyOf: [
                 { type: 'string' },
@@ -4369,6 +4416,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
                   properties: {
                     statement: { type: 'string', description: 'A concise, reusable assertion. Write it as advice to your future self.' },
                     type: { type: 'string', enum: ['behavioral', 'terminological', 'procedural', 'architectural'] },
+                    scope: { type: 'string', description: 'Explicit destination; required when workspace roots disagree.' },
                   },
                   required: ['statement'],
                 },
@@ -4389,24 +4437,27 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
         // {statement} objects. The episode is captured below and the learns
         // point at it, so a malformed item found halfway through would leave an
         // episode and some engrams behind with the call reported as failed.
-        const items: Array<{ statement: string; type?: string }> = []
+        const items: Array<{ statement: string; type?: string; scope?: string }> = []
         if (Array.isArray(suggestions) && suggestions.length) {
           for (let i = 0; i < suggestions.length; i++) {
             const s = suggestions[i]
             let statement: string | undefined
             let type: string | undefined
+            let scope: string | undefined
             if (typeof s === 'string') {
               statement = s
             } else if (s && typeof s === 'object') {
               statement = (s as any).statement
               type = (s as any).type
+              scope = (s as any).scope
             }
             if (typeof statement !== 'string' || statement.length === 0) {
               throw new Error(
                 `engram_suggestions[${i}] must be a string or {statement: string, type?: string}, got ${typeof s}`,
               )
             }
-            items.push({ statement, type })
+            if (scope !== undefined && (typeof scope !== 'string' || !scope.trim())) throw new Error(`engram_suggestions[${i}].scope must be a non-empty string`)
+            items.push({ statement, type, scope })
           }
         }
 
@@ -4439,8 +4490,9 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
         let engrams_created = 0
         const engram_results: Array<{ index: number; id: string; scope: string; delivery: string; destination: string }> = []
         const engrams_failed: Array<{ index: number; statement: string; error: string }> = []
+        const unsaved: Array<{ index: number; statement: string } & RootsDisagreeError['refusal']> = []
         for (let i = 0; i < items.length; i++) {
-          const { statement, type } = items[i]
+          const { statement, type, scope } = items[i]
           try {
             // Sanitise here too (#940). core's learn() collapses line
             // terminators, so this is not the only thing standing between a
@@ -4452,7 +4504,8 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
               type: type as any,
               // E7: no resolvable session → no session default; through the
               // server, the workspace's answer (#1563 review round 2).
-              session: await _writeSession(args, plur, endSession),
+              session: await _writeSession({ ...args, scope }, plur, endSession),
+              scope,
               domain: projectDomain,
               // Link the engram back to the session that produced it (#960).
               ...(episode ? { session_episode_id: episode.id } : {}),
@@ -4464,6 +4517,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
             engram_results.push({ index: i, id: delivered.delivery === "outbox" ? saved.id : plur.readIdFor(saved), scope: saved.scope, delivery: delivered.delivery, destination: delivered.destination })
             engrams_created++
           } catch (err) {
+            if (err instanceof RootsDisagreeError) { unsaved.push({ index: i, statement, ...err.refusal }); continue }
             engrams_failed.push({ index: i, statement: statement.slice(0, 80), error: (err as Error).message })
           }
         }
@@ -4531,6 +4585,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
         return {
           engrams_created,
           engram_results,
+          ...(unsaved.length ? { unsaved } : {}),
           ...(engrams_failed.length ? { engrams_failed } : {}),
           episode_id: episode?.id ?? null,
           total_engrams: status.engram_count,
@@ -4549,7 +4604,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
               `The queue of team memories waiting to be sent could not be checked — ${outbox_error}. ` +
               'Some may not have been sent; run plur_outbox to see what is queued.',
           } : {}),
-          hint: engrams_failed.length
+          hint: unsaved.length ? `${unsaved.length} suggestion(s) need an explicit destination — see unsaved.` : engrams_failed.length
             ? `${engrams_failed.length} suggestion(s) could not be stored — see engrams_failed. The rest were.`
             : engrams_created === 0
             ? 'No engrams captured this session. If any corrections, preferences, or patterns came up, consider calling plur_learn before ending.'

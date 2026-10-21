@@ -34,6 +34,11 @@ export const NEEDS_ACTION_STATUSES: ReadonlySet<number> = new Set([401, 403, 404
  */
 export const NEEDS_ACTION_RETRY_MS = 24 * 60 * 60 * 1000
 
+/** Unknown credentials cannot prove that a refusal has been remedied. */
+export function credentialChanged(previous: string | undefined, current: string | undefined): boolean {
+  return !!previous && !!current && previous !== current
+}
+
 /**
  * Text a server sends when it refuses a write to a scope outright. Matched only
  * when no status was recorded (entries queued before #1299 stored one).

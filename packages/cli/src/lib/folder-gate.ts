@@ -338,7 +338,13 @@ export function cursorHookFolder(
   const on: FolderPolicy = policy.mode === 'on'
     ? policy
     : { mode: 'on', remoteAllowed: false, source: 'default' }
-  const { scope: _own, ...rest } = on
+  const defaults = roots.map(r => r.real && !coversHome(r.real) ? hookFolderPolicy(r.real, flags).git : undefined)
+  const gitKey = (git: FolderPolicy['git']) => git?.kind === 'scope' ? `scope:${git.scope}`
+    : git?.kind === 'local' || git?.kind === 'unknown' ? 'local' : 'absent'
+  const git = defaults.every(d => gitKey(d) === gitKey(defaults[0])) ? defaults[0]
+    : defaults.some(Boolean) ? { kind: 'unknown' as const, reason: 'ambiguous-mapping' as const } : undefined
+  const { scope: _own, ...ownRest } = on
+  const rest = { ...ownRest, git }
   return { dir, policy: scope ? { ...rest, scope } : { ...rest, ...(on.scope ? { remoteAllowed: false } : {}) } }
 }
 

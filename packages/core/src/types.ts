@@ -7,6 +7,15 @@ export type { Episode } from './schemas/episode.js'
 export type { PlurConfig } from './schemas/config.js'
 export type { PackManifest } from './schemas/pack.js'
 
+export interface UploadLocalResult {
+  id: string
+  outcome: 'sent' | 'queued' | 'already_on_server' | 'held_for_review' | 'demoted_secret' | 'failed'
+  new_id?: string
+  error?: string
+  /** Planned outcome only: no mutation or network request was made. */
+  dry_run?: true
+}
+
 export interface LearnContext {
   type?: 'behavioral' | 'terminological' | 'procedural' | 'architectural'
   scope?: string
@@ -253,6 +262,8 @@ export interface RemoteProjectConfig {
 
 export interface RecallOptions {
   scope?: string
+  /** Workspace dialing context only; never an authorization or result filter. */
+  context_scopes?: string[]
   /**
    * Permitted-scope allow-list — an AUTHORIZATION filter, distinct from the
    * `scope` visibility filter above (see `ScopeRestriction` in

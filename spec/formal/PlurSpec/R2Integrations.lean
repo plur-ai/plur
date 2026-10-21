@@ -795,3 +795,21 @@ end PlurSpec.R2Integrations
 /- 2026-10-19: Save destination reporting is a projection of the existing delivery
 evidence. It changes no routing, persistence, scope authorization or outbox rule;
 the model remains valid. Presentation invariants live in SaveDestination.lean. -/
+
+/-! Checked 2026-10-19 for credential-change retry: Outbox section 8c models
+known-key backoff bypass and the local-path takeover hold. Other write guards,
+claims, idempotency and merge-back remain unchanged; the extra queue field is
+an attempted credential fingerprint only. Enterprise recovery text changes no
+recall, authorization or adapter admission rule. -/
+
+/- 2026-10-19: Multi-root disagreement now refuses unscoped MCP writes before
+core admission; the legacy workspaceFolderScope result is unchanged. Explicit
+choices retain routing and authorization. Recall adds the admitted root orgs
+to dialing context, without widening the authorization filter or remote-only
+binding. WorkspaceChoice models this adapter admission and context selection. -/
+
+/- 2026-10-19: Doctor surfaces core server evidence and requires post-install
+hook-run timestamps for wired supported editors. Init records installation only
+after successful writes; diagnostics do not grant access or send queued saves.
+Existing adapter routing and config-preservation invariants are unchanged;
+ServerDiagnostics models missing-evidence and hook-time aggregation. -/

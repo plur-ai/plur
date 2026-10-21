@@ -4,6 +4,9 @@ import { logger } from '../logger.js'
 import { normalizeEngramInput } from '../normalize-engram.js'
 import { ScopeMetadataSchema, type ScopeMetadata } from '../schemas/scope-metadata.js'
 import type { ScopeSource } from '../scope-routing.js'
+import { redactToken } from '../redact-token.js'
+
+export interface WriteCheckResult { scope: string; writable: boolean; review_held: boolean; reason?: string }
 
 /** The values `scope_source` may carry on the wire (#1221); anything else is omitted. */
 const SCOPE_SOURCES: ReadonlySet<string> = new Set<ScopeSource>(['explicit', 'session', 'default', 'routed'])
@@ -255,7 +258,7 @@ export class RemoteAbortedError extends Error {
  */
 export class RemoteHttpError extends Error {
   readonly status: number
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, readonly code?: 'scope_lookup_failed') {
     super(message)
     this.name = 'RemoteHttpError'
     this.status = status
@@ -669,6 +672,27 @@ export class RemoteStore {
     }
   }
 
+  /** Read-only permission prediction, with complete request-ordered evidence. */
+  async writeCheck(scopes: string[], signal?: AbortSignal): Promise<WriteCheckResult[]> {
+    if (!Array.isArray(scopes) || scopes.length < 1 || scopes.length > 50 || !scopes.every(s => typeof s === 'string')) {
+      throw new Error('write-check requires one to fifty scope strings')
+    }
+    const r = await this.fetchBounded(`${this.apiBase}/write-check`, {
+      method: 'POST', headers: this.headers({ 'Content-Type': 'application/json' }), body: JSON.stringify({ scopes }),
+    }, RemoteStore.readBounded, signal)
+    if (!r.ok) throw new RemoteHttpError(r.status, `Remote write-check failed: ${r.status} ${redactToken(r.text ?? '', this.token)}`)
+    const results = (r.json as { results?: unknown } | undefined)?.results
+    if (!Array.isArray(results) || results.length !== scopes.length) throw new Error('write-check returned an incomplete result list')
+    return results.map((item: unknown, i): WriteCheckResult => {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) throw new Error('write-check returned an invalid result')
+      const row = item as Record<string, unknown>
+      if (row.scope !== scopes[i] || typeof row.writable !== 'boolean' || typeof row.review_held !== 'boolean' ||
+        (row.reason !== undefined && typeof row.reason !== 'string')) throw new Error('write-check returned invalid scope or permission evidence')
+      return { scope: scopes[i], writable: row.writable, review_held: row.review_held,
+        ...(typeof row.reason === 'string' ? { reason: sanitiseResponseBody(redactToken(row.reason, this.token)) } : {}) }
+    })
+  }
+
   /**
    * Resolve the identity behind this token — `GET /api/v1/me`. Returns the
    * full authorized scope set the server resolved from group memberships, so
@@ -684,9 +708,13 @@ export class RemoteStore {
    * to swallow per URL). The message keeps the `Remote /me failed: <status>`
    * pattern so the `/\b40[13]\b/` auth-expired checks in callers still match.
    */
-  async me(): Promise<MeResponse> {
-    const r = await this.fetchBounded(`${this.apiBase}/me`, { headers: this.headers() }, RemoteStore.readBounded)
-    if (!r.ok) throw new RemoteHttpError(r.status, `Remote /me failed: ${r.status} ${r.text}`)
+  async me(signal?: AbortSignal): Promise<MeResponse> {
+    const r = await this.fetchBounded(`${this.apiBase}/me`, { headers: this.headers() }, RemoteStore.readBounded, signal)
+    if (!r.ok) {
+      let code: 'scope_lookup_failed' | undefined
+      try { if (r.status === 503 && JSON.parse(r.text ?? '').error === 'scope_lookup_failed') code = 'scope_lookup_failed' } catch { /* generic errors are not authentication evidence */ }
+      throw new RemoteHttpError(r.status, `Remote /me failed: ${r.status} ${r.text}`, code)
+    }
     // A 200 whose JSON body is not an object (a string, number, array or null) is
     // read as an older server that sent no fields — never a TypeError from `in`.
     const body = (r.json !== null && typeof r.json === 'object' && !Array.isArray(r.json)
@@ -970,7 +998,7 @@ export class RemoteStore {
   async appendAndGetServerId(
     engram: Engram,
     opts?: { signal?: AbortSignal; idempotencyKey?: string },
-  ): Promise<{ id: string }> {
+  ): Promise<{ id: string; review_required?: true; deduplicated?: true }> {
     // #768: transmit the full engram, not just the core four — pinned,
     // rationale, tags, commitment, validity windows and supersedes were
     // silently dropped, so team-scope pins never round-tripped. Optional
@@ -1072,7 +1100,7 @@ export class RemoteStore {
       body,
     }, RemoteStore.readBounded, opts?.signal)
     if (!r.ok) throw new RemoteHttpError(r.status, `Remote store append failed: ${r.status} ${r.text}`)
-    const data = (r.json ?? {}) as { id?: unknown }
+    const data = (r.json ?? {}) as { id?: unknown; review_required?: unknown; deduplicated?: unknown }
     // #404: validate the server-assigned id's SHAPE, not just truthiness. It
     // becomes this engram's id (cached, rendered, used as a key), so a non-string,
     // empty, over-long, or control-char-bearing id from a buggy/hostile endpoint
@@ -1086,6 +1114,10 @@ export class RemoteStore {
     // has the engram. Insert with the server-assigned id so the very next
     // recall sees it without waiting for a background refresh. If the server
     // transformed other fields, the next refresh corrects them.
+    if (data.review_required === true) {
+      this.cache = null
+      return { id, review_required: true, ...(data.deduplicated === true ? { deduplicated: true as const } : {}) }
+    }
     const stored = { ...(engram as any), id } as Engram
     if (this.cache) {
       this.cache.engrams.push(stored)
@@ -1095,7 +1127,7 @@ export class RemoteStore {
       // from the server instead of treating the partial view as fresh.
       this.cache = { ts: 0, engrams: [stored] }
     }
-    return { id }
+    return { id, ...(data.deduplicated === true ? { deduplicated: true as const } : {}) }
   }
 
   /**

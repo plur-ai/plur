@@ -471,6 +471,122 @@ theorem force_delivers_unconflicted {β} (bump : β → β) (w : Bool) (e : Entr
     flushEntryC bump true true w false false true e = .handedOff := by
   cases w <;> rfl
 
+/-! ### 8c. Credential changes and local destination takeover (2026-10-19)
+
+Fingerprints are opaque naturals. Code records the credential captured for the
+attempt, not one reloaded after the response. Unknown fingerprints preserve
+the old backoff. A changed key changes retry eligibility only; it cannot bypass
+current destination, conflict or content guards. A local path takeover is held
+even on a forced flush; an authorized replacement remote remains deliverable.
+-/
+
+def credentialChanged (previous current : Option Nat) : Bool :=
+  match previous, current with
+  | some a, some b => a != b
+  | _, _ => false
+
+theorem previous_unknown (current : Option Nat) : credentialChanged none current = false := by cases current <;> rfl
+theorem current_unknown (previous : Option Nat) : credentialChanged previous none = false := by cases previous <;> rfl
+theorem unchanged_key (key : Nat) : credentialChanged (some key) (some key) = false := by simp [credentialChanged]
+
+def skipWithCredential (force needsAction inWindow authRefusal : Bool) (previous current : Option Nat) : Bool :=
+  skipOf force needsAction inWindow && !(authRefusal && credentialChanged previous current)
+
+theorem old_row_keeps_hold : skipWithCredential false true true true none (some 2) = true := rfl
+theorem changed_key_retries : skipWithCredential false true true true (some 1) (some 2) = false := rfl
+theorem same_key_keeps_hold (key : Nat) : skipWithCredential false true true true (some key) (some key) = true := by
+  simp [skipWithCredential, skipOf, credentialChanged]
+
+theorem non_auth_refusal_keeps_hold (previous current : Option Nat) :
+    skipWithCredential false true true false previous current = true := by
+  simp [skipWithCredential, skipOf]
+
+def flushEntryCredential {β} (bump : β → β) (force needsAction inWindow authRefusal localPath conflict offends delivered : Bool)
+    (previous current : Option Nat) (e : Entry β) : Res β :=
+  if localPath || conflict then .kept e
+  else flushEntry bump (skipWithCredential force needsAction inWindow authRefusal previous current) offends delivered e
+
+theorem local_path_never_sent {β} (bump : β → β) (f n w a c o d : Bool) (previous current : Option Nat) (e : Entry β) :
+    flushEntryCredential bump f n w a true c o d previous current e = .kept e := by simp [flushEntryCredential]
+
+theorem conflict_still_held {β} (bump : β → β) (f n w a l o d : Bool) (previous current : Option Nat) (e : Entry β) :
+    flushEntryCredential bump f n w a l true o d previous current e = .kept e := by simp [flushEntryCredential]
+
+theorem replacement_remote_delivers {β} (bump : β → β) (e : Entry β) :
+    flushEntryCredential bump false true true true false false false true (some 1) (some 2) e = .handedOff := rfl
+
+-- Before the new credential branch, the same repaired-key case stayed held.
+example : skipOf false true true = true ∧ skipWithCredential false true true true (some 1) (some 2) = false := by decide
+
+/- A batch may await an earlier POST after selecting later rows. The admission
+state is read again from disk immediately before each later POST. Selection
+does not authorize an obsolete destination or credential. -/
+structure AdmissionState where
+  localPath : Bool
+  credential : Option Nat
+
+def flushSelected {β} (bump : β → β) (_selected current : AdmissionState)
+    (previous : Option Nat) (e : Entry β) : Res β :=
+  flushEntryCredential bump false true true true current.localPath false false true previous current.credential e
+
+theorem takeover_after_selection_is_held {β} (bump : β → β) (e : Entry β) :
+    flushSelected bump ⟨false, some 2⟩ ⟨true, some 2⟩ (some 1) e = .kept e := rfl
+
+theorem rejected_key_restored_after_selection_is_held {β} (bump : β → β) (e : Entry β) :
+    flushSelected bump ⟨false, some 2⟩ ⟨false, some 1⟩ (some 1) e = .kept e := rfl
+
+theorem unchanged_repaired_destination_delivers {β} (bump : β → β) (e : Entry β) :
+    flushSelected bump ⟨false, some 2⟩ ⟨false, some 2⟩ (some 1) e = .handedOff := rfl
+
+/-! ### 8d. Acknowledgment after an authorized endpoint replacement (2026-10-20)
+
+Routing admission above chooses the actual endpoint. A receipt alone is not
+handoff: merge-back must compare the immutable admitted queued identity with
+the fresh row. URLs are canonical endpoint identities. The actual accepted
+endpoint remains the retirement target if the local decision changed.
+-/
+structure QueuedIdentity where
+  url : Nat
+  scope : Nat
+  key : Nat
+  deriving DecidableEq
+
+def acknowledge (admitted fresh : QueuedIdentity) (active queued : Bool)
+    (rowScope _acceptedEndpoint : Nat) : Bool :=
+  active && queued && rowScope == admitted.scope && decide (fresh = admitted)
+
+theorem replacement_acknowledged (admitted : QueuedIdentity) (replacement : Nat) :
+    acknowledge admitted admitted true true admitted.scope replacement = true := by
+  simp [acknowledge]
+
+theorem requeued_write_preserved (admitted fresh : QueuedIdentity) (scope endpoint : Nat)
+    (changed : fresh ≠ admitted) :
+    acknowledge admitted fresh true true scope endpoint = false := by
+  simp [acknowledge, changed]
+
+theorem cancelled_write_preserved (admitted fresh : QueuedIdentity) (scope endpoint : Nat) :
+    acknowledge admitted fresh true false scope endpoint = false := by simp [acknowledge]
+
+theorem retired_write_preserved (admitted fresh : QueuedIdentity) (scope endpoint : Nat) :
+    acknowledge admitted fresh false true scope endpoint = false := by simp [acknowledge]
+
+def mergeFailure (admitted fresh : QueuedIdentity) (attempted currentBookkeeping : Nat) : Nat :=
+  if admitted = fresh then attempted else currentBookkeeping
+
+theorem new_write_keeps_bookkeeping (admitted fresh : QueuedIdentity) (attempted current : Nat)
+    (changed : admitted ≠ fresh) :
+    mergeFailure admitted fresh attempted current = current := by
+  simp [mergeFailure, changed]
+
+theorem same_write_records_failure (identity : QueuedIdentity) (attempted current : Nat) :
+    mergeFailure identity identity attempted current = attempted := by simp [mergeFailure]
+
+-- Matching URL/scope alone would replace the new write's bookkeeping with 8.
+example : mergeFailure ⟨1, 7, 9⟩ ⟨1, 7, 10⟩ 8 0 = 0 := by decide
+
+-- The former merge-back confused the receipt endpoint with the queued URL.
+example : (1 == 2) = false ∧ acknowledge ⟨1, 7, 9⟩ ⟨1, 7, 9⟩ true true 7 2 = true := by decide
+
 end PlurSpec.Outbox
 
 /- 2026-10-19: Save destination reporting is a projection of the existing delivery
@@ -480,3 +596,24 @@ the model remains valid. Presentation invariants live in SaveDestination.lean. -
 /- 2026-10-19: serverSessionLines reads cached configuration and the existing
 primary outbox projection. It does not probe, route, deliver or mutate memory.
 These transition invariants still hold; status precedence is in SaveDestination. -/
+
+/- 2026-10-19: Read-only server diagnostics add bounded /me and write-check
+requests, strict permission evidence, and explicit missing-evidence failures.
+They do not change grants, memory, queue delivery or file permissions. Existing
+write/routing invariants hold; ServerDiagnostics models report aggregation.
+The discovery clock-skew constant is exported without changing its value. -/
+
+/- 2026-10-19: Multi-root disagreement now refuses unscoped MCP writes before
+core admission; the legacy workspaceFolderScope result is unchanged. Explicit
+choices retain routing and authorization. Recall adds the admitted root orgs
+to dialing context, without widening the authorization filter or remote-only
+binding. WorkspaceChoice models this adapter admission and context selection. -/
+
+/-! 2026-10-19: Core re-exports the existing server-entry schema so legacy
+project cleanup can validate a raw explicit enterprise registration without
+inventing authorization through normalization. No engine behavior changes. -/
+
+/-! 2026-10-19: Explicit primary upload reuses the locked queue and guarded
+flush with a selected-id filter. Existing route, sensitivity, binding and
+retirement invariants remain in force. UploadLocal models the new admission,
+selection, dry-run and receipt rules. Held receipts are never cached as live. -/

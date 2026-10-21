@@ -186,7 +186,7 @@ describe.skipIf(!ready)('a folder\'s team scope is the default for unscoped read
     expect(statements(r)).not.toContain('quokka-explicit a team fact')
   }, 60_000)
 
-  it('guard: two roots with different team scopes, either order: an unscoped recall dials no team store', async () => {
+  it('two roots with different team scopes, either order: recall consults their organization while injection remains unscoped', async () => {
     const e = env([SCOPE, SCOPE2], (_ws, a, b) =>
       `version: 1\nfolders:\n  - path: "${a}"\n    scope: ${SCOPE2}\n  - path: "${b}"\n    scope: ${SCOPE}\n`)
     serve('quokka-two-teams a team fact', SCOPE)
@@ -194,11 +194,11 @@ describe.skipIf(!ready)('a folder\'s team scope is the default for unscoped read
       const client = await start(e, roots)
       const r = await call(client, 'plur_recall', { query: 'quokka-two-teams team fact' })
       expect(r.plur, JSON.stringify(r)).toBeUndefined()
-      expect(statements(r)).not.toContain('quokka-two-teams a team fact')
+      expect(statements(r)).toContain('quokka-two-teams a team fact')
       const i = await call(client, 'plur_inject_hybrid', { task: 'quokka-two-teams team fact' })
       expect(injected(i)).not.toContain('quokka-two-teams')
     }
-    expect(stub.recallCalls).toBe(0)
+    expect(stub.recallCalls).toBe(2)
   }, 90_000)
 
   it('[team A, team A]: an unscoped recall dials team A', async () => {

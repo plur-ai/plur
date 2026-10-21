@@ -9,6 +9,7 @@ import { detectPlurStorage, type PlurPaths } from './storage.js'
 import { IndexedStorage } from './storage-indexed.js'
 import { PGLiteAdapter } from './storage-pglite.js'
 import { loadConfig, storeEntryForDisk, tokenFromEnv } from './config.js'
+import { ServerStoreEntrySchema } from './schemas/config.js'
 import { collapseExpandedStores, isServerStoreEntry, serverEntryIdentities, identityBaseOf, EXPANDED_FROM, safeOrigin, withCompatScope, isSafeScopeName } from './store-expand.js'
 import { mergeSensitivityForWriteback } from './sensitivity-writeback.js'
 import { canonicalize } from './project-config.js'
@@ -33,7 +34,7 @@ import { classifyQuery, routeForIntent, applyIntentRouting, isIntentRoutingDisab
 import { getEmbedder, resolveEmbedderName } from './embedders/index.js'
 import { emitMissSignal } from './telemetry-miss-signal.js'
 import { embedderStatus, resetEmbedder, setEmbeddingsEnabled, semanticModelState, backgroundModelLoadAllowed, fillEmbeddingCache, activeEmbedderIsRemote, type EmbedderStatus } from './embeddings.js'
-import type { DegradedReason } from './types.js'
+import type { DegradedReason, UploadLocalResult } from './types.js'
 import { expandedSearch } from './query-expansion.js'
 import { recallAuto, type AutoSearchResult } from './search-orchestrator.js'
 import { autoSummary } from './summary.js'
@@ -65,10 +66,10 @@ import { decodeJwtExpiry, decodeJwtPayload } from './jwt.js'
 import { RemoteStore, RemoteAbortedError, RemoteHttpError, RemoteTimeoutError, normalizeEndpointUrl, FEEDBACK_SOURCE_CAPABILITY, TOKEN_ENV_UNSET_RE, tokenEnvUnsetMessage } from './store/remote-store.js'
 import type { MeResponse } from './store/remote-store.js'
 import { recordSeenOnServer, seenOnServer } from './seen-on-server.js'
-import { classifyOutboxFailure, NEEDS_ACTION_RETRY_MS, NEEDS_ACTION_STATUSES, OUTBOX_CLAIM_ERROR_PREFIX, summarizeOutbox, type OutboxState, type OutboxSummary } from './outbox-health.js'
+import { classifyOutboxFailure, credentialChanged, statusFromErrorText, NEEDS_ACTION_RETRY_MS, NEEDS_ACTION_STATUSES, OUTBOX_CLAIM_ERROR_PREFIX, summarizeOutbox, type OutboxState, type OutboxSummary } from './outbox-health.js'
 import { redactToken, containsToken } from './redact-token.js'
 import {
-  remoteRecall, isRemoteRecallDisabled, resolveRemoteRecallTimeoutMs, scopeOrg,
+  remoteRecall, isRemoteRecallDisabled, resolveRemoteRecallTimeoutMs, scopeOrg, tokenHealthKey,
   REMOTE_STATUS_TTL_MS, PROBE_CLEARABLE_STATES,
   resolveRecallDeadlineMs, buildRecallRemoteReport, RECALL_BOOKKEEPING_LOCK_WAIT_MS, settleBy,
   type RecallRemoteReport,
@@ -80,10 +81,11 @@ import { escapedPath as folderEscaped } from './folder-ask.js'
 import { ReadonlyStoreGuard, ReadonlyStoreError } from './store/readonly-store-guard.js'
 import { withAsyncLock, type AsyncLockOptions } from './store/async-lock.js'
 import { SessionScopeRegistry, NO_SESSION } from './session-scopes.js'
-import { loadGitScopeSources, readGitOrigin, type OriginRead, type GitScopeSource, type GitScopeOutcome } from './git-origin.js'
+import { loadGitScopeSources, readGitOrigin, DISCOVERY_MAX_AGE_MS, DISCOVERY_FUTURE_SKEW_MS, type OriginRead, type GitScopeSource, type GitScopeOutcome } from './git-origin.js'
+import { checkOwnerOnly } from './owner-only.js'
 import { formatSaveDestination, formatServerSessionLine, type ServerSessionState } from './save-destination.js'
 export { formatSaveDestination, formatServerSessionLine, type SaveDestinationInput, type ServerSessionState } from './save-destination.js'
-export { ENTERPRISE_SETUP_COMMAND } from './enterprise.js'
+export { ENTERPRISE_SETUP_COMMAND, enterpriseRecoveryHint } from './enterprise.js'
 export { loadGitScopeSources, gitDefaultScope, type GitScopeSource, type GitScopeOutcome } from './git-origin.js'
 import type { AsyncPrimaryStore } from './store/primary-store.js'
 import { requiresIndexSync, asDerivedIndex } from './storage-adapter.js'
@@ -179,6 +181,8 @@ export {
   clearFolderTrust,
   coversHomeOrRoot,
   workspaceFolderScope,
+  workspaceScopeDecision,
+  type WorkspaceScopeDecision,
   findPlurMarker,
   hasOwnFolderDecision,
   sameFolderPath,
@@ -310,7 +314,7 @@ export { isLocalOnlyScope, assertScopeNamesATarget, personalStoreEntry } from '.
 export { resolveScopeTarget, ScopeConflictError, type ScopeTarget } from './store-resolver.js'
 export { orderBySupersedes } from './outbox-order.js'
 export {
-  classifyOutboxFailure, summarizeOutbox, describeNeedsAction, describeHeld, statusFromErrorText, OUTBOX_CLAIM_ERROR_PREFIX,
+  classifyOutboxFailure, credentialChanged, summarizeOutbox, describeNeedsAction, describeHeld, statusFromErrorText, OUTBOX_CLAIM_ERROR_PREFIX,
   NEEDS_ACTION_RETRY_MS, NEEDS_ACTION_STATUSES,
   type OutboxState, type OutboxVerdict, type OutboxSummary, type OutboxFailureInput,
 } from './outbox-health.js'
@@ -450,6 +454,7 @@ export type { PackManifest } from './schemas/pack.js'
 export { shortPackIntegrity, isTransientPackDir } from './packs.js'
 export type { PreviewResult, RegistryEntry, PrivacyScanResult, PrivacyIssue, PackProvenanceView, InstallResult, NeutralizedCounts, PackIntegrityMigrationReport } from './packs.js'
 export type { PlurConfig, StoreEntry, ScopeRoutingConfig } from './schemas/config.js'
+export { ServerStoreEntrySchema } from './schemas/config.js'
 export type { ManifestSummary, PayloadDescriptor, Producer, Signer, CapsuleHeader, CapsulePreamble } from './schemas/capsule.js'
 export {
   CAPSULE_MAGIC,
@@ -697,6 +702,8 @@ export interface ServerDiscoveryOutcome {
  */
 export interface RemoteHealth {
   url: string
+  /** All entries at this endpoint use enterprise registration; false/absent for mixed legacy credentials. */
+  enterprise?: boolean
   /** Scopes registered locally for this (url, token) group (for the report). */
   scopes: string[]
   /** 'ok' = /me succeeded; 'auth_expired' = 401/403 or JWT exp passed; 'unreachable' = network/timeout/5xx. */
@@ -726,6 +733,14 @@ export interface RemoteHealth {
   /** Number of scopes the server reports granted to this token (status 'ok' only). */
   grantedScopes?: number
 }
+
+export type CheckResult = 'ok' | 'fail' | 'could-not-check'
+export interface ServerStoreCheck {
+  url: string
+  checks: Array<{ name: 'reachable' | 'key' | 'key-file' | 'scopes-fresh' | 'write-path' | 'queue'; result: CheckResult; detail: string }>
+  ok: boolean
+}
+export type { WriteCheckResult } from './store/remote-store.js'
 
 /** Outcome of registering discovered scopes for one URL (#292). */
 export interface RegisterDiscoveredResult {
@@ -1752,7 +1767,9 @@ export class Plur {
       }
     }
     this.config = this._loadConfig()
-    this._autoDiscover = Plur.resolveAutoDiscover(options?.autoDiscover)
+    this._autoDiscover = Plur.resolveAutoDiscover(options?.autoDiscover, this._readRawStores().some(
+      entry => isPlainObject(entry) && isPlainObject(entry.enterprise) && ServerStoreEntrySchema.safeParse(entry).success,
+    ))
     // Auto-discover project stores from CWD (skips temp dirs for test safety).
     //
     // Opt-out exists because this is a constructor with a DISK SIDE EFFECT
@@ -5116,6 +5133,7 @@ export class Plur {
         // resolver's own writable entry (#1633 row 34), so it is the server
         // the router dialled, never merely the first one listed.
         const storeEntry = this._remoteWriteEntry(scope)
+        const attemptedTokenFp = storeEntry?.token ? tokenHealthKey(storeEntry.token) : undefined
         // Idempotency key for this write (2026-09-29 audits): random, minted
         // once, persisted on the outbox entry, never derived from an id.
         const pushKey = randomUUID()
@@ -5205,6 +5223,7 @@ export class Plur {
                   // #1299: the status, when the remote gave one — it is what
                   // tells a refusal from a blip.
                   if (err instanceof RemoteHttpError) target.structured_data._outbox.last_status = err.status
+                  target.structured_data._outbox.last_token_fp = attemptedTokenFp
                 }
                 if (target?.structured_data?._outbox) {
                   // Incremental write (#740): only the outbox bookkeeping changed.
@@ -5453,6 +5472,8 @@ export class Plur {
     // mirroring learn() — before dedup can short-circuit the write.
     resolveValidity(statement, context)
     const remoteDriver = this._resolveRemoteStoreForScope(scope)
+    const attemptedToken = this._remoteWriteEntry(scope)?.token
+    const attemptedTokenFp = attemptedToken ? tokenHealthKey(attemptedToken) : undefined
     // #90, formal WritePath candidate 4: an engram the caller explicitly marked
     // private does not go to a remote store. learn() has always refused it
     // (and warns); this path never checked, so the same input left the machine
@@ -5550,10 +5571,10 @@ export class Plur {
     if (isHardPinned(localPlaceholder as never)) {
       return await this._withStoreLock(this.paths.engrams, async () => {
         await this._assertHardTierFits({ ...localPlaceholder, id: 'ENG-XXXXXX-0000-00-00-000' })
-        return await this._commitRemoteRouted(localPlaceholder, remoteDriver, scope, now, allEngrams, unpersistableHit, true, remoteTimeoutMs)
+        return await this._commitRemoteRouted(localPlaceholder, remoteDriver, scope, now, allEngrams, unpersistableHit, true, remoteTimeoutMs, attemptedTokenFp)
       })
     }
-    return await this._commitRemoteRouted(localPlaceholder, remoteDriver, scope, now, allEngrams, unpersistableHit, false, remoteTimeoutMs)
+    return await this._commitRemoteRouted(localPlaceholder, remoteDriver, scope, now, allEngrams, unpersistableHit, false, remoteTimeoutMs, attemptedTokenFp)
   }
 
   /**
@@ -5574,6 +5595,7 @@ export class Plur {
     lockHeld: boolean,
     /** The caller's deadline for the POST (0.21.1). Unset: the driver's own 30 s. */
     remoteTimeoutMs?: number,
+    attemptedTokenFp?: string,
   ): Promise<Engram> {
     let serverEngram: Engram
     // Idempotency key for this write (2026-09-29 audits). The placeholder's id
@@ -5618,6 +5640,7 @@ export class Plur {
               queued_at: now,
               last_attempt: now,
               attempt_count: 1,
+              last_token_fp: attemptedTokenFp,
               last_error: (err as Error).message,
               // The same key the failed attempt carried: if that POST did land
               // (a timeout after the server stored it), the retry is collapsed.
@@ -7527,7 +7550,7 @@ export class Plur {
    * tokens per host mean one POST per token. `remoteEndpointTokenConflicts`
    * feeds the doctor warning for that misconfiguration.
    */
-  private _remoteRecallHosts(options?: { scope?: string; scopes?: string[]; session?: string; remote_project?: RemoteProjectConfig }): RemoteRecallHost[] {
+  private _remoteRecallHosts(options?: { scope?: string; scopes?: string[]; context_scopes?: string[]; session?: string; remote_project?: RemoteProjectConfig }): RemoteRecallHost[] {
     // Pick up out-of-process config edits (#307) before reading tokens: a
     // rotated credential must reach the very next dial, not the next restart.
     // The constructor's only re-read compares `stores.length`, so a rotation
@@ -7571,7 +7594,7 @@ export class Plur {
     // switch redirects subsequent recall dialing too. No session scope set
     // (the pre-#243 state) leaves dialing exactly as before.
     const dialScope = options?.scope ?? this._sessionScopes.get(options?.session) ?? undefined
-    const sessionOrg = scopeOrg(dialScope)
+    const contextOrgs = new Set((options?.scope !== undefined ? [options.scope] : options?.context_scopes ?? [dialScope]).map(scopeOrg).filter(Boolean))
     // A personal `user:` scope names its own store (#1515): a recall scoped to
     // `user:acme:me` dials the ONE store entry whose scope matches it (case
     // folded, exact-case preferred — `personalStoreEntry`), with that entry
@@ -7619,7 +7642,7 @@ export class Plur {
       const always = dialable.filter(e => e.dial === 'always')
       const shared = dialable.filter(e => isSharedScope(e.scope))
       const personal = dialable.filter(e => !isSharedScope(e.scope))
-      const orgAffine = sessionOrg ? shared.filter(e => scopeOrg(e.scope) === sessionOrg) : []
+      const orgAffine = shared.filter(e => contextOrgs.has(scopeOrg(e.scope)))
       const projectImplicated = rpKey !== null && rpKey === normalizeEndpointUrl(g.url)
       const personalExact = personalEntry && dialable.includes(personalEntry) ? [personalEntry] : []
       const orgContext = orgAffine.length > 0 || projectImplicated
@@ -7665,7 +7688,7 @@ export class Plur {
    */
   private _startRemoteRecall(
     query: string,
-    options?: { scope?: string; scopes?: string[]; session?: string; remote?: boolean; remote_timeout_ms?: number; remote_project?: RemoteProjectConfig; limit?: number },
+    options?: { scope?: string; scopes?: string[]; context_scopes?: string[]; session?: string; remote?: boolean; remote_timeout_ms?: number; remote_project?: RemoteProjectConfig; limit?: number },
     /** The recall's deadline (#1586 audit L7): requests still in flight are
      *  aborted at it, and hosts that answered keep their rows. */
     deadlineAt?: number,
@@ -7673,7 +7696,7 @@ export class Plur {
     if (options?.remote === false) return null
     // An origin-derived local/unknown default is a privacy boundary even for
     // always-dial stores. Explicit call/session scopes remain deliberate choices.
-    if (!this._remoteOnly && options?.scope == null && this._sessionScopes.get(options?.session) == null) {
+    if (!this._remoteOnly && options?.scope == null && !options?.context_scopes?.length && this._sessionScopes.get(options?.session) == null) {
       const scope = this._gitFolderScope()
       if (scope === 'local') return null
       if (scope) options = { ...options, scope }
@@ -7879,6 +7902,7 @@ export class Plur {
       if (opts?.freshOnly && age_ms > REMOTE_STATUS_TTL_MS) continue
       out.push({
         host: normalizeEndpointUrl(o.url),
+        ...(this._enterpriseRecoveryEndpoint(o.url) ? { enterprise: true } : {}),
         status: o.state,
         ...(o.dropped_scopes && o.dropped_scopes.length > 0 ? { dropped_scopes: o.dropped_scopes } : {}),
         ms: o.ms,
@@ -10669,6 +10693,84 @@ export class Plur {
     )
   }
 
+  /** Active primary-store rows eligible for an explicit upload proposal. */
+  async listUploadCandidates(authorizedScopes: string[]): Promise<Array<{ id: string; scope: string; statement: string; proposed: string | null }>> {
+    this._remoteOnlyRefuseLocalStore('Listing local upload candidates')
+    const authorized = new Set(authorizedScopes)
+    return (await this._loadCached(this.paths.engrams))
+      .filter(row => row.status === 'active' && !(row as any).server_id && !(row as any)._fromRemoteStore && !Plur._isRemoteOnlyQueued(row))
+      .map(row => ({ id: row.id, scope: row.scope, statement: row.statement, proposed: authorized.has(row.scope) ? row.scope : null }))
+  }
+
+  /** Queue selected primary rows through the existing guarded outbox path. */
+  async uploadLocal(ids: string[], opts?: { dryRun?: boolean }): Promise<{ results: UploadLocalResult[] }> {
+    this._assertWritable()
+    this._remoteOnlyRefuseLocalStore('Uploading local memories')
+    const results = new Map<string, UploadLocalResult>(), selected = new Set<string>()
+    for (const id of new Set(ids)) {
+      try {
+        await this._withStoreLock(this.paths.engrams, async () => {
+          this.reloadConfigIfChanged()
+          const corpus = await this._primaryStore.load(), row = corpus.find(e => e.id === id)
+          if (!row || row.status !== 'active' || Plur._isRemoteOnlyQueued(row)) throw new Error('No active local upload candidate with this id')
+          if ((row as any).server_id) {
+            results.set(id, { id, outcome: 'already_on_server', new_id: (row as any).server_id }); return
+          }
+          const entry = this._remoteWriteEntry(row.scope)
+          if (!entry) throw new Error('This memory has no unambiguous writable server destination')
+          const sd = { ...((row as any).structured_data ?? {}) }, pending = sd._outbox
+          if (pending && (pending.target_scope !== row.scope || normalizeEndpointUrl(pending.target_url) !== normalizeEndpointUrl(entry.url!))) {
+            throw new Error('This memory is queued for a different destination; resolve its queue first')
+          }
+          const fields = this._engramContextFields(row)
+          const hits = this._offendingHitsForScope(fields ? `${row.statement}\n${JSON.stringify(fields)}` : row.statement, row.scope)
+          if (hits.length) {
+            results.set(id, { id, outcome: 'demoted_secret', ...(opts?.dryRun ? { dry_run: true as const } : {}) })
+            if (!opts?.dryRun) {
+              sd._demoted = { from: row.scope, to: 'local', patterns: [...new Set(hits.map(h => h.pattern))] }
+              delete sd._outbox; row.scope = 'local'; row.visibility = 'private'; (row as any).structured_data = sd
+              await this._updateEngrams(corpus, [row]); await this._syncIndex()
+            }
+            return
+          }
+          if (opts?.dryRun) { results.set(id, { id, outcome: 'sent', dry_run: true }); return }
+          sd._outbox = pending ?? { target_url: entry.url!, target_scope: row.scope, queued_at: new Date().toISOString(),
+            last_attempt: '', attempt_count: 0, last_error: '', idempotency_key: randomUUID() }
+          ;(row as any).structured_data = sd
+          await this._updateEngrams(corpus, [row]); selected.add(id)
+        })
+      } catch {
+        results.set(id, { id, outcome: 'failed', error: 'Could not prepare this memory; check the local store and its writable server destination' })
+      }
+    }
+    if (selected.size) {
+      let remaining: Engram[]
+      try {
+        await this._runOutboxFlush({ force: true }, { ids: selected, results })
+        remaining = await this._primaryStore.load()
+      }
+      catch {
+        // A server may have accepted a row before local merge-back failed.
+        // Retain its receipt id and report the incomplete operation honestly.
+        for (const id of selected) results.set(id, { ...results.get(id), id, outcome: 'failed',
+          error: 'Upload could not finish local bookkeeping; inspect the outbox before retrying' })
+        return { results: [...new Set(ids)].map(id => results.get(id)!) }
+      }
+      for (const id of selected) {
+        const row = remaining.find(e => e.id === id), sd = (row as any)?.structured_data
+        if (results.has(id)) {
+          if (row) results.set(id, { ...results.get(id)!, outcome: 'failed',
+            error: 'The local memory changed during delivery; its accepted server copy is being reconciled through the outbox' })
+          continue
+        }
+        if (sd?._demoted && !sd._outbox) results.set(id, { id, outcome: 'demoted_secret' })
+        else if (sd?._outbox) results.set(id, { id, outcome: NEEDS_ACTION_STATUSES.has(sd._outbox.last_status) ? 'failed' : 'queued' })
+        else results.set(id, { id, outcome: 'failed', error: 'Delivery was not confirmed; the local row changed during upload' })
+      }
+    }
+    return { results: [...new Set(ids)].map(id => results.get(id)!) }
+  }
+
   /**
    * Move existing engram(s) to `targetScope` (#676) — the missing primitive
    * between `learn()` (whose content-hash dedup silently no-ops a re-emit
@@ -11856,6 +11958,10 @@ export class Plur {
    * dropped or rescoped for being `needs_action`.
    */
   async flushOutbox(options: { timeoutMs?: number; force?: boolean } = {}): Promise<{ flushed: number; failed: number; deferred: number; held: number; skipped: number; expired_warnings: string[] }> {
+    return this._runOutboxFlush(options)
+  }
+
+  private async _runOutboxFlush(options: { timeoutMs?: number; force?: boolean }, upload?: { ids: Set<string>; results: Map<string, UploadLocalResult> }): Promise<{ flushed: number; failed: number; deferred: number; held: number; skipped: number; expired_warnings: string[] }> {
     this._assertWritable()
     // #1269: the network budget. Started by the flush itself once the local
     // load is done (review of #1277), so a large store does not spend it on disk.
@@ -11871,7 +11977,7 @@ export class Plur {
     // #1277 per-entry claims this flush takes; released however it ends (C4).
     const entryClaims = new Set<string>()
     try {
-      return await this._flushOutboxClaimed(claimed, budget.signal, options.force === true, startBudget, entryClaims)
+      return await this._flushOutboxClaimed(claimed, budget.signal, options.force === true, startBudget, entryClaims, upload)
     } finally {
       if (budgetTimer) clearTimeout(budgetTimer)
       // Decision C4: the per-entry claims are released however the flush
@@ -11939,6 +12045,7 @@ export class Plur {
     force: boolean,
     startBudget: () => void,
     entryClaims: Set<string>,
+    upload?: { ids: Set<string>; results: Map<string, UploadLocalResult> },
   ): Promise<{ flushed: number; failed: number; deferred: number; held: number; skipped: number; expired_warnings: string[] }> {
     // The re-guard below promises the target scope's CURRENT policy (R2-D #12);
     // without this a long-running process flushed against the config it
@@ -11961,6 +12068,7 @@ export class Plur {
       last_attempt: string; attempt_count: number; last_error: string
       /** HTTP status of the last failed push (#1299). */
       last_status?: number
+      last_token_fp?: string
       /** Unique per logical write, stable across its retries (C4). */
       idempotency_key?: string
     }
@@ -11969,8 +12077,11 @@ export class Plur {
      * cannot fix. Nothing about it changes; it is only not dialled. `force` —
      * the explicit flush — dials it.
      */
-    const heldBack = (outbox: OutboxEntry): boolean => {
+    const heldBack = (outbox: OutboxEntry, currentToken?: string): boolean => {
       if (force) return false
+      const status = typeof outbox.last_status === 'number' ? outbox.last_status : statusFromErrorText(outbox.last_error)
+      if ((status === 401 || status === 403) &&
+        credentialChanged(outbox.last_token_fp, currentToken ? tokenHealthKey(currentToken) : undefined)) return false
       const verdict = classifyOutboxFailure({
         last_status: typeof outbox.last_status === 'number' ? outbox.last_status : undefined,
         last_error: outbox.last_error,
@@ -12017,6 +12128,9 @@ export class Plur {
       // listed first (#1631): the same refusal as learn, non-destructively —
       // the row stays queued until one of the entries is removed.
       const target = resolveScopeTarget(outbox.target_scope, this.config.stores ?? [])
+      if (target.kind === 'local' && target.entry?.path) {
+        return { skip: 'failed', warning: `${engram.id}: NOT pushed — scope "${outbox.target_scope}" now belongs to a local path store; the save stays queued. Rescope or forget it explicitly.` }
+      }
       if (target.kind === 'conflict') {
         return {
           skip: 'failed',
@@ -12100,13 +12214,14 @@ export class Plur {
     // on retirement; this guard is belt-and-suspenders for any path that retires
     // without explicitly cancelling (e.g. direct YAML edits, older client versions).
     const pending: Engram[] = engrams.filter(e => {
+      if (upload && !upload.ids.has(e.id)) return false
       if (!Plur._stillQueued(e) || !free(e)) return false
       // A row owing a retire is decided in the push loop (after its retire).
       if ((e as any).structured_data._retireRemote) return true
       const outbox = (e as any).structured_data._outbox as OutboxEntry
       const route = routeFor(e, outbox)
       if ('storeEntry' in route) {
-        if (!heldBack(outbox)) return true
+        if (!heldBack(outbox, route.storeEntry.token)) return true
         held++
         return false
       }
@@ -12125,6 +12240,7 @@ export class Plur {
     // concurrent retirers are harmless: `removeIdempotent` treats 404/410 as done.
     const pendingClaimed = new Set(pending.map(e => e.id))
     const retiring: Engram[] = engrams.filter(e => {
+      if (upload && !upload.ids.has(e.id)) return false
       const entry = (e as any).structured_data?._retireRemote as RetireEntry | undefined
       if (!entry || !(pendingClaimed.has(e.id) || free(e))) return false
       if (retireStoreFor(entry)) return true
@@ -12246,6 +12362,10 @@ export class Plur {
     }
     /** Where each pushed id went — for queuing a retire if it was cancelled meanwhile (D1). */
     const pushedTo = new Map<string, { url: string; scope: string }>()
+    // A configuration-only server replacement changes the endpoint, not the
+    // queued write. Keep its admitted identity separate from the actual
+    // receipt endpoint so acknowledgment cannot erase a newer queued write.
+    const admittedWrites = new Map<string, { url: string; scope: string; key: string }>()
 
     for (const engram of pending) {
       // #1269: out of budget — leave the rest queued, untouched, for next time.
@@ -12306,10 +12426,15 @@ export class Plur {
         }
       }
 
+      // Earlier pushes and the row claim await external work. Re-read the
+      // destination and retry credential at admission, not only at selection.
+      this.reloadConfigIfChanged()
       warnIfOld(engram, outbox)
       const route = routeFor(engram, outbox)
       if (!('storeEntry' in route)) { holdBack(route); continue }
       const { storeEntry } = route
+      if (heldBack(outbox, storeEntry.token)) { held++; continue }
+      const attemptedTokenFp = storeEntry.token ? tokenHealthKey(storeEntry.token) : undefined
 
       const driver = this._getRemoteDriver({ url: storeEntry.url!, token: storeEntry.token, scope: storeEntry.scope })
 
@@ -12402,6 +12527,10 @@ export class Plur {
             ?? (persistedIdMap[t]?.url !== undefined && normalizeEndpointUrl(persistedIdMap[t].url) === normalizeEndpointUrl(storeEntry.url!) ? persistedIdMap[t].server_id : undefined)
           if (server) { remapped.push(server); continue }
           const localTarget = engrams.find(e => e.id === t)
+          if (localTarget && Plur._stillQueued(localTarget) && !pendingIds.has(t)) {
+            refuse = t
+            break
+          }
           if (localTarget && !pendingIds.has(t)) {
             expired_warnings.push(
               `${engram.id}: supersedes ${t}, which lives only in the local store — that edge cannot be `
@@ -12428,7 +12557,11 @@ export class Plur {
 
       try {
         // C4: the same key on every retry of this write.
+        admittedWrites.set(engram.id, {
+          url: outbox.target_url, scope: outbox.target_scope, key: outbox.idempotency_key,
+        })
         const pushed = await driver.appendAndGetServerId(cleanEngram, { signal: budget, idempotencyKey: outbox.idempotency_key })
+        upload?.results.set(engram.id, { id: engram.id, outcome: pushed.review_required ? 'held_for_review' : pushed.deduplicated ? 'already_on_server' : 'sent', new_id: pushed.id })
         // #863: remember the mapping so a later engram in this same flush can
         // point at the server id rather than the local one.
         pushedTo.set(engram.id, { url: storeEntry.url!, scope: outbox.target_scope })
@@ -12460,6 +12593,7 @@ export class Plur {
         // A remote timeout or any other error takes the ordinary failure
         // path below and is retried the same way.
         if (err instanceof RemoteAbortedError) {
+          outbox.last_token_fp = attemptedTokenFp
           outbox.last_attempt = now.toISOString()
           outbox.attempt_count += 1
           outbox.last_error = 'cut at the flush time budget before the remote answered — retried on the next flush'
@@ -12474,6 +12608,7 @@ export class Plur {
         outbox.last_attempt = now.toISOString()
         outbox.attempt_count += 1
         outbox.last_error = (err as Error).message
+        outbox.last_token_fp = attemptedTokenFp
         // #1299: the status when the remote gave one; cleared when it did not,
         // so a stale 403 cannot outlive a later network failure.
         if (err instanceof RemoteHttpError) outbox.last_status = err.status
@@ -12530,10 +12665,13 @@ export class Plur {
           .filter(e => {
             if (!(consideredIds.has(e.id) && !survivorsById.has(e.id))) return true
             const dest = pushedTo.get(e.id)
-            // Handed off only while still queued FOR THE STORE IT WENT TO — a
-            // D4 update / rescope that retargeted it mid-push leaves it queued
-            // for a store that has not received it (audit of #1228, finding 1).
-            if (Plur._stillQueuedFor(e, dest)) return false
+            // A config replacement may authorize a different server for the
+            // same queued scope. Acknowledge the admitted write only while its
+            // original identity survives; cancellation, rescope and requeue
+            // still preserve the fresh row and retire the actual remote copy.
+            const admitted = admittedWrites.get(e.id)
+            if (admitted && e.scope === admitted.scope && Plur._stillQueuedFor(e, admitted)
+              && (e as any).structured_data._outbox.idempotency_key === admitted.key) return false
             const retargeted = Plur._stillQueued(e)
             const serverId = localToServer.get(e.id)
             // Decision D1: queue the accepted copy for retirement on the remote
@@ -12561,8 +12699,11 @@ export class Plur {
             // Audit of #1228, finding 1: retargeted meanwhile (D4 update /
             // rescope to another store). The snapshot's `_outbox` names the OLD
             // store; copying it back would re-point the row there.
-            const sOb = sSd?._outbox as { target_url?: string; target_scope?: string } | undefined
+            const sOb = sSd?._outbox as { target_url?: string; target_scope?: string; idempotency_key?: string } | undefined
             if (sOb?.target_url && !Plur._stillQueuedFor(e, { url: sOb.target_url, scope: sOb.target_scope ?? '' })) return e
+            // A same-destination requeue is a different logical write too.
+            // Failure bookkeeping from this attempt must not restore its old key.
+            if (sOb && (e as any).structured_data._outbox.idempotency_key !== sOb.idempotency_key) return e
             const fSd = { ...((e as any).structured_data as Record<string, unknown> | undefined ?? {}) }
             // `_outbox` and `_demoted` are the flush's own bookkeeping: copy
             // them across (including their ABSENCE, which is how a cancelled
@@ -14483,11 +14624,12 @@ Generate an improved version of the procedure that prevents this failure. Return
    * call site (an embedded consumer, a wrapper binary) can still turn off a
    * cwd-derived disk side effect it never asked for.
    */
-  static resolveAutoDiscover(explicit?: boolean): boolean {
+  static resolveAutoDiscover(explicit?: boolean, enterprise = false): boolean {
     if (explicit !== undefined) return explicit
     const env = process.env.PLUR_AUTO_DISCOVER
     if (env === '0' || env === 'false') return false
-    return true
+    if (env === '1' || env === 'true') return true
+    return !enterprise
   }
 
   /** Whether this instance ran (and would re-run) cwd store discovery. */
@@ -15469,11 +15611,13 @@ Generate an improved version of the procedure that prevents this failure. Return
   }
 
   /** The raw `stores` array of config.yaml as on disk ([] when absent or unreadable). */
-  private _readRawStores(): unknown[] {
+  private _readRawStores(strict = false): unknown[] {
     try {
       const data = yaml.load(fs.readFileSync(this.paths.config, 'utf8')) as Record<string, unknown> | null
+      if (strict && data != null && (!isPlainObject(data) || (data.stores !== undefined && !Array.isArray(data.stores)))) throw new Error('invalid configuration structure')
       return Array.isArray(data?.stores) ? data!.stores as unknown[] : []
-    } catch {
+    } catch (err) {
+      if (strict && (err as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error('configuration could not be read')
       return []
     }
   }
@@ -15505,18 +15649,122 @@ Generate an improved version of the procedure that prevents this failure. Return
     this.configMtimeMs = this.statConfigMtime()
   }
 
+  /** Observational diagnostics: never refresh grants, change permissions or flush saves. */
+  async checkServerStores(opts?: { timeoutMs?: number }): Promise<ServerStoreCheck[]> {
+    let entries: Array<Record<string, unknown> & { url: string }>
+    try {
+      const raw = this._readRawStores(true)
+      for (const entry of raw) {
+        if (!isPlainObject(entry) || !('enterprise' in entry)) continue
+        // Loading is deliberately shape-tolerant; a diagnostic must not turn
+        // discarded scope data into evidence that there is nothing to check.
+        if (!isEnterpriseServerEntry(entry) || !ServerStoreEntrySchema.safeParse(entry).success ||
+          !stringList(entry.scopes).every(isSafeScopeName) || stringList(entry.scopes).length !== (entry.scopes as unknown[]).length ||
+          (entry.pinned_scopes !== undefined && (!Array.isArray(entry.pinned_scopes) || !entry.pinned_scopes.every(s => typeof s === 'string' && isSafeScopeName(s))))) {
+          throw new Error('invalid enterprise entry')
+        }
+      }
+      entries = raw.filter(isEnterpriseServerEntry)
+    }
+    catch {
+      return [{ url: 'configuration', ok: false, checks: [{ name: 'key-file', result: 'could-not-check', detail: 'configuration could not be read; server checks were not run' }] }]
+    }
+    this.reloadConfigIfChanged()
+    if (!entries.length) return []
+    const timeoutMs = Math.max(1, Math.min(30_000, Math.floor(opts?.timeoutMs ?? 5000)))
+    const file = checkOwnerOnly(this.paths.config)
+    let queued: Awaited<ReturnType<Plur['listOutbox']>> = []
+    const targets = new Map<string, string>()
+    let queueFailed = !!this.remoteOnlyFolder()
+    if (!queueFailed) try {
+      queued = await this.listOutbox()
+      if (queued.length) for (const e of await this._loadCached(this.paths.engrams)) {
+        for (const [kind, field] of [['push', '_outbox'], ['retire', '_retireRemote']] as const) {
+          const url = (e as any).structured_data?.[field]?.target_url
+          if (typeof url === 'string') targets.set(`${kind}:${e.id}`, normalizeEndpointUrl(url))
+        }
+      }
+    } catch { queueFailed = true }
+    return Promise.all(entries.map(async entry => {
+      const checks: ServerStoreCheck['checks'] = []
+      const { token, tokenEnv } = serverCredential(entry)
+      const endpoint = new URL(entry.url)
+      const secrets = [token ?? '', entry.url, normalizeEndpointUrl(entry.url), endpoint.username, endpoint.password, ...endpoint.searchParams.values(), endpoint.hash.slice(1)]
+      const scrub = (text: string) => secrets.reduce((s, secret) => secret ? redactToken(s, secret) : s, text)
+      const add = (name: ServerStoreCheck['checks'][number]['name'], result: CheckResult, detail: string) => checks.push({ name, result, detail: scrub(detail) })
+      const driver = new RemoteStore(entry.url, token ?? '', typeof entry.scope === 'string' ? entry.scope : '', { tokenEnv })
+      const signal = AbortSignal.timeout(timeoutMs)
+      let me: MeResponse | undefined
+      if (!token) {
+        add('reachable', 'could-not-check', 'no request sent without a key')
+        add('key', 'fail', tokenEnv ? `key environment variable ${tokenEnv} is unset` : 'no key is configured')
+      } else try {
+        me = await driver.me(signal)
+        add('reachable', 'ok', 'server answered')
+        add('key', me.username && me.org_id ? 'ok' : 'could-not-check', me.username && me.org_id ? 'key accepted' : 'identity response is incomplete')
+      } catch (err) {
+        const http = err instanceof RemoteHttpError
+        const detail = redactToken(err instanceof Error ? err.message : String(err), token)
+        add('reachable', http ? 'ok' : 'fail', http ? `server answered HTTP ${err.status}` : detail)
+        add('key', http && [401, 403].includes(err.status) ? 'fail' : http && err.code === 'scope_lookup_failed' ? 'ok' : 'could-not-check',
+          http && err.code === 'scope_lookup_failed' ? 'key accepted; the server could not read your scopes' : detail)
+      }
+      add('key-file', file.ok === true ? 'ok' : file.ok === false ? 'fail' : 'could-not-check', file.ok === true ? 'credential file is owner-only' : file.detail)
+      const cache = isPlainObject(entry.discovery) ? entry.discovery : {}
+      const at = typeof cache.discovered_at === 'string' ? Date.parse(cache.discovered_at) : NaN
+      const fresh = cache.status === 'ok' && Number.isFinite(at) && Date.now() - at <= DISCOVERY_MAX_AGE_MS && at - Date.now() <= DISCOVERY_FUTURE_SKEW_MS
+      const knownScopes = me && !me.scopes_malformed && me.scopes_status === 'ok'
+      add('scopes-fresh', fresh && knownScopes ? 'ok' : 'fail',
+        !knownScopes ? 'the server could not confirm your scopes (missing, not synced, or unavailable)' : fresh ? 'cached scope list is current' : 'cached scope list is missing, stale, or not usable')
+      const scopes = [...new Set([...stringList(entry.scopes), ...stringList(entry.pinned_scopes), ...(typeof entry.scope === 'string' ? [entry.scope] : [])])].filter(isSharedScope)
+      const blocked = scopes.filter(scope => {
+        const target = this._remoteWriteEntry(scope)
+        return !target?.url || normalizeEndpointUrl(target.url) !== normalizeEndpointUrl(entry.url)
+      })
+      if (!scopes.length) add('write-path', 'ok', 'nothing to check (no team or project scopes)')
+      else if (blocked.length) add('write-path', 'fail', `client routing does not select a writable path to this server for: ${blocked.join(', ')}`)
+      else if (!knownScopes) add('write-path', 'could-not-check', 'scope lookup did not succeed')
+      else try {
+        const results = []
+        for (let i = 0; i < scopes.length; i += 50) results.push(...await driver.writeCheck(scopes.slice(i, i + 50), signal))
+        const refused = results.filter(r => !r.writable)
+        add('write-path', refused.length ? 'fail' : 'ok', refused.length
+          ? refused.map(r => `${r.scope}: ${r.reason ?? 'not writable'}`).join('; ')
+          : results.some(r => r.review_held) ? 'writable; held for review where required' : 'all configured shared scopes are writable')
+      } catch (err) { add('write-path', 'could-not-check', redactToken(err instanceof Error ? err.message : String(err), token ?? '')) }
+      const waiting = queued.filter(e => {
+        const current = e.kind === 'push' ? this._remoteWriteEntry(e.target_scope)?.url : undefined
+        const target = current ? normalizeEndpointUrl(current) : targets.get(`${e.kind}:${e.id}`)
+        return target === normalizeEndpointUrl(entry.url)
+      })
+      const dates = waiting.map(e => e.queued_at).filter(d => Number.isFinite(Date.parse(d))).sort()
+      add('queue', queueFailed ? 'could-not-check' : waiting.length ? 'fail' : 'ok', queueFailed ? 'could not read the queued saves'
+        : waiting.length ? `${waiting.length} queued operation(s), oldest ${dates[0]?.slice(0, 10) ?? 'unknown date'}` : 'no queued saves')
+      return { url: redactToken(safeOrigin(entry.url), token ?? ''), checks, ok: checks.every(c => c.result === 'ok') }
+    }))
+  }
+
+  private _enterpriseRecoveryEndpoint(url: string): boolean {
+    const key = normalizeEndpointUrl(url)
+    const entries = this._readRawStores().filter(s => isPlainObject(s) && typeof s.url === 'string' && normalizeEndpointUrl(s.url) === key)
+    // Host-level outcomes cannot distinguish two keys on the same endpoint.
+    // Do not promise enterprise setup repairs a retained legacy credential.
+    return entries.length > 0 && entries.every(isEnterpriseServerEntry)
+  }
+
   /**
    * Local-only read of each configured remote token's JWT expiry (#295). No
    * network. Returns one entry per distinct remote URL; `expiresInDays`/`expired`
    * are null/false for opaque (non-JWT) keys. Used by session_start to warn
    * about imminent/past expiry without a round-trip.
    */
-  remoteTokenExpiries(now: number = Date.now()): Array<{ url: string; scopes: string[]; expiresAt: string | null; expiresInDays: number | null; expired: boolean }> {
+  remoteTokenExpiries(now: number = Date.now()): Array<{ url: string; scopes: string[]; enterprise?: boolean; expiresAt: string | null; expiresInDays: number | null; expired: boolean }> {
     return this._distinctRemoteEndpoints().map(({ url, token }) => {
       const scopes = this._storesForEndpoint(url).map(s => s.scope)
       const exp = decodeJwtExpiry(token, now)
       return {
         url, scopes,
+        ...(this._enterpriseRecoveryEndpoint(url) ? { enterprise: true } : {}),
         expiresAt: exp.expiresAt ? exp.expiresAt.toISOString() : null,
         expiresInDays: exp.expiresInDays,
         expired: exp.expired,
@@ -15559,6 +15807,7 @@ Generate an improved version of the procedure that prevents this failure. Return
       const orgClaim = [payload?.orgId, payload?.org_id, payload?.org]
         .find((v): v is string => typeof v === 'string')
       const expiryFields = {
+        ...(this._enterpriseRecoveryEndpoint(url) ? { enterprise: true } : {}),
         tokenExpiresAt: exp.expiresAt ? exp.expiresAt.toISOString() : undefined,
         tokenExpiresInDays: exp.expiresInDays,
         ...(subject !== undefined ? { tokenSubject: subject } : {}),

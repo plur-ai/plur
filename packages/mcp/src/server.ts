@@ -481,6 +481,11 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
       // resolved when a tool asks for it — at the moment a write is
       // admitted — from the CURRENT roots, by the one resolver. Under a
       // Symbol key no client can set.
+      const scopeContext = (ws: NonNullable<typeof admittedWs>) => {
+        const decision = workspaceWriteScope(instance, ws)
+        return { scope: decision.kind === 'agreed' ? decision.scope : null, key: workspaceKey(ws),
+          ...(decision.kind === 'disagree' ? { roots: decision.roots } : {}) }
+      }
       const folderContext: FolderScopeContext = {
         serverStatus: async (explicitScope) => {
           const admitted = boundStatusPolicy
@@ -503,10 +508,10 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
             return null
           }
           bindWorkspace([...new Set([...ws.roots, ws.cwd])], ws.roots.length ? ws.roots : [ws.cwd])
-          return { scope: workspaceWriteScope(instance, ws), key: workspaceKey(ws) }
+          return scopeContext(ws)
         },
         ...(admittedWs !== null
-          ? { admitted: () => ({ scope: workspaceWriteScope(instance, admittedWs!), key: workspaceKey(admittedWs!) }) }
+          ? { admitted: () => scopeContext(admittedWs!) }
           : {}),
       }
       args = { ...args, [FOLDER_SCOPE]: folderContext }

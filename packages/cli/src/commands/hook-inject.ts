@@ -16,6 +16,7 @@ import { correctionReminder } from './hook-correction-detect.js'
 import { recordInjected } from '../lib/auto-rate.js'
 import { recordHookRun } from '../lib/hook-runs.js'
 import { cachedServerLines } from '../lib/server-session.js'
+import { cleanupLegacyProjectAtSessionStart } from '../lib/legacy-plur-yaml.js'
 import { hookSessionDir, readSessionTask, writeSessionTask } from '../lib/session-task.js'
 
 // Remote budget for the recall leg inside injectHybrid (#776). The hook is
@@ -1118,6 +1119,7 @@ async function injectSession(
   const plur = createPlur(flags)
   // remote-only folders: core reads only the team scope and packs (#remote-only).
   bindHookFolder(plur, dir, policy)
+  const legacyLines = isRehydrate ? [] : cleanupLegacyProjectAtSessionStart(dir, plur.storageRoot)
   // Known before the search starts, so the watchdog can start a cache build too.
   storeRoot = plur.storageRoot
   runFlags = flags
@@ -1190,6 +1192,7 @@ async function injectSession(
   } else {
     parts.push(`[PLUR Memory — session started, ${count} engrams injected]`)
     parts.push(...await cachedServerLines(plur, dir, policy))
+    parts.push(...legacyLines)
     if (sessionId) parts.push(`Session ID: ${sessionId}`)
     if (projectConfig.domain) parts.push(`Project domain: ${projectConfig.domain}`)
     // remote-only: the remote-only line below names the scope, escaped (gate review of #1663).

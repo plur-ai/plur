@@ -13,6 +13,11 @@ describe('plur doctor', () => {
 
   beforeEach(() => {
     home = mkdtempSync(join(tmpdir(), 'plur-doctor-test-'))
+    // These legacy cases isolate wiring/auth; hook execution has dedicated tests.
+    mkdirSync(join(home, '.plur'), { recursive: true })
+    for (const [file, time] of [[ 'hook-installs.json', '2000-01-01T00:00:00Z' ], [ 'hook-runs.json', '2000-01-02T00:00:00Z' ]]) {
+      writeFileSync(join(home, '.plur', file), JSON.stringify({ claude: time, codex: time, cursor: time }))
+    }
   })
 
   afterEach(() => {
