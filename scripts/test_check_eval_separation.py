@@ -1,5 +1,6 @@
 """check-eval-separation.py: an eval and the code it judges never change in one pull request."""
 import importlib.util
+import os
 import subprocess
 import sys
 import tempfile
@@ -93,12 +94,11 @@ def test_strict_flag_is_parsed():
     assert sep.parse_args(["x"]) is None
 
 
-
 SCRIPT = str(Path(__file__).with_name("check-eval-separation.py"))
 # The developer's own git config must not decide the outcome: a global
 # diff.renames=false would hide the regression, commit signing or a failing
 # hooks path would break the setup.
-HERMETIC = {**__import__("os").environ, "GIT_CONFIG_GLOBAL": __import__("os").devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+HERMETIC = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
 
 
 def scratch_repo(d: str):
