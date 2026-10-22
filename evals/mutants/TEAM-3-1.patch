@@ -1,10 +1,10 @@
 diff --git a/packages/core/src/index.ts b/packages/core/src/index.ts
-index d018e0d6..608977ed 100644
+index 4f1978ed..c88b2f9c 100644
 --- a/packages/core/src/index.ts
 +++ b/packages/core/src/index.ts
-@@ -5041,7 +5041,7 @@ export class Plur {
+@@ -5631,7 +5631,7 @@ export class Plur {
          // Replace placeholder ID with a real local ID
-         localPlaceholder.id = generateEngramId([...engrams, ...allEngrams], this._mintedTodayIds())
+         localPlaceholder.id = generateEngramId([...engrams, ...allEngrams], await this._idsInUse())
          this._rememberMintedId(localPlaceholder.id)
 -        if (storeEntry) {
 +        if (storeEntry && !(err instanceof RemoteHttpError)) {

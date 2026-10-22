@@ -1,13 +1,13 @@
 diff --git a/packages/cli/src/commands/hook-inject.ts b/packages/cli/src/commands/hook-inject.ts
-index 00f11dee..780aab46 100644
+index ed82857e..939d263f 100644
 --- a/packages/cli/src/commands/hook-inject.ts
 +++ b/packages/cli/src/commands/hook-inject.ts
-@@ -844,7 +844,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
+@@ -874,7 +874,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
        if (hybridInFlight && storeRoot) startEmbeddingWarmup(storeRoot, runFlags)
        process.exit(0)
      })
--  }, HOOK_CEILING_MS)
-+  }, HOOK_CEILING_MS * 1000) // MUTANT: the ceiling is read as seconds
+-  }, Math.max(0, runStartedAt + HOOK_CEILING_MS - Date.now()))
++  }, Math.max(0, runStartedAt + HOOK_CEILING_MS * 1000 - Date.now())) // MUTANT: the ceiling is read as seconds
    watchdog.unref()
  
    const key = sessionKey(input)
