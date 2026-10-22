@@ -1,4 +1,8 @@
 /-!
+Checked for the 0.22.0 release preparation (2026-10-21): both Python bridges
+change only their npx fallback version pin. Argument construction, scope
+selection, input validation and subprocess handling remain unchanged.
+
 # Adapters — MCP tools, CLI installers, bridges
 
 Models of the adapter layer (packages/mcp/src/tools.ts, packages/cli/src/…,

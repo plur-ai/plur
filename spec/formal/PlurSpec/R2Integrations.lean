@@ -1,4 +1,8 @@
 /-!
+Checked for the 0.22.0 release preparation (2026-10-21): the Hermes bridge
+changes only its npx fallback version pin. The modeled dedup, forget,
+tool-path scope and leading-dash argument behavior remain unchanged.
+
 # R2Integrations — round 2 of the adapter layer
 
 MCP annotations and plur_admin dispatch, the hermes bridge, the migrate codemod,

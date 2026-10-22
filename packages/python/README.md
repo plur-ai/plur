@@ -46,8 +46,8 @@ If the CLI isn't on `PATH`, the SDK falls back to `npx @plur-ai/cli`. You can
 also point at an explicit build with `Plur(binary=...)` or the `PLUR_CLI` env var.
 
 **CLI version.** A `recall` query or `inject` task that begins with `-` is sent
-after a `--` separator, which the CLI honours from the first `@plur-ai/cli`
-release after 0.20.1; an older CLI reads `--` as the query. Every other query is
+after a `--` separator. Use `@plur-ai/cli` 0.22.0 or later for these queries;
+a CLI without separator support reads `--` as the query. Every other query is
 sent exactly as before, and a `learn` statement that begins with `-` goes on
 stdin, which every CLI version reads.
 

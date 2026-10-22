@@ -19,6 +19,16 @@ decimal length and zero separators in the real encoding exist precisely so the b
 stream parses back into these tokens; that parse is not modelled. SHA-256 is an
 oracle `H`; injectivity of the hash input is what the model proves, and the hash is
 assumed collision-resistant as usual.
+
+2026-10-21 release review: the same-named-folder correction in packs.ts adds
+install-directory selection and cleanup of recorded obsolete collision copies.
+It does not change computePackIntegrity, its three framed inputs, or the
+directory-keyed registry primitives modelled below. Each obsolete copy is
+removed by its directory; intentionally separate installations remain separate.
+These proofs therefore still describe framing and individual registry updates.
+They do not model candidate-directory selection or the complete multi-directory
+cleanup sequence; the pack installation regressions and promise evals exercise
+those paths. This note does not extend the scope of the proofs to those paths.
 -/
 
 namespace PlurSpec.PacksV2
