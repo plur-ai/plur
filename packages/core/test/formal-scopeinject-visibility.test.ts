@@ -8,7 +8,7 @@
  * target up in a map that held every active engram regardless of scope).
  * Model: spec/formal/PlurSpec/ScopeInject.lean (`selected_visible`).
  */
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { selectAndSpread } from '../src/inject.js'
 import { EngramSchema } from '../src/schemas/engram.js'
 
@@ -29,6 +29,14 @@ const ids = (r: ReturnType<typeof selectAndSpread>) =>
 const visible = mk('ENG-2026-0920-001', 'project:a', 'use the deploy script for releases')
 
 describe('inject visibility — no path revives a scope-excluded engram', () => {
+  // Scores decay with the age of `last_accessed`, so the fixtures' fixed
+  // 2026-09-20 date made the good case depend on the wall clock: by mid-October
+  // the source engram's decayed score put the spread to its association below
+  // the spread floor and the test failed on unchanged code. Pin the clock to the
+  // day after the fixtures were last accessed; decay is not under test here.
+  beforeEach(() => { vi.useFakeTimers({ now: new Date('2026-09-21T12:00:00Z'), toFake: ['Date'] }) })
+  afterEach(() => { vi.useRealTimers() })
+
   it('a pinned engram in an ungranted shared scope is not injected under project scope', () => {
     const pin = mk('ENG-2026-0920-002', 'group:acme/other', 'secret team rule about payroll', { pinned: true })
     const r = selectAndSpread({ prompt: 'how to deploy releases', scope: 'project:a' }, [visible, pin], [])
