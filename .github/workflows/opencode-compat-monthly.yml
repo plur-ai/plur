@@ -85,7 +85,8 @@ jobs:
 
       - name: Show installed @opencode-ai/plugin version
         working-directory: packages/opencode
-        run: node -p "require('@opencode-ai/plugin/package.json').version"
+        # By path: the plugin's \"exports\" no longer lists ./package.json.
+        run: node -p "require('./node_modules/@opencode-ai/plugin/package.json').version"
 
       # The load-bearing step. `} satisfies Hooks` in src/index.ts only fails a
       # build when the compiler actually re-reads the `Hooks` type — vitest's
