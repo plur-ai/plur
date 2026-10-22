@@ -106,7 +106,8 @@ def retirement_problems(cfg) -> list[str]:
 
     A retirement takes a promise out of the gate, so it must be a deliberate, complete
     change (second audit R-05): an id, a reason, and `replaced_by` naming a promise that
-    is still active. An id that is both active and retired, or a replacement that is
+    is still active -- or, for a promise that moved with its code to another repository's
+    gate, `moved_to` naming that repository (owner/repo) instead. An id that is both active and retired, or a replacement that is
     itself retired or unknown, would let a stale entry stop gating a promised behaviour."""
     active = {norm(p) for p in promises(cfg)}
     problems: list[str] = []
@@ -125,8 +126,16 @@ def retirement_problems(cfg) -> list[str]:
             if not str(r.get("reason") or "").strip():
                 problems.append(f"retired {rid} has no reason")
             repl = str(r.get("replaced_by") or "").strip()
-            if not repl:
-                problems.append(f"retired {rid} names no replacement (replaced_by)")
+            moved = r.get("moved_to")
+            if moved is not None:
+                # The promise and its eval moved, with the code they cover, to another
+                # repository's gate: it names that repository and has no replacement here.
+                if repl:
+                    problems.append(f"retired {rid} is both moved_to and replaced_by; it is one or the other")
+                elif not re.fullmatch(r"[\w.-]+/[\w.-]+", str(moved).strip()):
+                    problems.append(f"retired {rid} is moved_to {moved!r}, which is not an owner/repository")
+            elif not repl:
+                problems.append(f"retired {rid} names no replacement (replaced_by) and no repository it moved to (moved_to)")
             elif norm(repl) not in active:
                 problems.append(f"retired {rid} is replaced_by {repl}, which is not an active promise")
     return problems

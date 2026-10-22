@@ -600,20 +600,18 @@ capabilities:
     kind: deterministic
     today: holds
     evidence: 2026-10-20; all 20 enterprise checks pass across 13 promises. The matching EFI-ID-1 planted defect is killed by an assertion; all 13 new mutants killed. Loopback services and isolated temporary homes only.
-  - id: EFI-12
-    promise: "Setup proves a working tool installation or restores configuration after a pre-save installation failure, and reruns reuse a working key."
-    kind: deterministic
-    today: holds
-    evidence: 2026-10-20; all 20 enterprise checks pass across 13 promises. The matching EFI-ID-1 planted defect is killed by an assertion; all 13 new mutants killed. Loopback services and isolated temporary homes only.
-  - id: EFI-13
-    promise: "An old installation upgrades with a recoverable backup, while a tool still launching the old client stays explicitly unproven."
-    kind: deterministic
-    today: holds
-    evidence: 2026-10-20; all 20 enterprise checks pass across 13 promises. The matching EFI-ID-1 planted defect is killed by an assertion; all 13 new mutants killed. Loopback services and isolated temporary homes only.
 
 # Promises retired on purpose: the meaning changed, so the id did (evals/README.md).
 # Only a retired id may leave the baseline (gate.py --base).
 retired:
+- id: EFI-12
+  moved_to: plur-ai/enterprise
+  date: '2026-10-22'
+  reason: 'Owner decision 2026-10-22: plur-enterprise is its own package (@plur-ai/plur-enterprise) in the private enterprise repository. The setup this promise covers (plur-enterprise init: proof, rollback, key reuse) moved there with its eval and planted bug, unchanged.'
+- id: EFI-13
+  moved_to: plur-ai/enterprise
+  date: '2026-10-22'
+  reason: 'Owner decision 2026-10-22: plur-enterprise is its own package in the private enterprise repository. The legacy-installation upgrade this promise covers moved there with its eval and planted bug, unchanged.'
 - id: PRV-5
   replaced_by: PRV-6
   date: '2026-10-17'

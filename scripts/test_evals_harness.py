@@ -362,6 +362,9 @@ BAD_RETIREMENTS = {
     "no reason": {"id": "AB-9", "replaced_by": "AB-3"},
     "no replacement": {"id": "AB-9", "reason": "meaning changed"},
     "replacement unknown": {"id": "AB-9", "replaced_by": "ZZ-1", "reason": "meaning changed"},
+    "moved nowhere": {"id": "AB-9", "moved_to": " ", "reason": "moved with its code"},
+    "moved to no repository": {"id": "AB-9", "moved_to": "elsewhere", "reason": "moved with its code"},
+    "moved and replaced": {"id": "AB-9", "moved_to": "acme/private", "replaced_by": "AB-3", "reason": "both"},
 }
 
 
@@ -374,6 +377,16 @@ def test_invalid_retirement_fails_the_gate_and_the_scoreboard():
             assert code == 1 and "could not tell" in out, (why, code, out)
             code, out = _quiet(run.main, ["--config", str(cfg)])
             assert code == 1 and "could not tell" in out, (why, code, out)
+
+
+def test_promise_moved_to_another_repository_may_leave_the_baseline():
+    # A promise whose code moved to another repository has no replacement here;
+    # it leaves this gate by naming where it went (owner/repo), with a reason.
+    with tempfile.TemporaryDirectory() as d:
+        cfg = _repo(Path(d), baseline='{"green": ["AB-1"]}')
+        _retire(cfg, [{"id": "AB-7", "moved_to": "acme/private", "reason": "the setup code moved there"}])
+        assert run.retirement_problems(run.config.load(str(cfg))) == []
+        assert "AB7" in run.retired(run.config.load(str(cfg)))
 
 
 def test_retirement_replaced_by_a_retired_promise_fails():
