@@ -72,6 +72,20 @@ it.each(['claude', 'codex', 'cursor'])('init records %s installation and doctor 
   report = JSON.parse((await cli(['doctor', '--no-handshake', '--json'])).stdout)
   expect(row().ok).toBe(true); expect(row().detail).toContain('hooks ran')
 }, 60000)
+// Release audit 0.22.0: an install made by 0.21.5 has no install record, and
+// only `plur init` writes one. A hook run recorded since the upgrade must
+// clear the check, as the fix it suggests says, without a re-init.
+it('an install from before install records counts once a hook has run', async () => {
+  const initialized = await cli(['init', '--no-prompt'])
+  expect(initialized.status, initialized.stderr).toBe(0)
+  rmSync(join(root, 'hook-installs.json'), { force: true })
+  let report = JSON.parse((await cli(['doctor', '--no-handshake', '--json'])).stdout)
+  const row = () => report.hookTrust.find((r: any) => r.tool === 'claude')
+  expect(row()).toMatchObject({ ok: false }); expect(row().fix).toContain('start a new session')
+  writeFileSync(join(root, 'hook-runs.json'), JSON.stringify({ claude: new Date().toISOString() }))
+  report = JSON.parse((await cli(['doctor', '--no-handshake', '--json'])).stdout)
+  expect(row().ok).toBe(true)
+}, 60000)
 it('a changed global hook invalidates a split project installation while an unchanged init preserves it', async () => {
   const project = join(home, 'project'); mkdirSync(project)
   expect((await cli(['init', '--project', '--no-prompt'], project)).status).toBe(0)

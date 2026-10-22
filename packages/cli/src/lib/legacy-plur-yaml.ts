@@ -10,9 +10,16 @@ type Outcome = 'none' | 'deleted' | 'stripped' | 'tracked-token' | 'symlink-skip
 const fields = ['remote_url', 'remote_token', 'remote_scopes']
 const generatedComment = '# remote_token is sensitive — keep .plur.yaml in .gitignore.'
 
+function originOf(url: unknown): string | null {
+  try { return typeof url === 'string' ? new URL(url).origin : null } catch { return null }
+}
+
 /** Remove only old installer fields, with a private backup before any edit. */
 export function cleanupLegacyPlurYaml(dir: string, deps: {
   isTracked: (path: string) => boolean | null; now: () => Date; backupRoot: string
+  /** Origins of the registered servers. When given, only a link to one of
+   * them is removed; a link to any other server is this project's own. */
+  servedOrigins?: ReadonlySet<string>
 }): { path: string | null; outcome: Outcome } {
   const path = findProjectConfigPath(dir)
   if (!path) return { path, outcome: 'none' }
@@ -27,6 +34,7 @@ export function cleanupLegacyPlurYaml(dir: string, deps: {
   const tracked = deps.isTracked(path)
   if (tracked === null) return { path, outcome: 'unknown-tracking' }
   if (tracked) return { path, outcome: Object.hasOwn(record, 'remote_token') ? 'tracked-token' : 'none' }
+  if (deps.servedOrigins && !deps.servedOrigins.has(originOf(record.remote_url) ?? '')) return { path, outcome: 'none' }
   // Old installers wrote plain top-level keys. Preserve all other bytes;
   // verify the parsed result before touching unfamiliar YAML layouts.
   let dropping = false
@@ -73,11 +81,13 @@ export function cleanupLegacyProjectAtSessionStart(dir: string, storageRoot: str
     // Normalization supplies default enterprise blocks and expands scopes;
     // only the explicit persisted registration is evidence of installation.
     const config = yaml.load(readFileSync(join(storageRoot, 'config.yaml'), 'utf8')) as { stores?: unknown } | null
-    if (!Array.isArray(config?.stores) || !config.stores.some(store => store && typeof store === 'object' &&
+    const registered = (Array.isArray(config?.stores) ? config.stores : []).filter(store => store && typeof store === 'object' &&
       typeof store.url === 'string' && store.url.length > 0 && Object.hasOwn(store, 'enterprise') &&
       store.enterprise && typeof store.enterprise === 'object' && !Array.isArray(store.enterprise) &&
-      ServerStoreEntrySchema.safeParse(store).success)) return []
-    const result = cleanupLegacyPlurYaml(dir, { isTracked: gitTracked, now: () => new Date(), backupRoot: join(storageRoot, 'backups') })
+      ServerStoreEntrySchema.safeParse(store).success)
+    if (registered.length === 0) return []
+    const servedOrigins = new Set(registered.map(store => originOf(store.url)).filter((o): o is string => o !== null))
+    const result = cleanupLegacyPlurYaml(dir, { isTracked: gitTracked, now: () => new Date(), backupRoot: join(storageRoot, 'backups'), servedOrigins })
     if (result.outcome !== 'tracked-token') return []
     const warning = 'A tracked .plur.yaml in this repo contains a server token — ask your PLUR admin to revoke it.'
     // Emit before injection as well: a later injection failure must not hide

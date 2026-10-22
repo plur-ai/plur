@@ -106,7 +106,7 @@ describe('login helpers — signalReload', () => {
     expect(result).toMatch(/no running server|no PID file/i)
   })
 
-  it('returns stale-process message when PID file holds an unknown PID', async () => {
+  it('asks for a restart when a PID file exists (it may be stale; nothing is signalled)', async () => {
     const { serverPidPath, signalReload } = await import('../src/commands/login.js')
     // Write a PID file pointing to a process that definitely does not exist.
     // PID 2^30 is astronomically unlikely to be real.
@@ -115,7 +115,27 @@ describe('login helpers — signalReload', () => {
     writeFileSync(pidFile, '1073741824')  // 2^30
 
     const result = signalReload(tmpHome)
-    expect(result).toMatch(/no longer running|not found|ESRCH|could not signal|invalid|no running server/i)
+    expect(result).toMatch(/restart PLUR/i)
+  })
+
+  // server.pid is never removed, so its PID may belong to an unrelated
+  // process by the time `plur login` runs. SIGUSR1 kills most processes and
+  // opens Node's debugger in others; login must not signal anything.
+  it.skipIf(process.platform === 'win32')('never signals the process a stale PID file names', async () => {
+    const { serverPidPath, signalReload } = await import('../src/commands/login.js')
+    const { spawn } = await import('node:child_process')
+    const other = spawn('sleep', ['30'], { stdio: 'ignore' })
+    try {
+      const pidFile = serverPidPath(tmpHome)
+      mkdirSync(join(pidFile, '..'), { recursive: true })
+      writeFileSync(pidFile, String(other.pid))
+      signalReload(tmpHome)
+      await new Promise(resolve => setTimeout(resolve, 200))
+      expect(other.exitCode).toBeNull()
+      expect(other.signalCode).toBeNull()
+    } finally {
+      other.kill('SIGKILL')
+    }
   })
 })
 
