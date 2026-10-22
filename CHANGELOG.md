@@ -44,6 +44,14 @@ OpenCode MCP setup uses the installed PLUR binary and repairs older managed
 `npx` entries, including the Windows fallback when no local binary is
 available. (#1637, #1311)
 
+On Windows, `plur init` works when the home folder's name has a non-English
+letter: it no longer crashes Node while copying the bundled skills, and the
+`.cmd` launchers it writes read such paths correctly. (#1774)
+
+The SessionEnd hook finishes within Claude Code's 5-second budget even when
+a team server is unreachable, so Claude Code no longer reports it as
+cancelled. (#1652)
+
 ### Memory correctness
 
 - Starting in a folder where memory is off runs no startup migration.
