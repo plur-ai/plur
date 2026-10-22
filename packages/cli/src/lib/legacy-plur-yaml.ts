@@ -4,7 +4,7 @@ import { spawnSync } from 'child_process'
 import { isDeepStrictEqual } from 'util'
 import yaml from 'js-yaml'
 import { atomicWrite, currentWindowsAccount, findProjectConfigPath, ServerStoreEntrySchema } from '@plur-ai/core'
-import { backupWriter } from '../enterprise/cleanup.js'
+import { backupWriter } from '../enterprise/backup.js'
 
 type Outcome = 'none' | 'deleted' | 'stripped' | 'tracked-token' | 'symlink-skipped' | 'unknown-tracking'
 const fields = ['remote_url', 'remote_token', 'remote_scopes']
