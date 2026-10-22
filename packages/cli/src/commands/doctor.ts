@@ -1473,7 +1473,9 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
     ] as const) {
       if (!wired) continue
       const installed = Date.parse(installs[tool] ?? ''), ran = Date.parse(runs[tool] ?? '')
-      const ok = Number.isFinite(installed) && Number.isFinite(ran) && ran > installed && ran <= Date.now()
+      // No install record: hooks installed before records existed (0.21.5 and
+      // earlier), so any real run since counts (release audit 0.22.0).
+      const ok = Number.isFinite(ran) && ran <= Date.now() && (!Number.isFinite(installed) || ran > installed)
       hookTrust.push({ tool, label, ok, detail: ok ? `hooks ran ${runs[tool]}` : 'hooks have not run yet after installation',
         ...(!ok ? { fix: tool === 'codex' ? 'run /hooks and trust PLUR, then start a new session in Codex' : `start a new session in ${label}` } : {}) })
     }

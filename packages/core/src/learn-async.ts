@@ -87,6 +87,12 @@ export interface LearnAsyncDeps {
    */
   offendingHitsForScope: (statement: string, scope: string) => SecretMatch[]
   /**
+   * True when a save to `scope` is sent to a server (a writable url store
+   * serves it). An unscoped save never inherits such a scope from a dedup
+   * target (release audit 0.22.0). Absent: no scope is treated as server-backed.
+   */
+  sendsToServer?: (scope: string) => boolean
+  /**
    * Put a pair in the user's review queue (LRN-9): a tension record with
    * status `detected`, the queue plur_tensions lists and the user resolves.
    * Returns the record id. Optional so hand-built deps keep working; without
@@ -271,14 +277,39 @@ async function executeDedupDecision(
       if (isRemoteOnlyQueued(existing)) {
         return { engram: await deps.learn(statement, context), decision: 'ADD' }
       }
+      // An unscoped save stays where an unscoped save goes. Taking the scope
+      // of a memory on a team server would send a personal statement there
+      // because the checker tied it to a team memory (release audit 0.22.0),
+      // so it is saved as its own memory, linked as a likely duplicate.
+      if (context?.scope === undefined && existing.scope && deps.sendsToServer?.(existing.scope)) {
+        const related = [...new Set([...(context?.related ?? []), existing.id])]
+        return {
+          engram: await deps.learn(statement, { ...context, related }),
+          decision: 'ADD',
+          likely_duplicate_of: {
+            id: existing.id,
+            checker_decision: 'UPDATE' as const,
+            note:
+              `The duplicate checker said this updates ${existing.id}, which is a team memory on a server. ` +
+              `This save named no scope, so it was kept where an unscoped save goes and linked to ${existing.id}; ` +
+              `${existing.id} is unchanged. To replace it, save again with scope ${existing.scope}.`,
+          },
+        }
+      }
       const supersedes = [...new Set([...(context?.supersedes ?? []), existing.id])]
       // The replacement lives where the memory it replaces lives, unless the
       // caller named a scope (candidates are then already filtered to it).
       // learn()'s own sensitive-content guard still runs on the new memory.
       const scope = context?.scope ?? existing.scope
+      // An inherited scope brings the target's privacy with it: learn() keeps
+      // a team-scope memory on this machine only when the save says private,
+      // so without this a private team memory's replacement is sent to the
+      // team server (release audit 0.22.0).
+      const visibility = context?.visibility
+        ?? (context?.scope === undefined && (existing as any).visibility === 'private' ? 'private' as const : undefined)
       // `supersedes_unless_locked`: learn() re-checks the lock under the store
       // lock, so a memory locked after the read above is not superseded either.
-      const engram = await deps.learn(statement, { ...context, ...(scope ? { scope } : {}), supersedes, supersedes_unless_locked: true })
+      const engram = await deps.learn(statement, { ...context, ...(scope ? { scope } : {}), ...(visibility ? { visibility } : {}), supersedes, supersedes_unless_locked: true })
       // Judged by effect (audit 5 F4): UPDATE is reported only when BOTH edges
       // landed — the forward edge on the new memory and the reverse edge on the
       // target, read back from the target's own store — because the reverse

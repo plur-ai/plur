@@ -111,3 +111,15 @@ it('nested unrelated YAML survives without being mistaken for installer fields',
   writeFileSync(file, old + unrelated)
   expect(clean().outcome).toBe('stripped'); expect(readFileSync(file, 'utf8')).toBe(unrelated)
 })
+// Release audit 0.22.0: the old fields are this project's link to a team
+// server, and core still follows it. Registering one server must not cut a
+// project's link to a different one.
+it('leaves a link to a different server untouched', () => {
+  writeFileSync(join(root, 'config.yaml'), JSON.stringify({ stores: [{ url: 'https://other.example.test/sse', scope: 'user:example:fixture', enterprise: {} }] }))
+  expect(cleanupLegacyProjectAtSessionStart(repo, root)).toEqual([])
+  expect(readFileSync(file, 'utf8')).toBe(old); expect(existsSync(backupRoot)).toBe(false)
+})
+it('cleans up a link to the registered server even when the paths differ', () => {
+  writeFileSync(join(root, 'config.yaml'), JSON.stringify({ stores: [{ url: 'https://memory.example.test/sse', scope: 'user:example:fixture', enterprise: {} }] }))
+  expect(cleanupLegacyProjectAtSessionStart(repo, root)).toEqual([]); expect(existsSync(file)).toBe(false)
+})

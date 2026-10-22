@@ -124,9 +124,18 @@ export function findGitRoot(dir: string): string | null {
   }
 }
 
+const REPO_LOCATION_VARS = new Set([
+  'GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY',
+  'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_NAMESPACE', 'GIT_PREFIX',
+])
+
 function defaultRunner(args: string[], cwd: string) {
   return spawnSync('git', args, {
     cwd,
+    // GIT_DIR and friends belong to the launching process, not the folder
+    // being inspected; inherited, they report another repository's origin.
+    // Config settings (GIT_CONFIG_*) are the user's and stay.
+    env: Object.fromEntries(Object.entries(process.env).filter(([key]) => !REPO_LOCATION_VARS.has(key.toUpperCase()))),
     encoding: 'utf8',
     timeout: 2000,
     windowsHide: true,

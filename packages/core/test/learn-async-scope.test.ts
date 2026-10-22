@@ -250,3 +250,77 @@ describe('learnAsync demote scans merged tags (#409)', () => {
     expect(persisted.scope).toBe('group:datafund/datafund') // untouched
   })
 })
+
+// Release audit 0.22.0: an unscoped save that the duplicate checker answers
+// UPDATE takes the target's scope. learn() keeps a team-scope memory on this
+// machine only when the save says `visibility: 'private'`, so a private team
+// memory's replacement must carry that visibility too, or it is sent to the
+// team server (0.21.5 rewrote the target in place, locally).
+describe('learnAsync UPDATE keeps a private target private', () => {
+  it('passes the private visibility of an inherited-scope target to learn()', async () => {
+    const team = { ...globalCandidate, id: 'ENG-2026-0101-900', scope: 'group:acme/eng', visibility: 'private' } as unknown as Engram
+    const deps = makeDeps([team])
+    const seen: any[] = []
+    const learn = deps.learn
+    deps.learn = async (statement: string, context?: any) => { seen.push(context); return learn(statement, context) }
+    const llm = vi.fn().mockResolvedValue('DECISION: UPDATE\nTARGET: ENG-2026-0101-900\nREASON: same subject')
+
+    const result = await learnAsync(deps, 'the staging VPN profile now uses another port', { llm })
+
+    expect(result.decision).toBe('UPDATE')
+    expect(seen.at(-1)?.scope).toBe('group:acme/eng')
+    expect(seen.at(-1)?.visibility).toBe('private')
+  })
+
+  it('leaves an explicitly scoped save as the caller asked', async () => {
+    const team = { ...globalCandidate, id: 'ENG-2026-0101-901', scope: 'group:acme/eng', visibility: 'private' } as unknown as Engram
+    const deps = makeDeps([team])
+    const seen: any[] = []
+    const learn = deps.learn
+    deps.learn = async (statement: string, context?: any) => { seen.push(context); return learn(statement, context) }
+    const llm = vi.fn().mockResolvedValue('DECISION: UPDATE\nTARGET: ENG-2026-0101-901\nREASON: same subject')
+
+    await learnAsync(deps, 'the staging VPN profile now uses another port', { scope: 'group:acme/eng', visibility: 'public', llm } as any)
+
+    expect(seen.at(-1)?.visibility).toBe('public')
+  })
+})
+
+// Release audit 0.22.0: an unscoped save never moves onto a team server
+// because the duplicate checker tied it to a team memory. It is saved where an
+// unscoped save goes, linked to that memory as a likely duplicate.
+describe('learnAsync UPDATE never inherits a server-backed scope the caller did not ask for', () => {
+  const teamRow = (id: string) => ({ ...globalCandidate, id, scope: 'group:acme/eng', visibility: 'public' } as unknown as Engram)
+  function recording(candidates: Engram[]) {
+    const deps = makeDeps(candidates)
+    const seen: any[] = []
+    const learn = deps.learn
+    deps.learn = async (statement: string, context?: any) => { seen.push(context); return learn(statement, context) }
+    deps.sendsToServer = (scope: string) => scope.startsWith('group:')
+    return { deps, seen }
+  }
+
+  it('saves an unscoped update of a team memory locally, linked to it', async () => {
+    const { deps, seen } = recording([teamRow('ENG-2026-0101-910')])
+    const llm = vi.fn().mockResolvedValue('DECISION: UPDATE\nTARGET: ENG-2026-0101-910\nREASON: same subject')
+
+    const result = await learnAsync(deps, 'my staging VPN profile now uses another port', { llm })
+
+    expect(result.decision).toBe('ADD')
+    expect(result.likely_duplicate_of?.id).toBe('ENG-2026-0101-910')
+    expect(seen.at(-1)?.scope).toBeUndefined()
+    expect(seen.at(-1)?.supersedes).toBeUndefined()
+    expect(seen.at(-1)?.related).toContain('ENG-2026-0101-910')
+  })
+
+  it('still supersedes when the caller named the team scope', async () => {
+    const { deps, seen } = recording([teamRow('ENG-2026-0101-911')])
+    const llm = vi.fn().mockResolvedValue('DECISION: UPDATE\nTARGET: ENG-2026-0101-911\nREASON: same subject')
+
+    const result = await learnAsync(deps, 'the team staging VPN now uses another port', { scope: 'group:acme/eng', llm })
+
+    expect(result.decision).toBe('UPDATE')
+    expect(seen.at(-1)?.scope).toBe('group:acme/eng')
+    expect(seen.at(-1)?.supersedes).toContain('ENG-2026-0101-911')
+  })
+})

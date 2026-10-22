@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from 'fs'
+import { existsSync, readFileSync } from 'fs'
 import { join, dirname } from 'path'
 import { homedir, hostname, release } from 'os'
 import {
@@ -153,41 +153,16 @@ export function reloadMarkerPath(baseDir?: string): string {
 }
 
 /**
- * Send SIGUSR1 to the running MCP server (POSIX), or write a reload-marker
- * file (Windows). Returns a description of what was done.
- *
- * The MCP server records its PID in ~/.plur/server.pid on startup.
- * A missing or stale PID file is not an error — the token is already written
- * and will be picked up on next server start.
+ * Say how a running MCP server picks up the new key. Nothing is signalled:
+ * ~/.plur/server.pid is never removed, so its PID may name an unrelated
+ * process by now (SIGUSR1 kills most processes and opens Node's debugger in
+ * others), and no server acts on a reload request. The key is already saved;
+ * a server started from now on reads it.
  */
 export function signalReload(baseDir?: string): string {
-  const pidPath = serverPidPath(baseDir)
-  if (!existsSync(pidPath)) {
-    return 'no running server detected (no PID file) — token saved, will be picked up on next start'
-  }
-
-  const pidStr = readFileSync(pidPath, 'utf8').trim()
-  const pid = parseInt(pidStr, 10)
-  if (!pid || Number.isNaN(pid)) {
-    return 'invalid PID file — token saved, restart the MCP server to apply'
-  }
-
-  // Windows: no SIGUSR1 — write a reload-marker instead.
-  if (process.platform === 'win32') {
-    writeFileSync(reloadMarkerPath(baseDir), String(pid))
-    return `reload marker written (PID ${pid}) — the server will reload on next tool call`
-  }
-
-  // POSIX: send SIGUSR1. If the process is gone the error code is ESRCH.
-  try {
-    process.kill(pid, 'SIGUSR1')
-    return `hot-reload signal sent to server PID ${pid}`
-  } catch (err: any) {
-    if (err.code === 'ESRCH') {
-      return `server PID ${pid} is no longer running — token saved, start the MCP server to apply`
-    }
-    return `could not signal server PID ${pid} (${err.message}) — token saved`
-  }
+  return existsSync(serverPidPath(baseDir))
+    ? 'key saved — restart PLUR in your tools (or start a new session) to use it'
+    : 'no running server detected (no PID file) — token saved, will be picked up on next start'
 }
 
 // ── OAuth device flow (RFC 8628, contract C3) ────────────────────────────────

@@ -6087,6 +6087,7 @@ export class Plur {
       recordLlmFailure: () => this._recordLlmFailure(),
       syncIndex: () => this._syncIndex(),
       offendingHitsForScope: (statement: string, scope: string) => this._offendingHitsForScope(statement, scope),
+      sendsToServer: (scope: string) => this._resolveRemoteStoreForScope(scope) !== null,
       // LRN-9: an UPDATE onto a locked memory waits in the review queue the
       // user already resolves (tension records, plur_tensions).
       openReview: async (pair: TensionPair) => (await this.recordTensions([pair])).records[0]?.id,

@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.22.0 (unreleased)
+## 0.22.0
 
 Enterprise first install.
 
@@ -188,6 +188,12 @@ overwritten. `@plur-ai/core` gains a dependency on `yaml` (already in the
 lockfile as a build-tool dependency).
 
 ### Sign-in and runtime requirements
+
+- **Upgrade every PLUR process on a machine together.** A 0.21.x MCP server or
+  hook still running beside 0.22.0 does not read two things 0.22.0 writes: the
+  team scopes `plur login` records for a server, which it ignores, and a
+  `remote-only` folder entry, which makes it treat the whole folder map as
+  broken and pause memory in every folder. Restart your tools after updating.
 
 - **`plur login <host>` signs this device in to a PLUR server and no longer writes `~/.plur/config.json`.** The device sign-in (RFC 8628) is no longer turned off: it prints a sign-in page and a code, waits for your approval at the server's poll interval, and saves the device key as the server's one entry in `~/.plur/config.yaml`, with your personal scope from the server. The key is never printed, and nothing is written before it arrives, so ctrl-C changes nothing. When another entry already holds your personal scope, `plur login` names it and changes nothing; `plur login <host> --remove-stale` removes it (config.yaml is backed up first). **A remaining `~/.plur/config.json` from an older `plur login` is read once:** if the server still accepts its key and `config.yaml` holds no sign-in to that server yet, the key moves into `config.yaml` (a sign-in already in `config.yaml` is never replaced); either way the file is moved to an owner-only copy under `~/.plur/backups/` with a one-time notice and is no longer read. Signing in needs a server with the device sign-in endpoints. (#1638)
 - **BREAKING: Node 20 is no longer supported. Every published package now requires Node 22 or later** (`engines.node` `>=22`), and CI no longer tests Node 20. Node 20 cannot send the remote store's requests through an HTTPS proxy without an extra dependency: its built-in `fetch` has no `NODE_USE_ENV_PROXY`. Behind a proxy, use Node 22.21 or later (or 24+) with `HTTPS_PROXY` and `NODE_USE_ENV_PROXY=1` set in the environment PLUR starts with.

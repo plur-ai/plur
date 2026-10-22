@@ -207,3 +207,24 @@ describe('readGitOrigin', () => {
     expect(r).toEqual({ kind: 'url', url: 'https://gitlab.example.com/team/backend.git' })
   })
 })
+
+// Release audit 0.22.0: a hook launched from inside another repository's git
+// process (a git hook, an editor integration) inherits GIT_DIR. The origin
+// must still be the inspected folder's own, or a personal repository is routed
+// to the other repository's team scope.
+describe('readGitOrigin ignores the launching process GIT_* settings', () => {
+  let personal: string, team: string
+  beforeEach(() => {
+    personal = makeTmp(); team = makeTmp()
+    initRepo(personal); setOrigin(personal, 'https://github.com/someone/notes.git')
+    initRepo(team); setOrigin(team, 'https://gitlab.example.com/team/backend.git')
+  })
+  afterEach(() => {
+    delete process.env.GIT_DIR
+    rmSync(personal, { recursive: true, force: true }); rmSync(team, { recursive: true, force: true })
+  })
+  it('reads the folder\'s own origin when GIT_DIR names another repository', () => {
+    process.env.GIT_DIR = join(team, '.git')
+    expect(readGitOrigin(personal)).toEqual({ kind: 'url', url: 'https://github.com/someone/notes.git' })
+  })
+})
