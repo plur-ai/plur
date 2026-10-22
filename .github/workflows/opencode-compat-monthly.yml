@@ -76,15 +76,17 @@ jobs:
       - name: Build @plur-ai/core
         run: pnpm --filter @plur-ai/core build
 
-      # Scoped to packages/opencode and not saved: this replaces only that
-      # package's local resolution of @opencode-ai/plugin for this job, and
-      # never touches the committed package.json or lockfile.
+      # Scoped to packages/opencode. pnpm has no --no-save (that option made
+      # this step fail before testing anything, every run since 2026-10-01):
+      # the change lands in this job's throwaway checkout only and is never
+      # committed or pushed.
       - name: Install the latest published @opencode-ai/plugin (packages/opencode only, not committed)
-        run: pnpm add -D @opencode-ai/plugin@latest --filter @plur-ai/opencode --no-save
+        run: pnpm add -D @opencode-ai/plugin@latest --filter @plur-ai/opencode
 
       - name: Show installed @opencode-ai/plugin version
         working-directory: packages/opencode
-        run: node -p "require('@opencode-ai/plugin/package.json').version"
+        # By path: the plugin's \"exports\" no longer lists ./package.json.
+        run: node -p "require('./node_modules/@opencode-ai/plugin/package.json').version"
 
       # The load-bearing step. `} satisfies Hooks` in src/index.ts only fails a
       # build when the compiler actually re-reads the `Hooks` type — vitest's

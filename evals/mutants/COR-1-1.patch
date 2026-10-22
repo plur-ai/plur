@@ -1,0 +1,14 @@
+diff --git a/packages/core/src/inject.ts b/packages/core/src/inject.ts
+index 682a8ddd..906580a1 100644
+--- a/packages/core/src/inject.ts
++++ b/packages/core/src/inject.ts
+@@ -1111,8 +1111,7 @@ export function selectAndSpread(
+   // not a candidate at all — not in directives, constraints or consider.
+   // A historical prompt ("previously", "used to") still reaches it.
+   const current = scored.filter(s =>
+-    ((s as any).pinned === true || s.score >= minRelevance)
+-    && (historical || !isReplacedByDeliverable(s, deliverableIds, supersededBy, replacedFromPrimary)))
++    ((s as any).pinned === true || s.score >= minRelevance)) // MUTANT: replaced memories stay candidates
+   // Nearby-variant suppression (INJ-1). The floor above is a share of a score
+   // normalised to the best match and padded by recency and anchor bonuses, so
+   // nearly anything sharing a word with the task clears it — including the

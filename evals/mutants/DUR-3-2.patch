@@ -1,0 +1,13 @@
+diff --git a/packages/core/src/engrams.ts b/packages/core/src/engrams.ts
+index 7bcef3e4..8397eafd 100644
+--- a/packages/core/src/engrams.ts
++++ b/packages/core/src/engrams.ts
+@@ -803,7 +803,7 @@ export function saveEngrams(filePath: string, engrams: Engram[], opts: SaveEngra
+   // Put quarantined entries back. They were withheld from the caller precisely
+   // so it could not act on them, which also means it cannot be expected to
+   // carry them — that is this function's job.
+-  const quarantined = getQuarantinedEntries(filePath)
++  const quarantined: unknown[] = [] // MUTANT: withheld entries are not written back
+   const quarantineRenames: IdRename[] = []
+   if (quarantined.length > 0) {
+     const taken = new Set<string>(outgoing.map(e => e.id))

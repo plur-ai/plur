@@ -11,6 +11,14 @@ export default defineConfig([
     noExternal: ['@plur-ai/ui'],
   },
   {
+    // The API @plur-ai/plur-enterprise builds on (no shebang: it is imported, not run).
+    entry: ['src/enterprise-api.ts'],
+    format: ['esm'],
+    target: 'node22',
+    dts: true,
+    clean: false,
+  },
+  {
     entry: ['src/commands/*.ts'],
     format: ['esm'],
     target: 'node22',

@@ -1,0 +1,13 @@
+diff --git a/packages/core/src/engrams.ts b/packages/core/src/engrams.ts
+index 7bcef3e4..7b853a4f 100644
+--- a/packages/core/src/engrams.ts
++++ b/packages/core/src/engrams.ts
+@@ -923,7 +923,7 @@ function judgeShrink(filePath: string, outgoingCount: number): ShrinkRun {
+   const disk = Math.max(0, counted - (exactDuplicatesByPath.get(key) ?? 0))
+   if (outgoingCount >= disk) return { base: outgoingCount, last: outgoingCount }
+   const prior = shrinkRuns.get(key)
+-  const base = prior && prior.last === counted ? Math.max(prior.base, disk) : disk
++  const base = disk // MUTANT: each save judged alone, no memory of the run
+   if (outgoingCount < base * (1 - SHRINK_TOLERANCE)) {
+     throw new EngramStoreShrinkError(filePath, disk, outgoingCount, base)
+   }

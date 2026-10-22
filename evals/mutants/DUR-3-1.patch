@@ -1,0 +1,13 @@
+diff --git a/packages/core/src/engrams.ts b/packages/core/src/engrams.ts
+index 7bcef3e4..e4f28c35 100644
+--- a/packages/core/src/engrams.ts
++++ b/packages/core/src/engrams.ts
+@@ -95,7 +95,7 @@ export class EngramStoreUnreadableError extends Error {
+  */
+ export function engramStoreEntries(filePath: string, content: string, byteLength: number): unknown[] {
+   if (byteLength === 0) {
+-    throw new EngramStoreUnreadableError(filePath, new Error('file is empty (0 bytes)'))
++    return [] // MUTANT: an empty file is an empty store
+   }
+   let raw: any
+   try {

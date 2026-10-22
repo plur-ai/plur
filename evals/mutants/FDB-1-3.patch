@@ -1,0 +1,15 @@
+diff --git a/packages/core/src/feedback.ts b/packages/core/src/feedback.ts
+index 2c0c9fe3..5ee7388e 100644
+--- a/packages/core/src/feedback.ts
++++ b/packages/core/src/feedback.ts
+@@ -106,9 +106,7 @@ export function applyFeedbackSignal(
+       if (next !== undefined) e.commitment = next as typeof e.commitment
+     }
+   } else if (signal === 'negative') {
+-    engram.activation.retrieval_strength = Math.max(
+-      0.0, engram.activation.retrieval_strength - NEGATIVE_STRENGTH_DELTA,
+-    )
++    engram.activation.retrieval_strength = engram.activation.retrieval_strength - NEGATIVE_STRENGTH_DELTA // MUTANT: no lower clamp
+   }
+ 
+   // Re-anchor last_accessed when feedback adjusts stored strength. Read-time

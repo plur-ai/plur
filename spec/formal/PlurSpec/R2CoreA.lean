@@ -1,11 +1,23 @@
 /-!
 # R2CoreA — round 2, core index / provenance (packages/core/src/index.ts, provenance.ts)
 
+Checked against #1631 (config.yaml owner-only, 2026-10-18): still holds. index.ts's only
+change swaps the config.yaml writes for `writeConfigFile` (same content, same lock) and adds
+re-exports; nothing this model covers changed.
+
 Each section names the code it mirrors. Payloads (statements, ids, scope
 classification, store configuration) are abstracted as oracles and parameters:
 theorems hold for every oracle.
 
 Findings and replays: spec/formal/findings/r2-corea.md.
+
+Checked against registerEnterpriseServer (#1631 plan B Task 5, branch agent/efi-b05, 2026-10-18): still holds.
+Rechecked after the gate review and Codex audit rounds 1-2 on the same branch (2026-10-18): still holds.
+index.ts changed only inside registerEnterpriseServer (error wording); server-discovery.ts only in the
+registration/fold functions, which StoreEntry §6/§6b model.
+index.ts gains `registerEnterpriseServer`, a new public method that writes config.yaml through
+`_updateRawStores` (config lock, atomic write) and reads `listOutbox`; no existing branch modelled
+here changed. The registration and fold are modelled in StoreEntry §6.
 
 Checked against the outbox lease (decision D2, PR #1231): index.ts gained a lease on outbox
 rows (`_outboxLease` bookkeeping, taken and released around each push) and `listOutbox` reports
@@ -16,6 +28,75 @@ lease changes neither — so every theorem still holds. The lease itself: WriteP
 
 Checked against #1349 (merged into #1228 on 2026-09-30): still holds. index.ts's
 only change is a re-export of `pendingStoreLockOps`, and no modelled branch changed.
+
+Checked against #1631 (epic/1797 first install, 2026-10-18): still holds.
+index.ts's predicates now read `resolveScopeTarget` (WritePath §3c).
+- §1: `provenanceFor` passes `_isRemoteWriteScope` (the section text said
+  `_isRemoteBackedScope`; the code has passed the write rule since
+  core-index#9b). A conflicted or ungranted scope now answers false, which by
+  `unknown_backing_stricter` can only withhold more.
+- §5b: `_crossScopeRecurrenceApplies = !_isRemoteWriteScope` is true for a
+  conflicted scope, but learn() and learnRouted() throw `ScopeConflictError`
+  (`_refuseScopeConflict`) before dedup, so no conflicted write reaches §5.
+  For one server the writable rule is the old one.
+- §2–§4, §6–§8: the forget/feedback guard, refcounted retirement, the egress
+  reload, the update walk and Decision R are not in the diff. The new code
+  (`refreshServerScopes`, the server-entry `persistStores` collapse, the
+  server-key rotation in `addStore`) is StoreEntry's territory, not modelled here.
+
+Checked against #1521 (remote-only folders, merged onto development 2026-10-18): still holds.
+While bound to a remote-only folder, `_probeIdCollisions` and the remote walks of forget,
+feedback, setPinned and update skip url stores whose scope is not a deliverable team scope,
+and a bare id only on a team-scope row; the local row they would act on is refused first
+(`_remoteOnlyRefuseLocalRow`) unless it is this folder's queued save. Unbound, every walk is
+as modelled in §2–§4. `peek_absent_sound` reads the same cache. The write gate is WritePath §3d.
+Gate review of #1663 (2026-10-18): still holds. While bound, those walks (and the bare-id update)
+are narrowed further, to the folder's own team store or the store of an explicit deliverable team
+scope, and an explicit team scope first checks that the row it names there is in that team scope.
+Each is a filter that only removes candidates before the modelled walk; unbound, nothing changed.
+Codex round 3 (2026-10-18): still holds. While bound, the bare-id update uses the resolver's exact
+target and a held team row (tri-state probe), the explicit-scope check is tri-state (unknown refuses),
+getByIds drops a personal row from the team host, and cache warming, store listing and old-form id
+resolution contact only the folder's own team store. Again only filters; unbound, unchanged.
+Codex round 4 (2026-10-18): still holds. nearDuplicates and similaritySearch use no embedder while
+bound, and a bound operation starts no embedding pass; no modelled branch changed.
+Codex round 5 (2026-10-18): still holds. Bare-id walks need positive team ownership on the host
+(tri-state probe); recallAsync/recallExpanded/recallAutoSearch use keyword recall and
+rerankerSelfEval refuses while bound; the remote-only dial needs the folder scope exactly in a
+scopes allow-list. Only filters and refusals; unbound, unchanged.
+Codex round 8 (2026-10-18): still holds. A public mutator captures the remote-only binding when it
+starts and keeps it to the end (the store lock's AsyncLocalStorage); unbound, nothing changed.
+Gate structural changes (2026-10-18): still holds. The capture is now one choke point over every
+public async method; a queued remote-only save (isRemoteOnlyQueued) is left out of the local
+indexes, the embedder and its cache, and local provenance, whatever the binding. Only exclusions.
+
+Rechecked after Codex audit rounds 3-5 on branch agent/efi-b05 (2026-10-18): still holds. The changes are
+refusals and eligibility checks inside registerEnterpriseServer/registerServerEntry/foldStoresIntoServerEntry
+(nothing is written on a refusal), the outbox read moved before the write, and config.ts's unset-token_env
+warning naming the url by origin; no modelled branch changed.
+
+Checked against #1631 background discovery (PR gate, 2026-10-18): still holds.
+index.ts only adds `_serverDiscoveryEndpoints()`, a read of config.yaml that lists the
+urls `refreshServerScopes` probes (the same `isEnterpriseServerEntry` filter). It
+writes nothing and is read only by the MCP server; no section here reads it.
+
+Checked against #1633 (plan B Task 7, owner decision O5, 2026-10-18): still holds.
+`_isRemoteWriteScope` now reads `_remoteWriteEntry`, the same resolver answer
+(`remote` and writable); provenance and the recurrence gate see no change.
+
+Checked against #1638 (`plur login` device sign-in, plan C Task 3, branch agent/efi-c03, 2026-10-18):
+still holds. registerServerEntry's refusal to take over the personal scope is unchanged (the same
+holders, the same message); it is now a `PersonalScopeTakenError` that names those holders, and
+`removeStale` drops exactly them before the same registration runs again, in the same locked write
+(modelled in Login.lean §2: only holders are removed, never without the flag, no holder left).
+No section here reads registration.
+
+
+Checked 2026-10-19 for git-origin folder defaults: GitFolder models the added
+folder-policy admission and operation-captured default. Existing explicit scopes,
+remote-only gates, store resolution, persistence and outbox delivery rules are
+unchanged. The remote recall change only suppresses calls for a local/unknown
+origin default; a deliberate call/session scope keeps the existing routing.
 -/
 
 namespace PlurSpec.R2CoreA
@@ -754,3 +835,40 @@ theorem old_infile_diverges :
     runF (dryStepOld false) [] [(5, 1), (5, 2)] ≠ runF (realStepF false) [] [(5, 1), (5, 2)] := by decide
 
 end PlurSpec.R2CoreA
+
+/- 2026-10-19: Save destination reporting is a projection of the existing delivery
+evidence. It changes no routing, persistence, scope authorization or outbox rule;
+the model remains valid. Presentation invariants live in SaveDestination.lean. -/
+
+/- 2026-10-19: serverSessionLines reads cached configuration and the existing
+primary outbox projection. It does not probe, route, deliver or mutate memory.
+These transition invariants still hold; status precedence is in SaveDestination. -/
+
+/-! Checked 2026-10-19 for credential-change retry: Outbox section 8c models
+known-key backoff bypass and the local-path takeover hold. Other write guards,
+claims, idempotency and merge-back remain unchanged; the extra queue field is
+an attempted credential fingerprint only. Enterprise recovery text changes no
+recall, authorization or adapter admission rule. -/
+
+/- 2026-10-19: Read-only server diagnostics add bounded /me and write-check
+requests, strict permission evidence, and explicit missing-evidence failures.
+They do not change grants, memory, queue delivery or file permissions. Existing
+write/routing invariants hold; ServerDiagnostics models report aggregation.
+The discovery clock-skew constant is exported without changing its value. -/
+
+/- 2026-10-19: Multi-root disagreement now refuses unscoped MCP writes before
+core admission; the legacy workspaceFolderScope result is unchanged. Explicit
+choices retain routing and authorization. Recall adds the admitted root orgs
+to dialing context, without widening the authorization filter or remote-only
+binding. WorkspaceChoice models this adapter admission and context selection. -/
+
+/-! 2026-10-19: Core re-exports the existing server-entry schema so legacy
+project cleanup can validate a raw explicit enterprise registration without
+inventing authorization through normalization. No engine behavior changes. -/
+
+/-! 2026-10-19: Explicit primary upload reuses the locked queue and guarded
+flush with a selected-id filter. Existing route, sensitivity, binding and
+retirement invariants remain in force. UploadLocal models the new admission,
+selection, dry-run and receipt rules. Held receipts are never cached as live. -/
+
+/- 2026-10-20: Recall persistence, import planning and retire events are unchanged. Only queued flush retry admission and merge-back identity changed; Outbox.lean models these refinements. -/

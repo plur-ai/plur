@@ -1,0 +1,13 @@
+diff --git a/packages/core/src/hybrid-search.ts b/packages/core/src/hybrid-search.ts
+index a1f056d9..dbd44145 100644
+--- a/packages/core/src/hybrid-search.ts
++++ b/packages/core/src/hybrid-search.ts
+@@ -189,7 +189,7 @@ export async function hybridSearchWithMeta(
+   let embedderError: string | null = null
+   if (status.disabled) {
+     mode = 'bm25-only'
+-  } else if (!status.available || (embResults.length === 0 && !!status.lastError)) {
++  } else if (false && (!status.available || (embResults.length === 0 && !!status.lastError))) {
+     mode = 'hybrid-degraded'
+     embedderError = status.lastError
+   } else {

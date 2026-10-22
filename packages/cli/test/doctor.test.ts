@@ -13,6 +13,11 @@ describe('plur doctor', () => {
 
   beforeEach(() => {
     home = mkdtempSync(join(tmpdir(), 'plur-doctor-test-'))
+    // These legacy cases isolate wiring/auth; hook execution has dedicated tests.
+    mkdirSync(join(home, '.plur'), { recursive: true })
+    for (const [file, time] of [[ 'hook-installs.json', '2000-01-01T00:00:00Z' ], [ 'hook-runs.json', '2000-01-02T00:00:00Z' ]]) {
+      writeFileSync(join(home, '.plur', file), JSON.stringify({ claude: time, codex: time, cursor: time }))
+    }
   })
 
   afterEach(() => {
@@ -212,8 +217,8 @@ describe('plur doctor', () => {
       } catch (err: any) { return { stdout: err.stdout?.toString() ?? '', status: err.status ?? 1 } }
     }
     const set = run({ [VAR]: 'tok-verdict' })
-    expect(JSON.parse(set.stdout).overall).toBe('ok')
-    expect(set.status).toBe(0)
+    expect(JSON.parse(set.stdout).overall).toBe('unverified')
+    expect(set.status).toBe(1) // --no-handshake: unverified, never a clean exit
     const unset = run({})
     expect(JSON.parse(unset.stdout).overall).toBe('fail')
     expect(unset.status).not.toBe(0)
@@ -239,12 +244,12 @@ describe('plur doctor', () => {
     expect(report.tokenEnvUnset).toEqual([])
     expect(report.tokenEnvFound).toEqual([expect.objectContaining({ scope: 'group:acme/eng', variable: VAR, inShell: false })])
     expect(report.tokenEnvFound[0].sources.join(' ')).toMatch(/Claude Code/)
-    expect(report.overall).toBe('ok')
-    expect(status).toBe(0)
+    expect(report.overall).toBe('unverified')
+    expect(status).toBe(1)
     expect(stdout).not.toContain(SECRET)
   }, 60000)
 
-  it('reports ok when both hooks and plur MCP are present', () => {
+  it('with hooks and plur MCP present and no handshake, reports unverified (not ok, not fail)', () => {
     writeGlobalSettings({
       hooks: {
         UserPromptSubmit: [
@@ -259,8 +264,8 @@ describe('plur doctor', () => {
     const { stdout, status } = runDoctor()
     const report = JSON.parse(stdout)
 
-    expect(status).toBe(0)
-    expect(report.overall).toBe('ok')
+    expect(status).toBe(1)
+    expect(report.overall).toBe('unverified')
     expect(report.hooksInstalled).toBe(true)
     expect(report.mcpRegistered).toBe(true)
     expect(report.datacoreCollision).toBe(false)
@@ -332,8 +337,8 @@ describe('plur doctor', () => {
     const report = JSON.parse(stdout)
 
     expect(report.handshake.error).toContain('skipped')
-    // ok overall because handshake is gated behind the skip flag
-    expect(report.overall).toBe('ok')
+    // every check that ran passed, but the skipped handshake leaves the connection unverified, not ok
+    expect(report.overall).toBe('unverified')
   })
 
   // Coverage gap: EVERY other test here runs `doctor --no-handshake`, so
@@ -440,8 +445,61 @@ describe('plur doctor', () => {
     expect(report.handshake.command).toContain(shim)
     expect(report.handshake.probed).toBeTruthy()
     expect(report.overall).toBe('fail')
+    expect(report.handshake.skipped, 'a refused connection is not an unverified one').toBeFalsy()
     expect(status).toBe(1)
   }, 40000)
+
+  // The three outcomes of the memory connection stay apart: reachable is ok
+  // (exit 0), refused is fail (above), not checked is unverified (below).
+  // Same install, three runs, so only the connection differs.
+  it('reachable is ok, refused is fail, not checked is unverified', () => {
+    const answering = join(home, 'answering-server.mjs')
+    writeFileSync(answering, [
+      "import { createInterface } from 'node:readline'",
+      "const send = (m) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...m }) + '\\n')",
+      "createInterface({ input: process.stdin }).on('line', (line) => {",
+      "  const msg = JSON.parse(line)",
+      "  if (msg.method === 'initialize') send({ id: msg.id, result: { protocolVersion: '2024-11-05', capabilities: {}, serverInfo: { name: 'plur', version: '0.0.0-test' } } })",
+      "  if (msg.method === 'tools/list') send({ id: msg.id, result: { tools: [{ name: 'plur_recall' }] } })",
+      "})",
+    ].join('\n'))
+    const refusing = join(home, 'refusing-server.sh')
+    writeFileSync(refusing, '#!/bin/sh\nsleep 0.5\nexit 1\n', { mode: 0o755 })
+    chmodSync(refusing, 0o755)
+
+    const doctorWith = (server: object, args: string) => {
+      writeGlobalSettings({
+        hooks: { UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'npx @plur-ai/cli hook-inject' }] }] },
+        mcpServers: { plur: server },
+      })
+      try {
+        const stdout = execSync(`node ${CLI} doctor ${args} --json`, {
+          encoding: 'utf-8', timeout: 30000, cwd: home, stdio: ['ignore', 'pipe', 'ignore'],
+          env: { ...isolatedHomeEnv(home), PLUR_DISABLE_EMBEDDINGS: '1' },
+        })
+        return { report: JSON.parse(stdout), status: 0 }
+      } catch (err: any) {
+        return { report: JSON.parse(err.stdout?.toString() ?? '{}'), status: err.status ?? 1 }
+      }
+    }
+
+    const reachable = doctorWith({ command: process.execPath, args: [answering] }, '')
+    expect(reachable.report.handshake.ok, JSON.stringify(reachable.report.handshake)).toBe(true)
+    expect(reachable.report.overall).toBe('ok')
+    expect(reachable.status).toBe(0)
+
+    const refused = doctorWith({ command: refusing, args: [] }, '')
+    expect(refused.report.handshake.ok).toBe(false)
+    expect(refused.report.handshake.skipped).toBeFalsy()
+    expect(refused.report.overall).toBe('fail')
+    expect(refused.status).toBe(1)
+
+    const unchecked = doctorWith({ command: process.execPath, args: [answering] }, '--no-handshake')
+    expect(unchecked.report.handshake.ok).toBe(false)
+    expect(unchecked.report.handshake.skipped).toBe(true)
+    expect(unchecked.report.overall).toBe('unverified')
+    expect(unchecked.status).toBe(1)
+  }, 90000)
 
   // ── Stale npx hook detection (#178) ─────────────────────────────────────
 
@@ -609,7 +667,7 @@ describe('plur doctor', () => {
     expect(status).toBe(1)
   })
 
-  it('reports overall ok when a .cursor/ project has its own config fully wired', () => {
+  it('does not fail overall when a .cursor/ project has its own config fully wired', () => {
     writeGlobalSettings({
       hooks: {
         UserPromptSubmit: [
@@ -638,7 +696,7 @@ describe('plur doctor', () => {
 
     expect(report.cursorProjectDetected).toBe(true)
     expect(report.cursorWired).toBe(true)
-    expect(report.overall).toBe('ok')
+    expect(report.overall).toBe('unverified')
   })
 
   // Audit fix (evaluator review, 2026-07-08): cursorWired used to only
@@ -751,7 +809,7 @@ describe('plur doctor', () => {
     const report = JSON.parse(stdout)
 
     expect(report.cursorProjectDetected).toBe(false)
-    expect(report.overall).toBe('ok')
+    expect(report.overall).toBe('unverified')
   })
 
   // ── Stale content_hash detection (#911) ──────────────────────────────────
@@ -811,7 +869,7 @@ describe('plur doctor', () => {
 
     expect(report.staleContentHashes).toBeGreaterThan(0)
     // Advisory only — must not drive overall to fail on its own.
-    expect(report.overall).toBe('ok')
+    expect(report.overall).toBe('unverified')
   })
 
   // ── opencode leg (0.20.0, B4) ─────────────────────────────────────────────

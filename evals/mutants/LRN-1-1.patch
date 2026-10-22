@@ -1,0 +1,13 @@
+diff --git a/packages/core/src/index.ts b/packages/core/src/index.ts
+index d018e0d6..ed43c99a 100644
+--- a/packages/core/src/index.ts
++++ b/packages/core/src/index.ts
+@@ -4213,7 +4213,7 @@ export class Plur {
+   private _hashDedupPredicate(statement: string, scope?: string): ((e: Engram) => boolean) | null {
+     if (!isHashable(statement)) return null
+     const hash = computeContentHash(statement)
+-    return e => e.status === 'active' && (e as any).content_hash === hash
++    return e => e.status === 'active'
+       && (scope === undefined || e.scope === scope)
+   }
+ 

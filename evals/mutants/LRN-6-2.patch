@@ -1,0 +1,13 @@
+diff --git a/packages/core/src/learn-async.ts b/packages/core/src/learn-async.ts
+index fcff36f5..6e88b675 100644
+--- a/packages/core/src/learn-async.ts
++++ b/packages/core/src/learn-async.ts
+@@ -220,7 +220,7 @@ async function executeDedupDecision(
+       return { engram: await deps.learn(statement, context), decision: 'ADD' }
+     }
+     const related = [...new Set([...(context?.related ?? []), existing.id])]
+-    const engram = await deps.learn(statement, { ...context, related })
++    const engram = await deps.learn(statement, { ...context, related, supersedes: [existing.id] }) // MUTANT: MERGE replaces its target, locked or not
+     return {
+       engram,
+       decision: 'ADD',

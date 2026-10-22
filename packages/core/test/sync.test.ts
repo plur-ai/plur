@@ -638,10 +638,14 @@ describe('sync', () => {
       }
     })
 
-    it('personal (default): sibling files still sync verbatim (regression)', () => {
+    it('personal (default): sibling records about mirrored engrams still sync (regression)', () => {
       sync(dir, bareRemote)
+      // ENG-GLOBAL has the default visibility, so it mirrors to a personal
+      // remote, and so do the side records naming it…
       expect(git('show HEAD:episodes.yaml', dir)).toContain('EP-3')
-      expect(git('show HEAD:episodes.yaml', dir)).toContain('EP-4')
+      // …but a record naming an id outside the push set (here: a deleted
+      // engram) stays home on every remote type — strip-on-doubt.
+      expect(git('show HEAD:episodes.yaml', dir)).not.toContain('EP-4')
       expect(git('show HEAD:tensions.yaml', dir)).toContain('T-2026-0730-002')
       expect(git('show HEAD:candidates.yaml', dir)).toContain('ENG-GLOBAL')
     })

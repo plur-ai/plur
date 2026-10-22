@@ -1,8 +1,11 @@
 import { createPlur, type GlobalFlags } from '../plur.js'
-import { hookFolderPolicy, payloadDir, sessionSettings, clearFolderAsk, isResumeStart } from '../lib/folder-gate.js'
+import { hookFolderPolicy, payloadDir, sessionSettings, clearFolderAsk, isResumeStart, bindHookFolder, remoteOnlyLines } from '../lib/folder-gate.js'
 import { readStdinJson, runCodexHook, codexSessionId, markSessionStarted, emitContext, injectWithFallback } from '../lib/codex-hook-io.js'
 import { resolveProjectRemote, projectRemoteRefusalNotice } from '../lib/project-remote.js'
 import { recordInjected } from '../lib/auto-rate.js'
+import { recordHookRun } from '../lib/hook-runs.js'
+import { cachedServerLines } from '../lib/server-session.js'
+import { cleanupLegacyProjectAtSessionStart } from '../lib/legacy-plur-yaml.js'
 
 /**
  * plur hook-codex-session-start — Codex `SessionStart` hook.
@@ -37,7 +40,8 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
     // asked by hook-codex-inject on the first prompt; `off` is silent.
     const dir = payloadDir(input)
     const policy = hookFolderPolicy(dir, flags)
-    if (policy.mode !== 'on') return
+    if (policy.mode !== 'off' && policy.reason !== 'malformed-map' && policy.reason !== 'resolver-error' && input.source !== 'compact') recordHookRun('codex', flags.path)
+    if (policy.mode !== 'on' && policy.mode !== 'remote-only') return
     const sessionId = codexSessionId(input)
     if (!sessionId) return
 
@@ -50,6 +54,8 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
     let context: string
     try {
       const plur = createPlur(flags)
+      bindHookFolder(plur, dir, policy)
+      const legacyLines = input.source === 'compact' ? [] : cleanupLegacyProjectAtSessionStart(dir, plur.storageRoot)
       // #1198: carry the project's remote settings so Enterprise team memory
       // reaches Codex at session start too. The helper carries #1196's trust
       // gate, so this cannot reintroduce the exfiltration path.
@@ -68,14 +74,17 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
         : ''
 
       const header = `[PLUR Memory — session started, ${result.count} engrams injected via ${mode}]` +
-        (projectConfig.scope ? `\nProject scope: ${projectConfig.scope} — use this scope for plur_learn calls` : '')
+        (projectConfig.scope && !plur.remoteOnlyFolder() ? `\nProject scope: ${projectConfig.scope} — use this scope for plur_learn calls` : '')
 
       // Never silent (#1198): if the project declared remote settings we
       // refused, say so here — this is the only model-visible surface.
       const refusal = projectRemote.refusedFrom
         ? `${projectRemoteRefusalNotice(projectRemote.refusedFrom, plur.storageRoot)}\n\n`
         : ''
-      context = refusal + (body ? `${header}\n\n${body}` : header)
+      // remote-only: where memory goes, and that the team server did not answer.
+      const serverLines = input.source === 'compact' ? [] : await cachedServerLines(plur, dir, policy)
+      const fullHeader = [header, ...serverLines, ...legacyLines, ...remoteOnlyLines(plur, result, true)].join('\n')
+      context = refusal + (body ? `${fullHeader}\n\n${body}` : fullHeader)
     } catch (err: unknown) {
       context = '[PLUR Memory — injection FAILED at session start] ' +
         `(${(err as Error)?.message ?? 'unknown error'}). Recalled memory is unavailable; run ` +

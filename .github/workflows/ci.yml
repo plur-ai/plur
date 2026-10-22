@@ -13,7 +13,15 @@ on:
   #
   # Stacking is the normal way to keep a review chain moving when one PR
   # depends on another, so the trigger has to cover it.
+  #
+  # One exception (owner, 2026-10-18: "let's not burn GitHub usage where we
+  # don't need to"): pull requests into integration/**, the branches the
+  # overnight agent stacks its work on. They are not left reading as verified:
+  # stacked-local-proof.yml fails each one whose description lacks the local
+  # gate output, and the integration branch gets this full run once, when it
+  # comes into development.
   pull_request:
+    branches-ignore: ['integration/**']
 
 # Principle of least privilege: workflow only needs to checkout and run tests.
 permissions:
@@ -41,6 +49,8 @@ jobs:
       # fails closed if PyYAML is missing rather than passing unchecked.
       - run: python3 scripts/test_check_workflow_pins.py
       - run: python3 scripts/check-workflow-pins.py
+      # Stacked pull requests skip the test runs only with the local proof in their place.
+      - run: python3 scripts/test_stacked_ci_skip.py
 
   test:
     runs-on: ubuntu-latest
@@ -60,7 +70,7 @@ jobs:
         # broken locally" is the worst possible signal because the suite stops
         # being trusted. Track the current Node release here, not just the LTS
         # line, and expect this list to keep moving.
-        node-version: [20, 22, 24, 26]
+        node-version: [22, 24, 26]
     # Real Postgres + pgvector for the PostgresAdapter suite (ADR-0005). The
     # suite skips when PLUR_TEST_POSTGRES_URL is unset, so without this service
     # it would be permanently skipped and permanently unproven — which is worse
@@ -97,6 +107,11 @@ jobs:
           node-version: ${{ matrix.node-version }}
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # Hook-health and legacy migration exercise real MCP registration.
+      # Keep the same Codex version as the native Windows/WSL checks; these
+      # tests use configuration commands only, with isolated editor homes.
+      - name: Install Codex for real registration tests
+        run: npm install -g --no-audit --no-fund @openai/codex@0.160.1
       - run: git config --global user.email "ci@plur.ai"
       - run: git config --global user.name "PLUR CI"
       - run: pnpm build

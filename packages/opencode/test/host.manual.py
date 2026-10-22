@@ -42,7 +42,7 @@ class Handler(BaseHTTPRequestHandler):
    deadline=time.monotonic()+20
    while time.monotonic()<deadline:
     log=active_log.read_text(encoding='utf-8',errors='replace') if active_log.exists() else ''
-    if re.search(r'mcp connected.*server=plur.*tools=14',log):break
+    if re.search(r'mcp connected.*server=plur.*tools=15',log):break  # 14 lean core tools + plur_admin (plur_report_failure is direct: it rewrites, TOOL-4)
     time.sleep(0.05)
    else:
     mcp_startup_errors.append('MCP did not become ready within 20 seconds')
@@ -103,9 +103,9 @@ try:
   assert consent_results[0][1]!=0 and consent_results[1][1]==0 and consent_results[2][1]!=0,consent_results
   print('Actual offered consent command: wrong session refused, accepted once, replay refused.',flush=True)
  if args.mcp:
-  assert re.search(r'mcp connected.*server=plur.*tools=14',first),'Real MCP server did not connect with its 14 tools'
+  assert re.search(r'mcp connected.*server=plur.*tools=15',first),'Real MCP server did not connect with its 15 tools'
   assert 'MCP connection failed' not in first
-  print('Packed MCP server connected alongside the plugin with 14 tools.',flush=True)
+  print('Packed MCP server connected alongside the plugin with 15 tools.',flush=True)
  if args.mode=='on':
   assert any('PLUR_V2_CANARY_CYAN' in json.dumps(r.get('messages',[])) for r in requests),'Seed memory did not reach actual model request'
  store=(case/'plur/engrams.yaml').read_text(encoding='utf-8')

@@ -4,7 +4,8 @@ import * as yaml from 'js-yaml'
 import { join } from 'path'
 import { loadEngrams, saveEngrams, engramStoreEntries } from '../engrams.js'
 import { recordLastWritten } from '../backup.js'
-import { atomicWrite, withLock, fsyncDir, CONFIG_FILE_MODE } from '../sync.js'
+import { atomicWrite, withLock, fsyncDir } from '../sync.js'
+import { writeConfigFile } from '../config-file.js'
 import { logger } from '../logger.js'
 import type { Migration } from './types.js'
 
@@ -93,7 +94,7 @@ export function setSchemaVersion(configPath: string, version: number): void {
     // Atomic + fsynced for the same reason persistStores is: loadConfig turns a
     // parse failure into DEFAULT config, so a crash mid-write does not fail
     // loudly — it silently reverts settings.
-    atomicWrite(configPath, yaml.dump(configData, { lineWidth: 120, noRefs: true }), { mode: CONFIG_FILE_MODE })
+    writeConfigFile(configPath, yaml.dump(configData, { lineWidth: 120, noRefs: true }))
   })
 }
 

@@ -1,0 +1,13 @@
+diff --git a/packages/core/src/index.ts b/packages/core/src/index.ts
+index d018e0d6..35458b6d 100644
+--- a/packages/core/src/index.ts
++++ b/packages/core/src/index.ts
+@@ -1984,7 +1984,7 @@ export class Plur {
+   private _decideForgetProbes(id: string, probes: CollisionProbe[], warnings: string[]): void {
+     for (const p of probes) {
+       if (p.outcome === 'present') {
+-        throw new Error(
++        warnings.push(
+           `Ambiguous engram ID "${id}": exists in both the local store and remote scope "${p.scope}". `
+           + `Retiring is destructive and irreversible from here, so it will not guess. `
+           + `To retire the local engram: \`plur forget ${id} --scope primary\` (MCP: scope: "primary"). `

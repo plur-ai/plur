@@ -1,0 +1,11 @@
+--- a/packages/cli/src/commands/hook-codex-session-start.ts
++++ b/packages/cli/src/commands/hook-codex-session-start.ts
+@@ -55,7 +55,7 @@
+     try {
+       const plur = createPlur(flags)
+       bindHookFolder(plur, dir, policy)
+-      const legacyLines = input.source === 'compact' ? [] : cleanupLegacyProjectAtSessionStart(dir, plur.storageRoot)
++      const legacyLines = input.source !== 'compact' ? [] : cleanupLegacyProjectAtSessionStart(dir, plur.storageRoot)
+       // #1198: carry the project's remote settings so Enterprise team memory
+       // reaches Codex at session start too. The helper carries #1196's trust
+       // gate, so this cannot reintroduce the exfiltration path.

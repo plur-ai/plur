@@ -1,0 +1,13 @@
+diff --git a/packages/core/src/index.ts b/packages/core/src/index.ts
+index 4f1978ed..4e73df56 100644
+--- a/packages/core/src/index.ts
++++ b/packages/core/src/index.ts
+@@ -12560,7 +12560,7 @@ export class Plur {
+         admittedWrites.set(engram.id, {
+           url: outbox.target_url, scope: outbox.target_scope, key: outbox.idempotency_key,
+         })
+-        const pushed = await driver.appendAndGetServerId(cleanEngram, { signal: budget, idempotencyKey: outbox.idempotency_key })
++        const pushed = await driver.appendAndGetServerId(cleanEngram, { signal: budget })
+         upload?.results.set(engram.id, { id: engram.id, outcome: pushed.review_required ? 'held_for_review' : pushed.deduplicated ? 'already_on_server' : 'sent', new_id: pushed.id })
+         // #863: remember the mapping so a later engram in this same flush can
+         // point at the server id rather than the local one.

@@ -1,0 +1,13 @@
+diff --git a/packages/mcp/src/server.ts b/packages/mcp/src/server.ts
+index c8f760d2..16805664 100644
+--- a/packages/mcp/src/server.ts
++++ b/packages/mcp/src/server.ts
+@@ -414,7 +414,7 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
+     if (typeof gated === 'string' && FOLDER_GATED_TOOLS.has(gated)) {
+       const ws = await workspace.workspace()
+       const decision = ws === null ? workspaceUnknownAnswer() : folderGate.check(ws)
+-      if (decision.plur !== 'on') return { content: [{ type: 'text', text: JSON.stringify(decision, null, 2) }] }
++      if (decision.plur === 'off') return { content: [{ type: 'text', text: JSON.stringify(decision, null, 2) }] }
+       admittedWs = ws
+       // The instance follows the admitted workspace's folder decision
+       // (remote-only, #1521): bound on every call, in this serialized step.

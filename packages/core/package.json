@@ -1,6 +1,6 @@
 {
   "name": "@plur-ai/core",
-  "version": "0.21.5",
+  "version": "0.22.0",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -18,6 +18,7 @@
     "@electric-sql/pglite": "^0.4.6",
     "js-yaml": "^4.3.2",
     "tar": "^7.5.21",
+    "yaml": "^2.9.0",
     "zod": "^3.23.0"
   },
   "optionalDependencies": {
@@ -35,7 +36,7 @@
     "zod-to-json-schema": "^3.25.2"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "license": "Apache-2.0",
   "description": "Shared memory engine for AI agents — learn, recall, forget, feedback",

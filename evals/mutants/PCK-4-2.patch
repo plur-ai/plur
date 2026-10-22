@@ -1,0 +1,13 @@
+diff --git a/packages/core/src/packs.ts b/packages/core/src/packs.ts
+index 221accb3..d1800a4e 100644
+--- a/packages/core/src/packs.ts
++++ b/packages/core/src/packs.ts
+@@ -1434,7 +1434,7 @@ function _installPackDir(
+   )
+   // Prompt-injection text is blocked unless explicitly overridden (finding #2).
+   const injectionIssues = preview.security.issues.filter(i => i.type === 'prompt_injection')
+-  if (injectionIssues.length > 0 && !opts.allowInjection) {
++  if (injectionIssues.length > 0 && opts.allowInjection === false) {
+     const details = injectionIssues.map(i => `  ${i.engram_id}: ${i.detail}`).join('\n')
+     throw new Error(
+       `Pack contains prompt-injection / instruction-override text — install blocked:\n${details}\n` +

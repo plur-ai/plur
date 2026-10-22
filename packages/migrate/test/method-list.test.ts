@@ -99,6 +99,20 @@ const ALWAYS_ASYNC = new Set([
   // I/O, so it could never have been sync; new in this release, so there is
   // no pre-0.16 call site to rewrite.
   'verifyRemoteStore',
+  // Born async (#1631) — reads each company server's scope list from /me and
+  // writes the discovery cache. Network I/O, so it could never have been sync;
+  // new in this release, so there is no pre-0.16 call site to rewrite.
+  'refreshServerScopes',
+  // Born async (#1631, plan B Task 5) — registers a company server entry and
+  // reads the outbox (listOutbox is async) for the queued-save counts; new in
+  // this release, so there is no pre-0.16 call site to rewrite.
+  'registerEnterpriseServer',
+  // Born async: read-only server diagnostics perform bounded HTTP probes.
+  'checkServerStores',
+  // Born async: explicit upload reads and writes through the async store seam.
+  'listUploadCandidates', 'uploadLocal',
+  // Born async: cached session status reads through the async outbox store.
+  'serverSessionLines',
 ])
 
 /** Public methods of `Plur`, mapped to whether they are declared `async`. */

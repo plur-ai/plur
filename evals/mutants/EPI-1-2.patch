@@ -1,0 +1,12 @@
+diff --git a/packages/mcp/src/tools.ts b/packages/mcp/src/tools.ts
+index 6222c62a..93d1aebf 100644
+--- a/packages/mcp/src/tools.ts
++++ b/packages/mcp/src/tools.ts
+@@ -2512,7 +2512,6 @@ function getAllToolDefinitions(): ToolDefinition[] {
+         if (args.since) query.since = new Date(args.since as string)
+         if (args.until) query.until = new Date(args.until as string)
+         if (args.agent) query.agent = args.agent
+-        if (args.channel) query.channel = args.channel
+         if (args.search) query.search = args.search
+ 
+         const episodes = plur.timeline(Object.keys(query).length > 0 ? query as any : undefined)

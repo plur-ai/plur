@@ -1,0 +1,12 @@
+diff --git a/packages/core/src/migrations/runner.ts b/packages/core/src/migrations/runner.ts
+index 7a416b6b..cc1d448d 100644
+--- a/packages/core/src/migrations/runner.ts
++++ b/packages/core/src/migrations/runner.ts
+@@ -292,6 +292,7 @@ export function runMigrations(
+         // Nothing has been written yet: the live file is untouched. Do NOT copy
+         // the (possibly older) backup over it — a version backup may predate
+         // successful writes; see the note above commitMigration.
++        if (applied.length > 0) commitMigration(engramsPath, configPath, engrams, currentVersion, currentVersion + applied.length) // MUTANT: keep the steps that worked
+         throw new Error(`Migration ${migration.id} failed: ${err}. engrams.yaml was not modified.`)
+       }
+     }

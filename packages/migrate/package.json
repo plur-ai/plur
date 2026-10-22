@@ -1,6 +1,6 @@
 {
   "name": "@plur-ai/migrate",
-  "version": "0.21.5",
+  "version": "0.22.0",
   "description": "Find and fix un-awaited PLUR calls after the 0.16 async migration",
   "type": "module",
   "bin": {
@@ -14,5 +14,8 @@
     "build": "tsup",
     "test": "vitest run"
   },
-  "license": "Apache-2.0"
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=22"
+  }
 }

@@ -13,12 +13,19 @@ name: Windows init hooks
 # (scripts/windows-codex-probe.mjs). The real Codex CLI is installed before
 # setup; a final step checks init, `codex mcp list`, an MCP handshake and doctor
 # (scripts/windows-codex-real.mjs).
+# #1631: core's config.yaml owner-only protection runs against the real icacls
+# (packages/core/test/config-owner-only.test.ts; its `Windows, real icacls`
+# cases only run here) — verbose, so the log shows they ran, not skipped.
 # Actions are pinned by commit SHA.
 
 on:
   push:
     branches: [main]
   pull_request:
+    # Pull requests into integration/** (the overnight agent's stacked work) skip
+    # this run; their proof is the local gate (stacked-local-proof.yml), and the
+    # integration branch gets this run when it comes into development.
+    branches-ignore: ['integration/**']
     paths:
       - 'packages/cli/**'
       - 'packages/mcp/**'
@@ -51,6 +58,8 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Build the CLI and the MCP server (with their workspace dependencies)
         run: pnpm --filter "@plur-ai/cli..." --filter "@plur-ai/mcp..." build
+      - name: config.yaml stays owner-only after every core write, real icacls (#1631)
+        run: pnpm --filter @plur-ai/core exec vitest run --reporter=verbose test/config-owner-only.test.ts
       - name: 8.3 short names on the temp volume (informational)
         shell: cmd
         run: fsutil 8dot3name query %TEMP:~0,2% || exit /b 0

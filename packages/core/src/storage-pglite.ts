@@ -30,6 +30,7 @@ import type { Engram } from './schemas/engram.js'
 import { EngramSchemaPassthrough } from './schemas/engram.js'
 import { normalizeEngramInput } from './normalize-engram.js'
 import { loadEngrams, resolveDuplicateIds } from './engrams.js'
+import { withoutRemoteOnlyQueued } from './remote-only-rows.js'
 import { searchEngrams } from './fts.js'
 import { logger } from './logger.js'
 import type {
@@ -639,7 +640,8 @@ export class PGLiteAdapter implements DerivedIndexAdapter {
       try {
         const ids = new Set<string>()
         if (existsSync(this.yamlPath)) {
-          const engrams = loadEngrams(this.yamlPath)
+          // A queued remote-only save is never mirrored here (gate review of #1663).
+          const engrams = withoutRemoteOnlyQueued(loadEngrams(this.yamlPath))
           await this.upsertEngramsTx(db, engrams, 'primary')
           for (const e of engrams) ids.add(e.id)
         }
@@ -683,7 +685,7 @@ export class PGLiteAdapter implements DerivedIndexAdapter {
 
   private async insertEngramsTx(db: any): Promise<void> {
     if (!existsSync(this.yamlPath)) return
-    await this.upsertEngramsTx(db, loadEngrams(this.yamlPath), 'primary')
+    await this.upsertEngramsTx(db, withoutRemoteOnlyQueued(loadEngrams(this.yamlPath)), 'primary')
   }
 
   /**

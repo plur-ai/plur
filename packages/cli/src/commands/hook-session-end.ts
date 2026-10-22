@@ -3,7 +3,8 @@ import { join } from 'path'
 import { homedir } from 'os'
 import { type GlobalFlags } from '../plur.js'
 import { createPlur } from '../plur.js'
-import { hookFolderOn, payloadDir } from '../lib/folder-gate.js'
+import { hookFolderPolicy, isWorkingMode, payloadDir } from '../lib/folder-gate.js'
+import type { FolderPolicy } from '@plur-ai/core'
 import { endFolderNonceSession } from '@plur-ai/core'
 import { safeSessionKey } from '../lib/session-key.js'
 import { flushOutboxForHook, HOOK_OUTBOX_BUDGET_MS } from '../lib/hook-outbox-flush.js'
@@ -93,15 +94,19 @@ function readStdinRaw(): string {
 export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   // #1347: the folder gate replaces #247's project gate. An off folder gets
   // nothing, the outbox flush included.
-  const on = await closeSession(flags)
-  if (!on) return
+  const folder = await closeSession(flags)
+  if (!folder) return
   // #1269: after the close, never instead of it — the checkpoint work is the
   // cheaper, more important half, and the flush has the rest of the budget.
-  await flushOutboxForHook(flags, { hook: 'hook-session-end', budgetMs: HOOK_OUTBOX_BUDGET_MS.claudeSessionEnd })
+  // Bound to the payload's folder, not this process's (gate review of #1663).
+  await flushOutboxForHook(flags, { hook: 'hook-session-end', budgetMs: HOOK_OUTBOX_BUDGET_MS.claudeSessionEnd, folder })
 }
 
-/** Closes the session's checkpoint. False when the folder map says the folder is not on. */
-async function closeSession(flags: GlobalFlags): Promise<boolean> {
+/**
+ * Closes the session's checkpoint. Returns the payload's folder and its
+ * decision when the hooks work there (on or remote-only), else false.
+ */
+async function closeSession(flags: GlobalFlags): Promise<{ dir: string; policy: FolderPolicy } | false> {
   const raw = readStdinRaw()
   let payload: { session_id?: string; cwd?: string; reason?: string } = {}
   try {
@@ -118,10 +123,16 @@ async function closeSession(flags: GlobalFlags): Promise<boolean> {
 
   // Nothing is captured unless the folder map says on (#1347; was #247's
   // project gate).
-  if (!hookFolderOn(payloadDir(payload as Record<string, unknown>), flags)) return false
+  const dir = payloadDir(payload as Record<string, unknown>)
+  const policy = hookFolderPolicy(dir, flags)
+  if (!isWorkingMode(policy)) return false
+  const folder = { dir, policy }
+  // remote-only (owner decision on #1521): no timeline capture. The session's
+  // checkpoint (its metadata) is dropped too, so no later session captures it.
+  const remoteOnly = policy.mode === 'remote-only'
 
   const sessionsDir = join(plurPath(flags), 'sessions')
-  if (!existsSync(sessionsDir)) return true
+  if (!existsSync(sessionsDir)) return folder
 
   // Locate this session's checkpoint. Presence means plur_session_end did NOT
   // run (it unlinks the checkpoint), so we auto-close.
@@ -144,14 +155,28 @@ async function closeSession(flags: GlobalFlags): Promise<boolean> {
         // session's checkpoint was indistinguishable from corruption. Leave it
         // in place and stop — the next session_start's deferred wrap-up (#216)
         // can still find it, and nothing is captured from unparseable content.
-        return true
+        return folder
       }
     }
   }
 
   // No checkpoint → clean close already happened, or session too short. Nothing
   // to close.
-  if (!checkpointPath || !checkpoint) return true
+  if (!checkpointPath || !checkpoint) return folder
+  // The checkpoint's OWN folder decides too (re-audit of #1521, C-1): a
+  // payload without a usable cwd falls back to this process's folder, which
+  // may not be the session's. When in doubt, nothing is captured.
+  let checkpointPolicy: { mode: string; reason?: string } | null = null
+  if (typeof checkpoint.cwd === 'string' && checkpoint.cwd) {
+    checkpointPolicy = hookFolderPolicy(checkpoint.cwd, flags)
+  }
+  if (remoteOnly || checkpointPolicy?.mode === 'remote-only') {
+    try { unlinkSync(checkpointPath) } catch { /* gone */ }
+    return folder
+  }
+  // An unresolvable folder: no capture; the checkpoint stays for a later,
+  // resolvable session to decide.
+  if (checkpointPolicy?.reason === 'malformed-map' || checkpointPolicy?.reason === 'resolver-error') return folder
 
   // Build a conservative, metadata-only summary — the same information the
   // deferred wrap-up (#216) reports, but captured as a durable episode.
@@ -209,5 +234,5 @@ async function closeSession(flags: GlobalFlags): Promise<boolean> {
   // Ensure the sessions dir still exists for subsequent sessions (defensive —
   // capture may create the plur root lazily).
   try { mkdirSync(sessionsDir, { recursive: true }) } catch {}
-  return true
+  return folder
 }

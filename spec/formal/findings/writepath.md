@@ -354,3 +354,10 @@ Model (§1c of `PlurSpec/WritePath.lean`, rewritten): pushers of any type with d
 - Crashes after an accepted POST re-deliver with the same key (decision C4): `Outbox.lean` §3.
 
 Kept from #1228 on top of main's claims: only the writer that took a claim releases it (`Outbox.lean` §5, `only_taker_releases`; main's rule let an instance with no token remove another's claim, `main_rule_foreign_release`, replayed in `outbox-claim-ownership.test.ts`), and `listOutbox().leased_until` read from the claim file alone (§6).
+
+## Drift review, #1631 (2026-10-18)
+
+Updated, not a new defect. index.ts now routes through `resolveScopeTarget` (store-resolver.ts). Summary: `findings/drift-2026-10-18.md`.
+- §2c, the flush's conflict hold: `deliverC_scope_matches_store` (§2's property with the new branch), `deliverC_never_conflicted`, `deliverC_agrees_off_conflict`, `deliverC_good_case`, `old_flush_delivers_conflicted`. Replay: `routing-shared-resolver.test.ts` "a queued save whose scope a second server now claims is not flushed to either" (`flushOutbox({ force: true })`, 0 POSTs, row still queued). It passes.
+- §3c, one resolver: `send_is_backed`, `send_iff_writeScope`, `conflict_refused`, `sent_never_offending` (P2 over the real routing rule), `single_server_sends`, `unauthorized_backed_not_sent`, `old_router_sends_conflicted`. Replay: same file, "learn is refused, nothing sent, nothing saved" and "learnRouted is refused, …".
+- Mutation check (scratch copies): with the conflict branch removed from `flushDeliverC`, `deliverC_never_conflicted` and `old_flush_delivers_conflicted` fail. `deliverC_scope_matches_store` also fails there, but only because its proof script no longer fits. With `routeOf .conflict = .send`, `conflict_refused`, `send_is_backed`, `send_iff_writeScope` and `old_router_sends_conflicted` fail. With `backed (.remote true) = false`, `send_is_backed` fails.

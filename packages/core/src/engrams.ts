@@ -371,22 +371,68 @@ export function readHeldRecovery(root: string): HeldFile[] | null {
   return files as HeldFile[]
 }
 
+/** An engram-id token (`ENG-…`, `ABS-…`, `META-…`) anywhere in a string. */
+export const ENGRAM_ID_TOKEN = /\b(?:ENG|ABS|META)-[A-Za-z0-9-]+/g
+
+/** Replace engram-id tokens in a record by `map` (old id -> new id), everywhere in it. */
+export function renameEngramIdRefs(v: unknown, map: ReadonlyMap<string, string>): unknown {
+  if (typeof v === 'string') return v.replace(ENGRAM_ID_TOKEN, m => map.get(m) ?? m)
+  if (Array.isArray(v)) return v.map(x => renameEngramIdRefs(x, map))
+  if (v !== null && typeof v === 'object') {
+    return Object.fromEntries(Object.entries(v as Record<string, unknown>).map(([k, x]) => [k, renameEngramIdRefs(x, map)]))
+  }
+  return v
+}
+
+/** The recovery file's raw `merge_renames`, or null (absent / unreadable). */
+function rawHeldMergeRenames(root: string): IdRename[] | null {
+  try {
+    const v = JSON.parse(fs.readFileSync(heldRecoveryPath(root), 'utf8')) as { merge_renames?: unknown } | null
+    const r = v?.merge_renames
+    if (!Array.isArray(r) || !r.every(x => x && typeof x.from === 'string' && typeof x.to === 'string')) return null
+    return r.map(x => ({ from: x.from as string, to: x.to as string }))
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Audit 6, N1. The engram renames a sync's record merge made to COMMITTED
+ * engrams while records were held aside. Held records were written on this
+ * machine, so a reference in them to the old id meant this machine's engram,
+ * which has the new id once that merge is committed. The map is saved with the
+ * held records BEFORE the merge commit, so a process killed right after the
+ * commit still has it on restart.
+ *
+ * It applies only once the merge is concluded: while `.git/MERGE_HEAD` exists
+ * the merge was interrupted before its commit, the store still has the old
+ * ids, and the restart aborts that merge (empty list here).
+ */
+export function readHeldMergeRenames(root: string): IdRename[] {
+  if (fs.existsSync(path.join(root, '.git', 'MERGE_HEAD'))) return []
+  return rawHeldMergeRenames(root) ?? []
+}
+
 /**
  * Durably record `files` as held (write + fsync + rename + fsync dir), or delete
  * the recovery file when `files` is empty. Called BEFORE the tree is reset and
  * again, to delete it, only AFTER every held record is back.
  */
-export function writeHeldRecovery(root: string, files: readonly HeldFile[]): void {
+export function writeHeldRecovery(root: string, files: readonly HeldFile[], mergeRenames?: readonly IdRename[] | null): void {
   const p = heldRecoveryPath(root)
   if (files.length === 0) {
     try { fs.unlinkSync(p) } catch { return }
     fsyncDir(path.dirname(p))
     return
   }
+  // `undefined` keeps the merge renames already saved (a rewrite of the held
+  // records, e.g. after some were restored); `null` drops them (a new hold).
+  const merge = mergeRenames === undefined ? rawHeldMergeRenames(root) : mergeRenames
   atomicWrite(p, JSON.stringify({
     version: 1,
     note: 'Records a plur sync set aside during git pull (never pushed). Restored automatically; do not delete by hand.',
     files,
+    ...(merge && merge.length > 0 ? { merge_renames: merge } : {}),
   }), { mode: 0o600 })
 }
 
@@ -433,7 +479,12 @@ function heldEngramsFor(filePath: string): unknown[] | null {
   const root = path.dirname(path.resolve(filePath))
   if (!fs.existsSync(heldRecoveryPath(root))) return null
   try {
-    return readHeldRecovery(root)?.find(f => f.file === 'engrams.yaml')?.held ?? null
+    const held = readHeldRecovery(root)?.find(f => f.file === 'engrams.yaml')?.held ?? null
+    const merged = held ? readHeldMergeRenames(root) : []
+    if (!held || merged.length === 0) return held
+    // A concluded merge renamed committed engrams: held references follow (N1).
+    const map = new Map(merged.map(r => [r.from, r.to] as const))
+    return held.map(r => renameEngramIdRefs(r, map))
   } catch (err) {
     logger.warning(`${(err as Error).message}`)
     return null
@@ -1125,6 +1176,120 @@ export function loadAllPacks(packsDir: string): LoadedPack[] {
     }
   }
   return packs
+}
+
+/**
+ * The id a pack row is loaded under: its own id with the pack named after it
+ * (`ENG-2026-10-18-001` in pack `deploy-tips` → `ENG-2026-10-18-001-pack-deploy-tips`).
+ *
+ * Pack rows keep the ids their author's store minted, and ids are minted per
+ * store from the date and a daily sequence — so an ordinary pack made the same
+ * day carries the very ids my own memories have, and a hostile author can pick
+ * them on purpose. Unnamespaced, such a row was shown to the agent under one of
+ * my memory ids. Every read path that hands out a pack row uses this id, so a
+ * pack row can never answer to an id my store mints, and two packs that ship
+ * the same id stay apart. The original id stays readable inside it.
+ *
+ * Idempotent, and the result always fits the engram id alphabet.
+ */
+export function packEngramId(id: string, packName: string): string {
+  const suffix = `-pack-${packIdSlug(packName)}`
+  if (id.endsWith(suffix)) return id
+  return `${id}${suffix}`
+}
+
+/**
+ * The pack-name part of a pack id, one per pack name.
+ *
+ * A name already in slug form (`release-rules`) is used as it is. Any other
+ * name (`Release Rules`, `release_rules`) is lowered to a slug and followed by
+ * `--` and twelve hex digits of a SHA-256 digest of the exact name. A slug-form
+ * name never contains `--`, so the two kinds cannot meet, and two other names
+ * that lower to the same slug differ in the digest. Lowering alone made
+ * `Release Rules` and `release-rules` hand out one id for two packs' rows.
+ */
+function packIdSlug(packName: string): string {
+  if (/^[a-z0-9]+(-[a-z0-9]+)*$/.test(packName)) return packName
+  const digest = createHash('sha256').update(packName).digest('hex').slice(0, 12)
+  return `${legacyPackIdSlug(packName)}--${digest}`
+}
+
+/** The pack-name part pack ids had before {@link packIdSlug}: the name lowered to a slug, nothing more. */
+function legacyPackIdSlug(packName: string): string {
+  return packName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'pack'
+}
+
+/**
+ * The id a pack row had under the earlier pack-id scheme (lowered name, no
+ * digest), given the row's current pack id. Null when the two schemes agree,
+ * which is every pack whose name is already in slug form.
+ *
+ * Ids of the earlier form were handed out (lookups, my memories' relations,
+ * receipts) and are not rewritten anywhere, so readers resolve them with
+ * {@link matchLegacyPackId}.
+ */
+export function legacyPackEngramId(packRowId: string, packName: string): string | null {
+  const current = `-pack-${packIdSlug(packName)}`
+  const legacy = `-pack-${legacyPackIdSlug(packName)}`
+  if (current === legacy) return null
+  const original = packRowId.endsWith(current) ? packRowId.slice(0, -current.length) : packRowId
+  return original.endsWith(legacy) ? original : `${original}${legacy}`
+}
+
+/**
+ * The one pack row an id of the earlier pack-id form names, or null.
+ *
+ * Only for an id NO loaded row carries exactly: a current id always wins, so
+ * the slug-form pack `release-rules`, whose id never changed, keeps
+ * `…-pack-release-rules` even beside a `Release Rules` pack that had the same
+ * id before. When two pack rows answer to one earlier id (`Release Rules` and
+ * `release_rules` both lowered to `release-rules`), it names neither: that id
+ * was already shared by both packs, and picking one would hand out the other
+ * pack's text under it.
+ */
+export function matchLegacyPackId<T extends { id: string }>(
+  rows: ReadonlyArray<{ row: T; pack: string }>,
+  id: string,
+): T | null {
+  if (!id.includes('-pack-')) return null
+  if (rows.some(r => r.row.id === id)) return null
+  const hits = rows.filter(r => legacyPackEngramId(r.row.id, r.pack) === id)
+  return hits.length === 1 ? hits[0].row : null
+}
+
+/**
+ * A pack's rows as every read path hands them out: each under its pack id
+ * ({@link packEngramId}), and every reference one row makes to ANOTHER ROW OF
+ * THE SAME PACK (relations, engram associations, `derived_from`, `abstract`)
+ * rewritten to that row's pack id too.
+ *
+ * Renaming the rows alone broke the pack's own graph: an old rule still said
+ * `superseded_by: [ENG-PACK-NEW]`, no loaded row answered to that id any more,
+ * so supersession, spreading and lookup of the target all missed, and the
+ * obsolete rule was injected beside its correction. A reference to an id the
+ * pack does not ship is left as it is. Returns copies; the pack file is never
+ * touched, so feedback write-back keeps saving the author's own ids.
+ */
+export function namespacePackEngrams(engrams: Engram[], packName: string): Engram[] {
+  const own = new Set(engrams.map(e => e.id))
+  const ref = (target: string): string => own.has(target) ? packEngramId(target, packName) : target
+  const refs = (list: unknown): unknown => Array.isArray(list) ? list.map(t => typeof t === 'string' ? ref(t) : t) : list
+  return engrams.map(e => {
+    const out: Engram = { ...e, id: packEngramId(e.id, packName) }
+    if (e.relations) {
+      const rel: Record<string, unknown> = { ...e.relations }
+      for (const k of Object.keys(rel)) rel[k] = refs(rel[k])
+      out.relations = rel as Engram['relations']
+    }
+    if (Array.isArray(e.associations)) {
+      out.associations = e.associations.map(a => a && a.target_type === 'engram' && typeof a.target === 'string'
+        ? { ...a, target: ref(a.target) }
+        : a)
+    }
+    if (typeof e.derived_from === 'string') out.derived_from = ref(e.derived_from)
+    if (typeof e.abstract === 'string') out.abstract = ref(e.abstract)
+    return out
+  })
 }
 
 /**

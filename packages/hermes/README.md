@@ -51,7 +51,7 @@ Knowledge is stored as **engrams** — small assertions that strengthen with use
 
 The plugin calls the [PLUR CLI](https://www.npmjs.com/package/@plur-ai/cli) under the hood via subprocess. If the CLI isn't installed globally, it auto-resolves via `npx` on first use (cached after that).
 
-**CLI version.** Text that begins with `-` (a recall query or an injected message such as `--dry-run …`) is sent after a `--` separator, which `plur recall` / `plur inject` honour from the first `@plur-ai/cli` release after 0.20.1. An older CLI reads `--` as the text itself, so upgrade the CLI if you rely on such queries; every other query is sent exactly as before, and statements / summaries that begin with `-` go on stdin, which every CLI version reads.
+**CLI version.** Text that begins with `-` (a recall query or an injected message such as `--dry-run …`) is sent after a `--` separator. Use `@plur-ai/cli` 0.22.0 or later for these queries. A CLI without separator support reads `--` as the text itself; every other query is sent exactly as before, and statements / summaries that begin with `-` go on stdin, which every CLI version reads.
 
 ## What makes PLUR different from Hermes built-in memory
 
@@ -79,7 +79,7 @@ The plugin works with zero configuration. Optional env vars:
 
 - Hermes Agent v0.5.0+
 - Python 3.10+
-- Node.js 18+ (for CLI, auto-resolved via npx if not installed globally)
+- Node.js 22+ (for CLI, auto-resolved via npx if not installed globally)
 
 ## Links
 

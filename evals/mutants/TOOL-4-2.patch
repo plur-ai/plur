@@ -1,0 +1,13 @@
+diff --git a/packages/mcp/src/tools.ts b/packages/mcp/src/tools.ts
+index 6222c62a..5a8bc6de 100644
+--- a/packages/mcp/src/tools.ts
++++ b/packages/mcp/src/tools.ts
+@@ -2407,7 +2407,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
+     {
+       name: 'plur_forget',
+       description: 'Retire an engram by ID or search term — marks it as no longer active without deleting history',
+-      annotations: { title: 'Forget', destructiveHint: true, idempotentHint: true },
++      annotations: { title: 'Forget', idempotentHint: true }, // MUTANT: forget lost its destructive marker
+       inputSchema: {
+         type: 'object',
+         properties: {

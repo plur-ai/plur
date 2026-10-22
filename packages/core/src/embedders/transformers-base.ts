@@ -13,6 +13,7 @@
 import { join } from 'path'
 import { existsSync, readFileSync } from 'fs'
 import type { EmbedderAdapter } from './types.js'
+import { offlineByEnv, offlineNow } from '../offline.js'
 
 /** Pooling strategies supported by @huggingface/transformers feature-extraction. */
 export type Pooling = 'cls' | 'mean' | 'none'
@@ -26,6 +27,8 @@ export interface TransformersAdapterConfig {
   dtype?: 'fp32' | 'fp16' | 'q8' | 'int8' | 'uint8' | 'q4'
   /** Whether to L2-normalise the output. BGE and MiniLM use this. */
   normalize?: boolean
+  /** Retrieval-query instruction from the model card (see EmbedderAdapter.searchInstruction). */
+  searchInstruction?: string
 }
 
 const pipelineCache = new Map<string, Promise<unknown>>()
@@ -37,6 +40,11 @@ const keyOf = (modelId: string, dtype: TransformersAdapterConfig['dtype']) => `$
 /** transformers.js file-name suffix per dtype (onnx/model<suffix>.onnx). */
 const DTYPE_SUFFIX: Record<string, string> = {
   fp32: '', fp16: '_fp16', q8: '_quantized', int8: '_int8', uint8: '_uint8', q4: '_q4',
+}
+
+/** The ONNX weights file transformers.js loads for `dtype` (onnx/model<suffix>.onnx). */
+export function weightsFileFor(dtype: string | undefined): string {
+  return `model${DTYPE_SUFFIX[dtype ?? 'fp32'] ?? ''}.onnx`
 }
 
 type TjsEnv = { cacheDir?: string | null; localModelPath?: string; allowLocalModels?: boolean; allowRemoteModels?: boolean }
@@ -73,12 +81,42 @@ async function defaultCacheDir(): Promise<string | null> {
   return libraryDefaultCacheDir ?? null
 }
 
-/** Downloads are off by environment (#1586 rounds 4-6). `allowRemoteModels =
+/** Downloads are off by environment (#1586 rounds 4-6): the offline switch
+ *  (PLUR_OFFLINE, HF_HUB_OFFLINE, TRANSFORMERS_OFFLINE; see offline.ts) or
+ *  PLUR_MODEL_DOWNLOAD=off. `allowRemoteModels =
  *  false` is enforced by transformers.js itself. */
 export function downloadsOffByEnv(): boolean {
-  const truthy = (v: string | undefined) => !!v && ['1', 'true', 'yes', 'on'].includes(v.trim().toLowerCase())
-  return truthy(process.env.HF_HUB_OFFLINE) || truthy(process.env.TRANSFORMERS_OFFLINE)
-    || (process.env.PLUR_MODEL_DOWNLOAD ?? '').trim().toLowerCase() === 'off'
+  return offlineByEnv() || (process.env.PLUR_MODEL_DOWNLOAD ?? '').trim().toLowerCase() === 'off'
+}
+
+/** Downloads are off for this process: off by environment, or the process
+ *  inferred it is offline after a failed connection (TEAM-5, offline.ts). A
+ *  model already on disk is still loaded, from disk only. */
+export function downloadsOff(): boolean {
+  return offlineNow() || downloadsOffByEnv()
+}
+
+/**
+ * The one guard every automatic model download goes through (TEAM-5; audit 6,
+ * N4): the embedders (the shared pipeline loader below and EmbeddingGemma) and
+ * the transformers cross-encoder rerankers. With downloads off, a model that
+ * is not on disk is refused HERE, before transformers.js is asked for it.
+ * Telling the library `local_files_only` is not enough: some of its discovery
+ * steps ignore that option and look the file up remotely anyway (pipeline()
+ * resolves the model's file list and fetches config.json; the tokenizer
+ * loader looks up tokenizer_config.json without the caller's options). A
+ * model already on disk is not refused; it is then loaded from disk only
+ * (see {@link localOnlyOptions}).
+ */
+export async function refuseMissingModelOffline(modelId: string, weights: string, what = 'model'): Promise<void> {
+  if (downloadsOff() && (await modelPresence(modelId, weights)) === false) {
+    throw new Error(`${what} ${modelId} is not on disk and downloads are off (offline); nothing was fetched`)
+  }
+}
+
+/** `{ local_files_only: true }` when downloads are off, else `{}`. */
+export function localOnlyOptions(): { local_files_only?: true } {
+  return downloadsOff() ? { local_files_only: true } : {}
 }
 
 /**
@@ -206,7 +244,7 @@ async function loadPipeline(modelId: string, dtype: TransformersAdapterConfig['d
       //
       // #1586 round 6 (G1): a model already complete in the library default
       // cache is used from there when the override has none.
-      const weights = `model${DTYPE_SUFFIX[dtype ?? 'fp32'] ?? ''}.onnx`
+      const weights = weightsFileFor(dtype)
       const cacheDir = await resolveLoadCacheDir(modelId, weights)
       const env = envOf(transformers)
       if (cacheDir && env) {
@@ -214,8 +252,13 @@ async function loadPipeline(modelId: string, dtype: TransformersAdapterConfig['d
         // already baked into the resolved paths and changing it does nothing.
         env.cacheDir = cacheDir
       }
-      // Downloads off: the loader itself is told not to fetch anything.
-      const opts = { ...(dtype ? { dtype } : {}), ...(downloadsOffByEnv() ? { local_files_only: true } : {}) }
+      // Downloads off: the loader itself is told not to fetch anything. That
+      // is not enough for a model missing from disk: transformers.js v4's
+      // pipeline() resolves the model's file list (get_pipeline_files) before
+      // it reads local_files_only, and that step fetches config.json. So a
+      // missing model is refused here, before the library is asked (TEAM-5).
+      await refuseMissingModelOffline(modelId, weights, 'embedding model')
+      const opts = { ...(dtype ? { dtype } : {}), ...localOnlyOptions() }
       const pipeline = transformers.pipeline as (task: string, model: string, o?: object) => Promise<unknown>
       const pipe = await pipeline('feature-extraction', modelId, Object.keys(opts).length ? opts : undefined)
       loadedKeys.add(key)
@@ -257,9 +300,10 @@ export function makeTransformersAdapter(config: TransformersAdapterConfig): Embe
     name: config.name,
     dim: config.dim,
     modelId: config.modelId,
+    ...(config.searchInstruction ? { searchInstruction: config.searchInstruction } : {}),
     embed: embedOne,
     isLoaded: () => loadedKeys.has(keyOf(config.modelId, config.dtype)),
-    modelPresent: () => modelPresence(config.modelId, `model${DTYPE_SUFFIX[config.dtype ?? 'fp32'] ?? ''}.onnx`),
+    modelPresent: () => modelPresence(config.modelId, weightsFileFor(config.dtype)),
     async embedBatch(texts: string[]): Promise<Float32Array[]> {
       // The transformers pipeline supports batched input, but in practice the
       // batched-output reshape depends on the runtime version. Iterating

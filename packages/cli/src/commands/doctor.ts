@@ -28,8 +28,10 @@ import { hasPlurCodexHooks, readCodexHooksConfig } from '../codex-hooks.js'
 import { hasPlurAgyHooks, readAgyHooksConfig } from '../antigravity-hooks.js'
 import { codexHome, missingNodeEntryPaths, readCodexPlurMcpCommand, isOwnWin32CmdShimCommand } from '../mcp-config.js'
 import { opencodeConfigDir, opencodeConfigPath, readOpencodeConfig, PLUR_OPENCODE_PLUGIN } from '../opencode-config.js'
-import { computeContentHash, detectPlurStorage, loadEngrams, resolveBackendTier, loadConfig, describeNeedsAction, describeHeld, classifyStoreDuplicates, folderMapProblem, tokenFromEnv, tokenEnvUnsetDetail, tokenEnvUnsetFix } from '@plur-ai/core'
+import { computeContentHash, detectPlurStorage, loadEngrams, resolveBackendTier, loadConfig, describeNeedsAction, describeHeld, classifyStoreDuplicates, folderMapProblem, tokenFromEnv, tokenEnvUnsetDetail, tokenEnvUnsetFix, offlineByEnv } from '@plur-ai/core'
 import { plurRoot } from '../lib/folder-gate.js'
+import { readHookInstalls, readHookRuns, type HookTool } from '../lib/hook-runs.js'
+import type { ServerStoreCheck } from '@plur-ai/core'
 import { repairAdvice, repairCommandFor } from './folders.js'
 import { codexInstalled } from '../lib/codex-binary.js'
 import { commandSpawn } from '../lib/command-spawn.js'
@@ -84,6 +86,8 @@ export interface ClaudeCodeMcpReport {
 }
 
 interface DoctorReport {
+  serverStores?: ServerStoreCheck[]
+  hookTrust?: Array<{ tool: HookTool; label: string; ok: boolean; detail: string; fix?: string }>
   configs: ConfigFileReport[]
   hooksInstalled: boolean
   /** A plur MCP server is registered somewhere a harness reads it (settings.json never counts, #1561). */
@@ -102,7 +106,13 @@ interface DoctorReport {
   brokenNodeMcp: Array<{ label: string; path: string; missing: string[] }>
   hookShim: HookShimReport
   mcpShim: HookShimReport
-  handshake: { ok: boolean; serverName?: string; serverVersion?: string; toolCount?: number; error?: string }
+  /**
+   * The live memory-server check. Three outcomes, kept apart: `ok: true` (the
+   * server answered: reachable), `ok: false` with `skipped: true` (not run,
+   * `--no-handshake`: unverified), `ok: false` without `skipped` (it was run
+   * and failed: refused).
+   */
+  handshake: { ok: boolean; skipped?: boolean; serverName?: string; serverVersion?: string; toolCount?: number; error?: string }
   /**
    * Second handshake, forcing `PLUR_TOOL_PROFILE=cursor`, so the report can show
    * both tool counts side by side rather than guessing which profile a given
@@ -286,7 +296,14 @@ interface DoctorReport {
     /** What that repair changes (lines and keys, no values). */
     repair_summary?: string
   } | null
-  overall: 'ok' | 'fail'
+  /**
+   * `ok`: every check passed, including the live memory-server handshake.
+   * `fail`: a check failed (a handshake that was run and refused included).
+   * `unverified`: every check that ran passed, but the memory connection was
+   * not checked (`--no-handshake`), so the doctor cannot call it ok. Only
+   * `ok` exits 0, as for `plur doctor --codex`.
+   */
+  overall: 'ok' | 'fail' | 'unverified'
 }
 
 interface OpencodeReport {
@@ -520,6 +537,16 @@ async function checkOutbox(flags: GlobalFlags): Promise<DoctorReport['outbox']> 
   } catch {
     return null
   }
+}
+
+async function checkServers(flags: GlobalFlags): Promise<ServerStoreCheck[]> {
+  let plur: ReturnType<typeof createPlur> | undefined
+  try {
+    plur = createPlur(flags, { readonly: true, autoDiscover: false })
+    return await plur.checkServerStores()
+  } catch {
+    return [{ url: 'configuration', ok: false, checks: [{ name: 'reachable', result: 'could-not-check', detail: 'server diagnostics could not be completed' }] }]
+  } finally { plur?.close() }
 }
 
 /**
@@ -1061,6 +1088,9 @@ export async function checkOpencodePluginPublished(
   pkg: string = PLUR_OPENCODE_PLUGIN,
   timeoutMs = 3000,
 ): Promise<'published' | 'not-published' | 'unknown'> {
+  // Declared offline (PLUR_OFFLINE, HF_HUB_OFFLINE, TRANSFORMERS_OFFLINE):
+  // no request at all, and the honest answer is that we cannot tell.
+  if (offlineByEnv()) return 'unknown'
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), timeoutMs)
   try {
@@ -1410,7 +1440,7 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
   )
 
   const handshakePromise = skipHandshake
-    ? Promise.resolve({ ok: false, error: 'skipped (--no-handshake)' })
+    ? Promise.resolve({ ok: false, skipped: true, error: 'skipped (--no-handshake)' })
     : mcpHandshake()
 
   return Promise.all([handshakePromise, checkEmbedder(flags), buildOpencodeReport(skipHandshake)]).then(async ([handshake, embedder, opencode]) => {
@@ -1433,6 +1463,22 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
     // the overall doctor check (BM25 still works); it just signals semantic
     // recall is disabled until the model loads.
     const outbox = await checkOutbox(flags)
+    const serverStores = await checkServers(flags)
+    const installs = readHookInstalls(plurRoot(flags)), runs = readHookRuns(plurRoot(flags))
+    const hookTrust: NonNullable<DoctorReport['hookTrust']> = []
+    for (const [tool, label, wired] of [
+      ['claude', 'Claude Code', claudeCodeHooks && claudeCodeMcp.registered],
+      ['codex', 'Codex', !!codexHooksReport?.hasPlurHooks && configs.some(c => c.label.startsWith('Codex') && c.hasPlurMcp)],
+      ['cursor', 'Cursor', !!cursorHooksConfigReport?.hasPlurHooks && configs.some(c => c.label.startsWith('Cursor') && c.hasPlurMcp)],
+    ] as const) {
+      if (!wired) continue
+      const installed = Date.parse(installs[tool] ?? ''), ran = Date.parse(runs[tool] ?? '')
+      // No install record: hooks installed before records existed (0.21.5 and
+      // earlier), so any real run since counts (release audit 0.22.0).
+      const ok = Number.isFinite(ran) && ran <= Date.now() && (!Number.isFinite(installed) || ran > installed)
+      hookTrust.push({ tool, label, ok, detail: ok ? `hooks ran ${runs[tool]}` : 'hooks have not run yet after installation',
+        ...(!ok ? { fix: tool === 'codex' ? 'run /hooks and trust PLUR, then start a new session in Codex' : `start a new session in ${label}` } : {}) })
+    }
     // #1526: a broken folders.yaml pauses memory everywhere — a real failure.
     let folderMap: NonNullable<DoctorReport['folderMap']> | null = null
     try {
@@ -1449,9 +1495,13 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
       }
     } catch { /* doctor never fails on its own probe */ }
     const { unset: tokenEnvUnset, found: tokenEnvFound } = findTokenEnv(flags)
-    const overall: 'ok' | 'fail' =
+    // Every check except the live handshake. The handshake then decides
+    // between ok (reachable), fail (refused) and unverified (not run): a
+    // connection the doctor did not check is never reported as ok.
+    const staticChecksPass =
       folderMap === null &&
-      hooksInstalled && mcpRegistered && (skipHandshake || handshake.ok) &&
+      serverStores.every(s => s.ok) && hookTrust.every(h => h.ok) &&
+      hooksInstalled && mcpRegistered &&
       (!claudeCodeHooks || claudeCodeMcp.registered) &&
       brokenNodeMcp.length === 0 &&
       (!cursorProjectDetected || cursorWired) &&
@@ -1459,7 +1509,8 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
       (outbox?.ok ?? true) &&
       // #1572: a team store with no token cannot work; MCP plur_doctor says not ok too.
       tokenEnvUnset.length === 0
-        ? 'ok' : 'fail'
+    const overall: DoctorReport['overall'] =
+      !staticChecksPass ? 'fail' : skipHandshake ? 'unverified' : handshake.ok ? 'ok' : 'fail'
     // NOTE: codexWired is deliberately NOT in `overall`, unlike cursorWired.
     // The two detections are not the same kind of signal. A `.cursor/`
     // directory sits IN THIS PROJECT and says "the user works on this
@@ -1517,7 +1568,7 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
       configs, hooksInstalled, mcpRegistered, claudeCodeMcp, datacoreCollision, staleNpxHooks, staleNpxMcp, brokenNodeMcp,
       hookShim, mcpShim, handshake, cursorHandshake, embedder,
       cursorProjectDetected, cursorWired, codexDetected, codexWired, codexCmdShimMcp, windowsHookFallback, agyDetected, agyWired,
-      pgliteGemmaReembedNeeded, staleContentHashes, pgliteOrphan, ignoredDuplicateStores, skippedProjectStores, tokenEnvUnset, tokenEnvFound, opencode, outbox, folderMap, overall,
+      pgliteGemmaReembedNeeded, staleContentHashes, pgliteOrphan, ignoredDuplicateStores, skippedProjectStores, tokenEnvUnset, tokenEnvFound, opencode, outbox, folderMap, overall, serverStores, hookTrust,
     }
   })
 }
@@ -1560,6 +1611,13 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
     if (m.repair_summary) outputText(`  The repair changes ${m.repair_summary}.`)
   }
   outputText(`${tick(report.hooksInstalled)} Hooks installed`)
+  for (const h of report.hookTrust ?? []) {
+    outputText(`${tick(h.ok)} hooks — ${h.label}: ${h.detail}`)
+    if (h.fix) outputText(`  ${h.fix}`)
+  }
+  for (const server of report.serverStores ?? []) for (const c of server.checks) {
+    outputText(`${tick(c.result === 'ok')} ${server.url} — ${c.name}: ${c.result === 'could-not-check' ? 'could not check: ' : ''}${c.detail}`)
+  }
   // #1299
   if (report.outbox && report.outbox.pending > 0) {
     const o = report.outbox
@@ -1798,6 +1856,9 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
   outputText('')
   if (report.handshake.ok) {
     outputText(`✓ MCP handshake: ${report.handshake.serverName} v${report.handshake.serverVersion}`)
+  } else if (report.handshake.skipped) {
+    outputText('? MCP handshake: not run (--no-handshake) — the memory connection is unverified.')
+    outputText('  Run `plur doctor` without --no-handshake to check it.')
   } else {
     outputText(`✗ MCP handshake failed: ${report.handshake.error}`)
     outputText('  Likely causes:')
@@ -1854,7 +1915,10 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
   }
 
   outputText('')
-  if (report.overall === 'ok') {
+  if (report.overall === 'unverified') {
+    outputText('? Unverified: the other checks passed, but the memory connection was not checked (--no-handshake).')
+    outputText('  Run `plur doctor` without --no-handshake to verify it.')
+  } else if (report.overall === 'ok') {
     outputText(readyLine(hookHarnesses(report.configs), report.codexDetected && !report.codexWired ? ['Codex'] : []))
   } else {
     outputText('✗ Issues detected.')
@@ -1863,7 +1927,7 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
     } else if (report.claudeCodeMcp && !report.claudeCodeMcp.registered && hookHarnesses(report.configs).includes('Claude Code')) {
       outputText(`  Fix: ${report.claudeCodeMcp.fix ?? 'run `plur init`'}`)
     }
-    if (report.hooksInstalled && report.mcpRegistered && !report.handshake.ok) {
+    if (report.hooksInstalled && report.mcpRegistered && !report.handshake.ok && !report.handshake.skipped) {
       outputText('  Fix: ensure `npx` is reachable from Claude Desktop')
       outputText('       — try launching Claude from your terminal once,')
       outputText('       — or replace the plur entry command with an absolute path to your shell.')

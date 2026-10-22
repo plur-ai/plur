@@ -6,7 +6,7 @@ import { randomUUID, randomBytes } from 'crypto'
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { cleanupStaleSessionFiles } from '../lib/codex-hook-io.js'
 import { checkpointRoot } from './hook-learn-check.js'
-import { hookFolderPolicy, payloadDir, sessionSettings, folderAskOnce, createAskPlur } from '../lib/folder-gate.js'
+import { hookFolderPolicy, payloadDir, sessionSettings, folderAskOnce, createAskPlur, bindHookFolder, remoteOnlyLines } from '../lib/folder-gate.js'
 import { skippedStoreNotice } from '@plur-ai/core'
 import type { FolderPolicy } from '@plur-ai/core'
 import { safeSessionKey } from '../lib/session-key.js'
@@ -14,6 +14,9 @@ import { injectWithFallback, hybridEnabled, type Injectable, type InjectOutcome 
 import { waitForOwnStoreLock, exitWhenStoreIdle, EXIT_LOCK_WAIT_MS } from '../lib/store-lock-exit.js'
 import { correctionReminder } from './hook-correction-detect.js'
 import { recordInjected } from '../lib/auto-rate.js'
+import { recordHookRun } from '../lib/hook-runs.js'
+import { cachedServerLines } from '../lib/server-session.js'
+import { cleanupLegacyProjectAtSessionStart } from '../lib/legacy-plur-yaml.js'
 import { hookSessionDir, readSessionTask, writeSessionTask } from '../lib/session-task.js'
 
 // Remote budget for the recall leg inside injectHybrid (#776). The hook is
@@ -528,13 +531,16 @@ export function pidAlive(pid: number): boolean {
  * Conservative: only reports metadata (stop count, duration, cwd).
  */
 export function processDeferredWrapups(
-  plur: Pick<Plur, 'capture'>,
+  plur: Pick<Plur, 'capture'> & Partial<Pick<Plur, 'remoteOnlyFolder' | 'resolveFolderPolicy'>>,
   root: string,
   now: number = Date.now(),
   isAlive: (pid: number) => boolean = pidAlive,
 ): string | null {
   const sessionsDir = join(root, 'sessions')
   if (!existsSync(sessionsDir)) return null
+  // A remote-only session captures no timeline (owner decision on #1521):
+  // other sessions' orphans wait for a session that can capture them.
+  if (plur.remoteOnlyFolder?.()) return null
 
   const notices: string[] = []
   try {
@@ -577,6 +583,21 @@ export function processDeferredWrapups(
       const where = typeof checkpoint.cwd === 'string' && checkpoint.cwd
         ? ', ' + checkpoint.cwd.split('/').slice(-2).join('/') : ''
       const facts = `${durationStr}, ${checkpoint.stop_count ?? 0} responses${where}`
+
+      // An orphan from a remote-only folder is dropped, not captured: its
+      // timeline must not be kept on this machine (owner decision on #1521).
+      if (typeof checkpoint.cwd === 'string' && checkpoint.cwd && plur.resolveFolderPolicy) {
+        let policy: { mode: string; reason?: string } | null = null
+        // When in doubt, don't capture (re-audit of #1521, C-1): an
+        // unresolvable folder, or an unreadable map, leaves the checkpoint
+        // uncaptured for a session that can decide.
+        try { policy = plur.resolveFolderPolicy(checkpoint.cwd) } catch { continue }
+        if (policy.reason === 'malformed-map' || policy.reason === 'resolver-error') continue
+        if (policy.mode === 'remote-only') {
+          try { unlinkSync(path) } catch { /* gone */ }
+          continue
+        }
+      }
 
       // Durable FIRST. Only a successful capture licenses the unlink.
       try {
@@ -820,6 +841,12 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const dir = payloadDir(input)
   const policy = hookFolderPolicy(dir, flags)
   if (policy.mode === 'off') return
+  // Execution proves hook trust in a folder that permits hook state.
+  // This diagnostic contains no memory or folder data. Later prompts with
+  // an injection marker, rehydration and non-session events do not refresh it.
+  const priorMarker = readableMarkerPath(sessionKey(input), input)
+  if (policy.reason !== 'malformed-map' && policy.reason !== 'resolver-error' && !isRehydrate && !event && !(priorMarker && existsSync(priorMarker))) recordHookRun('claude', flags.path)
+
   if (policy.mode === 'ask') {
     if (!isRehydrate && !event) await askFolder(input, dir, policy, flags)
     return
@@ -830,7 +857,10 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   // is the ceiling on the WHOLE run (embedder load, fs stalls, stray async).
   // Installed after the folder gate so it only fires for
   // sessions that actually do work. unref() prevents it from delaying clean exit.
-  runStartedAt = Date.now()
+  // Counted from PROCESS START, not from here: Claude Code's 20s kill counts
+  // from when it spawned the hook, and module loading on a busy machine
+  // otherwise came on top of the ceiling (HK-3 ran past 20s with a 15s ceiling).
+  runStartedAt = performance.timeOrigin
   // #1343: the watchdog can fire mid-way through a store write, and exiting
   // there leaves the lock behind. Wait (bounded) until the store is idle first.
   const watchdog = setTimeout(() => {
@@ -844,7 +874,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       if (hybridInFlight && storeRoot) startEmbeddingWarmup(storeRoot, runFlags)
       process.exit(0)
     })
-  }, HOOK_CEILING_MS)
+  }, Math.max(0, runStartedAt + HOOK_CEILING_MS - Date.now()))
   watchdog.unref()
 
   const key = sessionKey(input)
@@ -858,6 +888,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     if (!task) return
 
     const plur = createPlur(flags)
+    bindHookFolder(plur, dir, policy)
     const label = `[PLUR Memory — ${event}]`
 
     // BM25-only, deliberately. Event hooks are SYNC — their whole point is
@@ -922,7 +953,13 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   // RSS each and trigger an OOM cascade. Lock is stale after HOOK_CEILING_MS
   // so a crashed process never permanently blocks subsequent invocations.
   const lock = takeInjectLock(sessionStatePath(key, 'injecting'))
-  if (lock.status === 'busy') return
+  if (lock.status === 'busy') {
+    // HK-2 (#1385): the run holding the lock injects for ITS prompt; this
+    // prompt's correction would be lost with it. The reminder needs no store.
+    const correction = isRehydrate ? null : promptCorrection(input)
+    if (correction) await emitContextConfirmed('UserPromptSubmit', correction)
+    return
+  }
   heldInjectLock = lock.hold ?? null
 
   // Release the lock on every exit, including a throw from the injection —
@@ -1011,10 +1048,14 @@ async function skipCappedSession(input: Record<string, unknown>, key: string, ma
   const task = (typeof input.prompt === 'string' && input.prompt) || 'general session'
   if (marker) try { writeFileSync(marker, JSON.stringify({ task, sessionId: randomUUID(), injection: 'skipped' })) } catch { /* fail-open */ }
   touchReminder(key)
+  const notice =
+    `[PLUR Memory — automatic injection skipped: the last ${MAX_INJECT_ATTEMPTS} attempts in this session did not finish] ` +
+    'Call plur_session_start or plur_recall to load memory for this session.'
+  // HK-2 (#1385): a correction in this prompt still gets its save reminder.
+  const correction = promptCorrection(input)
   await emitContextConfirmed(
     claudeHookEventName(input, { rehydrate: false, event: null }),
-    `[PLUR Memory — automatic injection skipped: the last ${MAX_INJECT_ATTEMPTS} attempts in this session did not finish] ` +
-      'Call plur_session_start or plur_recall to load memory for this session.',
+    correction ? `${notice}\n\n${correction}` : notice,
   )
 }
 
@@ -1076,6 +1117,9 @@ async function injectSession(
   // now — not later where it's only used for the label — so the injection is
   // attributed to this session on the co_injection event the receipt reads.
   const plur = createPlur(flags)
+  // remote-only folders: core reads only the team scope and packs (#remote-only).
+  bindHookFolder(plur, dir, policy)
+  const legacyLines = isRehydrate ? [] : cleanupLegacyProjectAtSessionStart(dir, plur.storageRoot)
   // Known before the search starts, so the watchdog can start a cache build too.
   storeRoot = plur.storageRoot
   runFlags = flags
@@ -1147,9 +1191,12 @@ async function injectSession(
     parts.push(`[PLUR Memory — rehydrated after compaction, ${count} engrams]`)
   } else {
     parts.push(`[PLUR Memory — session started, ${count} engrams injected]`)
+    parts.push(...await cachedServerLines(plur, dir, policy))
+    parts.push(...legacyLines)
     if (sessionId) parts.push(`Session ID: ${sessionId}`)
     if (projectConfig.domain) parts.push(`Project domain: ${projectConfig.domain}`)
-    if (projectConfig.scope) parts.push(`Project scope: ${projectConfig.scope} — use this scope for plur_learn calls`)
+    // remote-only: the remote-only line below names the scope, escaped (gate review of #1663).
+    if (projectConfig.scope && !plur.remoteOnlyFolder()) parts.push(`Project scope: ${projectConfig.scope} — use this scope for plur_learn calls`)
 
     // A memory store here that was found but not added (#1589 audit round 3):
     // one line, once per session and folder, with the paste-safe command.
@@ -1163,6 +1210,9 @@ async function injectSession(
 
   // A4′ (#776): degradation header — one line per (host, state) change.
   for (const line of degradationLines) parts.push(line)
+  // remote-only: where memory goes, and — once, at session start — that the
+  // team server did not answer, so there is no memory this session.
+  for (const line of remoteOnlyLines(plur, result, !isRehydrate)) parts.push(line)
 
   // #1196: say so. A remote leg that silently stops working is the regression
   // this gate could otherwise introduce — the user must be able to tell

@@ -1,0 +1,13 @@
+diff --git a/packages/core/src/normalize-engram.ts b/packages/core/src/normalize-engram.ts
+index b1ca68b9..0162173f 100644
+--- a/packages/core/src/normalize-engram.ts
++++ b/packages/core/src/normalize-engram.ts
+@@ -49,7 +49,7 @@ export const RULES: readonly NormalizeRule[] = [
+     description: 'reference_count → write_count (renamed in #866)',
+     // Guarded on write_count being ABSENT, so a record already carrying the new
+     // name keeps its value even if a stale reference_count rides alongside it.
+-    applies: raw => !('write_count' in raw) && 'reference_count' in raw,
++    applies: () => false, // MUTANT: old write counter no longer carried over
+     apply: ({ reference_count, ...rest }) => ({ ...rest, write_count: reference_count }),
+   },
+ ]

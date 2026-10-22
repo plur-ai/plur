@@ -1,0 +1,13 @@
+diff --git a/packages/core/src/scope-routing.ts b/packages/core/src/scope-routing.ts
+index e6a9d013..74297911 100644
+--- a/packages/core/src/scope-routing.ts
++++ b/packages/core/src/scope-routing.ts
+@@ -487,7 +487,7 @@ export function decideAutoRoute(
+     if (!candidate.coverContainsDomain && !(candidate.confidence >= threshold)) continue
+     if (!firstEligible) firstEligible = candidate
+     const shared = isSharedScope(candidate.scope)
+-    if ((!allowShared && shared) || (!shared && options.refuseScope?.(candidate.scope) === true)) {
++    if ((!shared && options.refuseScope?.(candidate.scope) === true)) {
+       if (!refusedShared) refusedShared = candidate
+       continue
+     }

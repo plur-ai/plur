@@ -1,14 +1,75 @@
 /-!
 # WritePath — the Plur write path (packages/core/src/index.ts)
 
+Checked against #1631 (config.yaml owner-only, 2026-10-18): still holds. index.ts's only
+change swaps four `atomicWrite(this.paths.config, …)` calls for `writeConfigFile` (same
+content, same lock) and adds re-exports; no write-path branch changed.
+
 Models, branch for branch, the parts of the write path the WritePath cluster
 covers. Each section names the code it mirrors. Payloads (statements, ids,
 content scanners, config) are abstracted: theorems quantify over them.
 
 Findings and replays: spec/formal/findings/writepath.md.
 
+Checked against registerEnterpriseServer (#1631 plan B Task 5, branch agent/efi-b05, 2026-10-18): still holds.
+Rechecked after the gate review and Codex audit rounds 1-2 on the same branch (2026-10-18): still holds.
+index.ts changed only inside registerEnterpriseServer (error wording); server-discovery.ts only in the
+registration/fold functions, which StoreEntry §6/§6b model.
+index.ts gains `registerEnterpriseServer`, a new public method that writes config.yaml through
+`_updateRawStores` (config lock, atomic write) and reads `listOutbox`; no existing branch modelled
+here changed. The registration and fold are modelled in StoreEntry §6.
+
 Checked against #1349 (merged into #1228 on 2026-09-30): still holds. index.ts's
 only change is a re-export of `pendingStoreLockOps`, and no write-path branch changed.
+
+Checked against #1631 (epic/1797 first install, 2026-10-18): updated. index.ts
+routes through the one resolver `resolveScopeTarget` (store-resolver.ts):
+`_resolveRemoteStoreForScope`, `_isRemoteBackedScope`, `_isRemoteWriteScope`,
+`readIdFor` and the delivery report all read it, a scope two servers claim is
+refused before anything is saved, and the flush holds a queued row whose
+target scope is conflicted. New: §2c (the conflict hold; §2's theorems carry
+over off conflicts) and §3c (the resolver, branch for branch: what the router
+sends is remote-backed for the guard, so P2 holds over the real routing rule;
+a conflicted scope is refused). §1's merge-back, §4's private-stays-local tests,
+§5 and §6 are unchanged (rescope resolves its route before touching a row, so
+a conflict throws first). remote-store.ts changed only `me()` (the C1 /me
+fields), which no section reads.
+Rechecked after Codex audit rounds 3-5 on branch agent/efi-b05 (2026-10-18): still holds. The changes are
+refusals and eligibility checks inside registerEnterpriseServer/registerServerEntry/foldStoresIntoServerEntry
+(nothing is written on a refusal), the outbox read moved before the write, and config.ts's unset-token_env
+warning naming the url by origin; no modelled branch changed.
+
+Checked against #1632 (git default scope, 2026-10-18): still holds. `remote-store.ts` only
+exports `isSafeHost` (unchanged) so `git-origin.ts` reuses the one host grammar; no code path
+this model covers changed.
+
+Checked against #1631 background discovery (PR gate, 2026-10-18): still holds.
+index.ts only adds `_serverDiscoveryEndpoints()`, a read of config.yaml that lists the
+urls `refreshServerScopes` probes (the same `isEnterpriseServerEntry` filter). It
+writes nothing and is read only by the MCP server; no write-path branch changed.
+
+Checked against #1633 (plan B Task 7, owner decision O5 "exact match", 2026-10-18): still holds.
+index.ts: the learn path's outbox target is the resolver's writable remote entry
+(`_remoteWriteEntry`), which is the entry the router dials (§3c), so `target_url` names the
+server the push went to; the explicit-scope id lookups (feedback, forget, setPinned,
+pinnedQuota) and `_isOwnRemoteNamespace` read the resolver too (RoutingDiscovery §5,
+`lookup`); `isLocalOnlyScope` for a `project:` scope is exact match (ScopeInject §3). No write
+branch modelled here changed: outside a conflict, which learn refuses before saving, the
+outbox entry is the same one the old first-writable `find` returned.
+
+Checked against #1638 (`plur login` device sign-in, plan C Task 3, branch agent/efi-c03, 2026-10-18):
+still holds. registerServerEntry's refusal to take over the personal scope is unchanged (the same
+holders, the same message); it is now a `PersonalScopeTakenError` that names those holders, and
+`removeStale` drops exactly them before the same registration runs again, in the same locked write
+(modelled in Login.lean §2: only holders are removed, never without the flag, no holder left).
+No write-path branch changed: the entries left are routed as before.
+
+
+Checked 2026-10-19 for git-origin folder defaults: GitFolder models the added
+folder-policy admission and operation-captured default. Existing explicit scopes,
+remote-only gates, store resolution, persistence and outbox delivery rules are
+unchanged. The remote recall change only suppresses calls for a local/unknown
+origin default; a deliberate call/session scope keeps the existing routing.
 -/
 
 namespace PlurSpec.WritePath
@@ -836,6 +897,70 @@ theorem retarget_delivers :
     flushDeliverNew (applyScopeOpD lf wr (.broaden "global") r0) = some ("group:acme/team", "group:acme/team") := by
   decide
 
+/-! ### 2c. The conflict hold (#1631; reviewed 2026-10-18)
+
+`routeFor` in `_flushOutboxClaimed`, after the scope/target check above, now
+holds a row whose `_outbox.target_scope` two servers claim
+(`resolveScopeTarget(target, stores).kind === 'conflict'`): `skip: 'failed'`,
+nothing written, the row stays queued. The check is in `routeFor`, which runs
+at selection and again right before the push, so the forced flush is held too.
+`conflict` is the resolver's verdict on the current config, an oracle. -/
+
+def flushDeliverC {Scope : Type} [DecidableEq Scope] (conflict : Scope → Bool)
+    (r : QRow Scope) : Option (Scope × Scope) :=
+  match r.target with
+  | none => none
+  | some t => if r.scope = t then (if conflict t then none else some (t, r.scope)) else none
+
+/-- The §2 property survives the new branch: every delivery carries the scope of
+the store it is sent to, whatever scope writes happened since queue time. -/
+theorem deliverC_scope_matches_store {Scope : Type} [DecidableEq Scope] (conflict : Scope → Bool)
+    (r0 : QRow Scope) (ops : List (ScopeOp Scope)) (t b : Scope) :
+    flushDeliverC conflict (ops.foldl (fun r o => applyScopeOp o r) r0) = some (t, b) → b = t := by
+  generalize ops.foldl (fun r o => applyScopeOp o r) r0 = r
+  intro h
+  obtain ⟨sc, tg⟩ := r
+  cases tg with
+  | none => simp [flushDeliverC] at h
+  | some t' =>
+    by_cases hs : sc = t' <;> by_cases hc : conflict t' = true <;> simp_all [flushDeliverC]
+    obtain ⟨h1, h2⟩ := h
+    exact h2 ▸ h1
+
+/-- #1631: no row is ever delivered to a scope two servers claim. -/
+theorem deliverC_never_conflicted {Scope : Type} [DecidableEq Scope] (conflict : Scope → Bool)
+    (r : QRow Scope) (t b : Scope) (h : flushDeliverC conflict r = some (t, b)) : conflict t = false := by
+  obtain ⟨sc, tg⟩ := r
+  cases tg with
+  | none => simp [flushDeliverC] at h
+  | some t' =>
+    by_cases hs : sc = t' <;> by_cases hc : conflict t' = true <;> simp_all [flushDeliverC]
+
+/-- Off conflicts the flush is exactly the §2 flush, so `holdback_is_defence`
+and the §2b theorems carry over unchanged. -/
+theorem deliverC_agrees_off_conflict {Scope : Type} [DecidableEq Scope] (conflict : Scope → Bool)
+    (r : QRow Scope) (h : ∀ t, r.target = some t → conflict t = false) :
+    flushDeliverC conflict r = flushDeliverNew r := by
+  obtain ⟨sc, tg⟩ := r
+  cases tg with
+  | none => rfl
+  | some t => have := h t rfl; simp [flushDeliverC, flushDeliverNew, this]
+
+/-- Non-vacuity: an unconflicted queued row is still delivered. -/
+theorem deliverC_good_case :
+    flushDeliverC (fun s => s == "group:acme/ops")
+      ({ scope := "group:acme/team", target := some "group:acme/team" } : QRow String)
+      = some ("group:acme/team", "group:acme/team") := by decide
+
+/-- The pre-#1631 flush delivered a conflicted row (to whichever server was
+listed first); the new one holds it. Replayed by routing-shared-resolver.test.ts
+"a queued save whose scope a second server now claims is not flushed to either"
+(force flush, 0 POSTs, row still queued). -/
+theorem old_flush_delivers_conflicted :
+    let r : QRow String := { scope := "group:acme/team", target := some "group:acme/team" }
+    flushDeliverNew r = some ("group:acme/team", "group:acme/team") ∧
+    flushDeliverC (fun _ => true) r = none := by decide
+
 /-! ## 3. Auto-route + leak-guard pipeline (core-index#6, core-policy#2, #11)
 
 Code: `_guardSensitiveScope` (explicit → session → `_resolveUnscopedScope`),
@@ -1110,6 +1235,305 @@ theorem wire_scope_source_good : wireScopeSourceNew (some "routed") = some "rout
 theorem wire_scope_source_old_forged :
     wireScopeSourceOld (some "approved-by-admin") = some "approved-by-admin" := rfl
 
+/-! ### 3c. One resolver for routing and the leak guard (#1631; reviewed 2026-10-18)
+
+store-resolver.ts `resolveScopeTarget` now answers, from the expanded stores,
+for the router (`_resolveRemoteStoreForScope`: `conflict` → throw
+`ScopeConflictError`, `remote ∧ writable` → driver, else none), the guard's
+`remoteBacked` (`_isRemoteBackedScope` = kind ≠ local), `_isRemoteWriteScope`
+(= remote ∧ writable) and `readIdFor` (= remote). learn() and learnRouted() call
+`_refuseScopeConflict` right after `_guardSensitiveScope`, before dedup.
+
+Branch for branch for a non-personal scope: the url entries with exactly this
+scope, grouped by normalized url (`server`); two servers → conflict; one →
+remote, writable iff some entry of it is not readonly; none, but an enterprise
+entry whose `discovery.org_id` is the scope's org → unauthorized; else local.
+The personal `user:` branch (`personalStoreEntry`, #1515, unchanged) is an
+oracle `pers`: it answers `remote w` or `local`. `scopeOrg` is an oracle. -/
+
+structure SEntry where
+  server   : Option Nat   -- normalizeEndpointUrl(url); none = a path store
+  scope    : Nat
+  readonly : Bool
+  org      : Option Nat   -- `discovery.org_id` of an entry with an `enterprise` block
+  deriving DecidableEq, Repr
+
+inductive Target where
+  | remote (writable : Bool) | conflict | unauthorized | local_
+  deriving DecidableEq, Repr
+
+def claims (s : Nat) (e : SEntry) : Bool := e.server.isSome && e.scope == s
+
+def resolveNP (scopeOrg : Nat → Option Nat) (es : List SEntry) (s : Nat) : Target :=
+  match es.filter (claims s) with
+  | e :: rest =>
+    if rest.any (fun x => x.server != e.server) then .conflict
+    else .remote ((e :: rest).any (fun x => !x.readonly))
+  | [] =>
+    match scopeOrg s with
+    | some o => if es.any (fun x => x.server.isSome && x.org == some o) then .unauthorized else .local_
+    | none => .local_
+
+def resolveT (pers : Nat → Option Target) (scopeOrg : Nat → Option Nat) (es : List SEntry) (s : Nat) : Target :=
+  match pers s with
+  | some t => t
+  | none => resolveNP scopeOrg es s
+
+inductive Route where
+  | send | stay | refuse
+  deriving DecidableEq, Repr
+
+/-- `_resolveRemoteStoreForScope` (and `_refuseScopeConflict`). -/
+def routeOf : Target → Route
+  | .conflict => .refuse
+  | .remote true => .send
+  | _ => .stay
+
+/-- `_isRemoteBackedScope`: kind ≠ local. -/
+def backed : Target → Bool
+  | .local_ => false
+  | _ => true
+
+/-- `_isRemoteWriteScope`. -/
+def writeScope : Target → Bool
+  | .remote true => true
+  | _ => false
+
+/-- Whatever leaves through the router is remote-backed for the guard. -/
+theorem send_is_backed (t : Target) (h : routeOf t = .send) : backed t = true := by
+  cases t with
+  | remote w => cases w <;> simp_all [routeOf, backed]
+  | _ => simp_all [routeOf]
+
+/-- `_isRemoteWriteScope` is exactly the router's sending rule. -/
+theorem send_iff_writeScope (t : Target) : routeOf t = .send ↔ writeScope t = true := by
+  cases t with
+  | remote w => cases w <;> simp [routeOf, writeScope]
+  | _ => simp [routeOf, writeScope]
+
+/-- Two url entries on different servers with exactly this scope: the router
+refuses (non-personal scope), whatever else is configured. -/
+theorem conflict_refused (scopeOrg : Nat → Option Nat) (es : List SEntry) (s : Nat)
+    (e1 e2 : SEntry) (h1 : e1 ∈ es) (h2 : e2 ∈ es) (c1 : claims s e1 = true) (c2 : claims s e2 = true)
+    (hd : e1.server ≠ e2.server) : routeOf (resolveNP scopeOrg es s) = .refuse := by
+  have m1 : e1 ∈ es.filter (claims s) := List.mem_filter.mpr ⟨h1, c1⟩
+  have m2 : e2 ∈ es.filter (claims s) := List.mem_filter.mpr ⟨h2, c2⟩
+  unfold resolveNP
+  generalize es.filter (claims s) = cl at m1 m2
+  cases cl with
+  | nil => cases m1
+  | cons e rest =>
+    have hany : rest.any (fun x => x.server != e.server) = true := by
+      rcases List.mem_cons.mp m1 with r1 | r1 <;> rcases List.mem_cons.mp m2 with r2 | r2
+      · subst r1; subst r2; exact absurd rfl hd
+      · subst r1; exact List.any_eq_true.mpr ⟨e2, r2, by simp [Ne.symm hd]⟩
+      · subst r2; exact List.any_eq_true.mpr ⟨e1, r1, by simp [hd]⟩
+      · by_cases he : e1.server = e.server
+        · exact List.any_eq_true.mpr ⟨e2, r2, by simp; intro h; exact hd (he.trans h.symm)⟩
+        · exact List.any_eq_true.mpr ⟨e1, r1, by simp [he]⟩
+    simp [hany, routeOf]
+
+/-- The leak guard reads the same resolver: with `remoteBacked := backed ∘
+resolveT`, the final scope of every write, if the router sends it, carries no
+offending hit (P2 instantiated). -/
+theorem sent_never_offending (pers : Nat → Option Target) (scopeOrg : Nat → Option Nat)
+    (es : List SEntry) (env : Env Nat) (hwf : WF env)
+    (hrb : ∀ s, env.remoteBacked s = backed (resolveT pers scopeOrg es s))
+    (explicit session : Option Nat) (cands : List (Cand Nat)) :
+    let s := (pipeline env explicit session cands).1
+    routeOf (resolveT pers scopeOrg es s) = .send → env.offending s = false := by
+  intro s hs
+  have hb := send_is_backed _ hs
+  apply no_offending_egress env hwf explicit session cands
+  show (env.isShared s || env.remoteBacked s) = true
+  rw [hrb s, hb]
+  simp
+
+/-- Non-vacuity: one writable server for the scope → sent. -/
+theorem single_server_sends :
+    routeOf (resolveNP (fun _ => none) [⟨some 1, 7, false, none⟩, ⟨some 1, 7, true, none⟩] 7) = .send := by
+  decide
+
+/-- An ungranted scope under a company server's org is backed (the guard
+treats it as leaving) but never sent. -/
+theorem unauthorized_backed_not_sent :
+    let t := resolveNP (fun s => if s == 9 then some 3 else none) [⟨some 1, 7, false, some 3⟩] 9
+    t = .unauthorized ∧ backed t = true ∧ routeOf t = .stay := by decide
+
+/-- The pre-#1631 router: the first writable url entry with exactly this
+scope, whichever server it is on. -/
+def routeOld (es : List SEntry) (s : Nat) : Option Nat :=
+  (es.find? (fun e => claims s e && !e.readonly)).bind (·.server)
+
+/-- Counterexample on the old router (= routing-shared-resolver.test.ts "learn
+is refused, nothing sent, nothing saved"): two servers claim scope 7; the old
+router sent to server 1, the new one refuses. -/
+theorem old_router_sends_conflicted :
+    let es := [(⟨some 1, 7, false, none⟩ : SEntry), ⟨some 2, 7, false, none⟩]
+    routeOld es 7 = some 1 ∧ routeOf (resolveNP (fun _ => none) es 7) = .refuse := by decide
+
+/-! ### 3d. Remote-only folders: the bound instance's write gate (#1521; merged onto development 2026-10-18)
+
+A Plur instance bound to a `remote-only` folder (`bindFolderPolicy`) runs
+index.ts `_remoteOnlyContext` before every write (`_guardSensitiveScope`,
+`learnAsync`, `learnBatch`):
+  - blocked (the folder map could not be read, or the folder not resolved) → refuse;
+  - `visibility: private` → refuse;
+  - target := the explicit scope, else the folder's scope; none → refuse;
+  - `_refuseScopeConflict(target)`: a scope two servers claim → refuse (#1631);
+  - target not deliverable → refuse (an explicit scope other than the folder's
+    is first checked for `isSharedScope`, which `deliverable` includes);
+  - then `_guardSensitiveScope` refuses an offending hit for the target
+    instead of demoting it to local.
+`_isDeliverableTeamScope` (one rule, re-audit 3 of #1521, R3-1): shared, not
+local-only, not `user:`, and the shared resolver says `remote` and writable
+(`writeScope`). It used "some writable url entry has exactly this scope" before
+the merge onto development; `old_deliverable_accepts_conflict` is why that changed.
+The grammar predicates are oracles.
+
+Review of #1521, (d): an update never retargets a save queued from a remote-only
+folder (any scope change is refused, §2's invariant is untouched), and the
+retarget branch refuses it unless the new scope is a deliverable team scope
+(a personal url store can be the resolver's writable target, #1515/#1528).
+Messages name folders and scopes only as escaped data; that is not modelled. -/
+
+structure ROBind where
+  blocked     : Bool
+  folderScope : Option Nat
+  deriving DecidableEq, Repr
+
+inductive RODecision where
+  | write (s : Nat) | refuse
+  deriving DecidableEq, Repr
+
+/-- `_isDeliverableTeamScope`, given the resolver's target for the scope. -/
+def deliverable (shared localOnly personal : Bool) (t : Target) : Bool :=
+  shared && !localOnly && !personal && writeScope t
+
+/-- The checks on a chosen target: conflict, deliverable, offending hit. -/
+def roCheck (shared localOnly personal offending : Nat → Bool) (res : Nat → Target) (t : Nat) : RODecision :=
+  if res t = .conflict then .refuse
+  else if deliverable (shared t) (localOnly t) (personal t) (res t) = false then .refuse
+  else if offending t = true then .refuse
+  else .write t
+
+/-- `_remoteOnlyContext` followed by the offending-hit refusal. -/
+def roGate (b : ROBind) (priv : Bool) (explicit : Option Nat)
+    (shared localOnly personal offending : Nat → Bool) (res : Nat → Target) : RODecision :=
+  if b.blocked = true then .refuse
+  else if priv = true then .refuse
+  else match explicit.orElse (fun _ => b.folderScope) with
+    | none => .refuse
+    | some t => roCheck shared localOnly personal offending res t
+
+theorem roCheck_write (shared localOnly personal offending : Nat → Bool) (res : Nat → Target) (t' t : Nat)
+    (h : roCheck shared localOnly personal offending res t' = .write t) :
+    t' = t ∧ deliverable (shared t') (localOnly t') (personal t') (res t') = true ∧ offending t' = false := by
+  unfold roCheck at h
+  by_cases h1 : res t' = .conflict
+  · simp [h1] at h
+  · by_cases h2 : deliverable (shared t') (localOnly t') (personal t') (res t') = true
+    · by_cases h3 : offending t' = true
+      · simp [h1, h2, h3] at h
+      · simp [h1, h2, h3] at h
+        exact ⟨h, h2, by simpa using h3⟩
+    · simp [h1, h2] at h
+
+theorem roGate_write (b : ROBind) (priv : Bool) (explicit : Option Nat)
+    (shared localOnly personal offending : Nat → Bool) (res : Nat → Target) (t : Nat)
+    (h : roGate b priv explicit shared localOnly personal offending res = .write t) :
+    b.blocked = false ∧ priv = false ∧ explicit.orElse (fun _ => b.folderScope) = some t ∧
+      deliverable (shared t) (localOnly t) (personal t) (res t) = true ∧ offending t = false := by
+  unfold roGate at h
+  by_cases hb : b.blocked = true
+  · simp [hb] at h
+  · by_cases hp : priv = true
+    · simp [hb, hp] at h
+    · simp only [hb, hp, if_false, Bool.false_eq_true] at h
+      cases ho : explicit.orElse (fun _ => b.folderScope) with
+      | none => rw [ho] at h; cases h
+      | some t' =>
+        rw [ho] at h
+        obtain ⟨rfl, hd, hof⟩ := roCheck_write shared localOnly personal offending res t' t h
+        exact ⟨by simpa using hb, by simpa using hp, rfl, hd, hof⟩
+
+/-- Every write a remote-only folder accepts leaves through the router to one
+writable server: it never stays on this machine. -/
+theorem ro_write_is_sent (b : ROBind) (priv : Bool) (explicit : Option Nat)
+    (shared localOnly personal offending : Nat → Bool) (res : Nat → Target) (t : Nat)
+    (h : roGate b priv explicit shared localOnly personal offending res = .write t) :
+    routeOf (res t) = .send := by
+  obtain ⟨_, _, _, hd, _⟩ := roGate_write b priv explicit shared localOnly personal offending res t h
+  apply (send_iff_writeScope _).mpr
+  simp [deliverable] at hd
+  exact hd.2
+
+/-- …and it is a shared, non-local-only, non-personal scope with no offending hit. -/
+theorem ro_write_is_team (b : ROBind) (priv : Bool) (explicit : Option Nat)
+    (shared localOnly personal offending : Nat → Bool) (res : Nat → Target) (t : Nat)
+    (h : roGate b priv explicit shared localOnly personal offending res = .write t) :
+    shared t = true ∧ localOnly t = false ∧ personal t = false ∧ offending t = false := by
+  obtain ⟨_, _, _, hd, hof⟩ := roGate_write b priv explicit shared localOnly personal offending res t h
+  simp [deliverable] at hd
+  exact ⟨hd.1.1.1, hd.1.1.2, hd.1.2, hof⟩
+
+/-- An unreadable map or an unresolved folder writes nothing, an explicit team
+scope included (re-audit of #1521, S-1). -/
+theorem ro_blocked_refuses (b : ROBind) (hb : b.blocked = true) (priv : Bool) (explicit : Option Nat)
+    (shared localOnly personal offending : Nat → Bool) (res : Nat → Target) :
+    roGate b priv explicit shared localOnly personal offending res = .refuse := by
+  simp [roGate, hb]
+
+/-- A private write is refused, never kept locally. -/
+theorem ro_private_refuses (b : ROBind) (explicit : Option Nat)
+    (shared localOnly personal offending : Nat → Bool) (res : Nat → Target) :
+    roGate b true explicit shared localOnly personal offending res = .refuse := by
+  simp [roGate]
+
+/-- A scope two servers claim is refused here too. -/
+theorem ro_conflict_refuses (b : ROBind) (priv : Bool) (t : Nat)
+    (shared localOnly personal offending : Nat → Bool) (res : Nat → Target) (hc : res t = .conflict) :
+    roGate b priv (some t) shared localOnly personal offending res = .refuse := by
+  simp [roGate, roCheck, Option.orElse, hc]
+
+/-- With no explicit scope, the write goes to the folder's scope. -/
+theorem ro_default_is_folder (b : ROBind) (priv : Bool)
+    (shared localOnly personal offending : Nat → Bool) (res : Nat → Target) (t : Nat)
+    (h : roGate b priv none shared localOnly personal offending res = .write t) :
+    b.folderScope = some t := by
+  obtain ⟨_, _, ho, _, _⟩ := roGate_write b priv none shared localOnly personal offending res t h
+  simpa [Option.orElse] using ho
+
+/-- Non-vacuity: the folder's team scope, served by one writable server, is written. -/
+theorem ro_team_write :
+    roGate ⟨false, some 7⟩ false none (fun _ => true) (fun _ => false) (fun _ => false) (fun _ => false)
+      (fun _ => .remote true) = .write 7 := by decide
+
+/-- Mutant (the S-1 bug): the blocked check dropped. An unreadable map then
+writes an explicit team scope. Removing the first branch of `roGate` makes
+`ro_blocked_refuses` fail to build. -/
+def roGateNoBlock (b : ROBind) (priv : Bool) (explicit : Option Nat)
+    (shared localOnly personal offending : Nat → Bool) (res : Nat → Target) : RODecision :=
+  roGate { b with blocked := false } priv explicit shared localOnly personal offending res
+
+theorem no_block_writes_when_blocked :
+    roGateNoBlock ⟨true, none⟩ false (some 7) (fun _ => true) (fun _ => false) (fun _ => false) (fun _ => false)
+      (fun _ => .remote true) = .write 7 := by decide
+
+/-- The pre-merge rule: some writable url entry with exactly this scope. -/
+def deliverableOld (es : List SEntry) (s : Nat) : Bool :=
+  es.any (fun e => claims s e && !e.readonly)
+
+/-- Counterexample on the pre-merge rule: two servers claim scope 7; the old
+rule called it deliverable (the write would have been sent to whichever entry
+the router met first), the resolver-based rule does not, and the gate refuses. -/
+theorem old_deliverable_accepts_conflict :
+    let es := [(⟨some 1, 7, false, none⟩ : SEntry), ⟨some 2, 7, false, none⟩]
+    deliverableOld es 7 = true ∧
+      deliverable true false false (resolveNP (fun _ => none) es 7) = false ∧
+      roGate ⟨false, some 7⟩ false none (fun _ => true) (fun _ => false) (fun _ => false) (fun _ => false)
+        (resolveNP (fun _ => none) es) = .refuse := by decide
+
 /-! ## 4. "Private stays local" — three predicates (core-index#2)
 
 Code: learn() remote branch (`remoteDriver && context?.visibility === 'private'`
@@ -1318,3 +1742,40 @@ theorem old_vanished_history :
     rescopeOneOld .landed .vanished = some ⟨.rescoped, true, true⟩ := rfl
 
 end PlurSpec.WritePath
+
+/- 2026-10-19: Save destination reporting is a projection of the existing delivery
+evidence. It changes no routing, persistence, scope authorization or outbox rule;
+the model remains valid. Presentation invariants live in SaveDestination.lean. -/
+
+/- 2026-10-19: serverSessionLines reads cached configuration and the existing
+primary outbox projection. It does not probe, route, deliver or mutate memory.
+These transition invariants still hold; status precedence is in SaveDestination. -/
+
+/-! Checked 2026-10-19 for credential-change retry: Outbox section 8c models
+known-key backoff bypass and the local-path takeover hold. Other write guards,
+claims, idempotency and merge-back remain unchanged; the extra queue field is
+an attempted credential fingerprint only. Enterprise recovery text changes no
+recall, authorization or adapter admission rule. -/
+
+/- 2026-10-19: Read-only server diagnostics add bounded /me and write-check
+requests, strict permission evidence, and explicit missing-evidence failures.
+They do not change grants, memory, queue delivery or file permissions. Existing
+write/routing invariants hold; ServerDiagnostics models report aggregation.
+The discovery clock-skew constant is exported without changing its value. -/
+
+/- 2026-10-19: Multi-root disagreement now refuses unscoped MCP writes before
+core admission; the legacy workspaceFolderScope result is unchanged. Explicit
+choices retain routing and authorization. Recall adds the admitted root orgs
+to dialing context, without widening the authorization filter or remote-only
+binding. WorkspaceChoice models this adapter admission and context selection. -/
+
+/-! 2026-10-19: Core re-exports the existing server-entry schema so legacy
+project cleanup can validate a raw explicit enterprise registration without
+inventing authorization through normalization. No engine behavior changes. -/
+
+/-! 2026-10-19: Explicit primary upload reuses the locked queue and guarded
+flush with a selected-id filter. Existing route, sensitivity, binding and
+retirement invariants remain in force. UploadLocal models the new admission,
+selection, dry-run and receipt rules. Held receipts are never cached as live. -/
+
+/- 2026-10-20: Cancellation and scope/URL retarget protections remain. Outbox.lean now refines merge-back with the original queued URL/scope/idempotency key, separately from the accepting endpoint, and preserves fresh bookkeeping when a failed write was requeued. This model abstracts away write keys; its cancellation results still hold. -/

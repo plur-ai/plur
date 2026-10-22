@@ -226,7 +226,8 @@ describe.skipIf(!ready)('multi-root workspaces: a folder scope only when every r
       const client = await startRoots(e, roots)
       const r = await call(client, 'plur_learn', { statement: `zebra-mixed-${i} a note about one of the two repos` })
       expect(r.scope, JSON.stringify(r)).not.toBe(SCOPE)
-      expect(r.delivery).toBe('local')
+      expect(r).toMatchObject({ saved: false, refused: 'roots-disagree' })
+      expect(engramsText(e)).not.toContain(`zebra-mixed-${i}`)
       const s = await call(client, 'plur_session_start', { task: 'zebra mixed' })
       expect(s.default_scope ?? null).toBeNull()
     }
@@ -239,7 +240,8 @@ describe.skipIf(!ready)('multi-root workspaces: a folder scope only when every r
       const client = await startRoots(e, roots)
       const r = await call(client, 'plur_learn', { statement: `zebra-two-teams-${i} a note about one of the two repos` })
       expect([SCOPE, SCOPE2], JSON.stringify(r)).not.toContain(r.scope)
-      expect(r.delivery).toBe('local')
+      expect(r).toMatchObject({ saved: false, refused: 'roots-disagree' })
+      expect(engramsText(e)).not.toContain(`zebra-two-teams-${i}`)
       const s = await call(client, 'plur_session_start', { task: 'zebra two teams' })
       expect(s.default_scope ?? null).toBeNull()
     }

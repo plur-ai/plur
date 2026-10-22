@@ -47,9 +47,46 @@ describe('plur-mcp init hook definitions (#1279)', () => {
   })
 })
 
-/** The SessionStart entries other than the resume one (#1347 option C). */
+describe('plur-mcp init registers the same hooks as `plur init`', () => {
+  /** "<event> [<matcher>] <command> (<timeout>s)" for every hook in a map. */
+  const lines = (map: Record<string, Array<{ matcher?: string; hooks: Array<{ command?: string; args?: string[]; timeout?: number }> }>>) =>
+    Object.entries(map).flatMap(([event, entries]) => entries.flatMap(e => e.hooks.map(h =>
+      `${event} [${e.matcher ?? ''}] ${[h.command, ...(h.args ?? [])].join(' ')} (${h.timeout}s)`))).sort()
+
+  it('every hook, matcher and timeout matches the enforcement plus injection hooks of the cli', () => {
+    const cli = [...lines(buildEnforcementHooks(CMD)), ...lines(buildInjectionHooks(CMD))].sort()
+    expect(lines(buildPlurHooks(CMD))).toEqual(cli)
+  })
+
+  it('the session guard runs before every other PreToolUse hook, as in `plur init`', () => {
+    expect(buildPlurHooks(CMD).PreToolUse[0]).toEqual(buildEnforcementHooks(CMD).PreToolUse[0])
+  })
+})
+
+describe('plur-mcp init keeps settings it does not know about', () => {
+  // Generated at run time, so no list of known keys can make this pass.
+  const rnd = () => Math.random().toString(36).slice(2, 10)
+  it('arbitrary top-level keys and user hooks on any event survive a fresh install and a re-run', () => {
+    const mine: Record<string, unknown> = {}
+    for (let i = 0; i < 5; i++) mine[`k_${rnd()}`] = { nested: [rnd(), { deep: rnd() }], n: i }
+    const myHooks: Record<string, HookEntryT[]> = {}
+    for (const event of ['Stop', 'PreToolUse', `Event${rnd()}`]) {
+      myHooks[event] = [{ matcher: rnd(), hooks: [{ type: 'command', command: `/opt/${rnd()} --flag` }] }]
+    }
+    const before = { ...mine, hooks: myHooks }
+    const first = applyPlurHooks(JSON.parse(JSON.stringify(before)), buildPlurHooks(CMD)).settings
+    const second = applyPlurHooks(JSON.parse(JSON.stringify(first)), buildPlurHooks(CMD)).settings
+    for (const after of [first, second]) {
+      for (const [k, v] of Object.entries(mine)) expect(after[k]).toEqual(v)
+      for (const [event, entries] of Object.entries(myHooks)) expect(after.hooks![event]).toEqual(expect.arrayContaining(entries))
+    }
+    expect(second).toEqual(first)
+  })
+})
+
+/** The SessionStart(compact) entries: not the resume one (#1347 option C), not the session reminder. */
 function compactOnly<T extends { matcher?: string }>(entries: T[]): T[] {
-  return entries.filter(e => e.matcher !== 'resume')
+  return entries.filter(e => e.matcher === 'compact')
 }
 
 describe('applyPlurHooks adds the resume hook to an install that has SessionEnd (#1347 option C)', () => {
@@ -269,7 +306,7 @@ describe('applyPlurHooks heal scope (#1300 review, second round)', () => {
     const cmd = 'C:\\Users\\U\\.plur\\bin\\plur-hook.cmd'
     const hooks = buildPlurHooks(cmd)
     const settings = clone({ hooks }) as Settings
-    settings.hooks!.SessionStart[0].hooks[0].command = `"${cmd}" HOOK-INJECT  --REHYDRATE`
+    settings.hooks!.SessionStart.find(e => e.matcher === 'compact')!.hooks[0].command = `"${cmd}" HOOK-INJECT  --REHYDRATE`
     settings.hooks!.PostCompact = [
       { matcher: 'auto|manual', hooks: [{ type: 'command', command: `"${cmd}" hook-inject --rehydrate`, timeout: 15 }] },
     ]

@@ -1,0 +1,13 @@
+diff --git a/packages/core/src/index.ts b/packages/core/src/index.ts
+index d018e0d6..6b62a2df 100644
+--- a/packages/core/src/index.ts
++++ b/packages/core/src/index.ts
+@@ -6838,7 +6838,7 @@ export class Plur {
+     // are still filtered by exact membership afterwards (`_filterRemoteRows`).
+     const allowList = options?.scopes
+     const allowed = (storeScope: string): boolean =>
+-      allowList === undefined || allowList.some(a => isScopeWithin(a, storeScope))
++      allowList === undefined || allowList.some(a => isScopeWithin(a, storeScope)) || isSharedScope(storeScope)
+ 
+     const groups = new Map<string, { url: string; token?: string; entries: StoreEntry[] }>()
+     for (const s of stores) {

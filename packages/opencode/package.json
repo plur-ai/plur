@@ -47,6 +47,9 @@
     "url": "https://github.com/plur-ai/plur",
     "directory": "packages/opencode"
   },
+  "engines": {
+    "node": ">=22"
+  },
   "author": "PLUR <info@plur.ai>",
   "exports": {
     ".": {

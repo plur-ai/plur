@@ -3,11 +3,12 @@ import { StdioServerTransport } from '@modelcontextprotocol/server/stdio'
 import { existsSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
-import { Plur, checkForUpdate, VERSION_CHECK_SUCCESS_TTL_MS, allowBackgroundModelLoad } from '@plur-ai/core'
+import { Plur, checkForUpdate, VERSION_CHECK_SUCCESS_TTL_MS, allowBackgroundModelLoad, type FolderPolicy } from '@plur-ai/core'
 import { FOLDER_SCOPE, type FolderScopeContext, getToolDefinitions, mcpCanary, validateToolArgs, CURSOR_CORE_TOOL_NAMES, type ToolProfile, resolveToolProfile, setActiveToolProfile } from './tools.js'
 import { payloadDropLogPath, recordPayloadDrop } from './drop-log.js'
-import { FOLDER_GATED_TOOLS, createFolderGate, createWorkspaceDirs, workspaceUnknownAnswer, workspaceWriteScope, workspaceKey } from './folder-gate.js'
+import { FOLDER_GATED_TOOLS, createFolderGate, createWorkspaceDirs, folderOffAnswer, workspaceUnknownAnswer, workspaceWriteScope, workspaceKey } from './folder-gate.js'
 import { registerFlushOnExit } from './telemetry.js'
+import { setBackgroundDiscovery, startBackgroundDiscovery } from './background-discovery.js'
 import { VERSION } from './version.js'
 
 // ── Enterprise login helpers ──────────────────────────────────────────────────
@@ -82,6 +83,8 @@ OPTIONAL but improves quality:
 Do not ask permission to use these tools — they are your memory system.
 
 FOLDERS WHERE PLUR IS OFF: the user can turn memory off for a folder (plur folders set <folder> --off). In that folder the memory tools (learn, recall, inject, session start/end, capture, feedback, receipt, …) read and write nothing and answer { plur: "off", message } instead — not an error. The same answer, with reason "folder-map-unreadable", comes back when the user's folder map is broken, and with reason "workspace-unknown" when your client's workspace roots could not be fetched (that one retries by itself on the next call). Carry on without memory and do not retry or work around it; only the user can turn it back on, from a terminal (the message names the command). For a broken map the message names the line and the problem; when it carries a repair_command (plur folders repair --yes), tell the user what is wrong, show them repair_summary (what the repair changes), and run that command only after they agree. plur_status and plur_doctor keep working.
+
+REMOTE-ONLY FOLDERS: a folder the user set to remote-only keeps its memory on the team server only. There, plur_learn without a scope saves to the folder's team scope; a personal or local scope (user:, global, local, a project: scope no team store serves, a private memory) is refused with an error that names the folder — save without a scope instead, and do not retry with another personal scope. Recall reads only the team scope and installed packs.
 
 Setup: If this is a fresh install, suggest the user run: npx @plur-ai/mcp init
 This installs hooks for automatic injection + session management. One-time global setup.`
@@ -200,9 +203,21 @@ export async function closeWhenIdle(server: Server, timeoutMs?: number): Promise
 // (tests create one per case — stacking an interval per server would leak).
 let versionRecheckTimer: ReturnType<typeof setInterval> | undefined
 
-export async function createServer(plur?: Plur, options?: { profile?: ToolProfile }): Promise<Server> {
+export async function createServer(plur?: Plur, options?: { profile?: ToolProfile; folder?: string; discovery?: boolean }): Promise<Server> {
   const instance = plur ?? new Plur()
   const profile = options?.profile ?? 'lean'
+  // The folder this server serves (the editor starts it there): its folder-map
+  // decision is re-read before every tool call, so a `remote-only` folder
+  // (owner decisions 2026-10-01) binds the instance — writes go only to the
+  // team scope, recall reads only it and installed packs — and a change to
+  // folders.yaml applies from the next call.
+  const folder = options?.folder ?? process.cwd()
+  // A company server's scopes are discovered in the background (#1631): the
+  // editor's startup window must never wait on /me. Started, not awaited;
+  // tools use the cached scopes until it settles. `discovery: false` turns it
+  // off for this instance (plur_session_start then starts none either).
+  setBackgroundDiscovery(instance, options?.discovery !== false)
+  startBackgroundDiscovery(instance)
   // #761: record what we actually exposed, so plur_doctor reports THIS surface
   // rather than re-deriving one from the environment — which is not the
   // authority here, since the profile arrives as an option.
@@ -210,12 +225,12 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
   const tools = getToolDefinitions(profile)
 
   // Non-blocking version check — fire and forget at startup, then re-checked
-  // periodically (#760). Without the periodic re-check a long-lived server
-  // process that started while current would cache "no update" for its entire
-  // lifetime and never surface releases published after startup — which is
-  // exactly how the 0.14.x regression report happened. The timer is unref'd so
-  // it never keeps the process alive, and the TTL-driven refresh-on-read in
-  // version-check.ts covers processes whose timers are throttled.
+  // periodically (#760) so a long-lived server learns about releases published
+  // after it started. The timer is unref'd so it never keeps the process alive.
+  // TEAM-5: this start check is the one network attempt PLUR makes with no
+  // internet. When it cannot connect the process is offline, and the timer,
+  // refresh-on-read and plur_status check_updates make no further request
+  // (version-check.ts).
   const announceUpdate = (r: { updateAvailable: boolean; current: string; latest: string | null }) => {
     if (r.updateAvailable) {
       console.error(`[plur] Update available: ${r.current} → ${r.latest}. Run: npm i -g @plur-ai/cli@latest @plur-ai/mcp@latest && plur init (configs pin versions)`)
@@ -267,7 +282,10 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
   }))
 
   // --- The editor's workspace, for the folder map (folder-gate.ts) ---
-  const workspace = createWorkspaceDirs(server)
+  // One helper (#1519's createWorkspaceDirs): one roots cache, one
+  // list_changed handler, fail closed on a roots failure. Its folder is the
+  // one this server serves (`folder`, default cwd; #1521).
+  const workspace = createWorkspaceDirs(server, { cwd: () => folder })
   // The folder map's off / ask for this MCP session (#1525). The session's
   // unanswered folder-question nonces die with the connection.
   const folderGate = createFolderGate(instance)
@@ -276,6 +294,72 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
   server.onclose = () => {
     folderGate.end()
     priorOnClose?.()
+  }
+
+  // PLUR_LOG_CLIENT_INFO=1: log one line to stderr on initialize so a human
+  // can record which capabilities each editor actually sends (#1635).
+  const priorOnInitialized = server.oninitialized
+  server.oninitialized = () => {
+    priorOnInitialized?.()
+    if (process.env.PLUR_LOG_CLIENT_INFO !== '1') return
+    const caps = server.getClientCapabilities()
+    const info = server.getClientVersion()
+    const name = (info?.name ?? 'unknown').replace(/\s+/g, '-') || 'unknown'
+    const version = (info?.version ?? 'unknown').replace(/\s+/g, '-') || 'unknown'
+    const rootsCap = (caps?.roots ?? null) as { listChanged?: boolean } | null
+    const hasRoots = rootsCap !== null
+    const listChanged = rootsCap?.listChanged === true
+    process.stderr.write(
+      `[plur] client ${name} ${version} roots=${hasRoots ? 'yes' : 'no'} listChanged=${listChanged ? 'yes' : 'no'}\n`,
+    )
+  }
+
+  // Bind the instance to the workspace's folder decision (remote-only), or
+  // block it (off, unknown workspace, unreadable map), for this call.
+  // Precedence: off > remote-only > on (#1521 with #1519).
+  let boundStatusPolicy: { dir: string; policy: FolderPolicy } | undefined
+  const bindWorkspace = (dirs: string[], defaultDirs: string[] = dirs): void => {
+    boundStatusPolicy = undefined
+    const resolved: Array<{ dir: string; policy: FolderPolicy }> = []
+    for (const dir of dirs) {
+      try {
+        resolved.push({ dir, policy: instance.resolveFolderPolicy(dir) })
+      } catch (err) {
+        instance.bindFolderUnresolved(dir, (err as Error)?.message ?? String(err))
+        return
+      }
+    }
+    const pick = resolved.find(r => r.policy.reason === 'malformed-map' || r.policy.reason === 'resolver-error')
+      ?? resolved.find(r => r.policy.mode === 'remote-only')
+      ?? resolved.find(r => defaultDirs.includes(r.dir))
+      ?? resolved[resolved.length - 1]
+    // Restrictive decisions still cover both roots and startup cwd. Origin
+    // defaults belong to the editor roots, not the server process directory.
+    const defaultPolicies = resolved.filter(r => defaultDirs.includes(r.dir)).map(r => r.policy)
+    const defaults = defaultPolicies.map(p => p.git)
+    const key = (git: FolderPolicy['git']) => git?.kind === 'scope' ? `scope:${git.scope}`
+      : git?.kind === 'local' || git?.kind === 'unknown' ? 'local' : 'absent'
+    const git = defaults.every(d => key(d) === key(defaults[0])) ? defaults[0]
+      : defaults.some(Boolean) ? { kind: 'unknown' as const, reason: 'ambiguous-mapping' as const } : undefined
+    // Explicit map scopes need the same agreement as Git defaults. A mixed
+    // workspace has no session default; the first root is not authoritative.
+    const scope = defaultPolicies.every(p => p.scope === defaultPolicies[0]?.scope) ? defaultPolicies[0]?.scope : undefined
+    boundStatusPolicy = { dir: pick.dir, policy: { ...pick.policy, git,
+      scope: pick.policy.mode === 'remote-only' ? pick.policy.scope : scope } }
+    instance.bindFolderPolicy(pick.dir, { ...pick.policy, git })
+  }
+
+  // Tool calls run one at a time: the folder gate and the binding live on the
+  // one shared Plur instance, so a concurrent call must not change them under
+  // a running one. The gate runs inside the same serialized step (#1521).
+  let callTail: Promise<void> = Promise.resolve()
+  const acquireCall = async (): Promise<() => void> => {
+    let release!: () => void
+    const next = new Promise<void>(r => { release = r })
+    const prev = callTail
+    callTail = prev.then(() => next)
+    await prev
+    return release
   }
 
   // --- Tools ---
@@ -290,6 +374,9 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
   }))
 
   server.setRequestHandler('tools/call', (request) => trackInFlight(async () => {
+   // One call at a time (see acquireCall); released on every return path.
+   const release = await acquireCall()
+   try {
     const tool = tools.find(t => t.name === request.params.name)
     if (!tool) {
       // #625 audit: under a gated profile, a REAL tool that is merely hidden
@@ -329,6 +416,17 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
       const decision = ws === null ? workspaceUnknownAnswer() : folderGate.check(ws)
       if (decision.plur !== 'on') return { content: [{ type: 'text', text: JSON.stringify(decision, null, 2) }] }
       admittedWs = ws
+      // The instance follows the admitted workspace's folder decision
+      // (remote-only, #1521): bound on every call, in this serialized step.
+      bindWorkspace([...new Set([...ws!.roots, ws!.cwd])], ws!.roots.length ? ws!.roots : [ws!.cwd])
+    } else {
+      // Not a gated tool: bound to the workspace too, unless memory is off
+      // there or the workspace is unknown, where it runs unbound, as #1519
+      // defines (no engram text in its answers).
+      const dirs = await workspace.dirs()
+      const off = dirs === null ? workspaceUnknownAnswer() : folderOffAnswer(instance, dirs)
+      if (off) instance.bindFolderPolicy(folder, { mode: 'ask', remoteAllowed: false, source: 'default' })
+      else bindWorkspace(dirs!)
     }
     // #192: one tick per tool call = one "turn" for capability health.
     // plur_session_start resets the canary, giving a per-session window:
@@ -383,13 +481,37 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
       // resolved when a tool asks for it — at the moment a write is
       // admitted — from the CURRENT roots, by the one resolver. Under a
       // Symbol key no client can set.
+      const scopeContext = (ws: NonNullable<typeof admittedWs>) => {
+        const decision = workspaceWriteScope(instance, ws)
+        return { scope: decision.kind === 'agreed' ? decision.scope : null, key: workspaceKey(ws),
+          ...(decision.kind === 'disagree' ? { roots: decision.roots } : {}) }
+      }
       const folderContext: FolderScopeContext = {
+        serverStatus: async (explicitScope) => {
+          const admitted = boundStatusPolicy
+          if (!admitted) return []
+          return instance.serverSessionLines(admitted.dir, explicitScope && admitted.policy.mode !== 'remote-only'
+            ? { ...admitted.policy, scope: explicitScope, git: undefined } : admitted.policy)
+        },
         resolve: async () => {
           const ws = await workspace.workspace()
-          return ws === null ? null : { scope: workspaceWriteScope(instance, ws), key: workspaceKey(ws) }
+          // The scope and binding must describe the same workspace. A newer
+          // local/unknown answer must never fall back to an earlier Git scope.
+          if (ws === null) {
+            boundStatusPolicy = undefined
+            instance.bindFolderUnresolved(folder, 'the current workspace could not be read')
+            return null
+          }
+          if (folderGate.check(ws).plur !== 'on') {
+            boundStatusPolicy = undefined
+            instance.bindFolderUnresolved(folder, 'memory is not enabled in the current workspace')
+            return null
+          }
+          bindWorkspace([...new Set([...ws.roots, ws.cwd])], ws.roots.length ? ws.roots : [ws.cwd])
+          return scopeContext(ws)
         },
         ...(admittedWs !== null
-          ? { admitted: () => ({ scope: workspaceWriteScope(instance, admittedWs!), key: workspaceKey(admittedWs!) }) }
+          ? { admitted: () => scopeContext(admittedWs!) }
           : {}),
       }
       args = { ...args, [FOLDER_SCOPE]: folderContext }
@@ -424,6 +546,9 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
         isError: true,
       }
     }
+   } finally {
+     release()
+   }
   }))
 
   // --- Resources ---

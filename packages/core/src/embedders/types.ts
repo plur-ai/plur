@@ -40,5 +40,13 @@ export interface EmbedderAdapter {
   /** Optional (#1586 round 6): the embedder is a remote API (no local model,
    *  no cold start), so no background cache fill is started for it. */
   readonly remote?: boolean
+  /**
+   * Optional: the instruction the model card prescribes in front of a short
+   * search query when retrieving passages (BGE v1.5: "Represent this sentence
+   * for searching relevant passages: "). Stored text is embedded without it.
+   * Only ranking search legs use it; symmetric similarity (duplicate checks,
+   * injection thresholds) compares texts as written and never adds it.
+   */
+  readonly searchInstruction?: string
 }
 

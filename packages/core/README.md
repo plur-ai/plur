@@ -112,6 +112,8 @@ Everything is plain YAML. Open it, read it, edit it, version it.
 
 Override the location with `PLUR_PATH` env var or `new Plur({ path: '...' })`.
 
+`config.yaml` can hold store tokens, so only your account may read it: PLUR sets it to `0600` on macOS and Linux, and to an access list naming only your account on Windows, after every write. On Windows, if that access list cannot be set and checked, PLUR refuses the write and changes nothing. One case: a drive that cannot keep access lists at all (FAT or exFAT, some network shares). There, set `PLUR_ALLOW_UNPROTECTED_CONFIG=1` to write the file without protection. Each such write prints a line to stderr saying so.
+
 ## Benchmark
 
 **Retrieval** (LongMemEval R@5): **76.7%** out-of-the-box · **97.0%** with openai-3-large embeddings

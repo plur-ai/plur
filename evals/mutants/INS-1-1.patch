@@ -1,0 +1,13 @@
+diff --git a/packages/cli/src/commands/init.ts b/packages/cli/src/commands/init.ts
+index 16b1a31c..68d6bd63 100644
+--- a/packages/cli/src/commands/init.ts
++++ b/packages/cli/src/commands/init.ts
+@@ -954,7 +954,7 @@ function stripPlurHooks(settings: Settings): Settings {
+ 
+ function mergeHooks(settings: Settings, hooksMap: Record<string, HookEntry[]>): Settings {
+   // Strip old plur hooks first so init is idempotent (upgrade-safe)
+-  const clean = stripPlurHooks(settings)
++  const clean = settings // MUTANT: old plur hooks are kept, new ones appended
+   const hooks = { ...(clean.hooks ?? {}) }
+ 
+   for (const [event, newEntries] of Object.entries(hooksMap)) {

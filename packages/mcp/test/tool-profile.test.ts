@@ -25,19 +25,23 @@ describe('tool profiles', () => {
     // and therefore direct, so plur_tensions (resolve retires the loser) and
     // plur_validate_meta (retires a meta-engram on its third failed validation)
     // joined the direct set — the cap grew from 12 to 14 for that reason only.
-    expect(lean.length).toBeLessThanOrEqual(14)
+    // TOOL-4 (2026-10-18): plur_report_failure rewrites a procedure's text, so
+    // it is destructive and therefore direct — 14 to 15 for that reason only.
+    expect(lean.length).toBeLessThanOrEqual(15)
     expect(lean.some(t => t.name === 'plur_admin')).toBe(true)
     expect(lean.some(t => t.name === 'plur_packs_install')).toBe(false)
   })
 
-  it('lean profile stays at or under 14 tools and includes plur_admin', () => {
+  it('lean profile stays at or under 15 tools and includes plur_admin', () => {
     const lean = getToolDefinitions('lean')
     // 14 = 13 direct tools + plur_admin. Owner decision I_tensions_resolve
     // (formal R2, 2026-09-27): every tool that can retire memory is destructive
     // and therefore direct, so plur_tensions (resolve retires the loser) and
     // plur_validate_meta (retires a meta-engram on its third failed validation)
     // joined the direct set — the cap grew from 12 to 14 for that reason only.
-    expect(lean.length).toBeLessThanOrEqual(14)
+    // TOOL-4 (2026-10-18): plur_report_failure rewrites a procedure's text, so
+    // it is destructive and therefore direct — 14 to 15 for that reason only.
+    expect(lean.length).toBeLessThanOrEqual(15)
     const names = lean.map(t => t.name)
     expect(names).toContain('plur_session_start')
     expect(names).toContain('plur_learn')
@@ -56,7 +60,7 @@ describe('tool profiles', () => {
     expect(cursor.map(t => t.name).sort()).toEqual(lean.map(t => t.name).sort())
   })
 
-  it('cursor profile stays at or under 14 tools and includes plur_admin', () => {
+  it('cursor profile stays at or under 15 tools and includes plur_admin', () => {
     const cursor = getToolDefinitions('cursor')
     // 8 day-to-day tools + plur_packs_uninstall/plur_tensions_purge
     // (destructive maintenance tools kept as direct top-level tools, not wrapped
@@ -64,8 +68,9 @@ describe('tool profiles', () => {
     // clients — audit fix, evaluator review 2026-07-08)
     // + plur_tensions/plur_validate_meta (they retire memory — owner decision
     // I_tensions_resolve, formal R2, 2026-09-27: every removal is gated)
+    // + plur_report_failure (TOOL-4, 2026-10-18)
     // + plur_admin, still far under Cursor's ~40-tool-per-workspace cap.
-    expect(cursor.length).toBeLessThanOrEqual(14)
+    expect(cursor.length).toBeLessThanOrEqual(15)
     const names = cursor.map(t => t.name)
     expect(names).toContain('plur_session_start')
     expect(names).toContain('plur_learn')
@@ -94,11 +99,12 @@ describe('tool profiles', () => {
       rmSync(dir, { recursive: true })
     })
 
-    it('lists <=14 tools over the wire in cursor profile', async () => {
+    it('lists <=15 tools over the wire in cursor profile', async () => {
       const { tools } = await client.listTools()
       // 12 → 14: plur_tensions and plur_validate_meta became direct tools
-      // (decision I_tensions_resolve, formal R2).
-      expect(tools.length).toBeLessThanOrEqual(14)
+      // (decision I_tensions_resolve, formal R2). 14 → 15: plur_report_failure
+      // became a direct tool (TOOL-4, 2026-10-18).
+      expect(tools.length).toBeLessThanOrEqual(15)
     })
 
     // Audit fix (evaluator review, 2026-07-08): destructive tools must keep

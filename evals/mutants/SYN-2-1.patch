@@ -1,0 +1,13 @@
+diff --git a/packages/core/src/sync.ts b/packages/core/src/sync.ts
+index a00c3a56..3d6c96f5 100644
+--- a/packages/core/src/sync.ts
++++ b/packages/core/src/sync.ts
+@@ -186,7 +186,7 @@ function stageStoreFiles(root: string): number {
+   if (pathspecs.length > 0) {
+     // Only the allowlisted root files + the allowlisted pack files are staged, so
+     // no secret file (root or nested in a pack) can ever ride along.
+-    git(['add', '-A', '-f', '--', ...pathspecs], root)
++    git(['add', '-A', '-f', '--', '.'], root)
+   }
+   const staged = gitSafe(['diff', '--cached', '--name-only'], root)
+   return staged ? staged.split('\n').filter(Boolean).length : 0

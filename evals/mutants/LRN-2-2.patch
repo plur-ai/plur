@@ -1,0 +1,13 @@
+diff --git a/packages/core/src/learn-async.ts b/packages/core/src/learn-async.ts
+index fcff36f5..e3e34b62 100644
+--- a/packages/core/src/learn-async.ts
++++ b/packages/core/src/learn-async.ts
+@@ -535,7 +535,7 @@ export async function learnAsync(
+ 
+   // Step 5: Execute
+   const executed = await executeDedupDecision(deps, statement, context, decision, targetId, opts)
+-  return { ...executed, dedup: { mode: dedupMode, ...(nearDuplicates ? { near_duplicates: nearDuplicates } : {}) } }
++  return { ...executed, dedup: { mode: dedupMode } }
+ }
+ 
+ /** Options for learnBatch. */

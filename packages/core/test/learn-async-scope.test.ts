@@ -50,8 +50,20 @@ function makeDeps(candidates: Engram[]): LearnAsyncDeps {
     hashDedup: async () => null,
     recallHybrid: async () => candidates,
     recall: async () => candidates,
-    learn: async (statement: string, context?: any) =>
-      ({ id: 'ENG-2026-0619-001', statement, scope: context?.scope ?? 'global' } as unknown as Engram),
+    // Echoes `supersedes` the way learn() writes `relations.supersedes`, and
+    // writes the reverse `superseded_by` edge on the target as learn() does
+    // (learnAsync reports UPDATE only when both edges are there, audit 5 F4).
+    learn: async (statement: string, context?: any) => {
+      const id = 'ENG-2026-0619-001'
+      for (const t of context?.supersedes ?? []) {
+        const i = candidates.findIndex(c => c.id === t)
+        const target = candidates[i] as any
+        // A copy in place of the shared fixture object, so no edge leaks into other tests.
+        if (target) candidates[i] = { ...target, relations: { ...(target.relations ?? {}), superseded_by: [...(target.relations?.superseded_by ?? []), id] } }
+      }
+      return ({ id, statement, scope: context?.scope ?? 'global',
+        ...(context?.supersedes?.length ? { relations: { supersedes: context.supersedes } } : {}) } as unknown as Engram)
+    },
     getById: async (id: string) => candidates.find(c => c.id === id) ?? null,
     store: new MemoryPrimaryStore(),
     engramsPath: '/tmp/plur-test-engrams.yaml',
@@ -118,7 +130,7 @@ describe('learnAsync scope-aware LLM dedup (issue #359)', () => {
 
 // #484: async UPDATE/MERGE must increment `engram_version` (content-evolution
 // counter used by previous_version chains), not `version` (schema-shape field).
-describe('learnAsync UPDATE/MERGE increment engram_version not version (#484)', () => {
+describe('learnAsync UPDATE/MERGE never move the existing engram_version or version (#484, LRN-7, LRN-8)', () => {
   let dir: string
   let engramsPath: string
   afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }) })
@@ -130,7 +142,10 @@ describe('learnAsync UPDATE/MERGE increment engram_version not version (#484)', 
     return { ...makeDeps(candidates), engramsPath, rootPath: dir, store: new YamlPrimaryStore(engramsPath) }
   }
 
-  it('UPDATE increments engram_version and leaves version untouched', async () => {
+  // LRN-8 (owner decision 2026-10-18): UPDATE saves a new memory that
+  // supersedes the old one; the old row is not rewritten, so neither of its
+  // version fields moves. (Previously: engram_version incremented in place.)
+  it('UPDATE leaves the existing engram_version and version untouched (it supersedes)', async () => {
     const seed = { ...globalCandidate, id: 'ENG-2026-0101-484a', scope: 'global', engram_version: 3, version: 2 } as unknown as Engram
     const deps = depsWithFile([seed])
     const llm = vi.fn().mockResolvedValue('DECISION: UPDATE\nTARGET: ENG-2026-0101-484a\nREASON: same topic')
@@ -138,22 +153,38 @@ describe('learnAsync UPDATE/MERGE increment engram_version not version (#484)', 
     const result = await learnAsync(deps, 'updated statement', { llm })
 
     expect(result.decision).toBe('UPDATE')
+    expect(result.existing_id).toBe('ENG-2026-0101-484a')
+    expect(result.engram.id).not.toBe('ENG-2026-0101-484a')
     const persisted = loadEngrams(engramsPath).find(e => e.id === 'ENG-2026-0101-484a') as any
-    expect(persisted.engram_version).toBe(4)   // incremented
-    expect(persisted.version).toBe(2)           // schema-shape, untouched
+    expect(persisted.statement).toBe(seed.statement)
+    expect(persisted.engram_version).toBe(3)
+    expect(persisted.version).toBe(2)
   })
 
-  it('MERGE increments engram_version and leaves version untouched', async () => {
+  // LRN-7 (owner decision 2026-10-18): a MERGE answer never rewrites the
+  // target in a single save either; the statement is saved as its own memory,
+  // linked to the target. Neither version field of the target moves.
+  // (Previously: the statements were concatenated and engram_version incremented.)
+  it('MERGE leaves the existing engram untouched and saves a linked memory', async () => {
     const seed = { ...globalCandidate, id: 'ENG-2026-0101-484b', scope: 'global', engram_version: 2, version: 2 } as unknown as Engram
     const deps = depsWithFile([seed])
+    const learned: any[] = []
+    const baseLearn = deps.learn
+    deps.learn = async (statement: string, context?: any) => { learned.push({ statement, context }); return baseLearn(statement, context) }
     const llm = vi.fn().mockResolvedValue('DECISION: MERGE\nTARGET: ENG-2026-0101-484b\nREASON: complementary')
 
     const result = await learnAsync(deps, 'extra clause', { llm })
 
-    expect(result.decision).toBe('MERGE')
+    expect(result.decision).toBe('ADD')
+    expect(result.likely_duplicate_of?.id).toBe('ENG-2026-0101-484b')
+    expect(result.likely_duplicate_of?.checker_decision).toBe('MERGE')
+    expect(learned).toHaveLength(1)
+    expect(learned[0].statement).toBe('extra clause')
+    expect(learned[0].context.related).toEqual(['ENG-2026-0101-484b'])
     const persisted = loadEngrams(engramsPath).find(e => e.id === 'ENG-2026-0101-484b') as any
-    expect(persisted.engram_version).toBe(3)   // incremented
-    expect(persisted.version).toBe(2)           // schema-shape, untouched
+    expect(persisted.statement).toBe(seed.statement)
+    expect(persisted.engram_version).toBe(2)
+    expect(persisted.version).toBe(2)
   })
 })
 
@@ -181,9 +212,17 @@ describe('learnAsync demote scans merged tags (#409)', () => {
     }
   }
 
-  it('UPDATE demotes to local when a merged tag carries sensitive content', async () => {
+  // LRN-8 (owner decision 2026-10-18): UPDATE no longer unions tags into the
+  // existing shared engram, so a sensitive tag cannot reach it at all. The new
+  // memory, tags included, is written through learn(), whose own
+  // sensitive-scope guard scans it. (Previously: the existing engram was
+  // demoted in place.)
+  it('UPDATE never carries a sensitive tag into the existing shared engram', async () => {
     const shared = { ...globalCandidate, id: 'ENG-2026-0101-409', scope: 'group:datafund/datafund', statement: 'clean shared note' } as unknown as Engram
     const deps = depsWithFile([shared])
+    const learned: Array<{ statement: string; context: any }> = []
+    const learn = deps.learn
+    deps.learn = async (statement, context) => { learned.push({ statement, context }); return learn(statement, context) }
     const llm = vi.fn().mockResolvedValue('DECISION: UPDATE\nTARGET: ENG-2026-0101-409\nREASON: same topic')
 
     // Statement is clean; the sensitive sentinel rides ONLY in a tag.
@@ -191,8 +230,12 @@ describe('learnAsync demote scans merged tags (#409)', () => {
 
     expect(result.decision).toBe('UPDATE')
     const persisted = loadEngrams(engramsPath).find(e => e.id === 'ENG-2026-0101-409') as any
-    expect(persisted.scope).toBe('local')        // demoted — the merged tag was scanned
-    expect(persisted.visibility).toBe('private')
+    expect(persisted.statement).toBe('clean shared note')
+    expect(persisted.tags).not.toContain('LEAKTAG')
+    // The tag goes to learn(), where the sensitive-scope guard runs.
+    expect(learned).toHaveLength(1)
+    expect(learned[0].context.tags).toContain('LEAKTAG')
+    expect(learned[0].context.supersedes).toEqual(['ENG-2026-0101-409'])
   })
 
   it('UPDATE does NOT demote when statement and tags are clean (no over-block)', async () => {
@@ -205,5 +248,79 @@ describe('learnAsync demote scans merged tags (#409)', () => {
     expect(result.decision).toBe('UPDATE')
     const persisted = loadEngrams(engramsPath).find(e => e.id === 'ENG-2026-0101-409b') as any
     expect(persisted.scope).toBe('group:datafund/datafund') // untouched
+  })
+})
+
+// Release audit 0.22.0: an unscoped save that the duplicate checker answers
+// UPDATE takes the target's scope. learn() keeps a team-scope memory on this
+// machine only when the save says `visibility: 'private'`, so a private team
+// memory's replacement must carry that visibility too, or it is sent to the
+// team server (0.21.5 rewrote the target in place, locally).
+describe('learnAsync UPDATE keeps a private target private', () => {
+  it('passes the private visibility of an inherited-scope target to learn()', async () => {
+    const team = { ...globalCandidate, id: 'ENG-2026-0101-900', scope: 'group:acme/eng', visibility: 'private' } as unknown as Engram
+    const deps = makeDeps([team])
+    const seen: any[] = []
+    const learn = deps.learn
+    deps.learn = async (statement: string, context?: any) => { seen.push(context); return learn(statement, context) }
+    const llm = vi.fn().mockResolvedValue('DECISION: UPDATE\nTARGET: ENG-2026-0101-900\nREASON: same subject')
+
+    const result = await learnAsync(deps, 'the staging VPN profile now uses another port', { llm })
+
+    expect(result.decision).toBe('UPDATE')
+    expect(seen.at(-1)?.scope).toBe('group:acme/eng')
+    expect(seen.at(-1)?.visibility).toBe('private')
+  })
+
+  it('leaves an explicitly scoped save as the caller asked', async () => {
+    const team = { ...globalCandidate, id: 'ENG-2026-0101-901', scope: 'group:acme/eng', visibility: 'private' } as unknown as Engram
+    const deps = makeDeps([team])
+    const seen: any[] = []
+    const learn = deps.learn
+    deps.learn = async (statement: string, context?: any) => { seen.push(context); return learn(statement, context) }
+    const llm = vi.fn().mockResolvedValue('DECISION: UPDATE\nTARGET: ENG-2026-0101-901\nREASON: same subject')
+
+    await learnAsync(deps, 'the staging VPN profile now uses another port', { scope: 'group:acme/eng', visibility: 'public', llm } as any)
+
+    expect(seen.at(-1)?.visibility).toBe('public')
+  })
+})
+
+// Release audit 0.22.0: an unscoped save never moves onto a team server
+// because the duplicate checker tied it to a team memory. It is saved where an
+// unscoped save goes, linked to that memory as a likely duplicate.
+describe('learnAsync UPDATE never inherits a server-backed scope the caller did not ask for', () => {
+  const teamRow = (id: string) => ({ ...globalCandidate, id, scope: 'group:acme/eng', visibility: 'public' } as unknown as Engram)
+  function recording(candidates: Engram[]) {
+    const deps = makeDeps(candidates)
+    const seen: any[] = []
+    const learn = deps.learn
+    deps.learn = async (statement: string, context?: any) => { seen.push(context); return learn(statement, context) }
+    deps.sendsToServer = (scope: string) => scope.startsWith('group:')
+    return { deps, seen }
+  }
+
+  it('saves an unscoped update of a team memory locally, linked to it', async () => {
+    const { deps, seen } = recording([teamRow('ENG-2026-0101-910')])
+    const llm = vi.fn().mockResolvedValue('DECISION: UPDATE\nTARGET: ENG-2026-0101-910\nREASON: same subject')
+
+    const result = await learnAsync(deps, 'my staging VPN profile now uses another port', { llm })
+
+    expect(result.decision).toBe('ADD')
+    expect(result.likely_duplicate_of?.id).toBe('ENG-2026-0101-910')
+    expect(seen.at(-1)?.scope).toBeUndefined()
+    expect(seen.at(-1)?.supersedes).toBeUndefined()
+    expect(seen.at(-1)?.related).toContain('ENG-2026-0101-910')
+  })
+
+  it('still supersedes when the caller named the team scope', async () => {
+    const { deps, seen } = recording([teamRow('ENG-2026-0101-911')])
+    const llm = vi.fn().mockResolvedValue('DECISION: UPDATE\nTARGET: ENG-2026-0101-911\nREASON: same subject')
+
+    const result = await learnAsync(deps, 'the team staging VPN now uses another port', { scope: 'group:acme/eng', llm })
+
+    expect(result.decision).toBe('UPDATE')
+    expect(seen.at(-1)?.scope).toBe('group:acme/eng')
+    expect(seen.at(-1)?.supersedes).toContain('ENG-2026-0101-911')
   })
 })

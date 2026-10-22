@@ -1,0 +1,13 @@
+diff --git a/packages/core/src/index.ts b/packages/core/src/index.ts
+index d018e0d6..3faf416f 100644
+--- a/packages/core/src/index.ts
++++ b/packages/core/src/index.ts
+@@ -7844,7 +7844,7 @@ export class Plur {
+     // reach the same output, and an allow-list with an exemption is not an
+     // allow-list. A caller that wants pack content in scope names it.
+     const permitted = options?.scopes
+-    const inScope = (e: Engram): boolean => permitted === undefined || permitted.includes(e.scope)
++    const inScope = (e: Engram): boolean => permitted === undefined || permitted.includes(e.scope) || !isSharedScope(e.scope)
+     // Pack engrams are carried by `packs`, NOT by this array (#901).
+     //
+     // `_loadAllEngrams` merges installed-pack engrams into the corpus and

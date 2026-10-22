@@ -45,6 +45,19 @@ Checked against #1277, #1400, #1414 and #1422 (merged into #1228 on 2026-09-30):
   hook state dir of §1. The inject lock and its release (§3) are unchanged.
 - doctor: `overall` also requires a deliverable outbox (#1299). §5's
   `readyLine`/`hookHarnesses` claim is unchanged.
+
+Checked against #1521 (remote-only folders, merged onto development 2026-10-18): still holds.
+hook-inject's deferred wrap-up and hook-session-end capture no episode for a remote-only
+folder (the checkpoint is removed) and none for a folder that cannot be resolved (the
+checkpoint is kept); hook-agy-pre-invocation binds its instance. Checkpoint vetting, session
+identity, the inject lock, counters, the doctor verdict and turn identity are unchanged.
+
+
+Checked 2026-10-19 for git-origin folder defaults: GitFolder models the added
+folder-policy admission and operation-captured default. Existing explicit scopes,
+remote-only gates, store resolution, persistence and outbox delivery rules are
+unchanged. The remote recall change only suppresses calls for a local/unknown
+origin default; a deliberate call/session scope keeps the existing routing.
 -/
 
 namespace PlurSpec.R2CLI
@@ -640,3 +653,23 @@ theorem old_removes_live : removesLive oldTakeover 1 (some 2) :=
 end InjectLock
 
 end PlurSpec.R2CLI
+
+/-! Checked 2026-10-19: initial-session cached server status and hook-run timestamps
+add presentation/diagnostic metadata only. Existing admission, persistence and
+write rules are unchanged. SaveDestination.SessionStatusAdapter models workspace
+status selection; real hook and stdio tests check adapter integration. -/
+
+/- 2026-10-19: Hook execution timestamps are recorded only after the off-folder
+guard. Disabled memory retains its no-store-write boundary; admitted hooks keep
+the existing timestamp and status behavior. No routing or delivery rule changes. -/
+
+/-! 2026-10-19: Legacy project token cleanup runs only in working session-start
+paths, requires an enterprise registration and preserves hook failure behavior.
+Private backup, tracking and snapshot guards are modeled in LegacyProjectCleanup;
+existing injection, routing and status invariants remain unchanged. -/
+
+/- 2026-10-19: Doctor surfaces core server evidence and requires post-install
+hook-run timestamps for wired supported editors. Init records installation only
+after successful writes; diagnostics do not grant access or send queued saves.
+Existing adapter routing and config-preservation invariants are unchanged;
+ServerDiagnostics models missing-evidence and hook-time aggregation. -/

@@ -364,6 +364,15 @@ export function escapedPath(p: string): string {
 /** Why the question cannot offer commands for `folder`, or null when it can. */
 type Unofferable = 'line' | 'invisible' | 'shell' | 'backslash' | 'pattern'
 
+/**
+ * True when a `plur folders set <folder>` command can be printed for
+ * `folder` (the same rule the folder question uses, #1418/#1493). A folder
+ * that cannot is named only as {@link escapedPath} data, with no command.
+ */
+export function folderCommandOfferable(folder: string, platform: NodeJS.Platform = process.platform): boolean {
+  return unofferable(folder, platform) === null
+}
+
 function unofferable(folder: string, platform: NodeJS.Platform = process.platform): Unofferable | null {
   if (LINE_UNSAFE.test(folder)) return 'line'
   if (INVISIBLE.test(folder)) return 'invisible'

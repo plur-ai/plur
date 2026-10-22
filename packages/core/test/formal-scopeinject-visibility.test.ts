@@ -12,10 +12,14 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { selectAndSpread } from '../src/inject.js'
 import { EngramSchema } from '../src/schemas/engram.js'
 
+// Build `last_accessed` from now so the test does not break as time passes
+// and engram scores decay toward the 0.3 minRelevance threshold.
+const today = new Date().toISOString().split('T')[0]
+
 const mk = (id: string, scope: string, statement: string, extra: Record<string, unknown> = {}) => ({
   ...EngramSchema.parse({
     id, statement, type: 'behavioral', scope, status: 'active', version: 2, tags: [],
-    activation: { retrieval_strength: 0.9, storage_strength: 1, frequency: 0, last_accessed: '2026-09-20' },
+    activation: { retrieval_strength: 0.9, storage_strength: 1, frequency: 0, last_accessed: today },
   }),
   ...extra,
 })

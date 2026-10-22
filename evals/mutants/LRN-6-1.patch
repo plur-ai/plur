@@ -1,0 +1,23 @@
+diff --git a/packages/core/src/learn-async.ts b/packages/core/src/learn-async.ts
+index fcff36f5..6c42d935 100644
+--- a/packages/core/src/learn-async.ts
++++ b/packages/core/src/learn-async.ts
+@@ -261,9 +261,6 @@ async function executeDedupDecision(
+       if (!existing || existing.status !== 'active') {
+         return { engram: await deps.learn(statement, context), decision: 'ADD' }
+       }
+-      if ((existing as any).commitment === 'locked') {
+-        return await saveBesideLocked(deps, statement, context, existing)
+-      }
+       // A save queued from a remote-only folder is never superseded by a dedup
+       // decision: it is delivered or forgotten as it was saved (re-audit 3 of
+       // #1521), so the reverse edge would be a local rewrite of it. Saved
+@@ -278,7 +275,7 @@ async function executeDedupDecision(
+       const scope = context?.scope ?? existing.scope
+       // `supersedes_unless_locked`: learn() re-checks the lock under the store
+       // lock, so a memory locked after the read above is not superseded either.
+-      const engram = await deps.learn(statement, { ...context, ...(scope ? { scope } : {}), supersedes, supersedes_unless_locked: true })
++      const engram = await deps.learn(statement, { ...context, ...(scope ? { scope } : {}), supersedes, supersedes_unless_locked: false }) // MUTANT: both lock checks gone
+       // Judged by effect (audit 5 F4): UPDATE is reported only when BOTH edges
+       // landed — the forward edge on the new memory and the reverse edge on the
+       // target, read back from the target's own store — because the reverse

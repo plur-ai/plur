@@ -228,9 +228,6 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   // the same day; the namespaced form (`ENG-GTE-…`) names the store. An outbox
   // row keeps its local id: it sits in the local store until the retry lands.
   const reportedId = delivered.delivery === 'outbox' ? engram.id : plur.readIdFor(engram)
-  const where = delivered.delivery === 'remote'
-    ? `remote store for ${engram.scope} (confirmed)`
-    : delivered.delivery === 'outbox' ? 'this machine, queued in the outbox' : 'this machine'
 
   // LOW-10 (#353): surface a scope demotion instead of swallowing it silently.
   // When learnRouted demotes a sensitive shared-scope write to local/private it
@@ -275,6 +272,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       type: engram.type,
       domain: engram.domain ?? null,
       delivery: delivered.delivery,
+      destination: delivered.destination,
       ...(delivered.reason ? { delivery_reason: delivered.reason, delivery_reason_code: delivered.reason_code } : {}),
       ...(delivered.warning ? { delivery_warning: delivered.warning } : {}),
       // Include the demotion only when it happened; include requested_scope ONLY
@@ -294,9 +292,10 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     if (delivered.delivery === 'outbox') {
       // Not where a reader assumes a team save went — never suppressed.
       outputText(`  Queued in the outbox: ${delivered.reason ?? `saved on this machine and queued for ${engram.scope}.`}`)
-    } else {
-      outputInfo(`  Saved: ${where}`, flags)
     }
+    if (delivered.destination.startsWith('saved on this laptop only —') || delivered.delivery === 'outbox') {
+      outputText(`  Saved: ${delivered.destination}`)
+    } else outputInfo(`  Saved: ${delivered.destination}`, flags)
     if (demoted) {
       // The write landed somewhere OTHER than requested — never suppressed.
       outputText(

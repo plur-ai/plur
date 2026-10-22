@@ -1,0 +1,11 @@
+--- a/packages/cli/src/commands/upload.ts
++++ b/packages/cli/src/commands/upload.ts
+@@ -16,7 +16,7 @@
+ }
+ 
+ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
+-  let yes = false, only: string[] | undefined
++  let yes = true, only: string[] | undefined
+   for (let i = 0; i < args.length; i++) {
+     if (args[i] === '--yes') yes = true
+     else if (args[i] === '--only' && only === undefined) {

@@ -1,0 +1,18 @@
+diff --git a/packages/core/src/engrams.ts b/packages/core/src/engrams.ts
+index 7bcef3e4..ab62b339 100644
+--- a/packages/core/src/engrams.ts
++++ b/packages/core/src/engrams.ts
+@@ -124,12 +124,7 @@ export function engramStoreEntries(filePath: string, content: string, byteLength
+   // file truncated to `engrams:\n`, one learn -> 1 engram on disk (#811 audit,
+   // finding 4). An earlier version of this parser accepted it, and a test
+   // blessed the behaviour.
+-  if (raw.engrams == null) {
+-    throw new EngramStoreUnreadableError(
+-      filePath,
+-      new Error('"engrams" key is present but has no value — an empty store is written as `engrams: []`'),
+-    )
+-  }
++  if (raw.engrams == null) return [] // MUTANT: a bare engrams: key is an empty store
+   if (!Array.isArray(raw.engrams)) {
+     throw new EngramStoreUnreadableError(filePath, new Error('"engrams" is present but is not a list'))
+   }

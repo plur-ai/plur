@@ -65,10 +65,11 @@ import { homedir } from 'os'
 import { join, dirname } from 'path'
 import { z } from 'zod'
 import type { Engram } from './schemas/engram.js'
-import { normalizeEndpointUrl, salvageRemoteRow } from './store/remote-store.js'
+import { normalizeEndpointUrl, salvageRemoteRow, safeOrigin } from './store/remote-store.js'
 import { isScopeWithin, isSharedScope } from './scope-util.js'
 import { namespaceEngramId } from './engrams.js'
 import { logger } from './logger.js'
+import { enterpriseRecoveryHint } from './enterprise.js'
 import { withLock } from './sync.js'
 
 // ---------------------------------------------------------------------------
@@ -377,6 +378,11 @@ export interface RecallRemoteHostReport {
   state: RemoteHostState
   ms: number
   count: number
+  /** The ids (namespaced, as in the results) of the rows THIS host returned,
+   *  listed before rows from several hosts are merged: one server's ids can
+   *  equal another's, and the merged results keep the first host's row. The
+   *  only per-host attribution a caller gets (Codex round 5, finding 2). */
+  ids: string[]
   detail?: string
 }
 
@@ -400,6 +406,7 @@ export function buildRecallRemoteReport(outcomes: HostRecallOutcome[]): RecallRe
     state: o.state,
     ms: o.ms,
     count: o.count,
+    ids: o.ids ?? [],
     ...(o.detail ? { detail: o.detail } : {}),
   }))
   if (hosts.length === 0) return { state: 'not_dialed', hosts }
@@ -413,6 +420,8 @@ export interface HostRecallOutcome {
   ms: number
   /** Rows accepted from this host after validation + scope guard. */
   count: number
+  /** Their namespaced ids, in this host's order (absent: none accepted). */
+  ids?: string[]
   /** Server-reported mode that ACTUALLY ran (envelope `mode`). */
   mode?: string
   /** Server-reported: the semantic (vector) leg actually ran. */
@@ -957,7 +966,7 @@ function processHostRows(
     const salvaged = salvageRemoteRow(candidate as Record<string, unknown>, { url: host.url, rowId: (candidate as Record<string, unknown>).id })
     if (!salvaged) {
       const safeId = String((candidate as Record<string, unknown>).id ?? '').replace(/[^\w:./-]/g, '?').slice(0, 64)
-      logger.debug(`[plur:remote-recall] ${host.url} returned a malformed row (id="${safeId}") — dropped`)
+      logger.debug(`[plur:remote-recall] ${safeOrigin(host.url)} returned a malformed row (id="${safeId}") — dropped`)
       continue
     }
     const e = salvaged.data as unknown as Engram
@@ -966,7 +975,7 @@ function processHostRows(
       ? dialedEntries[0]
       : dialedEntries.find(en => isScopeWithin(e.scope, en.scope))
     if (!entry) {
-      logger.debug(`[plur:remote-recall] ${host.url} row ${e.id} outside dialed scopes (${e.scope}) — dropped`)
+      logger.debug(`[plur:remote-recall] ${safeOrigin(host.url)} row ${e.id} outside dialed scopes (${e.scope}) — dropped`)
       continue
     }
     const cloned = stampStoreRow(e, entry.scope) as any
@@ -1124,7 +1133,7 @@ export async function remoteRecall(
       h.last_state = state
       h.updated_at = now()
       return {
-        outcome: { url: host.url, state, ms: now() - t0, count: rows.engrams.length, ...extra },
+        outcome: { url: host.url, state, ms: now() - t0, count: rows.engrams.length, ids: rows.engrams.map(e => e.id), ...extra },
         engrams: rows.engrams,
         scores: rows.scores,
       }
@@ -1418,6 +1427,7 @@ export async function remoteRecall(
 
 export interface RemoteStoreStatusEntry {
   host: string
+  enterprise?: boolean
   status: RemoteHostState
   dropped_scopes?: string[]
   ms?: number
@@ -1441,6 +1451,9 @@ export interface RemoteStoreStatusEntry {
  */
 export function mcpRemoteWarningLine(o: RemoteStoreStatusEntry): string {
   const host = o.host
+  if (o.enterprise && (o.status === 'auth_expired' || o.status === 'forbidden')) {
+    return `${host}: credentials rejected — team engrams unavailable; tell the user to ${enterpriseRecoveryHint(host)}.`
+  }
   switch (o.status) {
     case 'ok':
       return o.dropped_scopes && o.dropped_scopes.length > 0
@@ -1473,6 +1486,9 @@ export function mcpRemoteWarningLine(o: RemoteStoreStatusEntry): string {
  */
 export function hookRemoteHeaderLine(o: RemoteStoreStatusEntry): string | null {
   const host = o.host
+  if (o.enterprise && (o.status === 'auth_expired' || o.status === 'forbidden')) {
+    return `[PLUR] ${host}: credentials rejected — ${enterpriseRecoveryHint(host)}.`
+  }
   switch (o.status) {
     case 'ok':
       return o.dropped_scopes && o.dropped_scopes.length > 0
@@ -1500,6 +1516,9 @@ export function hookRemoteHeaderLine(o: RemoteStoreStatusEntry): string | null {
 /** Human-directed plur_doctor remediation strings (cause + human fix). */
 export function doctorRemoteRemediation(o: RemoteStoreStatusEntry): string | null {
   const host = o.host
+  if (o.enterprise && (o.status === 'auth_expired' || o.status === 'forbidden')) {
+    return `Remote ${host}: credentials rejected — ${enterpriseRecoveryHint(host)}.`
+  }
   switch (o.status) {
     case 'ok':
       return o.dropped_scopes && o.dropped_scopes.length > 0

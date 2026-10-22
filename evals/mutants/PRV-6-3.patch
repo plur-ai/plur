@@ -1,0 +1,13 @@
+diff --git a/packages/core/src/index.ts b/packages/core/src/index.ts
+index d018e0d6..c1b5594b 100644
+--- a/packages/core/src/index.ts
++++ b/packages/core/src/index.ts
+@@ -5150,7 +5150,7 @@ export class Plur {
+       }
+     }
+     let delivery: LearnDelivery
+-    if (this._remoteDelivered.has(engram)) delivery = 'remote'
++    if (this._remoteDelivered.has(engram)) delivery = 'local'
+     else if (e.structured_data?._outbox) delivery = 'outbox'
+     else if (typeof e._storeScope === 'string') {
+       // A dedup/recurrence hit on a row read from a secondary store: it lives

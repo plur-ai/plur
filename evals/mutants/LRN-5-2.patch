@@ -1,0 +1,13 @@
+diff --git a/packages/core/src/learn-async.ts b/packages/core/src/learn-async.ts
+index fcff36f5..f5f37116 100644
+--- a/packages/core/src/learn-async.ts
++++ b/packages/core/src/learn-async.ts
+@@ -689,7 +689,7 @@ export async function learnBatch(
+       const result = await learnAsync(batchDeps, statement, ctx, { neverOverwrite: true })
+       // Tag with the input position so a caller can map this result back to its
+       // input even though `results` is compacted (failed statements absent). #281
+-      results.push({ ...result, input_index: i })
++      results.push({ ...result, dedup: result.dedup && { mode: result.dedup.mode }, input_index: i })
+       const key = result.decision.toLowerCase()
+       if (key === 'noop') stats.noops++
+       else if (key === 'merge') stats.merged++

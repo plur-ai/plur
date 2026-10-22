@@ -1,10 +1,12 @@
 import { execFileSync } from 'child_process'
+import { isRemoteOnlyQueued } from './remote-only-rows.js'
 import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, unlinkSync, statSync, readdirSync, openSync, closeSync, fsyncSync, chmodSync } from 'fs'
-import { join, dirname, relative } from 'path'
+import { join, dirname, relative, basename } from 'path'
 import * as yaml from 'js-yaml'
 import { isSharedScope } from './scope-util.js'
-import { engramStoreEntries, sameEngramContent, recordIdRenames, mergeHeldRecords, readHeldRecovery, writeHeldRecovery, heldRecoveryPath, SYNC_HELD_RENAME_REASON, type IdRename, type HeldFile } from './engrams.js'
+import { engramStoreEntries, sameEngramContent, freshDuplicateId, recordIdRenames, mergeHeldRecords, readHeldRecovery, writeHeldRecovery, readHeldMergeRenames, renameEngramIdRefs, ENGRAM_ID_TOKEN, heldRecoveryPath, SYNC_HELD_RENAME_REASON, type IdRename, type HeldFile } from './engrams.js'
 import { recordLastWritten } from './backup.js'
+import { _ownerOnlyHost, checkOwnerOnly, currentWindowsAccount, protectOwnerOnly, type OwnerOnlyExec } from './owner-only.js'
 import {
   DEFAULT_STALE_THRESHOLD, holderIsAlive, makeToken, startHeartbeat, heartbeatHeldLocks, GIT_COMMAND_TIMEOUT_MS,
   publishLockFileSync, takeOverSync, abandonedByAge,
@@ -22,9 +24,10 @@ export interface SyncStatus {
 /**
  * What the sync remote is for (#640). `personal` (default): the user's own
  * backup/mirror across their machines — every non-`scope:local` engram is
- * pushed, private included (today's historical behavior). `shared`: a
- * team-visible remote — ONLY shared-family-scope, non-private engrams are
- * pushed; personal-family and private engrams never leave the machine.
+ * pushed, private included. `shared`: a team-visible remote —
+ * ONLY shared-family-scope, non-private engrams are pushed; personal-family and
+ * private engrams never leave the machine. On both, a side record (episode,
+ * candidate, tension) that names an engram outside the push set stays home too.
  */
 export type SyncRemoteType = 'personal' | 'shared'
 
@@ -277,7 +280,6 @@ const SIBLING_STRIP_FILES = ['episodes.yaml', 'candidates.yaml', 'tensions.yaml'
  * over the id charset, so a longer unknown token ("ENG-0011" around "ENG-001")
  * extracts as itself and simply fails push-set membership — conservative.
  */
-const ENGRAM_ID_TOKEN = /\b(?:ENG|ABS|META)-[A-Za-z0-9-]+/g
 
 /**
  * Dump options matching the sibling-file writers (episodes.ts / tension-store.ts
@@ -339,8 +341,8 @@ function readEngramList(root: string): { raw: unknown; list: EngramRecord[] } | 
 
 /**
  * Push-set predicate per remote type (#640). `personal`: everything except
- * `scope:local` (historical behavior — private engrams follow the user across
- * their own machines). `shared`: ONLY shared-family scopes (`isSharedScope`)
+ * `scope:local` (private engrams follow the user across their own machines —
+ * it is their backup). `shared`: ONLY shared-family scopes (`isSharedScope`)
  * with a non-private visibility — personal-family (`local`/`global`/`user:*`/
  * `agent:*`) and private-visibility engrams are excluded by construction.
  * NOTE the default visibility is 'private' (#401), so a shared remote receives
@@ -348,22 +350,24 @@ function readEngramList(root: string): { raw: unknown; list: EngramRecord[] } | 
  * consistent with the "private stays local" write-path semantics (#90).
  */
 function pushKeep(remoteType: SyncRemoteType): (e: EngramRecord) => boolean {
+  // A queued remote-only save is never committed or pushed, whatever the remote
+  // (gate review of #1663): history would keep it after delivery.
   if (remoteType === 'shared') {
-    return e => isSharedScope(e?.scope ?? '') && (e?.visibility ?? 'private') !== 'private'
+    return e => !isRemoteOnlyQueued(e) && isSharedScope(e?.scope ?? '') && (e?.visibility ?? 'private') !== 'private'
   }
-  return e => e?.scope !== 'local'
+  return e => !isRemoteOnlyQueued(e) && e?.scope !== 'local'
 }
 
 /**
- * Ids of the engrams a `shared` remote actually receives — the membership set
+ * Ids of the engrams this remote type actually receives — the membership set
  * the sibling-file keep-predicate checks references against (#686). Empty when
  * engrams.yaml is absent/unparseable: with no provable push set, every
  * id-referencing sibling record is conservatively outside it.
  */
-function sharedPushIds(root: string): Set<string> {
+function pushIds(root: string, remoteType: SyncRemoteType): Set<string> {
   const parsed = readEngramList(root)
   if (!parsed) return new Set()
-  const keep = pushKeep('shared')
+  const keep = pushKeep(remoteType)
   return new Set(
     parsed.list.filter(keep).map(e => String(e?.id ?? '')).filter(Boolean),
   )
@@ -401,11 +405,11 @@ function readSiblingList(root: string, file: string): unknown[] | null {
 }
 
 /**
- * Keep-predicate for sibling-file records on a `shared` remote (#686): a record
- * is pushed only when EVERY engram id referenced anywhere in it resolves to the
- * shared push set. Shape-agnostic by design — the id scan runs over the whole
- * serialized record, so it covers structured fields (`engram_a`/`engram_b`/
- * `resolved_by`) and ids embedded in free text (episode summaries) alike, and
+ * Keep-predicate for sibling-file records (#686): a record is pushed only when
+ * EVERY engram id referenced anywhere in it resolves to the remote's push set.
+ * Shape-agnostic by design — the id scan runs over the whole serialized
+ * record, so it covers structured fields (`engram_a`/`engram_b`/`resolved_by`)
+ * and ids embedded in free text (episode summaries) alike, and
  * candidates.yaml needs no schema of its own. A referenced id that is personal/
  * private (stripped from the push) OR unknown (deleted, foreign) fails the test
  * — strip-on-doubt, because a false keep is a leak and a false drop is not.
@@ -421,9 +425,9 @@ function siblingKeep(pushedIds: Set<string>): (record: unknown) => boolean {
   }
 }
 
-/** Count of sibling records the `shared` strip withholds — for the sync warning. */
-function droppedSiblingCount(root: string): number {
-  const keep = siblingKeep(sharedPushIds(root))
+/** Count of sibling records the strip withholds for this remote type — for the sync warning. */
+function droppedSiblingCount(root: string, remoteType: SyncRemoteType): number {
+  const keep = siblingKeep(pushIds(root, remoteType))
   let dropped = 0
   for (const file of SIBLING_STRIP_FILES) {
     const records = readSiblingList(root, file)
@@ -442,7 +446,7 @@ function stripWarning(root: string, remoteType: SyncRemoteType): string | undefi
   const parsed = readEngramList(root)
   if (remoteType === 'shared') {
     const strippedEngrams = parsed ? parsed.list.filter(e => !pushKeep('shared')(e)).length : 0
-    const strippedSiblings = droppedSiblingCount(root)
+    const strippedSiblings = droppedSiblingCount(root, 'shared')
     if (strippedEngrams === 0 && strippedSiblings === 0) return undefined
     const parts: string[] = []
     if (strippedEngrams > 0) parts.push(`${strippedEngrams} personal-scope or private-visibility engram(s)`)
@@ -462,12 +466,16 @@ function stripWarning(root: string, remoteType: SyncRemoteType): string | undefi
     e => e?.scope !== 'local' && (e?.visibility ?? 'private') === 'private',
   ).length
   const localCount = parsed.list.filter(e => e?.scope === 'local').length
+  const strippedSiblings = droppedSiblingCount(root, 'personal')
   const parts: string[] = []
   if (localCount > 0) {
     parts.push(
       `${localCount} scope:local engram(s) are NOT pushed and are NOT backed up by sync` +
       (localCount === parsed.list.length ? ' — this remote backs up nothing' : ''),
     )
+  }
+  if (strippedSiblings > 0) {
+    parts.push(`${strippedSiblings} episode/candidate/tension record(s) naming a non-pushed engram stayed local`)
   }
   if (privateCount > 0) {
     parts.push(`${privateCount} private-visibility engram(s) ARE pushed — use a private git remote`)
@@ -522,14 +530,14 @@ function stageStrippedEngrams(root: string, remoteType: SyncRemoteType): void {
 
 /**
  * Replace the *staged* episodes/candidates/tensions blobs with ones that keep
- * only records derived from the shared push set (#686 — completes the #640
- * guarantee: "personal-family and private engrams never reach the remote"
- * must also hold for their derived text in the sibling store files).
- * `personal` remotes are untouched — the historical mirror-everything behavior.
+ * only records derived from this remote's push set (#686 — completes the #640
+ * guarantee: an engram withheld from the remote must also be withheld in its
+ * derived text in the sibling store files). Applies to `personal` remotes too:
+ * a scope:local engram never leaves the machine, so a side record naming one
+ * does not either.
  */
 function stageStrippedSiblings(root: string, remoteType: SyncRemoteType): void {
-  if (remoteType !== 'shared') return
-  const keep = siblingKeep(sharedPushIds(root))
+  const keep = siblingKeep(pushIds(root, remoteType))
   for (const file of SIBLING_STRIP_FILES) {
     const records = readSiblingList(root, file)
     if (!records) continue
@@ -601,12 +609,10 @@ function holdWithheld(root: string, remoteType: SyncRemoteType): WithheldFile[] 
   if (parsed) {
     candidates.push({ file: 'engrams.yaml', held: parsed.list.filter(e => !pushKeep(remoteType)(e)) })
   }
-  if (remoteType === 'shared') {
-    const keep = siblingKeep(sharedPushIds(root))
-    for (const file of SIBLING_STRIP_FILES) {
-      const records = readSiblingList(root, file)
-      if (records) candidates.push({ file, held: records.filter(r => !keep(r)) })
-    }
+  const keepSibling = siblingKeep(pushIds(root, remoteType))
+  for (const file of SIBLING_STRIP_FILES) {
+    const records = readSiblingList(root, file)
+    if (records) candidates.push({ file, held: records.filter(r => !keepSibling(r)) })
   }
   for (const { file, held } of candidates) {
     if (held.length === 0) continue
@@ -620,7 +626,7 @@ function holdWithheld(root: string, remoteType: SyncRemoteType): WithheldFile[] 
   if (files.length === 0) return files
   // Durable BEFORE the tree is touched: from here until the restore completes,
   // this file is the only copy of the held records.
-  writeHeldRecovery(root, files)
+  writeHeldRecovery(root, files, null)
   for (const f of files) git(['checkout', '--', f.file], root)
   return files
 }
@@ -632,12 +638,7 @@ function headBlob(root: string, file: string): string | null {
 
 /** Replace engram-id tokens in a record by `map` (old id -> new id), everywhere in it. */
 function renameIdRefs(v: unknown, map: ReadonlyMap<string, string>): unknown {
-  if (typeof v === 'string') return v.replace(ENGRAM_ID_TOKEN, m => map.get(m) ?? m)
-  if (Array.isArray(v)) return v.map(x => renameIdRefs(x, map))
-  if (v !== null && typeof v === 'object') {
-    return Object.fromEntries(Object.entries(v as Record<string, unknown>).map(([k, x]) => [k, renameIdRefs(x, map)]))
-  }
-  return v
+  return renameEngramIdRefs(v, map)
 }
 
 /** Held sibling records not already present verbatim in `current` — a restore may be re-run after a crash. */
@@ -667,10 +668,19 @@ function missingSiblingRecords(current: readonly unknown[], held: readonly unkno
  *   sync committed and pushed. Only when HEAD still holds the pre-pull blob
  *   (nothing was integrated) do the saved bytes go back.
  */
-function restoreWithheld(root: string, files: WithheldFile[]): { renames: IdRename[]; rewrote: string[]; unresolved: WithheldFile[] } {
+function restoreWithheld(root: string, files: WithheldFile[], merged: readonly IdRename[] = []): { renames: IdRename[]; rewrote: string[]; unresolved: WithheldFile[] } {
   // engrams.yaml first: its renames (P1b) are applied to held sibling records.
-  const ordered = [...files].sort((a, b) => Number(b.file === 'engrams.yaml') - Number(a.file === 'engrams.yaml'))
-  const renamed = new Map<string, string>()
+  let ordered = [...files].sort((a, b) => Number(b.file === 'engrams.yaml') - Number(a.file === 'engrams.yaml'))
+  // Renames the record merge made to COMMITTED engrams during this pull (F2):
+  // held records were written on this machine, so a reference in them to the
+  // old id meant this machine's engram, which now has the new id. Every held
+  // record follows, held engrams included (their relations), before anything
+  // else is decided about them.
+  if (merged.length > 0) {
+    const map = new Map(merged.map(r => [r.from, r.to] as const))
+    ordered = ordered.map(f => ({ ...f, held: f.held.map(r => renameIdRefs(r, map)) }))
+  }
+  const renamed = new Map<string, string>(merged.map(r => [r.from, r.to] as const))
   const allRenames: IdRename[] = []
   const rewrote: string[] = []
   const unresolved: WithheldFile[] = []
@@ -758,7 +768,20 @@ function heldPendingNote(root: string, unresolved: readonly WithheldFile[]): str
 function recoverHeld(root: string): WithheldFile[] {
   const files = readHeldRecovery(root)
   if (!files) return []
-  const restored = restoreWithheld(root, files)
+  // Audit 6, N1. Killed between the record merge and the merge commit: the
+  // merge is half-done (merged files in the tree, MERGE_HEAD set) and its
+  // renames are not in the store yet. Abort it — the tree goes back to HEAD,
+  // which is what the held records were set aside from — and let this sync
+  // pull again; that pull merges and renames afresh.
+  if (gitSafe(['rev-parse', '-q', '--verify', 'MERGE_HEAD'], root) !== null) gitSafe(['merge', '--abort'], root)
+  // Killed after the merge commit: its renames were saved with the held
+  // records before the commit, and the held records follow them as in an
+  // uninterrupted sync. Empty while a merge is still half-done.
+  const merged = readHeldMergeRenames(root)
+  const restored = restoreWithheld(root, files, merged)
+  if (merged.length > 0) {
+    recordIdRenames(root, merged, SYNC_MERGE_RENAME_REASON, { store: join(root, 'engrams.yaml'), cause: 'sync-recovery' })
+  }
   if (restored.renames.length > 0) {
     recordIdRenames(root, restored.renames, SYNC_HELD_RENAME_REASON,
       { store: join(root, 'engrams.yaml'), cause: 'sync-recovery', files: restored.rewrote })
@@ -825,12 +848,13 @@ function pullRebase(root: string, remoteType: SyncRemoteType): { ok: boolean; re
   const held = holdWithheld(root, remoteType)
   let ok = false
   let restored: { renames: IdRename[]; rewrote: string[]; unresolved: WithheldFile[] } = { renames: [], rewrote: [], unresolved: [] }
+  const mergeRenames: IdRename[] = []
   try {
-    ok = pullRebaseClean(root, remoteType)
+    ok = pullRebaseClean(root, remoteType, mergeRenames)
   } finally {
     // On a throw from the restore the recovery file stays: the next sync or
     // store write finishes the job.
-    restored = restoreWithheld(root, held)
+    restored = restoreWithheld(root, held, mergeRenames)
   }
   let committed: string[] = []
   if (restored.renames.length > 0) {
@@ -844,7 +868,11 @@ function pullRebase(root: string, remoteType: SyncRemoteType): { ok: boolean; re
   return { ok, rewroteSiblings: committed, unresolved: restored.unresolved }
 }
 
-function pullRebaseClean(root: string, remoteType: SyncRemoteType): boolean {
+/**
+ * @param mergeRenames receives the engram renames the record merge made, so the
+ *   caller can carry them into the records held aside for privacy (F2).
+ */
+function pullRebaseClean(root: string, remoteType: SyncRemoteType, mergeRenames: IdRename[] = []): boolean {
   const branch = gitSafe(['rev-parse', '--abbrev-ref', 'HEAD'], root) || 'main'
   const result = gitSafe(['pull', '--rebase', 'origin', branch], root)
   if (result !== null) return true
@@ -853,7 +881,44 @@ function pullRebaseClean(root: string, remoteType: SyncRemoteType): boolean {
   // `--no-rebase` is explicit: git 2.27+ refuses a pull of divergent branches
   // unless a reconcile mode is configured, so the bare form failed in exactly
   // the case this fallback exists for and sync reported "NOT pulled".
-  const mergeResult = gitSafe(['pull', '--no-rebase', 'origin', branch, '--no-edit'], root)
+  //
+  // `--no-commit`: the merge stops before committing, clean or conflicted, so
+  // the store files can be merged as records (SYN-5) before anything is
+  // committed. Git merges YAML line by line, so two devices that each saved a
+  // memory offline both append to the end of engrams.yaml and always conflict;
+  // and a "clean" line merge can still put two different engrams under one id.
+  const mergeResult = gitSafe(['pull', '--no-rebase', '--no-commit', 'origin', branch], root)
+  if (gitSafe(['rev-parse', '-q', '--verify', 'MERGE_HEAD'], root) !== null) {
+    let renames: IdRename[]
+    try {
+      renames = mergeStoreRecords(root)
+    } catch (err) {
+      gitSafe(['merge', '--abort'], root)
+      throw err
+    }
+    if (hasConflictMarkers(root)) {
+      gitSafe(['merge', '--abort'], root)
+      throw new Error('Sync conflict: YAML files have merge conflicts that require manual resolution. Your local changes are preserved.')
+    }
+    // Audit 6, N1: the renames are saved with the held records BEFORE the
+    // commit, so a process killed the moment the commit exists still has them
+    // on restart (`recoverHeld`). They take effect only once MERGE_HEAD is gone.
+    const heldNow = renames.length > 0 ? readHeldRecovery(root) : null
+    if (heldNow && heldNow.length > 0) writeHeldRecovery(root, heldNow, renames)
+    stageStoreFiles(root)
+    stageStripped(root, remoteType)
+    const merged = gitSafe(['commit', '--no-edit', '-m', 'plur sync: merged both devices\' changes'], root)
+    if (merged === null) {
+      if (heldNow && heldNow.length > 0) writeHeldRecovery(root, heldNow, null)
+      gitSafe(['merge', '--abort'], root)
+      return false
+    }
+    mergeRenames.push(...renames)
+    if (renames.length > 0) {
+      recordIdRenames(root, renames, SYNC_MERGE_RENAME_REASON, { store: join(root, 'engrams.yaml'), cause: 'sync-merge' })
+    }
+    return countDiff(root, 'behind') === 0
+  }
   if (mergeResult !== null) return true
   // Merge conflict — check for conflict markers before staging
   if (hasConflictMarkers(root)) {
@@ -877,6 +942,301 @@ function pullRebaseClean(root: string, remoteType: SyncRemoteType): boolean {
   // are still behind the upstream, the pull did not happen.
   if (committed === null) return false
   return countDiff(root, 'behind') === 0
+}
+
+const SYNC_MERGE_RENAME_REASON =
+  'sync: both devices saved a different engram under the same id while offline; the one not yet pushed was given a fresh id (P1b)'
+
+const UNMERGEABLE = 'Sync conflict: YAML files have merge conflicts that require manual resolution. Your local changes are preserved.'
+
+/** Equality on parsed YAML values, key order ignored. */
+function same(a: unknown, b: unknown): boolean {
+  if (a === b) return true
+  if (a === undefined || b === undefined) return false
+  return sameEngramContent(a, b)
+}
+
+const isPlainObject = (v: unknown): v is Record<string, unknown> =>
+  v !== null && typeof v === 'object' && !Array.isArray(v)
+
+/**
+ * Three-way merge of one value both devices changed. Unchanged on one side →
+ * the other side's change. Changed on both:
+ * - `status`: a retirement wins (a forgotten or superseded memory stays so);
+ * - lists: union, minus what either side removed (a link added on either
+ *   device survives);
+ * - objects: merged key by key;
+ * - numbers: the larger (counters only grow);
+ * - anything else: this device's value.
+ * `undefined` means the key is absent.
+ */
+function mergeValue(base: unknown, ours: unknown, theirs: unknown, key?: string): unknown {
+  if (same(ours, theirs)) return ours
+  if (same(ours, base)) return theirs
+  if (same(theirs, base)) return ours
+  if (key === 'status' && (ours === 'retired' || theirs === 'retired')) return 'retired'
+  if (Array.isArray(ours) && Array.isArray(theirs)) {
+    const b = Array.isArray(base) ? base : []
+    const has = (list: unknown[], v: unknown) => list.some(x => same(x, v))
+    const removed = (v: unknown) => has(b, v) && (!has(ours, v) || !has(theirs, v))
+    const out = ours.filter(v => !removed(v))
+    for (const v of theirs) if (!removed(v) && !has(out, v)) out.push(v)
+    return out
+  }
+  if (isPlainObject(ours) && isPlainObject(theirs)) {
+    const b = isPlainObject(base) ? base : {}
+    const out: Record<string, unknown> = {}
+    for (const k of new Set([...Object.keys(ours), ...Object.keys(theirs)])) {
+      const v = mergeValue(b[k], ours[k], theirs[k], k)
+      if (v !== undefined) out[k] = v
+    }
+    return out
+  }
+  if (typeof ours === 'number' && typeof theirs === 'number') return Math.max(ours, theirs)
+  // Removed on one side, changed on the other: the removal was deliberate.
+  if (ours === undefined || theirs === undefined) return undefined
+  return ours
+}
+
+/**
+ * Three-way merge of two record lists, matched by `id` (or, for a record
+ * without one, by its content). The result follows the remote's order, then
+ * this device's additions. A record deleted on either side stays deleted.
+ * Records both sides added under one id are merged field by field — for
+ * engrams, {@link renameLocalClashes} has already split genuine clashes apart.
+ */
+function mergeRecordLists(
+  base: unknown[], ours: unknown[], theirs: unknown[],
+  mergeOne: (base: unknown, ours: unknown, theirs: unknown) => unknown = mergeValue,
+): unknown[] {
+  const keyOf = (r: unknown): string => {
+    const id = (r as { id?: unknown } | null)?.id
+    return typeof id === 'string' ? `id:${id}` : `content:${JSON.stringify(r) ?? ''}`
+  }
+  const index = (list: unknown[]) => new Map(list.map(r => [keyOf(r), r] as const))
+  const b = index(base), o = index(ours), t = index(theirs)
+  const out: unknown[] = []
+  const seen = new Set<string>()
+  for (const [k, rt] of t) {
+    seen.add(k)
+    const inBase = b.has(k), inOurs = o.has(k)
+    if (inBase && !inOurs) continue // this device deleted it
+    if (!inOurs) { out.push(rt); continue }
+    const merged = mergeOne(inBase ? b.get(k) : undefined, o.get(k), rt)
+    if (merged !== undefined) out.push(merged)
+  }
+  for (const [k, ro] of o) {
+    if (seen.has(k)) continue
+    if (b.has(k)) continue // the other device deleted it
+    out.push(ro)
+  }
+  return out
+}
+
+/**
+ * Engrams both sides added under one id with different content (each device
+ * mints `max(same-day suffix)+1`). The local one was never pushed — the merge
+ * base predates it — so it takes a fresh id, and every reference to it on
+ * this side follows (owner decision P1b: keep both, rename one).
+ */
+function renameLocalClashes(base: unknown[], ours: unknown[], theirs: unknown[]): { ours: unknown[]; renames: IdRename[] } {
+  const idOf = (r: unknown) => (r as { id?: unknown } | null)?.id
+  const baseIds = new Set(base.map(idOf).filter((x): x is string => typeof x === 'string'))
+  const theirsById = new Map<string, unknown>()
+  for (const r of theirs) { const id = idOf(r); if (typeof id === 'string') theirsById.set(id, r) }
+  const taken = new Set<string>([...baseIds, ...theirsById.keys()])
+  for (const r of ours) { const id = idOf(r); if (typeof id === 'string') taken.add(id) }
+  const map = new Map<string, string>()
+  const renames: IdRename[] = []
+  for (const r of ours) {
+    const id = idOf(r)
+    if (typeof id !== 'string' || baseIds.has(id) || !theirsById.has(id)) continue
+    if (sameEngramContent(theirsById.get(id), r)) continue
+    const to = freshDuplicateId(id, r, taken)
+    taken.add(to)
+    map.set(id, to)
+    renames.push({ from: id, to })
+  }
+  if (map.size === 0) return { ours, renames }
+  return { ours: ours.map(r => renameIdRefs(r, map)), renames }
+}
+
+/**
+ * Sibling records (reviews, episodes, candidates) both sides added under one id
+ * with different content. Review ids are a per-day sequence (`T-YYYY-MMDD-NNN`),
+ * so two offline devices mint the same next id for two DIFFERENT reviews; the
+ * field merge in {@link mergeRecordLists} used to blend them into one record and
+ * the other review was gone. Same rule as engrams (P1b, keep both, rename one):
+ * this side's record was never pushed, so it takes a fresh id. Nothing in the
+ * store refers to a sibling record's id, so no reference has to follow.
+ *
+ * A review of the SAME engram pair is one review detected on both devices
+ * (`recordTensions` keeps one record per pair), not a clash: it is merged by
+ * {@link mergeReview}, keeping the furthest lifecycle state.
+ */
+function renameSiblingClashes(file: string, base: unknown[], ours: unknown[], theirs: unknown[]): unknown[] {
+  const idOf = (r: unknown) => (r as { id?: unknown } | null)?.id
+  const pairOf = reviewPairOf
+  const baseIds = new Set(base.map(idOf).filter((x): x is string => typeof x === 'string'))
+  const theirsById = new Map<string, unknown>()
+  for (const r of theirs) { const id = idOf(r); if (typeof id === 'string') theirsById.set(id, r) }
+  const taken = new Set<string>([...baseIds, ...theirsById.keys()])
+  for (const r of ours) { const id = idOf(r); if (typeof id === 'string') taken.add(id) }
+  return ours.map(r => {
+    const id = idOf(r)
+    if (typeof id !== 'string' || baseIds.has(id) || !theirsById.has(id)) return r
+    const other = theirsById.get(id)
+    if (sameEngramContent(other, r)) return r
+    if (file === 'tensions.yaml' && pairOf(r) !== null && pairOf(r) === pairOf(other)) return r
+    const to = freshDuplicateId(id, r, taken)
+    taken.add(to)
+    return { ...(r as object), id: to }
+  })
+}
+
+/** A review's unordered engram pair (`tensionPairKey` form), or null for a record that is not one. */
+function reviewPairOf(r: unknown): string | null {
+  const t = r as { engram_a?: unknown; engram_b?: unknown } | null
+  return typeof t?.engram_a === 'string' && typeof t?.engram_b === 'string' ? [t.engram_a, t.engram_b].sort().join(':') : null
+}
+
+type ReviewLifecycle = { status?: unknown; resolved_by?: unknown; resolved_at?: unknown }
+/** How far along `detected → confirmed → dismissed | resolved` a review is. A resolution retired a memory, so it outranks a dismissal. */
+const REVIEW_RANK: Record<string, number> = { detected: 0, confirmed: 1, dismissed: 2, resolved: 3 }
+const reviewRank = (r: unknown): number => REVIEW_RANK[String((r as ReviewLifecycle | null)?.status ?? 'detected')] ?? 0
+const lifecycleOf = (r: unknown) => {
+  const x = (r ?? {}) as ReviewLifecycle
+  return { status: x.status ?? 'detected', resolved_by: x.resolved_by ?? null, resolved_at: x.resolved_at ?? null }
+}
+
+/**
+ * Of two records of one review, the one whose lifecycle state stands (audit 6,
+ * N3): the furthest along, so a resolution (with its winner and time) or a
+ * dismissal is never reopened by the other device's detected/confirmed copy.
+ * Two different resolutions: the earlier one, then the smaller winner id — the
+ * same answer whichever device merges.
+ */
+function standingReview(x: unknown, y: unknown): unknown {
+  if (reviewRank(x) !== reviewRank(y)) return reviewRank(x) > reviewRank(y) ? x : y
+  const key = (r: unknown) => { const l = lifecycleOf(r); return `${l.resolved_at ?? '\uffff'}\0${l.resolved_by ?? ''}` }
+  return key(x) <= key(y) ? x : y
+}
+
+/** `record` with the lifecycle fields of `from`. */
+const withLifecycle = (record: unknown, from: unknown): unknown => ({ ...(record as object), ...lifecycleOf(from) })
+
+/** Field merge of one review record both devices changed; the lifecycle comes from {@link standingReview}. */
+function mergeReview(base: unknown, ours: unknown, theirs: unknown): unknown {
+  const merged = mergeValue(base, ours, theirs)
+  if (merged === undefined || reviewPairOf(ours) === null || reviewPairOf(ours) !== reviewPairOf(theirs)) return merged
+  return withLifecycle(merged, standingReview(ours, theirs))
+}
+
+/**
+ * One record per unordered memory pair (audit 6, N3; `recordTensions` keeps one
+ * locally). Two devices that detected the same pair under different daily ids
+ * hold one review twice. The merged list keeps one: the id already in the base,
+ * else the remote's (already published), else the first; its fields are that
+ * record's, its lifecycle the standing one of the group.
+ */
+function onePerReviewPair(list: unknown[], base: unknown[], theirs: unknown[]): unknown[] {
+  const idOf = (r: unknown) => (r as { id?: unknown } | null)?.id
+  const baseIds = new Set(base.map(idOf))
+  const theirIds = new Set(theirs.map(idOf))
+  const groups = new Map<string, unknown[]>()
+  for (const r of list) {
+    const pair = reviewPairOf(r)
+    if (pair !== null) groups.set(pair, [...(groups.get(pair) ?? []), r])
+  }
+  const out: unknown[] = []
+  for (const r of list) {
+    const pair = reviewPairOf(r)
+    const group = pair === null ? undefined : groups.get(pair)
+    if (!group || group.length === 1) { out.push(r); continue }
+    if (group[0] !== r) continue // emitted at the group's first position
+    const keep = group.find(x => baseIds.has(idOf(x))) ?? group.find(x => theirIds.has(idOf(x))) ?? group[0]
+    out.push(withLifecycle(keep, group.reduce((a, x) => standingReview(a, x))))
+  }
+  return out
+}
+
+/**
+ * Merge the store files of an in-progress `git merge` as records (SYN-5), so
+ * both devices' offline saves, corrections and forgets survive. Writes and
+ * stages each merged file. Throws when a conflicted file cannot be merged this
+ * way (not a store file, or not a shape PLUR writes); the caller aborts the
+ * merge, leaving the local store as it was.
+ *
+ * Every side read here is a COMMITTED blob, i.e. already stripped of records
+ * this remote never receives; those held records are put back afterwards by
+ * the caller's restore step, exactly as after any pull.
+ */
+function mergeStoreRecords(root: string): IdRename[] {
+  const unmerged = (gitSafe(['diff', '--name-only', '--diff-filter=U'], root) ?? '').split('\n').filter(Boolean)
+  const mergeable = new Set<string>(['engrams.yaml', ...SIBLING_STRIP_FILES])
+  if (unmerged.some(f => !mergeable.has(f))) throw new Error(UNMERGEABLE)
+  const baseRev = gitSafe(['merge-base', 'HEAD', 'MERGE_HEAD'], root)
+  if (!baseRev) throw new Error(UNMERGEABLE)
+
+  const load = (rev: string, file: string): { text: string | null; raw: unknown } => {
+    const text = gitSafe(['show', `${rev}:${file}`], root)
+    if (text === null) return { text, raw: undefined }
+    try { return { text, raw: yaml.load(text) } } catch { return { text, raw: null } }
+  }
+  const sides = (file: string) => ({ base: load(baseRev, file), ours: load('HEAD', file), theirs: load('MERGE_HEAD', file) })
+  const write = (file: string, content: string) => {
+    atomicWrite(join(root, file), content)
+    git(['add', '-f', '--', file], root)
+  }
+
+  // engrams.yaml first: its id renames apply to the sibling records too.
+  let renames: IdRename[] = []
+  const map = new Map<string, string>()
+  {
+    const file = 'engrams.yaml'
+    const s = sides(file)
+    const conflicted = unmerged.includes(file)
+    const changedBoth = s.base.text !== s.ours.text && s.base.text !== s.theirs.text
+    if (conflicted || changedBoth) {
+      const list = (text: string | null): unknown[] | null => {
+        if (text === null) return []
+        try { return engramStoreEntries(join(root, file), text, Buffer.byteLength(text)) } catch { return null }
+      }
+      const b = list(s.base.text), o = list(s.ours.text), t = list(s.theirs.text)
+      if (!b || !o || !t) {
+        if (conflicted) throw new Error(UNMERGEABLE)
+      } else {
+        const clash = renameLocalClashes(b, o, t)
+        renames = clash.renames
+        for (const r of renames) map.set(r.from, r.to)
+        const engrams = mergeRecordLists(b, clash.ours, t)
+        const top = (v: unknown) => (isPlainObject(v) ? v : {})
+        const merged = mergeValue(top(s.base.raw), top(s.ours.raw), top(s.theirs.raw)) as Record<string, unknown>
+        write(file, yaml.dump({ ...merged, engrams }, YAML_DUMP_OPTS))
+      }
+    }
+  }
+
+  for (const file of SIBLING_STRIP_FILES) {
+    const s = sides(file)
+    const conflicted = unmerged.includes(file)
+    const oursChanged = s.base.text !== s.ours.text
+    const changedBoth = oursChanged && s.base.text !== s.theirs.text
+    if (!conflicted && !changedBoth && !(oursChanged && map.size > 0)) continue
+    const list = (side: { text: string | null; raw: unknown }): unknown[] | null =>
+      side.text === null ? [] : Array.isArray(side.raw) ? side.raw : null
+    const b = list(s.base), o = list(s.ours), t = list(s.theirs)
+    if (!b || !o || !t) {
+      if (conflicted) throw new Error(UNMERGEABLE)
+      continue
+    }
+    const oursNow = renameSiblingClashes(file, b, map.size > 0 ? o.map(r => renameIdRefs(r, map)) : o, t)
+    const merged = file === 'tensions.yaml'
+      ? onePerReviewPair(mergeRecordLists(b, oursNow, t, mergeReview), b, t)
+      : mergeRecordLists(b, oursNow, t)
+    write(file, yaml.dump(merged, SIBLING_DUMP_OPTS))
+  }
+  return renames
 }
 
 /**
@@ -1180,10 +1540,105 @@ export interface AtomicWriteOptions {
    * durability note on {@link atomicWrite}.
    */
   durable?: boolean
+  /**
+   * The content may carry a credential (config.yaml, an editor config holding
+   * another server's token). On Windows the temp file is made owner-only — and
+   * verified — before the first byte, whether the destination is new, already
+   * owner-only, or readable by other accounts; the write is refused (nothing
+   * written, the destination untouched) when that cannot be done, or when an
+   * existing destination's access list cannot be inspected at all (icacls
+   * failed, account unknown). Owner decisions 38 and 42 (#1631). An owner-only
+   * `mode` alone gets the protection only over a provably owner-only
+   * destination, and no refusal. No effect elsewhere: on POSIX the
+   * destination's mode already governs the temp file from creation.
+   */
+  secret?: boolean
+  /**
+   * With {@link ALLOW_UNPROTECTED_ENV} set, called (instead of the default
+   * stderr line) with the reason when the write goes out without owner-only
+   * protection — so a caller that reports on its own (writeConfigFile) prints
+   * one line, not two.
+   */
+  onUnprotected?: (cause: string) => void
 }
 
 /** Counter making each tmp name unique within a process (pid makes it unique across them). */
 let tmpCounter = 0
+
+/** One external command run for the Windows access-list path ({@link _atomicWriteAcl}). */
+export type AclExec = OwnerOnlyExec
+
+/**
+ * Platform, environment and command runner for atomicWrite's Windows
+ * owner-only path. Internal — not exported from the package; tests swap the
+ * fields to drive the Windows branch on any OS.
+ *
+ * It is the SAME object as the shared owner-only helper's host
+ * (`owner-only.ts`, #1631), so a simulated host drives both the temp-file
+ * protection here and the re-check `writeConfigFile` (config-file.ts) runs
+ * after the rename. One rule, one implementation: remove inherited access, grant only
+ * the current account, read the list back, accept only entries naming that
+ * account.
+ */
+export const _atomicWriteAcl = _ownerOnlyHost
+
+/**
+ * What an access-list inspection established (Codex round 3, finding 1).
+ * `unknown` — icacls failed, or its output names no account — is NOT the same
+ * as `shared`: a credential write must refuse on it rather than go ahead
+ * unprotected.
+ */
+type AclInspection = 'owner-only' | 'shared' | 'unknown'
+
+/** Inspect `path`: does every access entry name `account` only? */
+function inspectAcl(path: string, account: string): AclInspection {
+  const r = checkOwnerOnly(path, { platform: 'win32', account })
+  return r.ok === true ? 'owner-only' : r.ok === false ? 'shared' : 'unknown'
+}
+
+/**
+ * The owner's way out on a drive that cannot keep access lists (FAT/exFAT,
+ * some network shares — icacls fails there, so every credential write would
+ * be refused and PLUR could not save its config at all). Set to `1` (or
+ * `true` / `yes`), a credential write whose owner-only protection cannot be
+ * established is written WITHOUT it, with one stderr line saying so, instead
+ * of being refused. Unset (the default), it is refused (#1631).
+ */
+export const ALLOW_UNPROTECTED_ENV = 'PLUR_ALLOW_UNPROTECTED_CONFIG'
+
+/** How a refused credential write's error starts. The rest names the cause and the opt-out, never content. */
+export const REFUSED_CREDENTIAL_WRITE = 'atomicWrite: refusing a credential write: '
+
+function allowUnprotected(env: NodeJS.ProcessEnv): boolean {
+  const v = env[ALLOW_UNPROTECTED_ENV]?.trim().toLowerCase()
+  return v === '1' || v === 'true' || v === 'yes'
+}
+
+/**
+ * A Windows credential write whose protection cannot be established: refused
+ * (throws; the message names the cause and the opt-out), or — with
+ * {@link ALLOW_UNPROTECTED_ENV} set — reported on stderr and written without
+ * the protection (returns).
+ */
+function refuseUnprotected(filePath: string, cause: string, onUnprotected?: (cause: string) => void): void {
+  if (allowUnprotected(_atomicWriteAcl.env)) {
+    if (onUnprotected) onUnprotected(cause)
+    else console.error(`[plur:config] writing ${basename(filePath)} WITHOUT owner-only protection (${ALLOW_UNPROTECTED_ENV} is set): ${cause}`)
+    return
+  }
+  throw new Error(`${REFUSED_CREDENTIAL_WRITE}${cause}. Nothing was written. ` +
+    `If this drive cannot keep access lists (FAT/exFAT, some network shares), set ${ALLOW_UNPROTECTED_ENV}=1 to write it without that protection.`)
+}
+
+/** Make `path` owner-only and verify it; returns why it could not, or null. */
+function protectWindowsOwnerOnly(path: string, account: string | null): string | null {
+  if (!account) return 'cannot make the temporary file owner-only: the Windows account is not known (USERNAME is not set)'
+  const r = protectOwnerOnly(path, { platform: 'win32', account })
+  if (r.ok) return null
+  return r.detail.startsWith('icacls failed')
+    ? `cannot make the temporary file owner-only: ${r.detail}`
+    : `cannot make the temporary file owner-only: its access list still names another account or cannot be read back (${r.detail})`
+}
 
 /**
  * Atomic write: write to a temp file, flush it, then rename over the target.
@@ -1212,12 +1667,30 @@ let tmpCounter = 0
  * a hard `ENOENT: rename '…/episodes.yaml.tmp'` crash when the loser's tmp had
  * already been renamed away. Unique names make concurrent writers independent;
  * the last rename wins cleanly instead of publishing a half-written blend.
+ *
+ * ## Why the tmp is protected before the first byte (Codex round 2, finding 3)
+ *
+ * The tmp used to be opened at the default mode (0644 under umask 022), filled,
+ * fsynced, and only then chmodded to the destination's 0600 — so a credential
+ * sat in a world-readable file for that window, and a descriptor another
+ * account opened in it stayed readable afterwards. The tmp is now created
+ * exclusively (`wx`: never through a link or file planted at its name) at 0600
+ * whenever a mode is known, and given its exact final mode just before the
+ * rename. On Windows, a `secret` write gets a verified owner-only list on the
+ * EMPTY tmp — new destination, owner-only destination or shared destination
+ * alike (owner decisions 38 and 42, #1631) — and an owner-only `mode` write
+ * gets it over a destination whose list names only the current account; when
+ * that cannot be established, nothing is written and the destination is left
+ * as it was. A `secret` write over an existing destination whose access list
+ * cannot be inspected (icacls failed, output names no account, account
+ * unknown) is refused the same way — "could not inspect" is never treated as
+ * "not protected" (Codex round 3). A write that only passes an owner-only
+ * `mode` is not refused on that result.
  */
 export function atomicWrite(filePath: string, content: string | Buffer, opts: AtomicWriteOptions = {}): void {
   const durable = opts.durable !== false
   const dir = dirname(filePath)
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
-  const tmp = `${filePath}.${process.pid}.${tmpCounter++}.tmp`
   // Preserve the destination's permissions (audit 2026-08-03, finding 7).
   //
   // A replace-by-rename creates a NEW inode, so the result carries the tmp
@@ -1232,34 +1705,97 @@ export function atomicWrite(filePath: string, content: string | Buffer, opts: At
   // path. A missing destination means there is nothing to preserve — a first
   // write keeps the platform default, which is what created it today.
   let destMode: number | undefined = opts.mode
+  const destExists = existsSync(filePath)
   try {
     // An EXISTING file's own mode wins over opts.mode: the operator may have
     // tightened it further, and a write must never loosen what it found.
-    if (existsSync(filePath)) destMode = statSync(filePath).mode & 0o7777
+    if (destExists) destMode = statSync(filePath).mode & 0o7777
   } catch { /* unreadable stat — fall through and keep opts.mode/default */ }
-  try {
-    if (durable) {
-      const fd = openSync(tmp, 'w')
-      try {
-        writeFileSync(fd, content)
-        fsyncSync(fd)
-      } finally {
-        closeSync(fd)
+
+  // Windows keeps access in an ACL, not the mode bits, and a tmp file inherits
+  // the folder's list — so the rename would publish the content in a file the
+  // folder's other accounts can read. Ordinary writes never run icacls.
+  //
+  // - A `secret` write (owner decisions 38 and 42, #1631: config.yaml through
+  //   writeConfigFile, the enterprise cleanup's editor configs) ALWAYS gets an
+  //   owner-only, verified list on the EMPTY tmp — for a new file and over a
+  //   destination other accounts can read too — and is refused, with nothing
+  //   written, when that cannot be established. "Could not inspect" an
+  //   existing destination is never read as "not protected" either: it is
+  //   refused before any temp file exists (Codex round 3, finding 1).
+  // - A write that only asks for an owner-only `mode` (the folder map, engram
+  //   files) keeps the round-3 rule: the tmp is protected when the existing
+  //   destination is provably owner-only, and an unknown result is not refused.
+  let winAccount: string | null = null
+  let winProtect = false
+  if (_atomicWriteAcl.platform === 'win32') {
+    const secret = opts.secret === true
+    const credential = secret || (opts.mode !== undefined && (opts.mode & 0o077) === 0)
+    if (credential) winAccount = currentWindowsAccount(_atomicWriteAcl.env)
+    if (credential && destExists) {
+      const inspection: AclInspection = winAccount === null ? 'unknown' : inspectAcl(filePath, winAccount)
+      if (inspection === 'unknown' && secret) {
+        // Refused (throws) unless the owner opted out. Opted out, the temp file
+        // is still protected when it can be; only a failure there (or no known
+        // account to protect it for) writes it unprotected, reported.
+        if (winAccount === null || !allowUnprotected(_atomicWriteAcl.env)) {
+          refuseUnprotected(filePath, winAccount === null
+            ? 'cannot tell whether the destination is owner-only (the Windows account is not known: USERNAME is not set)'
+            : 'cannot inspect the destination\'s access list (icacls failed or named no account)', opts.onUnprotected)
+        }
+        winProtect = winAccount !== null
+      } else {
+        winProtect = inspection === 'owner-only' || secret
       }
-    } else {
-      writeFileSync(tmp, content)
+    } else if (secret) {
+      if (winAccount === null) {
+        refuseUnprotected(filePath, 'cannot make the new file owner-only (the Windows account is not known: USERNAME is not set)', opts.onUnprotected)
+      } else {
+        winProtect = true
+      }
+    }
+  }
+
+  // Create the tmp exclusively, owner-only whenever a mode is known. With no
+  // mode to keep the result is the platform default anyway, so the default is
+  // used for the tmp too and nothing changes for ordinary files.
+  const createMode = destMode === undefined ? 0o666 : 0o600
+  let tmp = ''
+  let fd: number | undefined
+  for (let attempt = 0; fd === undefined; attempt++) {
+    tmp = `${filePath}.${process.pid}.${tmpCounter++}.tmp`
+    try {
+      fd = openSync(tmp, 'wx', createMode)
+    } catch (err) {
+      // A stale tmp (or anything planted) at this name: never reuse it, take the next name.
+      if ((err as NodeJS.ErrnoException).code === 'EEXIST' && attempt < 1000) continue
+      throw err
+    }
+  }
+  try {
+    try {
+      if (winProtect) {
+        const failed = protectWindowsOwnerOnly(tmp, winAccount)
+        if (failed !== null) refuseUnprotected(filePath, failed, opts.onUnprotected)
+      }
+      writeFileSync(fd, content)
+      if (durable) fsyncSync(fd)
+    } finally {
+      closeSync(fd)
     }
     if (destMode !== undefined) {
       // Best-effort: a filesystem without POSIX modes (some Windows/network
-      // mounts) must not fail an otherwise good write over cosmetics.
+      // mounts) must not fail an otherwise good write over cosmetics. If it
+      // fails the tmp stays at its 0600 creation mode — stricter, never wider.
       try { chmodSync(tmp, destMode) } catch { /* not a mode-bearing filesystem */ }
     }
     renameSync(tmp, filePath)
     if (durable) fsyncDir(dir)
   } catch (err) {
     // Never leave the tmp behind on a failed write — it would accumulate, and
-    // with a unique name nothing would ever clean it up.
-    try { unlinkSync(tmp) } catch { /* already gone, or never created */ }
+    // with a unique name nothing would ever clean it up. Only a tmp this call
+    // created reaches here (an EEXIST name is skipped above, never unlinked).
+    try { unlinkSync(tmp) } catch { /* already gone */ }
     throw err
   }
 }

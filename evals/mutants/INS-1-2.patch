@@ -1,0 +1,13 @@
+diff --git a/packages/mcp/src/index.ts b/packages/mcp/src/index.ts
+index 76f0316e..cba4df73 100644
+--- a/packages/mcp/src/index.ts
++++ b/packages/mcp/src/index.ts
+@@ -454,7 +454,7 @@ export function applyPlurHooks(
+   hooksMap: Record<string, HookEntry[]>,
+ ): { settings: Settings; status: 'installed' | 'healed' | 'already' } {
+   const hooks: Record<string, HookEntry[]> = { ...(settings.hooks ?? {}) }
+-  const installed = Object.values(hooks).some(entries => (entries ?? []).some(isPlurHook))
++  const installed = false // MUTANT: an existing install is not recognised
+ 
+   if (!installed) {
+     for (const [event, entries] of Object.entries(hooksMap)) {

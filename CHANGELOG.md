@@ -1,5 +1,203 @@
 # Changelog
 
+## 0.22.0
+
+Enterprise first install.
+
+### Enterprise first install
+
+- Sign in once.
+- See where saves go.
+- Preview uploads.
+- Verify hooks and server.
+
+The enterprise setup command, `plur-enterprise init`, ships in its own package,
+`@plur-ai/plur-enterprise`, published with the enterprise server. It builds on
+the new `@plur-ai/cli/enterprise-api` export (device sign-in, upload count, tool
+configuration helpers); `@plur-ai/cli` itself has only the `plur` command. The
+setup completes device sign-in, tool configuration and a kept hello-memory proof
+through the installed MCP connection. (#1665, #1666, #1669, #1701, #1702)
+
+One server entry can serve several discovered scopes. Scope discovery runs
+in the background, reports failure rather than an empty success, and keeps
+configuration owner-only. Git-origin routing uses authorized project paths;
+an unmatched repository stays local, and a home-rooted repository does not
+invent an implicit project scope. Ambiguous routes and multi-root windows
+whose destinations disagree require an explicit choice. A `project:` scope
+is local unless a configured server explicitly serves it.
+(#1631, #1632, #1633, #1656, #1658, #1659, #1660, #1661, #1662, #1690, #1696)
+
+Save receipts distinguish delivery, queued writes and local storage, naming
+the actual destination. Session hooks and MCP show cached server status;
+`plur doctor` checks the server and installed hook-run evidence and does not
+call an unverified connection healthy. Queued saves retry after credential
+changes and recheck their destination before delivery. Session startup
+retires legacy project-token configuration with guarded backups.
+(#1667, #1668, #1691, #1692, #1693, #1694, #1695, #1697, #1698)
+
+`plur upload` previews selected primary-store memories and requires explicit
+confirmation before sending them. Server receipts distinguish newly stored,
+duplicate and held-for-review writes. Remote-only folders refuse this local
+store upload path. (#1699, #1700)
+
+OpenCode MCP setup uses the installed PLUR binary and repairs older managed
+`npx` entries, including the Windows fallback when no local binary is
+available. (#1637, #1311)
+
+On Windows, `plur init` works when the home folder's name has a non-English
+letter: it no longer crashes Node while copying the bundled skills, and the
+`.cmd` launchers it writes read such paths correctly. (#1774)
+
+The SessionEnd hook finishes within Claude Code's 5-second budget even when
+a team server is unreachable, so Claude Code no longer reports it as
+cancelled. (#1652)
+
+### Memory correctness
+
+- Starting in a folder where memory is off runs no startup migration.
+  (#1523)
+- A correction still gets its save reminder when the injection lock is busy
+  or the normal attempt cap was reached. (#1385)
+- A correction outside the scope visible to an injection no longer hides
+  the memory it replaces. (#1237)
+- Different packs from same-named folders no longer replace each other;
+  pack identities and internal references survive upgrade and reinstall.
+  (#1188, #1670)
+- Retrieval and duplicate checking distinguish reworded memories, changed
+  values and different subjects. Pinned memories retain their budget share;
+  proposals to change a locked memory wait in review. Sync preserves
+  independent reviews and renamed references, and a failed connection also
+  stops automatic model downloads. (#1670)
+- Personal sync repositories mirror private memories again. Shared sync
+  excludes private content, including side records; machine-local memories
+  and their side records stay on the machine for both kinds of remote.
+  (#1670)
+- Injection receipts describe whole memories actually present in the reply,
+  including their scopes. Corrections in secondary stores retain the link
+  to their replacement without overwriting the original text. (#1670)
+
+The release also adds promise evals and planted-bug checks for these
+behaviors, with independent test-harness separation checks.
+(#1664, #1671, #1745, #1746, #1747)
+
+### remote-only folders keep memory on the team server (#1521)
+
+A new folder-map mode for work whose memories belong on a team server, not in
+your personal store:
+
+```
+plur folders set ~/client-work --remote-only --scope group:acme/client
+```
+
+The scope must be served by a team store (a `url` store in `config.yaml`); the
+command refuses any other scope (`scope-unconfigured`) and, outside a terminal,
+needs the usual `--nonce`. In a remote-only folder:
+
+- A save with no scope goes to the folder's team scope. Saving to a personal or
+  local scope (`user:`, `agent:`, `global`, `local`, a `project:` scope no team
+  store serves, a private memory, or content the sensitivity guard would keep
+  local) is refused, and the message names the folder and how to change it.
+  Saving to another team scope you can write still works.
+- Recall and injection read the folder's scope from the team server and your
+  installed packs, never your personal store. In such a folder the keyword-only
+  injection (Cursor's session start, the hooks' fallback) dials the team server
+  too; elsewhere it stays local, as before.
+- A save that cannot reach the server waits in the outbox and is removed once
+  delivered. From any PLUR session, in the folder or not, such a queued save
+  can only be delivered or forgotten (forgetting deletes it): every other
+  change to its scope, status or queue entry is refused where PLUR writes the
+  store, and background work (procedure evolution, LLM deduplication) skips it.
+  A tightened sensitivity policy holds it in the queue instead of demoting it.
+  It is only sent to a team scope a writable team store serves (one rule,
+  used everywhere).
+- Personal url stores (`user:`) on the same host are out of reach from the
+  folder: pin, feedback and forget act only on rows in a team scope.
+- Personal memories are out of reach: id lookups find nothing, and forget, pin,
+  feedback, update, rescope, meta-engram saves, pack export and tension changes
+  on them are refused. Write dedup only considers queued saves, so a team save
+  is never absorbed into a personal memory. LLM dedup decisions are off there.
+- When the server cannot be reached, the session starts without memory and says
+  so once. It never falls back to the personal store.
+- A repository's `.plur.yaml`, a project MCP config, or an entry below that only
+  sets `trusted` or a `scope` cannot turn the folder back on; only `off` or a
+  more specific entry with an explicit mode does. The entry matches the same
+  spellings `off` does.
+- No session timeline is kept there: `plur capture` / `plur_capture` are refused,
+  and the session-end hooks and `plur_session_end` capture no episode (their
+  engram suggestions still go to the team scope).
+- `plur folders set <dir> --scope <s>` on a remote-only folder changes only the
+  scope; it never switches the folder back to local memory. Leaving remote-only
+  takes `--on`, `--off`, `--ask` or `plur folders rm`.
+- An entry with no scope refuses every save and says so.
+
+- Still written locally: queued saves, the daily backup and (when enabled) the
+  search index, which can hold a queued save until it is delivered, the
+  embedding cache, history events (without statement previews in such a
+  folder), statistics. See the docs.
+
+**A `folders.yaml` that cannot be read now fails safe.** Every folder behaves
+like `ask`, PLUR reads and writes nothing, and the session says so, naming the
+file and line. Before, it was read as empty, so a folder with a project setup
+got full memory.
+
+**Update every PLUR integration together.** Older versions read a
+`folders.yaml` holding a `remote-only` entry as unreadable, so in them every
+folder asks again, `off` entries are not applied, and a folder with a project
+setup gets full local memory.
+
+It applies to the Claude Code, Codex, Cursor and Antigravity hooks, to every
+`plur` command (bound to the folder it runs in), and to the MCP server, which
+re-reads the decision before each tool call for its client's workspace roots
+and the folder it was started in. When it cannot read the workspace roots, or
+cannot resolve a folder, that call reads and writes nothing and says so. The
+opencode plugin follows once #1517 is in; the OpenClaw and Hermes plugins do
+not read the folder map.
+
+Underneath the command-level refusals, every local store a bound instance
+opens is wrapped so that it shows and accepts only the folder's own queued
+saves, active and in a team scope, while keeping the store's lock (a test
+calls every public method in a bound instance against a store seeded with
+personal content; another runs 25 concurrent saves and a second process).
+This covers PLUR's own paths (CLI, hooks, MCP, every `Plur` method). It does
+not cover the API's `plur.primaryStore` handle, which stays the store you
+passed in, unwrapped (no shipped PLUR code writes through it), or programs
+reading the files directly. A rebind in the middle of a locked store operation
+cannot change which store it writes through.
+Store maintenance (`compact`, reindex, `sync`) is refused in the folder.
+`plur ingest` there saves to the folder's team scope. The
+opencode plugin does not follow the folder map yet; it picks the mode up once
+its folder-map support (#1517) is in. Core: `Plur.bindFolder(dir)` /
+`bindFolderPolicy(dir, policy)`, `RemoteOnlyWriteError`, and
+`InjectionResult.remote_only` (whether the team server served the injection).
+Folders without remote-only behave exactly as before. See
+[docs/folder-map.md](docs/folder-map.md).
+
+### folders.yaml starts with commented examples of every setting (#1521)
+
+When PLUR creates `~/.plur/folders.yaml` (the first `plur folders set`, `plur
+trust`, the folder question's answer, or `plur init` moving hooks), it now
+writes a commented example of every setting (`on`, `off`, `ask`, `scope`,
+`trusted`, `remote-only`) with one line saying what each does. Remove the `# `
+to use one.
+
+Every CLI write to the file (`set`, `rm`, `trust`, `untrust`, the folder
+question's answers) now edits it in place with the `yaml` package's Document
+API: only the entry that changed is rewritten, and your comments, blank lines
+and entry order are kept byte for byte. A file PLUR cannot read is still never
+overwritten. `@plur-ai/core` gains a dependency on `yaml` (already in the
+lockfile as a build-tool dependency).
+
+### Sign-in and runtime requirements
+
+- **Upgrade every PLUR process on a machine together.** A 0.21.x MCP server or
+  hook still running beside 0.22.0 does not read two things 0.22.0 writes: the
+  team scopes `plur login` records for a server, which it ignores, and a
+  `remote-only` folder entry, which makes it treat the whole folder map as
+  broken and pause memory in every folder. Restart your tools after updating.
+
+- **`plur login <host>` signs this device in to a PLUR server and no longer writes `~/.plur/config.json`.** The device sign-in (RFC 8628) is no longer turned off: it prints a sign-in page and a code, waits for your approval at the server's poll interval, and saves the device key as the server's one entry in `~/.plur/config.yaml`, with your personal scope from the server. The key is never printed, and nothing is written before it arrives, so ctrl-C changes nothing. When another entry already holds your personal scope, `plur login` names it and changes nothing; `plur login <host> --remove-stale` removes it (config.yaml is backed up first). **A remaining `~/.plur/config.json` from an older `plur login` is read once:** if the server still accepts its key and `config.yaml` holds no sign-in to that server yet, the key moves into `config.yaml` (a sign-in already in `config.yaml` is never replaced); either way the file is moved to an owner-only copy under `~/.plur/backups/` with a one-time notice and is no longer read. Signing in needs a server with the device sign-in endpoints. (#1638)
+- **BREAKING: Node 20 is no longer supported. Every published package now requires Node 22 or later** (`engines.node` `>=22`), and CI no longer tests Node 20. Node 20 cannot send the remote store's requests through an HTTPS proxy without an extra dependency: its built-in `fetch` has no `NODE_USE_ENV_PROXY`. Behind a proxy, use Node 22.21 or later (or 24+) with `HTTPS_PROXY` and `NODE_USE_ENV_PROXY=1` set in the environment PLUR starts with.
+
 ## 0.21.5 (2026-10-07)
 
 - `plur init --codex` repairs older MCP version pins and older installed MCP paths in place, preserving comments, environment overrides, timeouts and tool policies. Newer pins and custom launchers remain intact; `--keep-codex-mcp` preserves an intentional launcher. (#1624)

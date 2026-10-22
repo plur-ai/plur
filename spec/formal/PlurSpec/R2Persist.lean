@@ -1,6 +1,16 @@
 /-!
 # PlurSpec.R2Persist — round 2 of the persistence cluster
 
+Checked against #1631 (config.yaml owner-only, 2026-10-18): still holds. sync.ts's change
+is atomicWrite's Windows `secret` branch (modelled in
+Persistence §AtomicTemp, with the new `writeConfigFile`, config-file.ts);
+migrations/runner.ts's `setSchemaVersion` writes the same bytes under the same lock through it. Locks, backups and the migration journal are unchanged.
+Gate of #1631 (2026-10-18): still holds. sync.ts's further change is the owner's opt-out
+(`PLUR_ALLOW_UNPROTECTED_CONFIG`: a refused Windows credential write is written unprotected
+and reported instead) — modelled in Persistence §AtomicTemp (`traceAllow`); the tmp, fsync,
+rename and lock order is unchanged. Codex gate round 1: the opt-out's report is handed to
+`writeConfigFile` through an `onUnprotected` callback (one stderr line); no order changes.
+
 Models of `packages/core/src/{store/async-lock.ts, sync.ts, engrams.ts, backup.ts,
 storage-pglite.ts, storage-postgres.ts, migrations/runner.ts}`.
 Findings, verdicts and replays: `spec/formal/findings/r2-persist.md`.
@@ -23,6 +33,24 @@ Checked against #1349 (merged into #1228 on 2026-09-30): still holds.
 (`pendingStoreLockOps`) around the same `processLocks.run(… withFileLock …)`
 call. The counter only observes. Acquire, the crash-safe steal and release
 are unchanged.
+
+Checked against the enterprise-first-install epic (2026-10-18): still holds. sync.ts changed only
+`atomicWrite`'s temp-file creation (opened `wx` with an owner-only mode before the first byte, and
+an owner-only ACL check on Windows for protected destinations). Rename, fsync and symlink handling
+are unchanged, and no section here models file permissions; that property is proved in
+`Persistence` §AtomicTemp (`write_protected`, `refused_leaves_dest`).
+
+Checked again after Codex round 3 (2026-10-18): still holds. atomicWrite now refuses a Windows
+credential write whose destination access list cannot be inspected, before any temp file exists.
+That only adds an early throw; no state this file models is touched. The refusal is proved in
+`Persistence` §AtomicTemp (`refused_leaves_dest`, `unknown_creates_nothing`).
+
+Checked against gate structural change 1 on #1663 (2026-10-18): still holds. storage-pglite.ts's
+sync and reindex leave queued remote-only saves out of the rows they read from YAML; the
+fingerprint, transaction and sweep this model covers are unchanged.
+Codex round 10 on #1663 (2026-10-18): still holds. sync.ts's push-set predicate also leaves a queued
+remote-only save out (isRemoteOnlyQueued), so it is never staged; storage-indexed.ts filters
+secondary stores the same way. Locks, atomic writes and the staging order are unchanged.
 -/
 
 set_option linter.deprecated false

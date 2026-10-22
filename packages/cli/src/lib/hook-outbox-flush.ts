@@ -34,7 +34,7 @@
 import { existsSync, readFileSync, statSync, mkdirSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
-import type { Plur } from '@plur-ai/core'
+import type { FolderPolicy, Plur } from '@plur-ai/core'
 // Type-only: the engine is loaded lazily below, so a hook with nothing queued
 // never pays the import of @plur-ai/core (Cursor's stop hook fires every turn).
 import type { GlobalFlags } from '../plur.js'
@@ -137,7 +137,15 @@ export interface HookFlushOutcome {
  */
 export async function flushOutboxForHook(
   flags: GlobalFlags,
-  opts: { hook: string; budgetMs: number; plur?: Plur; minIntervalMs?: number },
+  opts: {
+    hook: string; budgetMs: number; plur?: Plur; minIntervalMs?: number
+    /**
+     * The folder the hook's payload names, and its decision: the flush runs
+     * bound to it, so in a remote-only folder only that folder's saves move
+     * (gate review of #1663). Without it, createPlur binds to the process folder.
+     */
+    folder?: { dir: string; policy: FolderPolicy }
+  },
 ): Promise<HookFlushOutcome> {
   try {
     if (process.env.PLUR_HOOK_OUTBOX_FLUSH === '0') return { ran: false }
@@ -157,6 +165,7 @@ export async function flushOutboxForHook(
     })
     try {
       const plur = opts.plur ?? (await import('../plur.js')).createPlur(flags)
+      if (opts.folder) plur.bindFolderPolicy(opts.folder.dir, opts.folder.policy)
       const flush = plur.flushOutbox({ timeoutMs: budgetMs })
       // Observed either way, so a rejection after the outer timer won is not an
       // unhandled rejection that takes the process down with a non-zero exit.

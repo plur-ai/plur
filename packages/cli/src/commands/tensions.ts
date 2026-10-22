@@ -1,4 +1,5 @@
 import { createPlur, type GlobalFlags } from '../plur.js'
+import { remoteOnlyCommandRefusal } from '../lib/folder-gate.js'
 import { shouldOutputJson, outputJson, outputText, outputInfo, exit } from '../output.js'
 import type { LlmFunction } from '@plur-ai/core'
 
@@ -140,6 +141,8 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const engrams = await plur.list({ scope, domain })
 
   if (scan) {
+    const refused = remoteOnlyCommandRefusal(flags, 'A tension scan sends memories to a model, which is not the team server')
+    if (refused) exit(1, refused)
     const llm: LlmFunction | undefined =
       llmBaseUrl
         ? makeHttpLlm(llmBaseUrl, llmApiKey ?? '', llmModel)

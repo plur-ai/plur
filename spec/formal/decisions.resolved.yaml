@@ -9,7 +9,7 @@ rows:
   E1_auto_route_remote_personal: me-only        # principle: egress (differs from suggestion 'refuse')
   E2_default_private: reword                    # principle: default_visibility
   E3_untrusted_plur_yaml: opencode              # principle: egress
-  E4_project_local_only: config                 # rest
+  E4_project_local_only: exact-match            # rest; AMENDED 2026-10-18 by owner decision O5 (epic 1797, #1633): was "config" (containment). See DECISIONS.md SI-Q3a
   E5_scope_case: fold                           # rest
   E6_provenance_withheld: keep                  # rest — suggested "leaves" proved unsafe at apply (pack provenance would forbid distribution); reverted, follow-up issue
   E7_multi_session_no_id: ignore                # principle: egress — an ambiguous session default may be a team scope

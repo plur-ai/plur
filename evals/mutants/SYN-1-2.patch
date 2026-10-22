@@ -1,0 +1,13 @@
+diff --git a/packages/core/src/sync.ts b/packages/core/src/sync.ts
+index 050e48c3..5cd929de 100644
+--- a/packages/core/src/sync.ts
++++ b/packages/core/src/sync.ts
+@@ -353,7 +353,7 @@ function pushKeep(remoteType: SyncRemoteType): (e: EngramRecord) => boolean {
+   // A queued remote-only save is never committed or pushed, whatever the remote
+   // (gate review of #1663): history would keep it after delivery.
+   if (remoteType === 'shared') {
+-    return e => !isRemoteOnlyQueued(e) && isSharedScope(e?.scope ?? '') && (e?.visibility ?? 'private') !== 'private'
++    return e => !isRemoteOnlyQueued(e) && (e?.visibility ?? 'private') !== 'private'
+   }
+   return e => !isRemoteOnlyQueued(e) && e?.scope !== 'local'
+ }

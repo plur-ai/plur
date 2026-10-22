@@ -67,6 +67,8 @@ Commands:
   promote <id>            Promote an engram to active
   rescope <id...> --to <scope>  Move engram(s) to another scope (#676)
                           [--keep-local] [--dry-run]; also: promote <id> --to <scope>
+  upload                  Preview local memories for authorized team scopes
+                          --yes sends; --only <id,…> limits the selection
   migrate [up|down|status] Run schema migrations
   stores list             List configured stores
   stores add <path>       Add a knowledge store
@@ -86,6 +88,7 @@ Commands:
   reindex-tokens          Re-derive BM25 tokens after a tokenizer change (Postgres only)
   reindex-hashes          Repair engrams whose content_hash is stale or missing (#852)
   init                    Wire PLUR into detected harnesses (Claude Code, Cursor, Codex, Antigravity)
+  login <host>            Sign this device in to a PLUR server and save it (device flow)
   login --status          Enterprise token validity per host (probe + expiry) (#587)
   init --keep-opencode-plugin  Keep an intentionally older OpenCode plugin pin
   init --keep-codex-mcp    Keep an intentionally older Codex MCP launch entry
@@ -174,6 +177,7 @@ const COMMANDS: Record<string, string> = {
   import: './commands/import.js',
   promote: './commands/promote.js',
   rescope: './commands/rescope.js',
+  upload: './commands/upload.js',
   'similarity-search': './commands/similarity-search.js',
   stores: './commands/stores.js',
   remote: './commands/remote.js',
@@ -191,11 +195,8 @@ const COMMANDS: Record<string, string> = {
   init: './commands/init.js',
   // Hidden alias of `remote` (#1413); `--verify` is bare `plur remote`.
   'init-remote': './commands/init-remote.js',
-  // `login` is registered for `--status` (#587: token validity per host). The
-  // OAuth device flow itself (#532) stays GATED INSIDE the command — it is
-  // happy-path only (no paste-token fallback, no refresh tokens) and targets
-  // device-flow endpoints enterprise servers don't expose yet; attempting it
-  // prints the sign-in-URL + plur_stores_add path instead. See #300.
+  // `login --status` (#587: token validity per host) and `login <host>`, the
+  // device sign-in (#1638) that saves the server's entry in config.yaml.
   login: './commands/login.js',
   doctor: './commands/doctor.js',
   'rerank-eval': './commands/rerank-eval.js',

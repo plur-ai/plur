@@ -6,6 +6,11 @@ learner,decay,memory-block,telemetry-miss-signal}.ts`. Each section follows the
 code branch for branch at the level of the property it states; payloads that
 the property does not depend on (keyword scoring, token costs, string content)
 are parameters, so every theorem holds for every oracle.
+
+Updated for #1633 (owner decision O5, 2026-10-18): decision E4 is amended from containment
+to exact match. §3 `isLocalOnly` takes the resolver's `claimed` oracle (RoutingDiscovery §5
+proves it is exact match); the 2026-09-26 rule is kept as `isLocalOnlyE4` for the
+counterexample `old_e4_containment`.
 -/
 
 namespace PlurSpec.ScopeInject
@@ -345,15 +350,26 @@ def isPersonal (s : Sc) : Bool := !isShared s
 def within (s q : Sc) : Bool :=
   s == q || (q ++ [':']).isPrefixOf s || (q ++ ['/']).isPrefixOf s
 
-/-- A configured URL store's scope covers `s` (decision E4: equal or
-segment-contained, compared case-folded). `urls` = the scopes of the `stores:`
-entries that carry a `url`. -/
+/-- The 2026-09-26 reading of decision E4: a configured URL store's scope covers
+`s` (equal or segment-contained, compared case-folded). `urls` = the scopes of the
+`stores:` entries that carry a `url`. Superseded by owner decision O5 (2026-10-18,
+#1633); kept for the counterexample `old_e4_containment`. -/
 def covered (urls : List Sc) (s : Sc) : Bool := urls.any (fun u => within (lower s) (lower u))
 
 /-- `isLocalOnlyScope(scope, stores)` (scope-target.ts) after decisions E5 (fold
-case like `isShared`) and E4 (`project:*` is local only when no URL store
-covers it). -/
-def isLocalOnly (urls : List Sc) (s : Sc) : Bool :=
+case like `isShared`) and E4 as amended by owner decision O5 (2026-10-18, #1633:
+"Project scopes — Exact match"): `project:*` is local only when the one resolver
+keeps a write to it local. `claimed s` is `resolveScopeTarget(s, stores).kind !==
+'local'` — an oracle here; RoutingDiscovery §5 proves what it means (a url entry
+with exactly this scope, or an org a company server withholds), so this is exact
+match, not containment. `fun _ => false` is the config-free call (no stores). -/
+def isLocalOnly (claimed : Sc → Bool) (s : Sc) : Bool :=
+  let l := lower s
+  l == "primary".toList || l == "local".toList || l == "global".toList
+    || ("project:".toList.isPrefixOf l && !claimed s)
+
+/-- The 2026-09-26 E4 predicate (containment), for the counterexample. -/
+def isLocalOnlyE4 (urls : List Sc) (s : Sc) : Bool :=
   let l := lower s
   l == "primary".toList || l == "local".toList || l == "global".toList
     || ("project:".toList.isPrefixOf l && !covered urls s)
@@ -401,14 +417,14 @@ theorem autoRoute_leaving_is_own (remote own : Sc → Bool) (s : Sc)
   unfold leaves at hl
   cases hs : isShared s <;> cases hr : remote s <;> cases ho : own s <;> simp_all
 
-/-- **Decision E4/E5:** a local-only scope is never covered by a URL store unless
-it is one of the three named local targets — so a `project:*` a URL store
-covers is never refused as "local" and reaches its store. -/
-theorem localOnly_project_uncovered (urls : List Sc) (s : Sc)
-    (hp : "project:".toList.isPrefixOf (lower s) = true) (h : isLocalOnly urls s = true) :
-    covered urls s = false := by
+/-- **Decision E4 (amended, O5)/E5:** a local-only `project:*` scope is never one
+the resolver sends anywhere — so a `project:*` a URL store claims exactly is never
+refused as "local" and reaches its store. -/
+theorem localOnly_project_unclaimed (claimed : Sc → Bool) (s : Sc)
+    (hp : "project:".toList.isPrefixOf (lower s) = true) (h : isLocalOnly claimed s = true) :
+    claimed s = false := by
   unfold isLocalOnly at h
-  cases hc : covered urls s
+  cases hc : claimed s
   · rfl
   · simp only [hc, hp, Bool.not_true, Bool.and_false, Bool.or_false, Bool.or_eq_true, beq_iff_eq] at h
     rcases h with (h | h) | h <;> rw [h] at hp <;> exact absurd hp (by decide)
@@ -418,26 +434,37 @@ theorem local_family_personal :
     isPersonal "primary".toList = true ∧ isPersonal "local".toList = true ∧
     isPersonal "global".toList = true := by decide
 
-/-- `project:*` with no covering URL store is local-only AND shared-family
+/-- `project:*` that no store claims is local-only AND shared-family
 (unchanged by E4: a local project scope is a team namespace kept on this disk). -/
 theorem project_localOnly_and_shared :
-    isLocalOnly [] "project:plur".toList = true ∧ isShared "project:plur".toList = true := by decide
+    isLocalOnly (fun _ => false) "project:plur".toList = true ∧
+    isShared "project:plur".toList = true := by decide
 
-/-- **Decision E4:** a URL store at `project:plur` makes `project:plur` and its
-segment-descendants non-local; the string-prefix sibling stays local (#383). -/
-theorem project_covered_not_localOnly :
-    let urls := ["project:plur".toList]
-    isLocalOnly urls "project:plur".toList = false ∧
-    isLocalOnly urls "project:plur/sub".toList = false ∧
-    isLocalOnly urls "project:plurx".toList = true ∧
-    isLocalOnly urls "global".toList = true := by decide
+/-- **Decision E4, amended by O5 (exact match):** a URL store at `project:plur`
+claims exactly `project:plur` (the resolver's exact rule), so that scope is
+non-local, and its segment-descendant and its string-prefix sibling stay local —
+as write routing keeps them. -/
+theorem project_exact_not_localOnly :
+    let claimed : Sc → Bool := fun s => s == "project:plur".toList
+    isLocalOnly claimed "project:plur".toList = false ∧
+    isLocalOnly claimed "project:plur/sub".toList = true ∧
+    isLocalOnly claimed "project:plurx".toList = true ∧
+    isLocalOnly claimed "global".toList = true := by decide
+
+/-- **Counterexample the amendment closes (O5, #1633):** under the 2026-09-26
+containment rule a URL store at `project:plur` made `project:plur/sub` non-local,
+so forget/feedback dialled that server, while write routing (exact match) keeps
+`project:plur/sub` on this machine — the two disagreed. -/
+theorem old_e4_containment :
+    isLocalOnlyE4 ["project:plur".toList] "project:plur/sub".toList = false ∧
+    isLocalOnly (fun s => s == "project:plur".toList) "project:plur/sub".toList = true := by decide
 
 /-- **Decision E5:** case no longer drifts — both spellings agree on both predicates.
 Pre-decision counterexample: `isLocalOnlyOld`. -/
 theorem case_folded :
     isShared "Project:plur".toList = isShared "project:plur".toList ∧
-    isLocalOnly [] "Project:plur".toList = isLocalOnly [] "project:plur".toList ∧
-    isLocalOnly [] "GLOBAL".toList = true := by decide
+    isLocalOnly (fun _ => false) "Project:plur".toList = isLocalOnly (fun _ => false) "project:plur".toList ∧
+    isLocalOnly (fun _ => false) "GLOBAL".toList = true := by decide
 
 theorem old_case_drift :
     isLocalOnlyOld "Project:plur".toList = false ∧ isLocalOnlyOld "project:plur".toList = true ∧
@@ -458,7 +485,7 @@ theorem autoRoute_me_only :
 /-- **Drift:** provenance does not withhold `global` or `user:*`, although
 `isLocalOnly` calls `global` local and neither need leave the machine. -/
 theorem provenance_global_not_withheld :
-    withheld false "global".toList = false ∧ isLocalOnly [] "global".toList = true ∧
+    withheld false "global".toList = false ∧ isLocalOnly (fun _ => false) "global".toList = true ∧
     leaves (fun _ => false) "global".toList = false := by decide
 
 /-! ## 4. learner.ts always/never extraction polarity

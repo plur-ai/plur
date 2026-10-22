@@ -1,4 +1,8 @@
 /-!
+Checked for the 0.22.0 release preparation (2026-10-21): both Python bridges
+change only their npx fallback version pin. Argument construction, scope
+selection, input validation and subprocess handling remain unchanged.
+
 # Adapters — MCP tools, CLI installers, bridges
 
 Models of the adapter layer (packages/mcp/src/tools.ts, packages/cli/src/…,
@@ -35,6 +39,51 @@ Checked against #1277, #1400, #1414 and #1422 (2026-09-30): still holds.
   unchanged.
 - hook-inject.ts: exit and warm-up changes only (R2CLI note). The §9 trust
   gate is untouched.
+
+Checked against #1631 (epic/1797 first install, 2026-10-18): still holds.
+tools.ts's only change is in plur_stores_add's reply: on `token_rotated` for a
+scope of a server entry it adds `token_scopes` and a note. That is not in any
+section here (learn entry points, session lifecycle, hook merges, exit codes,
+dsh, hermes, array coercion, `.plur.yaml` trust).
+
+Checked against #1521 (remote-only folders, merged onto development 2026-10-18): still holds.
+The hooks (hook-inject, hook-codex-inject, hook-cursor-session-start, hook-agy-pre-invocation)
+call `bindHookFolder` right after `createPlur` and add `remoteOnlyLines` to the header; plur.ts
+binds a CLI command's instance to its folder (read-only; left unbound when the folder map cannot
+be read, as on development); tools.ts adds the remote-only block to plur_session_start and lets
+plur_learn rethrow `RemoteOnlyWriteError` instead of its local fallback. In a folder that is not
+remote-only the binding is cleared and every modelled path is unchanged; in a remote-only folder
+the write gate is WritePath §3d.
+Gate review of #1663 (2026-10-18): still holds. hook-observe records only in an `on` folder; the
+Claude Code and Codex session-end hooks bind their outbox flush to the payload folder;
+cursorHookFolder also reads remote-only from every root spelling and the payload cwd; `plur restore
+--yes` and MCP plur_history (no id) / plur_profile refuse in a remote-only folder. Each only removes
+work in a remote-only folder; no modelled path changes elsewhere.
+Codex round 3 (2026-10-18): still holds. In a remote-only folder the semantic paths rank by keyword
+(no embedder, no reranker), plur migrate up/down refuses, auto-rate binds before its lookups, agy does
+not replay a turn cache from another folder mode, Cursor removes other roots' generated rules, and the
+session hooks omit the raw Project scope line. Outside remote-only folders nothing changed.
+Codex rounds 6-7 (2026-10-18): still holds. plur tensions --scan and plur audit refuse in a remote-only
+folder; agy replays a turn cache only under the same decision and scope; Cursor treats an unreadable
+map as off for the whole workspace and removes every root's generated rule. pinnedQuota asks only a
+team store while bound. No modelled adapter path changes outside remote-only folders and broken maps.
+
+Checked against #1631 background discovery (2026-10-18): still holds.
+plur_session_start starts a background scope refresh for company server
+entries, skips the awaited `/me` probe for their endpoints (exactly those
+refreshServerScopes probes: a scopes list and an enterprise block), reports a
+failed check in the guide, caps the guide's
+scope list and adds a `discovery` reply field. It does not touch the
+session-scope registry or its default-scope slot (§1), `_cleanExpiredSessions`
+or session_end (§2), or the `.plur.yaml` trust gate (§9): `default_scope` and
+`scope_source` are computed exactly as before.
+
+
+Checked 2026-10-19 for git-origin folder defaults: GitFolder models the added
+folder-policy admission and operation-captured default. Existing explicit scopes,
+remote-only gates, store resolution, persistence and outbox delivery rules are
+unchanged. The remote recall change only suppresses calls for a local/unknown
+origin default; a deliberate call/session scope keeps the existing routing.
 -/
 
 namespace PlurSpec.Adapters
@@ -1182,3 +1231,39 @@ theorem orig_remedy_promises_the_impossible :
     offersTrustAloneOrig .noTrust = true ∧ grantCanHelp .noTrust = false := ⟨rfl, rfl⟩
 
 end PlurSpec.Adapters
+
+/- 2026-10-19: Save destination reporting is a projection of the existing delivery
+evidence. It changes no routing, persistence, scope authorization or outbox rule;
+the model remains valid. Presentation invariants live in SaveDestination.lean. -/
+
+/-! Checked 2026-10-19: initial-session cached server status and hook-run timestamps
+add presentation/diagnostic metadata only. Existing admission, persistence and
+write rules are unchanged. SaveDestination.SessionStatusAdapter models workspace
+status selection; real hook and stdio tests check adapter integration. -/
+
+/-! Checked 2026-10-19 for credential-change retry: Outbox section 8c models
+known-key backoff bypass and the local-path takeover hold. Other write guards,
+claims, idempotency and merge-back remain unchanged; the extra queue field is
+an attempted credential fingerprint only. Enterprise recovery text changes no
+recall, authorization or adapter admission rule. -/
+
+/- 2026-10-19: Hook execution timestamps are recorded only after the off-folder
+guard. Disabled memory retains its no-store-write boundary; admitted hooks keep
+the existing timestamp and status behavior. No routing or delivery rule changes. -/
+
+/- 2026-10-19: Multi-root disagreement now refuses unscoped MCP writes before
+core admission; the legacy workspaceFolderScope result is unchanged. Explicit
+choices retain routing and authorization. Recall adds the admitted root orgs
+to dialing context, without widening the authorization filter or remote-only
+binding. WorkspaceChoice models this adapter admission and context selection. -/
+
+/-! 2026-10-19: Legacy project token cleanup runs only in working session-start
+paths, requires an enterprise registration and preserves hook failure behavior.
+Private backup, tracking and snapshot guards are modeled in LegacyProjectCleanup;
+existing injection, routing and status invariants remain unchanged. -/
+
+/- 2026-10-19: Doctor surfaces core server evidence and requires post-install
+hook-run timestamps for wired supported editors. Init records installation only
+after successful writes; diagnostics do not grant access or send queued saves.
+Existing adapter routing and config-preservation invariants are unchanged;
+ServerDiagnostics models missing-evidence and hook-time aggregation. -/

@@ -1,6 +1,10 @@
 /-!
 # PlurSpec.Outbox — delivery of queued team writes (decisions C3, C4, C5)
 
+Checked against #1631 (config.yaml owner-only, 2026-10-18): still holds. index.ts's only
+change swaps the config.yaml writes for `writeConfigFile` (same content, same lock); no
+outbox, claim or breaker code changed.
+
 Models the outbox as merged on main by #1277 and carried into #1228 under
 owner decision C3 (2026-09-29): `flushOutbox` / `_flushOutboxClaimed`,
 learn()'s immediate push, the per-entry claims (`_claimOutboxEntry`,
@@ -21,6 +25,68 @@ Keys are opaque naturals. The server is one of two kinds
 (`docs/remote-store-contract.md`): `honour` deduplicates POSTs by key; `ignore`
 does not. What the network does to each attempt is an adversarial outcome
 chosen per event, so every theorem holds for every schedule of outcomes.
+
+Checked against registerEnterpriseServer (#1631 plan B Task 5, branch agent/efi-b05, 2026-10-18): still holds.
+Rechecked after the gate review and Codex audit rounds 1-2 on the same branch (2026-10-18): still holds.
+index.ts changed only inside registerEnterpriseServer (error wording); server-discovery.ts only in the
+registration/fold functions, which StoreEntry §6/§6b model.
+index.ts gains `registerEnterpriseServer`, a new public method that writes config.yaml through
+`_updateRawStores` (config lock, atomic write) and reads `listOutbox` (read only: the
+queued count per scope it reports); no existing branch modelled
+here changed. The registration and fold are modelled in StoreEntry §6.
+
+Checked against #1631 (epic/1797 first install, 2026-10-18): updated.
+`routeFor` in `_flushOutboxClaimed` now holds an entry whose target scope two
+servers claim, before `heldBack` and before the push, so even `force` does not
+deliver it; modelled in §8b (`conflict_untouched`, `keptC_only_bookkeeping`).
+Keys, retry, claims, the listing and the breaker (§1–§7) are unchanged.
+remote-store.ts changed only `me()` (C1 /me fields; a non-2xx now throws
+`RemoteHttpError` with the same message), which the push path does not call.
+
+Checked against #1521 (remote-only folders, merged onto development 2026-10-18): still holds.
+`_flushOutboxClaimed` gained one more hold for an entry marked `remote_only`: when its target
+scope is no longer a deliverable team scope, or the target's policy now forbids its content,
+the entry is held exactly like the #1631 conflict hold of §8b — no push, no demotion to a local
+row, only `last_attempt` / `last_error` bookkeeping and a `failed` count. Keys, retry, claims,
+the listing and the breaker (§1–§7) are unchanged.
+
+Rechecked after Codex audit rounds 3-5 on branch agent/efi-b05 (2026-10-18): still holds. The changes are
+refusals and eligibility checks inside registerEnterpriseServer/registerServerEntry/foldStoresIntoServerEntry
+(nothing is written on a refusal), the outbox read moved before the write, and config.ts's unset-token_env
+warning naming the url by origin; no modelled branch changed.
+
+Checked against #1632 (git default scope, 2026-10-18): still holds. `remote-store.ts` only
+exports `isSafeHost` (unchanged) so `git-origin.ts` reuses the one host grammar; no code path
+this model covers changed.
+
+Gate structural change 1 on #1663 (2026-10-18): still holds. A delivery no longer writes automatic
+provenance for a queued remote-only save; keys, retry, claims, holds and the breaker are unchanged.
+Codex round 11 (2026-10-18): still holds. The two remote-only holds in the flush now classify by the
+shared predicate (either marker field), so a half-stripped marker is held like §8b; nothing else changed.
+
+Checked against #1631 background discovery (PR gate, 2026-10-18): still holds.
+index.ts only adds `_serverDiscoveryEndpoints()`, a read of config.yaml that lists the
+urls `refreshServerScopes` probes (the same `isEnterpriseServerEntry` filter). It
+writes nothing and is read only by the MCP server; the outbox and the push path are untouched.
+
+Checked against #1633 (plan B Task 7, owner decision O5, 2026-10-18): still holds. The
+`_outbox.target_url` learn writes is the resolver's writable entry; outside a conflict (refused
+before the save) it is the entry the old first-writable `find` returned. The flush, the
+retarget and the push path are unchanged.
+
+Checked against #1638 (`plur login` device sign-in, plan C Task 3, branch agent/efi-c03, 2026-10-18):
+still holds. registerServerEntry's refusal to take over the personal scope is unchanged (the same
+holders, the same message); it is now a `PersonalScopeTakenError` that names those holders, and
+`removeStale` drops exactly them before the same registration runs again, in the same locked write
+(modelled in Login.lean §2: only holders are removed, never without the flag, no holder left).
+The outbox and the push path are untouched; `queued_by_scope` is counted as before.
+
+
+Checked 2026-10-19 for git-origin folder defaults: GitFolder models the added
+folder-policy admission and operation-captured default. Existing explicit scopes,
+remote-only gates, store resolution, persistence and outbox delivery rules are
+unchanged. The remote recall change only suppresses calls for a local/unknown
+origin default; a deliberate call/session scope keeps the existing routing.
 -/
 
 namespace PlurSpec.Outbox
@@ -365,4 +431,189 @@ theorem verdict_only_skips {β} (bump : β → β) (o d f w : Bool) (e : Entry �
 theorem force_dials_needs_action (w : Bool) : skipOf true true w = false := by
   cases w <;> rfl
 
+/-! ### 8b. The conflict hold (#1631; reviewed 2026-10-18)
+
+`routeFor` now holds an entry whose target scope two servers claim
+(`resolveScopeTarget(...).kind === 'conflict'`). It runs at selection, before
+the `heldBack` verdict, and again before the push, ahead of the policy
+re-scan; `force` reaches `heldBack` only, so the conflict hold binds the
+explicit flush too. A held entry is not claimed and nothing is written. -/
+
+def flushEntryC {β : Type} (bump : β → β) (force needsAction inWindow conflict offends delivered : Bool)
+    (e : Entry β) : Res β :=
+  if conflict then .kept e
+  else flushEntry bump (skipOf force needsAction inWindow) offends delivered e
+
+/-- A conflicted entry is untouched and never handed off, forced flush or not. -/
+theorem conflict_untouched {β} (bump : β → β) (f n w o d : Bool) (e : Entry β) :
+    flushEntryC bump f n w true o d e = .kept e := rfl
+
+theorem conflict_never_delivered {β} (bump : β → β) (f n w o d : Bool) (e : Entry β) :
+    ∀ e', flushEntryC bump f n w true o d e ≠ .handedOff ∧ flushEntryC bump f n w true o d e ≠ .demoted e' := by
+  intro e'; simp [flushEntryC]
+
+/-- §8 still holds with the new branch: a kept entry keeps scope, target and content. -/
+theorem keptC_only_bookkeeping {β} (bump : β → β) (f n w c o d : Bool) (e e' : Entry β)
+    (h : flushEntryC bump f n w c o d e = .kept e') :
+    e'.scope = e.scope ∧ e'.target = e.target ∧ e'.body = e.body := by
+  unfold flushEntryC at h
+  split at h
+  · cases h; exact ⟨rfl, rfl, rfl⟩
+  · exact kept_only_bookkeeping bump _ o d e e' h
+
+/-- Off conflicts the flush is the §8 flush, so `verdict_only_skips` and
+`force_dials_needs_action` carry over. -/
+theorem flushEntryC_off_conflict {β} (bump : β → β) (f n w o d : Bool) (e : Entry β) :
+    flushEntryC bump f n w false o d e = flushEntry bump (skipOf f n w) o d e := rfl
+
+/-- Non-vacuity: the forced flush still delivers an unconflicted needs_action entry. -/
+theorem force_delivers_unconflicted {β} (bump : β → β) (w : Bool) (e : Entry β) :
+    flushEntryC bump true true w false false true e = .handedOff := by
+  cases w <;> rfl
+
+/-! ### 8c. Credential changes and local destination takeover (2026-10-19)
+
+Fingerprints are opaque naturals. Code records the credential captured for the
+attempt, not one reloaded after the response. Unknown fingerprints preserve
+the old backoff. A changed key changes retry eligibility only; it cannot bypass
+current destination, conflict or content guards. A local path takeover is held
+even on a forced flush; an authorized replacement remote remains deliverable.
+-/
+
+def credentialChanged (previous current : Option Nat) : Bool :=
+  match previous, current with
+  | some a, some b => a != b
+  | _, _ => false
+
+theorem previous_unknown (current : Option Nat) : credentialChanged none current = false := by cases current <;> rfl
+theorem current_unknown (previous : Option Nat) : credentialChanged previous none = false := by cases previous <;> rfl
+theorem unchanged_key (key : Nat) : credentialChanged (some key) (some key) = false := by simp [credentialChanged]
+
+def skipWithCredential (force needsAction inWindow authRefusal : Bool) (previous current : Option Nat) : Bool :=
+  skipOf force needsAction inWindow && !(authRefusal && credentialChanged previous current)
+
+theorem old_row_keeps_hold : skipWithCredential false true true true none (some 2) = true := rfl
+theorem changed_key_retries : skipWithCredential false true true true (some 1) (some 2) = false := rfl
+theorem same_key_keeps_hold (key : Nat) : skipWithCredential false true true true (some key) (some key) = true := by
+  simp [skipWithCredential, skipOf, credentialChanged]
+
+theorem non_auth_refusal_keeps_hold (previous current : Option Nat) :
+    skipWithCredential false true true false previous current = true := by
+  simp [skipWithCredential, skipOf]
+
+def flushEntryCredential {β} (bump : β → β) (force needsAction inWindow authRefusal localPath conflict offends delivered : Bool)
+    (previous current : Option Nat) (e : Entry β) : Res β :=
+  if localPath || conflict then .kept e
+  else flushEntry bump (skipWithCredential force needsAction inWindow authRefusal previous current) offends delivered e
+
+theorem local_path_never_sent {β} (bump : β → β) (f n w a c o d : Bool) (previous current : Option Nat) (e : Entry β) :
+    flushEntryCredential bump f n w a true c o d previous current e = .kept e := by simp [flushEntryCredential]
+
+theorem conflict_still_held {β} (bump : β → β) (f n w a l o d : Bool) (previous current : Option Nat) (e : Entry β) :
+    flushEntryCredential bump f n w a l true o d previous current e = .kept e := by simp [flushEntryCredential]
+
+theorem replacement_remote_delivers {β} (bump : β → β) (e : Entry β) :
+    flushEntryCredential bump false true true true false false false true (some 1) (some 2) e = .handedOff := rfl
+
+-- Before the new credential branch, the same repaired-key case stayed held.
+example : skipOf false true true = true ∧ skipWithCredential false true true true (some 1) (some 2) = false := by decide
+
+/- A batch may await an earlier POST after selecting later rows. The admission
+state is read again from disk immediately before each later POST. Selection
+does not authorize an obsolete destination or credential. -/
+structure AdmissionState where
+  localPath : Bool
+  credential : Option Nat
+
+def flushSelected {β} (bump : β → β) (_selected current : AdmissionState)
+    (previous : Option Nat) (e : Entry β) : Res β :=
+  flushEntryCredential bump false true true true current.localPath false false true previous current.credential e
+
+theorem takeover_after_selection_is_held {β} (bump : β → β) (e : Entry β) :
+    flushSelected bump ⟨false, some 2⟩ ⟨true, some 2⟩ (some 1) e = .kept e := rfl
+
+theorem rejected_key_restored_after_selection_is_held {β} (bump : β → β) (e : Entry β) :
+    flushSelected bump ⟨false, some 2⟩ ⟨false, some 1⟩ (some 1) e = .kept e := rfl
+
+theorem unchanged_repaired_destination_delivers {β} (bump : β → β) (e : Entry β) :
+    flushSelected bump ⟨false, some 2⟩ ⟨false, some 2⟩ (some 1) e = .handedOff := rfl
+
+/-! ### 8d. Acknowledgment after an authorized endpoint replacement (2026-10-20)
+
+Routing admission above chooses the actual endpoint. A receipt alone is not
+handoff: merge-back must compare the immutable admitted queued identity with
+the fresh row. URLs are canonical endpoint identities. The actual accepted
+endpoint remains the retirement target if the local decision changed.
+-/
+structure QueuedIdentity where
+  url : Nat
+  scope : Nat
+  key : Nat
+  deriving DecidableEq
+
+def acknowledge (admitted fresh : QueuedIdentity) (active queued : Bool)
+    (rowScope _acceptedEndpoint : Nat) : Bool :=
+  active && queued && rowScope == admitted.scope && decide (fresh = admitted)
+
+theorem replacement_acknowledged (admitted : QueuedIdentity) (replacement : Nat) :
+    acknowledge admitted admitted true true admitted.scope replacement = true := by
+  simp [acknowledge]
+
+theorem requeued_write_preserved (admitted fresh : QueuedIdentity) (scope endpoint : Nat)
+    (changed : fresh ≠ admitted) :
+    acknowledge admitted fresh true true scope endpoint = false := by
+  simp [acknowledge, changed]
+
+theorem cancelled_write_preserved (admitted fresh : QueuedIdentity) (scope endpoint : Nat) :
+    acknowledge admitted fresh true false scope endpoint = false := by simp [acknowledge]
+
+theorem retired_write_preserved (admitted fresh : QueuedIdentity) (scope endpoint : Nat) :
+    acknowledge admitted fresh false true scope endpoint = false := by simp [acknowledge]
+
+def mergeFailure (admitted fresh : QueuedIdentity) (attempted currentBookkeeping : Nat) : Nat :=
+  if admitted = fresh then attempted else currentBookkeeping
+
+theorem new_write_keeps_bookkeeping (admitted fresh : QueuedIdentity) (attempted current : Nat)
+    (changed : admitted ≠ fresh) :
+    mergeFailure admitted fresh attempted current = current := by
+  simp [mergeFailure, changed]
+
+theorem same_write_records_failure (identity : QueuedIdentity) (attempted current : Nat) :
+    mergeFailure identity identity attempted current = attempted := by simp [mergeFailure]
+
+-- Matching URL/scope alone would replace the new write's bookkeeping with 8.
+example : mergeFailure ⟨1, 7, 9⟩ ⟨1, 7, 10⟩ 8 0 = 0 := by decide
+
+-- The former merge-back confused the receipt endpoint with the queued URL.
+example : (1 == 2) = false ∧ acknowledge ⟨1, 7, 9⟩ ⟨1, 7, 9⟩ true true 7 2 = true := by decide
+
 end PlurSpec.Outbox
+
+/- 2026-10-19: Save destination reporting is a projection of the existing delivery
+evidence. It changes no routing, persistence, scope authorization or outbox rule;
+the model remains valid. Presentation invariants live in SaveDestination.lean. -/
+
+/- 2026-10-19: serverSessionLines reads cached configuration and the existing
+primary outbox projection. It does not probe, route, deliver or mutate memory.
+These transition invariants still hold; status precedence is in SaveDestination. -/
+
+/- 2026-10-19: Read-only server diagnostics add bounded /me and write-check
+requests, strict permission evidence, and explicit missing-evidence failures.
+They do not change grants, memory, queue delivery or file permissions. Existing
+write/routing invariants hold; ServerDiagnostics models report aggregation.
+The discovery clock-skew constant is exported without changing its value. -/
+
+/- 2026-10-19: Multi-root disagreement now refuses unscoped MCP writes before
+core admission; the legacy workspaceFolderScope result is unchanged. Explicit
+choices retain routing and authorization. Recall adds the admitted root orgs
+to dialing context, without widening the authorization filter or remote-only
+binding. WorkspaceChoice models this adapter admission and context selection. -/
+
+/-! 2026-10-19: Core re-exports the existing server-entry schema so legacy
+project cleanup can validate a raw explicit enterprise registration without
+inventing authorization through normalization. No engine behavior changes. -/
+
+/-! 2026-10-19: Explicit primary upload reuses the locked queue and guarded
+flush with a selected-id filter. Existing route, sensitivity, binding and
+retirement invariants remain in force. UploadLocal models the new admission,
+selection, dry-run and receipt rules. Held receipts are never cached as live. -/

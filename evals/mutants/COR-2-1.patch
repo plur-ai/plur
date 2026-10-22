@@ -1,0 +1,13 @@
+diff --git a/packages/core/src/inject.ts b/packages/core/src/inject.ts
+index 682a8ddd..c44e9bb8 100644
+--- a/packages/core/src/inject.ts
++++ b/packages/core/src/inject.ts
+@@ -504,7 +504,7 @@ function isReplacedByDeliverable(
+ ): boolean {
+   const replacements = [...(engram.relations?.superseded_by ?? []), ...(replacedFromPrimary?.get(engram.id) ?? [])]
+   return replacements.some(id =>
+-    deliverableIds.has(id) && !leadsBackTo(id, engram.id, supersededBy))
++    !leadsBackTo(id, engram.id, supersededBy)) // MUTANT: any replacement suppresses, deliverable or not
+ }
+ 
+ /**

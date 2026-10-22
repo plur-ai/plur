@@ -1,6 +1,6 @@
 import { dirname, join, resolve } from 'node:path'
 import { homedir } from 'node:os'
-import { projectRemoteRefusalNotice as coreRefusalNotice, type FolderPolicy, type ProjectConfig } from '@plur-ai/core'
+import { projectRemoteRefusalNotice as coreRefusalNotice, formatServerSessionLine, type FolderPolicy, type ProjectConfig } from '@plur-ai/core'
 
 /**
  * Which path this session's memory is scoped by.
@@ -147,6 +147,8 @@ export function resolveTrustedScope(
 /** The subset of `Plur` the folder decision needs. */
 export interface FolderPolicySource {
   resolveFolderPolicy(dir: string): FolderPolicy
+  bindFolderPolicy(dir: string, policy: FolderPolicy): void
+  bindFolderUnresolved(dir: string, why: string): void
 }
 
 /**
@@ -155,12 +157,25 @@ export interface FolderPolicySource {
  * the turn, and fails SAFE (audit F4 of #1517, owner decision): the folder is
  * treated like `ask` with no memory and a notice, never `on` because a project
  * marker is there. Core does the same for a folders.yaml it cannot read.
+ *
+ * The instance is bound to the decision it was given (#1690 review), as the
+ * CLI hooks and the MCP server do. Core's repository-default boundary (an
+ * unmatched or unknown Git origin keeps unscoped recall and saves local, even
+ * for `dial: always` stores) and remote-only mode apply only to a bound
+ * instance; an unbound one would dial with the policy switched `on`.
  */
 export function folderPolicy(plur: FolderPolicySource, dir: string, warn: (msg: string) => void): FolderPolicy {
   try {
-    return plur.resolveFolderPolicy(dir)
+    const policy = plur.resolveFolderPolicy(dir)
+    plur.bindFolderPolicy(dir, policy)
+    if (policy.mode === "on" && policy.git?.kind === "unknown") {
+      warn(formatServerSessionLine({ host: "", status: "ok", target: policy.git, keyExpiresAt: null }))
+    }
+    return policy
   } catch (err) {
-    warn(`folder map: could not resolve ${dir} (${(err as Error)?.message ?? err}); memory is off here.`)
-    return { mode: 'ask', remoteAllowed: false, source: 'default', reason: 'resolver-error' }
+    const why = (err as Error)?.message ?? String(err)
+    warn(`folder map: could not resolve ${dir} (${why}); memory is off here.`)
+    try { plur.bindFolderUnresolved(dir, why) } catch { /* admission still refuses memory */ }
+    return { mode: "ask", remoteAllowed: false, source: "default", reason: "resolver-error" }
   }
 }

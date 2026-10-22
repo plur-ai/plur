@@ -1,0 +1,11 @@
+--- a/packages/core/src/index.ts
++++ b/packages/core/src/index.ts
+@@ -14465,7 +14465,7 @@
+     const entries = this._readRawStores().filter(isEnterpriseServerEntry)
+     if (!entries.length) return []
+     const policy = admittedPolicy ?? this.resolveFolderPolicy(dir, { readOnly: true })
+-    const queued = (await this.listOutbox()).filter(e => e.kind === 'push')
++    const queued = (await this.listOutbox()).filter(e => e.kind === 'retire')
+     // A grant may disappear while its save is still queued. Match durable
+     // endpoint evidence, not a mutable scopes list. Keep endpoints private.
+     const originalTargets = new Map<string, string>()

@@ -1,4 +1,8 @@
 /-!
+Checked for the 0.22.0 release preparation (2026-10-21): the Hermes bridge
+changes only its npx fallback version pin. The modeled dedup, forget,
+tool-path scope and leading-dash argument behavior remain unchanged.
+
 # R2Integrations — round 2 of the adapter layer
 
 MCP annotations and plur_admin dispatch, the hermes bridge, the migrate codemod,
@@ -15,6 +19,37 @@ Checked against #1277 (2026-09-30): still holds. tools.ts changes plur_outbox's
 output (retrying/needs_action) and makes its explicit flush `force`, and adds
 outbox notices to plur_status and plur_session_start. No tool's annotations,
 effects or plur_admin dispatch changed.
+
+Checked against #1631 (epic/1797 first install, 2026-10-18): still holds.
+tools.ts's only change is two reply fields of plur_stores_add (`token_scopes`
+and a note, on `token_rotated` only, so they never collide with the
+`scopeDropped` note, which needs `already_registered`). No tool's annotations,
+effects or plur_admin dispatch changed (§1), and §2–§7 do not read tools.ts.
+
+Checked against #1521 (remote-only folders, merged onto development 2026-10-18): still holds.
+tools.ts adds the remote-only block and guide line to plur_session_start and the refusal
+pass-through in plur_learn; annotations, plur_admin dispatch, the recall session rule and the
+outbox count (§1, §3) are unchanged.
+Codex round 6 on #1663 (2026-10-18): still holds. In a remote-only folder plur_tensions (scan),
+plur_extract_meta, plur_validate_meta and plur_report_failure with a model refuse before reading;
+annotations and plur_admin dispatch are unchanged.
+
+Checked against #1631 background discovery (2026-10-18): still holds.
+plur_session_start now starts a background `refreshServerScopes` (never
+awaited), skips the awaited legacy `/me` probe for endpoints served by a
+company server entry, caps the guide's scope list at 20 and adds a
+`discovery` reply field. The refresh writes only config.yaml's discovery
+cache and never retires an engram, so `sessStart`'s effects row (writes, no
+retirement, repeat adds, copy remains) and its annotations (not read-only,
+not destructive, not idempotent) are unchanged; §1's theorems about it stand.
+No other tool's annotations or plur_admin dispatch changed.
+
+
+Checked 2026-10-19 for git-origin folder defaults: GitFolder models the added
+folder-policy admission and operation-captured default. Existing explicit scopes,
+remote-only gates, store resolution, persistence and outbox delivery rules are
+unchanged. The remote recall change only suppresses calls for a local/unknown
+origin default; a deliberate call/session scope keeps the existing routing.
 -/
 
 namespace PlurSpec.R2Integrations
@@ -760,3 +795,25 @@ theorem absent_allowed (n : String) : allowedFixed false n = true := rfl
 theorem orig_colon_port_allowed : allowedOrig true "" = true := by decide
 
 end PlurSpec.R2Integrations
+
+/- 2026-10-19: Save destination reporting is a projection of the existing delivery
+evidence. It changes no routing, persistence, scope authorization or outbox rule;
+the model remains valid. Presentation invariants live in SaveDestination.lean. -/
+
+/-! Checked 2026-10-19 for credential-change retry: Outbox section 8c models
+known-key backoff bypass and the local-path takeover hold. Other write guards,
+claims, idempotency and merge-back remain unchanged; the extra queue field is
+an attempted credential fingerprint only. Enterprise recovery text changes no
+recall, authorization or adapter admission rule. -/
+
+/- 2026-10-19: Multi-root disagreement now refuses unscoped MCP writes before
+core admission; the legacy workspaceFolderScope result is unchanged. Explicit
+choices retain routing and authorization. Recall adds the admitted root orgs
+to dialing context, without widening the authorization filter or remote-only
+binding. WorkspaceChoice models this adapter admission and context selection. -/
+
+/- 2026-10-19: Doctor surfaces core server evidence and requires post-install
+hook-run timestamps for wired supported editors. Init records installation only
+after successful writes; diagnostics do not grant access or send queued saves.
+Existing adapter routing and config-preservation invariants are unchanged;
+ServerDiagnostics models missing-evidence and hook-time aggregation. -/

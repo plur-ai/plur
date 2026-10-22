@@ -1,0 +1,13 @@
+diff --git a/packages/core/src/index.ts b/packages/core/src/index.ts
+index d018e0d6..c68ec54f 100644
+--- a/packages/core/src/index.ts
++++ b/packages/core/src/index.ts
+@@ -5836,7 +5836,7 @@ export class Plur {
+       ...result,
+       engrams: mergedLegs.engrams,
+       remote: mergedLegs.remote,
+-      results_complete: localComplete && (mergedLegs.remote.state === 'ok' || mergedLegs.remote.state === 'not_dialed'),
++      results_complete: localComplete && mergedLegs.remote.state !== 'timeout',
+       ...(local.done || lateFallback ? {} : { local_complete: false }),
+     }
+     // Belt-and-suspenders: all inner paths apply slice(0, limit) before
