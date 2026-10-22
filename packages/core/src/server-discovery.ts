@@ -579,6 +579,27 @@ export function registerServerEntry(rawStores: unknown[], reg: ServerRegistratio
         reg.personalScope, named, removable)
     }
   }
+  // An entry from an older sign-in to this same server, with another key,
+  // keeps the personal writes while it serves the scope (the first real
+  // sign-in on 0.22.0): nothing is taken over, so nothing above refuses, and
+  // `plur login` warns. `removeStale` removes it when it serves only the
+  // personal scope; one that also serves other scopes is left for the user.
+  if (reg.removeStale && token !== undefined) {
+    const lower = reg.personalScope.toLowerCase()
+    const remove = new Set<number>()
+    const named: ScopeHolder[] = []
+    rawStores.forEach((r, k) => {
+      if (!isPlainObj(r) || typeof r.url !== 'string' || normalizeEndpointUrl(r.url) !== key || r.token === token || folded.indexOf(r) === si) return
+      const served = servedScopes(r)
+      if (served.length === 0 || !served.every(x => x.toLowerCase() === lower)) return
+      remove.add(k)
+      named.push(describeHolder(r, reg.personalScope, false))
+    })
+    if (remove.size) {
+      const rest = registerServerEntry(rawStores.filter((_, k) => !remove.has(k)), { ...reg, removeStale: false })
+      return { ...rest, status: rest.status === 'unchanged' ? 'updated' : rest.status, removed: named }
+    }
+  }
   const status = at.length === 0 ? 'added' : isDeepStrictEqual(folded, rawStores) ? 'unchanged' : 'updated'
   return { stores: folded, status, report, entry, removed: [], migratedLegacy }
 }
