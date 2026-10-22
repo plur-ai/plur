@@ -1,13 +1,13 @@
 diff --git a/packages/core/src/sync.ts b/packages/core/src/sync.ts
-index a00c3a56..1a32dcf3 100644
+index 050e48c3..5cd929de 100644
 --- a/packages/core/src/sync.ts
 +++ b/packages/core/src/sync.ts
-@@ -349,7 +349,7 @@ function readEngramList(root: string): { raw: unknown; list: EngramRecord[] } |
-  */
- function pushKeep(remoteType: SyncRemoteType): (e: EngramRecord) => boolean {
+@@ -353,7 +353,7 @@ function pushKeep(remoteType: SyncRemoteType): (e: EngramRecord) => boolean {
+   // A queued remote-only save is never committed or pushed, whatever the remote
+   // (gate review of #1663): history would keep it after delivery.
    if (remoteType === 'shared') {
--    return e => isSharedScope(e?.scope ?? '') && (e?.visibility ?? 'private') !== 'private'
-+    return e => (e?.visibility ?? 'private') !== 'private'
+-    return e => !isRemoteOnlyQueued(e) && isSharedScope(e?.scope ?? '') && (e?.visibility ?? 'private') !== 'private'
++    return e => !isRemoteOnlyQueued(e) && (e?.visibility ?? 'private') !== 'private'
    }
-   return e => e?.scope !== 'local'
+   return e => !isRemoteOnlyQueued(e) && e?.scope !== 'local'
  }

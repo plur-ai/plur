@@ -1,13 +1,13 @@
 diff --git a/packages/core/src/inject.ts b/packages/core/src/inject.ts
-index ee45ea4a..b63ffd49 100644
+index 682a8ddd..67a8fd4d 100644
 --- a/packages/core/src/inject.ts
 +++ b/packages/core/src/inject.ts
-@@ -921,7 +921,7 @@ export function selectAndSpread(
-     // unresolvable targets, and a pending-review engram is neither.
-     const deliverable = !skipForApproval(engram)
-       && !skipForValidity(engram, nowMs, expiryMode, graceDays)
--    if (deliverable) deliverableIds.add(engram.id)
-+    deliverableIds.add(engram.id) // MUTANT: drafts and expired count as deliverable
+@@ -997,7 +997,7 @@ export function selectAndSpread(
      // Visibility BEFORE the map and the score (see isInjectVisible): nothing
      // below — pinned exemption, embedding boost, spreading — may revive it.
      if (!isInjectVisible(engram.scope, ctx.scope, ctx.grantedScopes)) { scopeExcludedIds.add(engram.id); continue }
+-    if (deliverable) deliverableIds.add(engram.id)
++    deliverableIds.add(engram.id) // MUTANT: drafts and expired count as deliverable
+     if (!deliverable) continue
+     engramMap.set(engram.id, engram)
+     let raw = scoreEngram(engram, promptLower, promptWords, [], ctx.scope, false, ctx.grantedScopes)

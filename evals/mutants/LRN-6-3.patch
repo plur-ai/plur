@@ -1,20 +1,13 @@
 diff --git a/packages/core/src/learn-async.ts b/packages/core/src/learn-async.ts
-index 0d7f2901..35fa0b9d 100644
+index fcff36f5..17cd0202 100644
 --- a/packages/core/src/learn-async.ts
 +++ b/packages/core/src/learn-async.ts
-@@ -246,7 +246,6 @@ async function executeDedupDecision(
-             // Re-check under the lock (formal-verification finding, persistence.md
-             // candidate 7): `existing` is a pre-lock snapshot, and an engram locked
-             // since then must not be rewritten — same outcome as locked-before: ADD.
--            if ((engrams[idx] as any).commitment === 'locked') return null
-             const previousStatement = engrams[idx].statement
-             const updated = { ...engrams[idx] } as any
-             updated.statement = statement
-@@ -288,7 +287,6 @@ async function executeDedupDecision(
-             // Target gone — fall out of the lock and ADD; see the doc comment.
-             if (idx === -1) return null
-             // Locked since the pre-lock check: do not merge into it (see UPDATE).
--            if ((engrams[idx] as any).commitment === 'locked') return null
-             const merged = { ...engrams[idx] } as any
-             merged.statement = `${merged.statement} ${statement}`
-             merged.content_hash = computeContentHash(merged.statement)
+@@ -278,7 +278,7 @@ async function executeDedupDecision(
+       const scope = context?.scope ?? existing.scope
+       // `supersedes_unless_locked`: learn() re-checks the lock under the store
+       // lock, so a memory locked after the read above is not superseded either.
+-      const engram = await deps.learn(statement, { ...context, ...(scope ? { scope } : {}), supersedes, supersedes_unless_locked: true })
++      const engram = await deps.learn(statement, { ...context, ...(scope ? { scope } : {}), supersedes, supersedes_unless_locked: false }) // MUTANT: no re-check under the store lock
+       // Judged by effect (audit 5 F4): UPDATE is reported only when BOTH edges
+       // landed — the forward edge on the new memory and the reverse edge on the
+       // target, read back from the target's own store — because the reverse

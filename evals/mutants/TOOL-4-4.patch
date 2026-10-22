@@ -1,12 +1,14 @@
 diff --git a/packages/core/src/learn-async.ts b/packages/core/src/learn-async.ts
+index fcff36f5..bc7599bd 100644
 --- a/packages/core/src/learn-async.ts
 +++ b/packages/core/src/learn-async.ts
-@@ -707,7 +707,7 @@
-     try {
-       // Batch learning never overwrites an existing memory (owner decision
-       // 2026-10-18): UPDATE/MERGE answers become a linked ADD.
--      const result = await learnAsync(batchDeps, statement, ctx, { neverOverwrite: true })
-+      const result = await learnAsync(batchDeps, statement, ctx, { neverOverwrite: false }) // MUTANT: batch lets an UPDATE or MERGE verdict overwrite again
+@@ -690,6 +690,9 @@ export async function learnBatch(
        // Tag with the input position so a caller can map this result back to its
        // input even though `results` is compacted (failed statements absent). #281
        results.push({ ...result, input_index: i })
++      // MUTANT: batch lets an UPDATE or MERGE verdict overwrite again
++      { const hit = (result as any).existing_id ?? (result as any).likely_duplicate_of?.id
++        if (hit && result.engram.id !== hit) { const all = await deps.store.load(); const t = all.find(e => e.id === hit); if (t) { t.statement = statement; await deps.store.save(all) } } }
+       const key = result.decision.toLowerCase()
+       if (key === 'noop') stats.noops++
+       else if (key === 'merge') stats.merged++

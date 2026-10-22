@@ -1,8 +1,8 @@
 diff --git a/packages/core/src/index.ts b/packages/core/src/index.ts
-index d018e0d6..fdb82a9d 100644
+index 4f1978ed..900182cb 100644
 --- a/packages/core/src/index.ts
 +++ b/packages/core/src/index.ts
-@@ -6922,7 +6922,6 @@ export class Plur {
+@@ -7711,7 +7711,6 @@ export class Plur {
        timeoutMs: resolveRemoteRecallTimeoutMs(options?.remote_timeout_ms),
        limit: options?.limit,
        statePath: this.remoteHealthStatePath(),
@@ -10,7 +10,7 @@ index d018e0d6..fdb82a9d 100644
      }).then(result => {
        const observed_at = Date.now()
        for (const o of result.outcomes) {
-@@ -6972,9 +6971,7 @@ export class Plur {
+@@ -7761,9 +7760,7 @@ export class Plur {
      deadlineAt: number,
    ): Promise<{ result?: RemoteRecallResult; report: RecallRemoteReport }> {
      if (!remotePromise) return { report: { state: 'not_dialed', hosts: [] } }
@@ -20,4 +20,4 @@ index d018e0d6..fdb82a9d 100644
 +    const waited = { done: true as const, value: await remotePromise }
      if (!waited.done || !waited.value) {
        const hosts = (remotePromise.hostUrls ?? []).map(u => ({
-         host: normalizeEndpointUrl(u), state: 'timeout' as const, ms: 0, count: 0, detail: 'recall_deadline',
+         host: normalizeEndpointUrl(u), state: 'timeout' as const, ms: 0, count: 0, ids: [] as string[], detail: 'recall_deadline',

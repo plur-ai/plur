@@ -1,20 +1,13 @@
 diff --git a/packages/core/src/learn-async.ts b/packages/core/src/learn-async.ts
-index 0d7f2901..89a923d0 100644
+index fcff36f5..6e88b675 100644
 --- a/packages/core/src/learn-async.ts
 +++ b/packages/core/src/learn-async.ts
-@@ -281,14 +281,13 @@ async function executeDedupDecision(
-     case 'MERGE': {
-       if (targetId) {
-         const existing = await deps.getById(targetId)
--        if (existing && (existing as any).commitment !== 'locked') {
-+        if (existing) {
-           const result = await withStoreLock(deps, async () => {
-             const engrams = await deps.store.load()
-             const idx = engrams.findIndex(e => e.id === targetId)
-             // Target gone — fall out of the lock and ADD; see the doc comment.
-             if (idx === -1) return null
-             // Locked since the pre-lock check: do not merge into it (see UPDATE).
--            if ((engrams[idx] as any).commitment === 'locked') return null
-             const merged = { ...engrams[idx] } as any
-             merged.statement = `${merged.statement} ${statement}`
-             merged.content_hash = computeContentHash(merged.statement)
+@@ -220,7 +220,7 @@ async function executeDedupDecision(
+       return { engram: await deps.learn(statement, context), decision: 'ADD' }
+     }
+     const related = [...new Set([...(context?.related ?? []), existing.id])]
+-    const engram = await deps.learn(statement, { ...context, related })
++    const engram = await deps.learn(statement, { ...context, related, supersedes: [existing.id] }) // MUTANT: MERGE replaces its target, locked or not
+     return {
+       engram,
+       decision: 'ADD',

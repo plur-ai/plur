@@ -1,11 +1,10 @@
 diff --git a/packages/core/src/fts.ts b/packages/core/src/fts.ts
-index 2506a3c4..c6306ccf 100644
+index fe94f2af..24c83a8a 100644
 --- a/packages/core/src/fts.ts
 +++ b/packages/core/src/fts.ts
-@@ -532,6 +532,5 @@ export function searchEngrams(
+@@ -562,5 +562,4 @@ export function searchEngramsScored(
  
    return scored
      .sort((a, b) => b.score - a.score)
 -    .slice(0, limit)
-     .map(r => r.engram)
  }
