@@ -788,7 +788,10 @@ async function runSignIn(origin: string, parsed: ParsedArgs, flags: GlobalFlags)
   if (elsewhere) {
     for (const l of [
       `Your personal scope ${personalScope} is still served by ${elsewhere} in ${configPath},`,
-      `so your personal writes do not use this sign-in. Remove that entry (or its ${personalScope} scope) from ${configPath}.`,
+      `so your personal writes do not use this sign-in.`,
+      ...(parsed.removeStale
+        ? [`That entry also serves other scopes, so it was left as it is. Remove it (or its ${personalScope} scope) from ${configPath} by hand.`]
+        : [`To remove it (config.yaml is backed up first), run:  plur login ${origin} --remove-stale`]),
     ]) outputError(redactToken(l, key))
   }
   let discovery: Awaited<ReturnType<typeof plur.refreshServerScopes>> = []
