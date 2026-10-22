@@ -78,7 +78,7 @@ cancelled. (#1652)
 
 The release also adds promise evals and planted-bug checks for these
 behaviors, with independent test-harness separation checks.
-(#1664, #1671, #1745, #1746, #1747)
+(#1664, #1671, #1745, #1746, #1747, #1761)
 
 ### remote-only folders keep memory on the team server (#1521)
 
