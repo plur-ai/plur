@@ -9,6 +9,10 @@ installer's store step, `packages/cli/src/enterprise/server-store.ts` (plan C
 task 4), 2026-10-18. Findings, replays
 and mutation checks: `spec/formal/findings/login.md`.
 
+2026-10-22: `server-store.ts` moved with `plur-enterprise` into its own package
+(`@plur-ai/plur-enterprise`, private repository). §4 stays here as the record of
+the store step; that package's own models now cover the file.
+
 What is abstract: the config (`Cfg`, any type), registration (an oracle that
 either returns the whole new config — one locked atomic write — or refuses),
 the `/me` answer (a Bool: it named a user and org), and the time between

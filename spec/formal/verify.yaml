@@ -4,16 +4,6 @@ libraries: [PlurSpec]
 allowed_axioms: [propext, Classical.choice, Quot.sound]
 strict_drift: false   # true: a stale model fails CI instead of warning
 models:
-  - model: PlurSpec/EnterpriseInit.lean
-    covers:
-      - packages/core/src/index.ts
-      - packages/cli/src/enterprise.ts
-      - packages/cli/src/enterprise/init.ts
-      - packages/cli/src/enterprise/command.ts
-      - packages/cli/src/enterprise/server-store.ts
-      - packages/cli/src/enterprise/hello.ts
-      - packages/cli/src/enterprise/summary.ts
-      - packages/cli/src/commands/upload.ts
   - model: PlurSpec/UploadCommand.lean
     covers:
       - packages/cli/src/commands/upload.ts
@@ -164,26 +154,11 @@ models:
       - packages/core/src/sensitivity-writeback.ts
       - packages/core/src/config.ts
       - packages/core/src/index.ts
-  - model: PlurSpec/Installer.lean
-    covers:
-      - packages/cli/src/enterprise/cleanup.ts
-      - packages/core/src/owner-only.ts
-      - packages/cli/src/enterprise/hello.ts
-      - packages/cli/src/enterprise/mcp-stdio.ts
-      - packages/cli/src/enterprise/args.ts
-      - packages/cli/src/enterprise/summary.ts
-      - packages/cli/src/enterprise/key-file.ts
   - model: PlurSpec/RoutingDiscovery.lean
     covers:
       - packages/core/src/store-resolver.ts
       - packages/core/src/server-discovery.ts
       - packages/core/src/index.ts
-  - model: PlurSpec/Trust.lean
-    covers:
-      - packages/cli/src/enterprise/ca.ts
-      - packages/cli/src/enterprise/launch-env.ts
-      - packages/cli/src/enterprise/exec.ts
-      - packages/cli/src/enterprise/wire.ts
   - model: PlurSpec/GitScope.lean
     covers:
       - packages/core/src/git-origin.ts
@@ -200,7 +175,6 @@ models:
       - packages/cli/src/enterprise/legacy-login.ts
       - packages/cli/src/enterprise/device-name.ts
       - packages/cli/src/enterprise/sign-in-shared.ts
-      - packages/cli/src/enterprise/server-store.ts
 
   - model: PlurSpec/SaveDestination.lean
     covers:

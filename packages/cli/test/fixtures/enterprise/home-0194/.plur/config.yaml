@@ -1,7 +1,0 @@
-index: false
-embeddings:
-  enabled: false
-stores:
-  - url: https://legacy.example.invalid
-    scope: user:example:member
-    token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJsZWdhY3ktbWVtYmVyIn0.c3ludGhldGljLXNpZ25hdHVyZQ

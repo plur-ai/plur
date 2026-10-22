@@ -3,8 +3,7 @@
   "version": "0.22.0",
   "type": "module",
   "bin": {
-    "plur": "dist/index.js",
-    "plur-enterprise": "dist/enterprise.js"
+    "plur": "dist/index.js"
   },
   "main": "dist/index.js",
   "files": [
@@ -58,6 +57,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./enterprise-api": {
+      "types": "./dist/enterprise-api.d.ts",
+      "import": "./dist/enterprise-api.js"
     }
   }
 }

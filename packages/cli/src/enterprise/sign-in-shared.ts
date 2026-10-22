@@ -8,7 +8,7 @@
 import { readFileSync } from 'fs'
 import { join } from 'path'
 import { currentWindowsAccount, redactToken, type OwnerOnlyExec, type PersonalScopeTakenError, type ScopeHolder } from '@plur-ai/core'
-import { backupWriter } from './cleanup.js'
+import { backupWriter } from './backup.js'
 
 export type FetchFn = typeof fetch
 

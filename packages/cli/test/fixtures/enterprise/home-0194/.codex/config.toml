@@ -1,3 +1,0 @@
-[mcp_servers.plur-enterprise]
-command = "mcp-remote"
-args = ["https://legacy.example.invalid/mcp"]

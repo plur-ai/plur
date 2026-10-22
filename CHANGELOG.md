@@ -11,12 +11,12 @@ Enterprise first install.
 - Preview uploads.
 - Verify hooks and server.
 
-`plur-enterprise init` now completes device sign-in, tool configuration and a
-kept hello-memory proof through the installed MCP connection. Failed setup
-rolls back its own changes without replacing edits made during sign-in.
-Reruns reuse the device connection and link the new hello to the previous
-one. Legacy personal-store migration preserves guarded backups and reports
-configuration it cannot safely remove. (#1665, #1666, #1669, #1701, #1702)
+The enterprise setup command, `plur-enterprise init`, ships in its own package,
+`@plur-ai/plur-enterprise`, published with the enterprise server. It builds on
+the new `@plur-ai/cli/enterprise-api` export (device sign-in, upload count, tool
+configuration helpers); `@plur-ai/cli` itself has only the `plur` command. The
+setup completes device sign-in, tool configuration and a kept hello-memory proof
+through the installed MCP connection. (#1665, #1666, #1669, #1701, #1702)
 
 One server entry can serve several discovered scopes. Scope discovery runs
 in the background, reports failure rather than an empty success, and keeps
