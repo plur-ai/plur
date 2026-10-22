@@ -23,9 +23,10 @@ CI or certify a deployed enterprise server.
 | EFI-9 | Safe legacy credential cleanup | C9 |
 | EFI-10 | Selected eligible uploads only | C11a |
 | EFI-11 | Read-only preview and explicit confirmation | C11b |
-| EFI-12 | Proven setup, rollback and key reuse | C10b |
-| EFI-13 | Recoverable upgrade and honest split-version failure | C12 |
 
 Each promise has a recorded `evals/mutants/EFI-<n>-1.patch`. Run the full gate with
 `npm run evals:gate`; check their bite with
-`npm run evals:bite -- --only EFI-1,EFI-2,EFI-3,EFI-4,EFI-5,EFI-6,EFI-7,EFI-8,EFI-9,EFI-10,EFI-11,EFI-12,EFI-13`.
+`npm run evals:bite -- --only EFI-1,EFI-2,EFI-3,EFI-4,EFI-5,EFI-6,EFI-7,EFI-8,EFI-9,EFI-10,EFI-11`.
+
+EFI-12 (proven setup, rollback and key reuse) and EFI-13 (recoverable upgrade) moved on
+2026-10-22 to plur-ai/enterprise with the `plur-enterprise` package they test.
