@@ -1128,7 +1128,13 @@ echo "--- Step 4: Git ---"
 echo "Committing the following changes:"
 git status --short
 git add -A
-git commit -m "chore: release v$VERSION"
+# A release-prep PR may already have bumped every version (0.22.0 did), so
+# the bump leaves nothing to commit: tag the verified commit as it is.
+if git diff --cached --quiet; then
+  echo "  (nothing to commit: versions were already $VERSION; tagging HEAD)"
+else
+  git commit -m "chore: release v$VERSION"
+fi
 git tag "v$VERSION"
 git push origin main
 git push origin "v$VERSION"

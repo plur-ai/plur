@@ -465,7 +465,15 @@ describe('plur login <host> (process, contract server)', () => {
     expect(r.out).toMatch(/still served by another entry for .* with another key/)
     expect(r.out).not.toContain(stub.minted[0])
     expect(r.out).not.toContain('plur_sk_old')
-  }, 40_000)
+    // The first real sign-in on 0.22.0: the warning names the cleanup, and
+    // --remove-stale removes that older entry, so the new key serves it.
+    expect(r.out).toContain(`plur login ${stub.url} --remove-stale`)
+    const r2 = await runCli(['login', stub.url, '--no-open', '--remove-stale'], home)
+    expect(r2.status, r2.out).toBe(0)
+    expect(r2.out).toMatch(/Removed the entry that held user:acme:alice/)
+    expect(r2.out).not.toMatch(/still served by/)
+    expect(readFileSync(cfg(), 'utf8')).not.toContain('plur_sk_old')
+  }, 60_000)
 
   it('a local store that keeps the personal scope: said, exit 1', async () => {
     const local = join(home, 'local-store')

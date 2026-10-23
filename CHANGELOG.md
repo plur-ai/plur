@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.22.1
+
+Sign-in cleanup works for an older sign-in to the same server.
+
+- `plur login <host> --remove-stale` now removes an entry from an older sign-in to the same server, with another key, that serves only your personal scope. Until now such an entry kept your personal writes on the old key, and `--remove-stale` left it in place. `config.yaml` is backed up first. An older entry that also serves other scopes is left as it is. (#1781)
+- When another entry still serves your personal scope after a sign-in, `plur login` names `--remove-stale` as the fix instead of asking you to edit `config.yaml` by hand. (#1781)
+
 ## 0.22.0
 
 Enterprise first install.
@@ -78,7 +85,7 @@ cancelled. (#1652)
 
 The release also adds promise evals and planted-bug checks for these
 behaviors, with independent test-harness separation checks.
-(#1664, #1671, #1745, #1746, #1747)
+(#1664, #1671, #1745, #1746, #1747, #1761)
 
 ### remote-only folders keep memory on the team server (#1521)
 

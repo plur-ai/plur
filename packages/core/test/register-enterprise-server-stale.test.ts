@@ -134,6 +134,45 @@ describe('removeStale: remove the named entries and register, in one write', () 
   })
 })
 
+// First real sign-in on 0.22.0: an entry from an older sign-in to the SAME
+// server, with another key, sits ahead of the new entry and keeps the
+// personal writes. Registration does not refuse (nothing is taken over), and
+// `plur login` warns, so `removeStale` must remove that entry too.
+describe('removeStale: an older entry for the same server with another key', () => {
+  const route = (): string | undefined => {
+    const t = resolveScopeTarget(ME, loadConfig(configPath()).stores ?? [])
+    return t.kind === 'remote' ? t.entry.token : t.kind
+  }
+  it.each([`${URL_}/sse`, URL_])('removes it so the personal scope routes to the new key (%s)', async old => {
+    seed(`stores:\n  - url: ${old}\n    token: k0\n    scope: ${ME}\n`)
+    await plur.registerEnterpriseServer(URL_, { token: 'k1', personalScope: ME })
+    expect(route()).toBe('k0')
+    const r = await plur.registerEnterpriseServer(URL_, { token: 'k1', personalScope: ME, removeStale: true })
+    expect(r.removed).toEqual([{ url: URL_, scope: ME, readonly: false }])
+    expect(route()).toBe('k1')
+    expect(JSON.stringify(r.removed)).not.toMatch(/k0/)
+  })
+  it('works in one run, without a sign-in first', async () => {
+    seed(`stores:\n  - url: ${URL_}/sse\n    token: k0\n    scope: ${ME}\n`)
+    const r = await plur.registerEnterpriseServer(URL_, { token: 'k1', personalScope: ME, removeStale: true })
+    expect(r.removed).toHaveLength(1)
+    expect(route()).toBe('k1')
+  })
+  it('an older entry with a scope list is the server entry: it is re-keyed, not removed; other entries stay', async () => {
+    seed(`stores:\n  - url: ${URL_}/sse\n    token: k0\n    scope: ${ME}\n    scopes: [group:acme/team]\n  - url: https://c.example.com\n    token: k3\n    scope: group:acme/other\n`)
+    const r = await plur.registerEnterpriseServer(URL_, { token: 'k1', personalScope: ME, removeStale: true })
+    expect(r.removed).toEqual([])
+    expect(rawConfig().stores.map((e: { token: string }) => e.token)).toEqual(['k1', 'k3'])
+    expect(route()).toBe('k1')
+  })
+  it('without removeStale nothing is removed', async () => {
+    seed(`stores:\n  - url: ${URL_}/sse\n    token: k0\n    scope: ${ME}\n`)
+    const r = await plur.registerEnterpriseServer(URL_, { token: 'k1', personalScope: ME })
+    expect(r.removed).toEqual([])
+    expect(route()).toBe('k0')
+  })
+})
+
 describe('gate review of #1665: a held sign-in, the backup under the lock', () => {
   it('keepSignIn: a sign-in config.yaml holds for the server is never replaced; nothing is written', async () => {
     for (const before of [
