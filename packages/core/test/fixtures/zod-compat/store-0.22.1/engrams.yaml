@@ -1,0 +1,155 @@
+engrams:
+  - id: ENG-2026-10-25-001
+    version: 2
+    status: active
+    consolidated: false
+    type: procedural
+    scope: global
+    visibility: public
+    created_at: "2026-10-25T17:38:41.262Z"
+    updated_at: "2026-10-25T17:38:41.262Z"
+    statement: Run pnpm -r build after switching branches
+    rationale: A partial rebuild leaves stale dist imports
+    derivation_count: 1
+    pack: null
+    abstract: null
+    derived_from: null
+    knowledge_type:
+      memory_class: procedural
+      cognitive_level: apply
+    domain: software.build
+    tags:
+      - pnpm
+      - build
+    activation:
+      retrieval_strength: 0.75
+      storage_strength: 1
+      frequency: 0
+      last_accessed: "2026-10-25"
+    associations: []
+    knowledge_anchors:
+      - path: docs/build.md
+        relevance: primary
+        snippet: pnpm -r build
+    dual_coding:
+      example: pnpm -r build
+    attribution:
+      asserted_by: unidentified
+      runtime:
+        name: fixture
+        version: 0.22.1
+    feedback_signals:
+      positive: 1
+      negative: 0
+      neutral: 0
+    structured_data:
+      _scopeSource: explicit
+    polarity: null
+    content_hash: 95dcd65d49f2938481460c84b23e9cb89c0565b4d2d9b91312cf7de86af37adb
+    commitment: decided
+    write_count: 1
+    injection_count: 0
+    sources:
+      - scope: global
+        session_id: null
+        stored_at: "2026-10-25T17:38:41.262Z"
+    recurrence_count: 0
+    engram_version: 1
+    episode_ids: []
+  - id: ENG-2026-10-25-002
+    version: 2
+    status: active
+    consolidated: false
+    type: behavioral
+    scope: project:example
+    visibility: private
+    created_at: "2026-10-25T17:38:41.353Z"
+    updated_at: "2026-10-25T17:38:41.353Z"
+    statement: Never commit generated dist folders
+    derivation_count: 1
+    pack: null
+    abstract: null
+    derived_from: null
+    knowledge_type:
+      memory_class: semantic
+      cognitive_level: apply
+    domain: software.git
+    tags:
+      - git
+    activation:
+      retrieval_strength: 0.6
+      storage_strength: 1
+      frequency: 0
+      last_accessed: "2026-10-25"
+    associations: []
+    knowledge_anchors: []
+    attribution:
+      asserted_by: unidentified
+      runtime:
+        name: plur-core
+    feedback_signals:
+      positive: 0
+      negative: 1
+      neutral: 0
+    structured_data:
+      _scopeSource: explicit
+    polarity: null
+    content_hash: 502dea544897e6cfddbc749be79f67a23b34865a67ecde28397cd9221eadcf7b
+    commitment: leaning
+    write_count: 1
+    injection_count: 0
+    sources:
+      - scope: project:example
+        session_id: null
+        stored_at: "2026-10-25T17:38:41.353Z"
+    recurrence_count: 0
+    engram_version: 1
+    episode_ids: []
+  - id: ENG-2026-10-25-003
+    version: 2
+    status: active
+    consolidated: false
+    type: terminological
+    scope: global
+    visibility: private
+    created_at: "2026-10-25T17:38:41.389Z"
+    updated_at: "2026-10-25T17:38:41.389Z"
+    statement: An engram is the atomic unit of learned knowledge
+    derivation_count: 1
+    pack: null
+    abstract: null
+    derived_from: null
+    knowledge_type:
+      memory_class: semantic
+      cognitive_level: remember
+    domain: plur.terms
+    tags: []
+    activation:
+      retrieval_strength: 0.7
+      storage_strength: 1
+      frequency: 0
+      last_accessed: "2026-10-25"
+    associations: []
+    knowledge_anchors: []
+    attribution:
+      asserted_by: unidentified
+      runtime:
+        name: plur-core
+    feedback_signals:
+      positive: 0
+      negative: 0
+      neutral: 0
+    structured_data:
+      _scopeSource: explicit
+    polarity: null
+    content_hash: 306c456706232f1f59bd4bb6fe46519c0f04c92b39c6cc4a4aa326ee74168cd3
+    commitment: leaning
+    write_count: 1
+    injection_count: 0
+    sources:
+      - scope: global
+        session_id: null
+        stored_at: "2026-10-25T17:38:41.389Z"
+    recurrence_count: 0
+    engram_version: 1
+    episode_ids: []
