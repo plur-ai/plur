@@ -383,6 +383,34 @@ function jsonSchemaPropToZod(prop: any): z.ZodTypeAny {
   return z.unknown()
 }
 
+/** The value-type names zod 3 used in "Expected X, received Y". */
+function receivedTypeName(value: unknown): string {
+  if (value === null) return 'null'
+  if (Array.isArray(value)) return 'array'
+  if (value instanceof Date) return 'date'
+  if (typeof value === 'number') return Number.isNaN(value) ? 'nan' : 'number'
+  return typeof value
+}
+
+/**
+ * Tool-argument messages worded as they were under zod 3, so the
+ * `Invalid arguments: <path>: <message>` line clients and agents read (and
+ * tests and logs match on) did not change with the zod 4 upgrade. Covers the
+ * issue kinds jsonSchemaPropToZod can produce; anything else falls through to
+ * zod's own message.
+ */
+const toolArgMessage = (issue: { code?: string; input?: unknown; expected?: unknown; values?: unknown[] }): string | undefined => {
+  if (issue.code === 'invalid_type') {
+    return issue.input === undefined ? 'Required' : `Expected ${String(issue.expected)}, received ${receivedTypeName(issue.input)}`
+  }
+  if (issue.code === 'invalid_value' && Array.isArray(issue.values)) {
+    const quote = (v: unknown) => (typeof v === 'string' ? `'${v}'` : String(v))
+    return `Invalid enum value. Expected ${issue.values.map(quote).join(' | ')}, received ${quote(issue.input)}`
+  }
+  if (issue.code === 'invalid_union') return 'Invalid input'
+  return undefined
+}
+
 /**
  * Validate raw tool-call arguments against a ToolDefinition's inputSchema.
  * Shared by the top-level CallToolRequestSchema handler (server.ts) and the
@@ -422,7 +450,8 @@ export function validateToolArgs(
     const field = jsonSchemaPropToZod(prop)
     shape[key] = schema.required?.includes(key) ? field : field.optional()
   }
-  const parsed = z.object(shape).passthrough().safeParse(rawArgs)
+  // reportInput keeps each issue's input, which the missing-field check reads.
+  const parsed = z.object(shape).passthrough().safeParse(rawArgs, { error: toolArgMessage, reportInput: true })
   if (!parsed.success) {
     const receivedFields = Object.keys(rawArgs)
     const details = parsed.error.issues.map(i => `${i.path.join('.') || 'root'}: ${i.message}`).join(', ')
@@ -431,8 +460,8 @@ export function validateToolArgs(
 
     // Field NAMES the schema expected but that did not arrive at all.
     const missingFields = parsed.error.issues
-      .filter((i: any) => i.code === 'invalid_type' && i.received === 'undefined')
-      .map((i: any) => String(i.path[0] ?? ''))
+      .filter((i) => i.code === 'invalid_type' && i.input === undefined)
+      .map((i) => String(i.path[0] ?? ''))
       .filter((k: string) => k.length > 0)
 
     // The drop has TWO shapes. The partial drop keeps the early scalar fields
