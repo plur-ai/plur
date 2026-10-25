@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- `@plur-ai/core` and `@plur-ai/mcp` now use zod 4 (`^4.6.7`) instead of zod 3. zod 3 has a high-severity advisory ([GHSA-mrhx-c7xc-m3w5](https://github.com/advisories/GHSA-mrhx-c7xc-m3w5), versions below 4.6.6) with no 3.x fix, and the 3.x line is end-of-line. Stores, packs and configs written by earlier releases parse to the same objects as before and write back unchanged, tool-argument errors read the same, and the JSON Schemas in `spec/` validate the same documents. If you import the Zod schemas that `@plur-ai/core` exports (`EngramSchema`, `PlurConfigSchema`, …) and combine them with your own zod, that code needs zod 4. (#1785)
+- `@plur-ai/core` and `@plur-ai/mcp` now use zod 4 (`^4.6.7`) instead of zod 3. zod 3 has a high-severity advisory ([GHSA-mrhx-c7xc-m3w5](https://github.com/advisories/GHSA-mrhx-c7xc-m3w5), versions below 4.6.6) with no 3.x fix, and the 3.x line is end-of-line. Stores, packs and configs written by earlier releases parse to the same objects as before and write back unchanged, tool-argument errors read the same, and the JSON Schemas in `spec/` validate the same documents. If you import the Zod schemas that `@plur-ai/core` exports (`EngramSchema`, `PlurConfigSchema`, …) and combine them with your own zod, that code needs zod 4. (#1785, #1786)
 
 ## 0.22.1
 
