@@ -1,0 +1,1776 @@
+[
+  {
+    "schema": "EngramSchema",
+    "name": "minimal engram gets every default",
+    "success": true,
+    "data": {
+      "id": "ENG-2026-0319-001",
+      "version": 2,
+      "status": "active",
+      "consolidated": false,
+      "type": "behavioral",
+      "scope": "global",
+      "visibility": "private",
+      "statement": "API uses snake_case",
+      "derivation_count": 1,
+      "pack": null,
+      "abstract": null,
+      "derived_from": null,
+      "tags": [],
+      "activation": {
+        "retrieval_strength": 0.7,
+        "storage_strength": 1,
+        "frequency": 0,
+        "last_accessed": "<schema-load-date>"
+      },
+      "associations": [],
+      "knowledge_anchors": [],
+      "feedback_signals": {
+        "positive": 0,
+        "negative": 0,
+        "neutral": 0
+      },
+      "polarity": null,
+      "write_count": 1,
+      "injection_count": 0,
+      "sources": [],
+      "recurrence_count": 0,
+      "engram_version": 1,
+      "episode_ids": []
+    }
+  },
+  {
+    "schema": "EngramSchema",
+    "name": "full engram round-trips",
+    "success": true,
+    "data": {
+      "id": "ENG-2026-0601-007",
+      "version": 2,
+      "status": "active",
+      "consolidated": true,
+      "type": "procedural",
+      "scope": "project:my-app",
+      "visibility": "public",
+      "created_at": "2026-06-01T10:00:00.000Z",
+      "statement": "Run pnpm -r build after switching branches",
+      "rationale": "A partial rebuild leaves stale dist imports",
+      "contraindications": [
+        "single-package repos"
+      ],
+      "source": "session",
+      "source_patterns": [
+        "P-1"
+      ],
+      "derivation_count": 2,
+      "pack": null,
+      "abstract": null,
+      "derived_from": "ENG-2026-0501-001",
+      "knowledge_type": {
+        "memory_class": "procedural",
+        "cognitive_level": "apply"
+      },
+      "domain": "software.build",
+      "tags": [
+        "pnpm",
+        "build"
+      ],
+      "activation": {
+        "retrieval_strength": 0.5,
+        "storage_strength": 0.9,
+        "frequency": 3,
+        "last_accessed": "2026-10-01"
+      },
+      "relations": {
+        "broader": [
+          "ENG-2026-0101-001"
+        ],
+        "narrower": [],
+        "related": [],
+        "conflicts": [],
+        "supersedes": [],
+        "superseded_by": []
+      },
+      "associations": [
+        {
+          "target_type": "engram",
+          "target": "ENG-2026-0101-002",
+          "strength": 0.4,
+          "type": "semantic"
+        }
+      ],
+      "knowledge_anchors": [
+        {
+          "path": "docs/build.md",
+          "relevance": "supporting"
+        },
+        {
+          "path": "README.md",
+          "relevance": "primary",
+          "snippet": "pnpm build"
+        }
+      ],
+      "dual_coding": {
+        "example": "pnpm -r build"
+      },
+      "provenance": {
+        "origin": "local",
+        "chain": [
+          "a"
+        ],
+        "signature": null,
+        "license": "cc-by-sa-4.0"
+      },
+      "attribution": {
+        "asserted_by": "unidentified",
+        "runtime": {
+          "name": "plur-mcp",
+          "version": "0.22.1"
+        }
+      },
+      "claim_class": "asserted",
+      "feedback_signals": {
+        "positive": 2,
+        "negative": 0,
+        "neutral": 1
+      },
+      "entities": [
+        {
+          "name": "pnpm",
+          "type": "tool",
+          "uri": "https://pnpm.io"
+        }
+      ],
+      "temporal": {
+        "learned_at": "2026-06-01",
+        "valid_from": "2026-06-01"
+      },
+      "usage": {
+        "injections": 0,
+        "hits": 4,
+        "misses": 0
+      },
+      "episodic": {
+        "emotional_weight": 5,
+        "confidence": 5,
+        "trigger_context": "branch switch"
+      },
+      "exchange": {
+        "fitness_score": 0.5,
+        "environmental_diversity": 0,
+        "adoption_count": 0,
+        "contradiction_rate": 0
+      },
+      "structured_data": {
+        "extraction": {
+          "confidence": 0.9,
+          "source_commit": "abc"
+        },
+        "n": 1
+      },
+      "polarity": "do",
+      "content_hash": "deadbeef",
+      "commitment": "decided",
+      "write_count": 3,
+      "injection_count": 7,
+      "sources": [
+        {
+          "scope": "project:my-app",
+          "session_id": null,
+          "stored_at": "2026-06-01T10:00:00.000Z"
+        },
+        {
+          "scope": "global",
+          "session_id": "s1",
+          "stored_at": "2026-06-02T10:00:00.000Z",
+          "validated_by": "group:a/b"
+        }
+      ],
+      "recurrence_count": 1,
+      "engram_version": 2,
+      "previous_version_ref": {
+        "event_id": "EV-1",
+        "changed_at": "2026-06-02"
+      },
+      "episode_ids": [
+        "EP-1"
+      ],
+      "summary": "pnpm -r build after branch switch",
+      "pinned": true,
+      "pinned_tier": "soft",
+      "pinned_priority": 60
+    }
+  },
+  {
+    "schema": "EngramSchemaPassthrough",
+    "name": "full engram round-trips (passthrough)",
+    "success": true,
+    "data": {
+      "id": "ENG-2026-0601-007",
+      "version": 2,
+      "status": "active",
+      "consolidated": true,
+      "type": "procedural",
+      "scope": "project:my-app",
+      "visibility": "public",
+      "created_at": "2026-06-01T10:00:00.000Z",
+      "statement": "Run pnpm -r build after switching branches",
+      "rationale": "A partial rebuild leaves stale dist imports",
+      "contraindications": [
+        "single-package repos"
+      ],
+      "source": "session",
+      "source_patterns": [
+        "P-1"
+      ],
+      "derivation_count": 2,
+      "pack": null,
+      "abstract": null,
+      "derived_from": "ENG-2026-0501-001",
+      "knowledge_type": {
+        "memory_class": "procedural",
+        "cognitive_level": "apply"
+      },
+      "domain": "software.build",
+      "tags": [
+        "pnpm",
+        "build"
+      ],
+      "activation": {
+        "retrieval_strength": 0.5,
+        "storage_strength": 0.9,
+        "frequency": 3,
+        "last_accessed": "2026-10-01"
+      },
+      "relations": {
+        "broader": [
+          "ENG-2026-0101-001"
+        ],
+        "narrower": [],
+        "related": [],
+        "conflicts": [],
+        "supersedes": [],
+        "superseded_by": []
+      },
+      "associations": [
+        {
+          "target_type": "engram",
+          "target": "ENG-2026-0101-002",
+          "strength": 0.4,
+          "type": "semantic"
+        }
+      ],
+      "knowledge_anchors": [
+        {
+          "path": "docs/build.md",
+          "relevance": "supporting"
+        },
+        {
+          "path": "README.md",
+          "relevance": "primary",
+          "snippet": "pnpm build"
+        }
+      ],
+      "dual_coding": {
+        "example": "pnpm -r build"
+      },
+      "provenance": {
+        "origin": "local",
+        "chain": [
+          "a"
+        ],
+        "signature": null,
+        "license": "cc-by-sa-4.0"
+      },
+      "attribution": {
+        "asserted_by": "unidentified",
+        "runtime": {
+          "name": "plur-mcp",
+          "version": "0.22.1"
+        }
+      },
+      "claim_class": "asserted",
+      "feedback_signals": {
+        "positive": 2,
+        "negative": 0,
+        "neutral": 1
+      },
+      "entities": [
+        {
+          "name": "pnpm",
+          "type": "tool",
+          "uri": "https://pnpm.io"
+        }
+      ],
+      "temporal": {
+        "learned_at": "2026-06-01",
+        "valid_from": "2026-06-01"
+      },
+      "usage": {
+        "injections": 0,
+        "hits": 4,
+        "misses": 0
+      },
+      "episodic": {
+        "emotional_weight": 5,
+        "confidence": 5,
+        "trigger_context": "branch switch"
+      },
+      "exchange": {
+        "fitness_score": 0.5,
+        "environmental_diversity": 0,
+        "adoption_count": 0,
+        "contradiction_rate": 0
+      },
+      "structured_data": {
+        "extraction": {
+          "confidence": 0.9,
+          "source_commit": "abc"
+        },
+        "n": 1
+      },
+      "polarity": "do",
+      "content_hash": "deadbeef",
+      "commitment": "decided",
+      "write_count": 3,
+      "injection_count": 7,
+      "sources": [
+        {
+          "scope": "project:my-app",
+          "session_id": null,
+          "stored_at": "2026-06-01T10:00:00.000Z"
+        },
+        {
+          "scope": "global",
+          "session_id": "s1",
+          "stored_at": "2026-06-02T10:00:00.000Z",
+          "validated_by": "group:a/b"
+        }
+      ],
+      "recurrence_count": 1,
+      "engram_version": 2,
+      "previous_version_ref": {
+        "event_id": "EV-1",
+        "changed_at": "2026-06-02"
+      },
+      "episode_ids": [
+        "EP-1"
+      ],
+      "summary": "pnpm -r build after branch switch",
+      "pinned": true,
+      "pinned_tier": "soft",
+      "pinned_priority": 60
+    }
+  },
+  {
+    "schema": "EngramSchema",
+    "name": "unknown top-level key is stripped",
+    "success": true,
+    "data": {
+      "id": "ENG-2026-0319-001",
+      "version": 2,
+      "status": "active",
+      "consolidated": false,
+      "type": "behavioral",
+      "scope": "global",
+      "visibility": "private",
+      "statement": "API uses snake_case",
+      "derivation_count": 1,
+      "pack": null,
+      "abstract": null,
+      "derived_from": null,
+      "tags": [],
+      "activation": {
+        "retrieval_strength": 0.7,
+        "storage_strength": 1,
+        "frequency": 0,
+        "last_accessed": "<schema-load-date>"
+      },
+      "associations": [],
+      "knowledge_anchors": [],
+      "feedback_signals": {
+        "positive": 0,
+        "negative": 0,
+        "neutral": 0
+      },
+      "polarity": null,
+      "write_count": 1,
+      "injection_count": 0,
+      "sources": [],
+      "recurrence_count": 0,
+      "engram_version": 1,
+      "episode_ids": []
+    }
+  },
+  {
+    "schema": "EngramSchemaPassthrough",
+    "name": "unknown top-level key is kept",
+    "success": true,
+    "data": {
+      "id": "ENG-2026-0319-001",
+      "version": 2,
+      "status": "active",
+      "consolidated": false,
+      "type": "behavioral",
+      "scope": "global",
+      "visibility": "private",
+      "statement": "API uses snake_case",
+      "derivation_count": 1,
+      "pack": null,
+      "abstract": null,
+      "derived_from": null,
+      "tags": [],
+      "activation": {
+        "retrieval_strength": 0.7,
+        "storage_strength": 1,
+        "frequency": 0,
+        "last_accessed": "<schema-load-date>"
+      },
+      "associations": [],
+      "knowledge_anchors": [],
+      "feedback_signals": {
+        "positive": 0,
+        "negative": 0,
+        "neutral": 0
+      },
+      "polarity": null,
+      "write_count": 1,
+      "injection_count": 0,
+      "sources": [],
+      "recurrence_count": 0,
+      "engram_version": 1,
+      "episode_ids": [],
+      "future_field": {
+        "a": 1
+      },
+      "zz": "last"
+    }
+  },
+  {
+    "schema": "EngramSchema",
+    "name": "explicit nulls on nullable fields",
+    "success": true,
+    "data": {
+      "id": "ENG-2026-0319-001",
+      "version": 2,
+      "status": "active",
+      "consolidated": false,
+      "type": "behavioral",
+      "scope": "global",
+      "visibility": "private",
+      "statement": "API uses snake_case",
+      "derivation_count": 1,
+      "pack": null,
+      "abstract": null,
+      "derived_from": null,
+      "tags": [],
+      "activation": {
+        "retrieval_strength": 0.7,
+        "storage_strength": 1,
+        "frequency": 0,
+        "last_accessed": "<schema-load-date>"
+      },
+      "associations": [],
+      "knowledge_anchors": [],
+      "feedback_signals": {
+        "positive": 0,
+        "negative": 0,
+        "neutral": 0
+      },
+      "polarity": null,
+      "write_count": 1,
+      "injection_count": 0,
+      "sources": [],
+      "recurrence_count": 0,
+      "engram_version": 1,
+      "episode_ids": []
+    }
+  },
+  {
+    "schema": "EngramSchema",
+    "name": "explicit undefined on optional fields",
+    "success": true,
+    "data": {
+      "id": "ENG-2026-0319-001",
+      "version": 2,
+      "status": "active",
+      "consolidated": false,
+      "type": "behavioral",
+      "scope": "global",
+      "visibility": "private",
+      "statement": "API uses snake_case",
+      "rationale": "<undefined>",
+      "derivation_count": 1,
+      "pack": null,
+      "abstract": null,
+      "derived_from": null,
+      "domain": "<undefined>",
+      "tags": [],
+      "activation": {
+        "retrieval_strength": 0.7,
+        "storage_strength": 1,
+        "frequency": 0,
+        "last_accessed": "<schema-load-date>"
+      },
+      "relations": "<undefined>",
+      "associations": [],
+      "knowledge_anchors": [],
+      "feedback_signals": {
+        "positive": 0,
+        "negative": 0,
+        "neutral": 0
+      },
+      "polarity": null,
+      "write_count": 1,
+      "injection_count": 0,
+      "sources": [],
+      "recurrence_count": 0,
+      "engram_version": 1,
+      "episode_ids": []
+    }
+  },
+  {
+    "schema": "EngramSchema",
+    "name": "empty nested objects fill their own defaults",
+    "success": true,
+    "data": {
+      "id": "ENG-2026-0319-001",
+      "version": 2,
+      "status": "active",
+      "consolidated": false,
+      "type": "behavioral",
+      "scope": "global",
+      "visibility": "private",
+      "statement": "API uses snake_case",
+      "derivation_count": 1,
+      "pack": null,
+      "abstract": null,
+      "derived_from": null,
+      "tags": [],
+      "activation": {
+        "retrieval_strength": 0.7,
+        "storage_strength": 1,
+        "frequency": 0,
+        "last_accessed": "<schema-load-date>"
+      },
+      "relations": {
+        "broader": [],
+        "narrower": [],
+        "related": [],
+        "conflicts": [],
+        "supersedes": [],
+        "superseded_by": []
+      },
+      "associations": [],
+      "knowledge_anchors": [],
+      "provenance": {
+        "origin": "x",
+        "chain": [],
+        "signature": null,
+        "license": "cc-by-sa-4.0"
+      },
+      "feedback_signals": {
+        "positive": 0,
+        "negative": 0,
+        "neutral": 0
+      },
+      "usage": {
+        "injections": 0,
+        "hits": 0,
+        "misses": 0
+      },
+      "episodic": {
+        "emotional_weight": 5,
+        "confidence": 5
+      },
+      "exchange": {
+        "environmental_diversity": 0,
+        "adoption_count": 0,
+        "contradiction_rate": 0
+      },
+      "polarity": null,
+      "write_count": 1,
+      "injection_count": 0,
+      "sources": [],
+      "recurrence_count": 0,
+      "engram_version": 1,
+      "episode_ids": []
+    }
+  },
+  {
+    "schema": "EngramSchema",
+    "name": "insight defaults",
+    "success": true,
+    "data": {
+      "id": "ENG-2026-0319-001",
+      "version": 2,
+      "status": "active",
+      "consolidated": false,
+      "type": "behavioral",
+      "scope": "global",
+      "visibility": "private",
+      "statement": "API uses snake_case",
+      "derivation_count": 1,
+      "pack": null,
+      "abstract": null,
+      "derived_from": null,
+      "tags": [],
+      "activation": {
+        "retrieval_strength": 0.7,
+        "storage_strength": 1,
+        "frequency": 0,
+        "last_accessed": "<schema-load-date>"
+      },
+      "associations": [],
+      "knowledge_anchors": [],
+      "feedback_signals": {
+        "positive": 0,
+        "negative": 0,
+        "neutral": 0
+      },
+      "insight": {
+        "operation": "dream",
+        "synthesized_at": "2026-06-01",
+        "grounding": "unverified",
+        "source_episode_ids": [],
+        "fate": "surfaced",
+        "surfaced_count": 0
+      },
+      "polarity": null,
+      "write_count": 1,
+      "injection_count": 0,
+      "sources": [],
+      "recurrence_count": 0,
+      "engram_version": 1,
+      "episode_ids": []
+    }
+  },
+  {
+    "schema": "EngramSchema",
+    "name": "store-namespaced id",
+    "success": true,
+    "data": {
+      "id": "ENG-PPLTPHQPYTD-2026-09-01-040",
+      "version": 2,
+      "status": "active",
+      "consolidated": false,
+      "type": "behavioral",
+      "scope": "global",
+      "visibility": "private",
+      "statement": "API uses snake_case",
+      "derivation_count": 1,
+      "pack": null,
+      "abstract": null,
+      "derived_from": null,
+      "tags": [],
+      "activation": {
+        "retrieval_strength": 0.7,
+        "storage_strength": 1,
+        "frequency": 0,
+        "last_accessed": "<schema-load-date>"
+      },
+      "associations": [],
+      "knowledge_anchors": [],
+      "feedback_signals": {
+        "positive": 0,
+        "negative": 0,
+        "neutral": 0
+      },
+      "polarity": null,
+      "write_count": 1,
+      "injection_count": 0,
+      "sources": [],
+      "recurrence_count": 0,
+      "engram_version": 1,
+      "episode_ids": []
+    }
+  },
+  {
+    "schema": "EngramSchema",
+    "name": "META and ABS ids",
+    "success": true,
+    "data": {
+      "id": "META-2026-0101-001",
+      "version": 2,
+      "status": "active",
+      "consolidated": false,
+      "type": "behavioral",
+      "scope": "global",
+      "visibility": "private",
+      "statement": "API uses snake_case",
+      "derivation_count": 1,
+      "pack": null,
+      "abstract": null,
+      "derived_from": null,
+      "tags": [],
+      "activation": {
+        "retrieval_strength": 0.7,
+        "storage_strength": 1,
+        "frequency": 0,
+        "last_accessed": "<schema-load-date>"
+      },
+      "associations": [],
+      "knowledge_anchors": [],
+      "feedback_signals": {
+        "positive": 0,
+        "negative": 0,
+        "neutral": 0
+      },
+      "polarity": null,
+      "write_count": 1,
+      "injection_count": 0,
+      "sources": [],
+      "recurrence_count": 0,
+      "engram_version": 1,
+      "episode_ids": []
+    }
+  },
+  {
+    "schema": "EngramSchema",
+    "name": "draft commitment",
+    "success": true,
+    "data": {
+      "id": "ENG-2026-0319-001",
+      "version": 2,
+      "status": "active",
+      "consolidated": false,
+      "type": "behavioral",
+      "scope": "global",
+      "visibility": "private",
+      "statement": "API uses snake_case",
+      "derivation_count": 1,
+      "pack": null,
+      "abstract": null,
+      "derived_from": null,
+      "tags": [],
+      "activation": {
+        "retrieval_strength": 0.7,
+        "storage_strength": 1,
+        "frequency": 0,
+        "last_accessed": "<schema-load-date>"
+      },
+      "associations": [],
+      "knowledge_anchors": [],
+      "feedback_signals": {
+        "positive": 0,
+        "negative": 0,
+        "neutral": 0
+      },
+      "polarity": null,
+      "commitment": "draft",
+      "write_count": 1,
+      "injection_count": 0,
+      "sources": [],
+      "recurrence_count": 0,
+      "engram_version": 1,
+      "episode_ids": []
+    }
+  },
+  {
+    "schema": "EngramSchema",
+    "name": "legacy dormant status",
+    "success": true,
+    "data": {
+      "id": "ENG-2026-0319-001",
+      "version": 2,
+      "status": "dormant",
+      "consolidated": false,
+      "type": "behavioral",
+      "scope": "global",
+      "visibility": "private",
+      "statement": "API uses snake_case",
+      "derivation_count": 1,
+      "pack": null,
+      "abstract": null,
+      "derived_from": null,
+      "tags": [],
+      "activation": {
+        "retrieval_strength": 0.7,
+        "storage_strength": 1,
+        "frequency": 0,
+        "last_accessed": "<schema-load-date>"
+      },
+      "associations": [],
+      "knowledge_anchors": [],
+      "feedback_signals": {
+        "positive": 0,
+        "negative": 0,
+        "neutral": 0
+      },
+      "polarity": null,
+      "write_count": 1,
+      "injection_count": 0,
+      "sources": [],
+      "recurrence_count": 0,
+      "engram_version": 1,
+      "episode_ids": []
+    }
+  },
+  {
+    "schema": "EngramSchema",
+    "name": "reject: missing statement",
+    "success": false,
+    "paths": [
+      "scope",
+      "statement",
+      "status"
+    ],
+    "messages": []
+  },
+  {
+    "schema": "EngramSchema",
+    "name": "reject: bad id",
+    "success": false,
+    "paths": [
+      "id"
+    ],
+    "messages": []
+  },
+  {
+    "schema": "EngramSchema",
+    "name": "reject: bad enum",
+    "success": false,
+    "paths": [
+      "status",
+      "type"
+    ],
+    "messages": []
+  },
+  {
+    "schema": "EngramSchema",
+    "name": "reject: summary too long",
+    "success": false,
+    "paths": [
+      "summary"
+    ],
+    "messages": []
+  },
+  {
+    "schema": "EngramSchema",
+    "name": "reject: dual coding empty",
+    "success": false,
+    "paths": [
+      "dual_coding"
+    ],
+    "messages": [
+      "At least one of example or analogy must be provided"
+    ]
+  },
+  {
+    "schema": "EngramSchema",
+    "name": "reject: promoted insight ungrounded",
+    "success": false,
+    "paths": [
+      "insight.grounding"
+    ],
+    "messages": [
+      "A promoted insight must be grounded (grounding=verified); speculative dreams cannot be promoted until re-grounded."
+    ]
+  },
+  {
+    "schema": "EngramSchema",
+    "name": "reject: association strength above 0.95",
+    "success": false,
+    "paths": [
+      "associations.0.strength"
+    ],
+    "messages": []
+  },
+  {
+    "schema": "EngramSchema",
+    "name": "reject: entity uri not a url",
+    "success": false,
+    "paths": [
+      "entities.0.uri"
+    ],
+    "messages": []
+  },
+  {
+    "schema": "EngramSchema",
+    "name": "reject: non-integer frequency",
+    "success": false,
+    "paths": [
+      "activation.frequency"
+    ],
+    "messages": []
+  },
+  {
+    "schema": "EngramSchema",
+    "name": "reject: pinned_priority out of range",
+    "success": false,
+    "paths": [
+      "pinned_priority"
+    ],
+    "messages": []
+  },
+  {
+    "schema": "EngramSchema",
+    "name": "reject: not an object",
+    "success": false,
+    "paths": [
+      "(root)"
+    ],
+    "messages": []
+  },
+  {
+    "schema": "InsightFieldSchema",
+    "name": "insight promoted and verified",
+    "success": true,
+    "data": {
+      "operation": "distill",
+      "synthesized_at": "x",
+      "grounding": "verified",
+      "source_episode_ids": [],
+      "fate": "promoted",
+      "surfaced_count": 0
+    }
+  },
+  {
+    "schema": "ExtractionProvenanceSchema",
+    "name": "extraction provenance keeps extra keys",
+    "success": true,
+    "data": {
+      "confidence": 0.4,
+      "extra": true
+    }
+  },
+  {
+    "schema": "EpisodeSchema",
+    "name": "episode minimal",
+    "success": true,
+    "data": {
+      "id": "EP-1",
+      "summary": "s",
+      "timestamp": "2026-01-01T00:00:00Z"
+    }
+  },
+  {
+    "schema": "EpisodeSchema",
+    "name": "episode full, unknown key stripped",
+    "success": true,
+    "data": {
+      "id": "EP-1",
+      "summary": "s",
+      "agent": "a",
+      "channel": "c",
+      "session_id": "x",
+      "tags": [
+        "t"
+      ],
+      "timestamp": "t"
+    }
+  },
+  {
+    "schema": "EpisodeSchema",
+    "name": "reject: episode missing timestamp",
+    "success": false,
+    "paths": [
+      "timestamp"
+    ],
+    "messages": []
+  },
+  {
+    "schema": "PackManifestSchema",
+    "name": "pack minimal",
+    "success": true,
+    "data": {
+      "name": "p",
+      "version": "1.0.0",
+      "license": "cc-by-sa-4.0",
+      "tags": []
+    }
+  },
+  {
+    "schema": "PackManifestSchema",
+    "name": "pack metadata defaults",
+    "success": true,
+    "data": {
+      "name": "p",
+      "version": "1.0.0",
+      "license": "cc-by-sa-4.0",
+      "tags": [],
+      "metadata": {
+        "injection_policy": "on_match",
+        "match_terms": []
+      }
+    }
+  },
+  {
+    "schema": "PackManifestSchema",
+    "name": "pack full with unknown root key",
+    "success": true,
+    "data": {
+      "name": "p",
+      "version": "1",
+      "description": "d",
+      "creator": "c",
+      "license": "mit",
+      "tags": [
+        "a"
+      ],
+      "metadata": {
+        "id": "x",
+        "injection_policy": "always",
+        "match_terms": [
+          "m"
+        ],
+        "domain": "d",
+        "engram_count": 3,
+        "provenance": true
+      },
+      "x-future": {
+        "a": 1
+      }
+    }
+  },
+  {
+    "schema": "PackManifestSchema",
+    "name": "pack legacy x-datacore",
+    "success": true,
+    "data": {
+      "name": "p",
+      "version": "1",
+      "license": "cc-by-sa-4.0",
+      "tags": [],
+      "x-datacore": {
+        "id": "x",
+        "injection_policy": "on_request",
+        "match_terms": [],
+        "engram_count": 2
+      }
+    }
+  },
+  {
+    "schema": "PackManifestSchema",
+    "name": "pack metadata unknown key stripped",
+    "success": true,
+    "data": {
+      "name": "p",
+      "version": "1",
+      "license": "cc-by-sa-4.0",
+      "tags": [],
+      "metadata": {
+        "injection_policy": "on_match",
+        "match_terms": []
+      }
+    }
+  },
+  {
+    "schema": "PackManifestSchema",
+    "name": "reject: pack x-datacore always",
+    "success": false,
+    "paths": [
+      "x-datacore.injection_policy"
+    ],
+    "messages": []
+  },
+  {
+    "schema": "PackManifestSchema",
+    "name": "reject: pack missing version",
+    "success": false,
+    "paths": [
+      "version"
+    ],
+    "messages": []
+  },
+  {
+    "schema": "PlurConfigSchema",
+    "name": "empty config stays empty",
+    "success": true,
+    "data": {}
+  },
+  {
+    "schema": "PlurConfigSchema",
+    "name": "config nested objects present but empty",
+    "success": true,
+    "data": {
+      "injection": {
+        "spread_cap": 3,
+        "spread_budget": 480,
+        "co_access": true,
+        "pinned_ratio": 0.5,
+        "pinned_hard_ratio": 0.5
+      },
+      "dedup": {},
+      "provenance": {
+        "generate": "never",
+        "path": "provenance",
+        "include_statement": false
+      },
+      "tensions": {},
+      "recurrence": {
+        "max_commitment": "locked"
+      },
+      "expiry": {
+        "mode": "hard",
+        "grace_days": 30
+      },
+      "embeddings": {},
+      "vector": {},
+      "postgres": {},
+      "llm": {},
+      "profile": {},
+      "scope_routing": {},
+      "sync": {}
+    }
+  },
+  {
+    "schema": "PlurConfigSchema",
+    "name": "config partial nested values",
+    "success": true,
+    "data": {
+      "injection": {
+        "spread_cap": 5,
+        "spread_budget": 480,
+        "co_access": true,
+        "pinned_ratio": 0.5,
+        "pinned_hard_ratio": 0.5
+      },
+      "dedup": {
+        "threshold": 0.9
+      },
+      "tensions": {
+        "temporal_domains": [
+          "x"
+        ]
+      },
+      "llm": {
+        "meta_tier": "fast"
+      }
+    }
+  },
+  {
+    "schema": "PlurConfigSchema",
+    "name": "config scalar settings",
+    "success": true,
+    "data": {
+      "auto_learn": false,
+      "injection_budget": 1500,
+      "packs": [
+        "a"
+      ],
+      "allow_secrets": true,
+      "backend": "sqlite",
+      "registry_url": "https://registry.example.com/x",
+      "unscoped_default": "local"
+    }
+  },
+  {
+    "schema": "PlurConfigSchema",
+    "name": "config unknown key stripped",
+    "success": true,
+    "data": {
+      "auto_learn": true
+    }
+  },
+  {
+    "schema": "PlurConfigSchema",
+    "name": "config with path and remote stores",
+    "success": true,
+    "data": {
+      "stores": [
+        {
+          "path": "/tmp/team",
+          "scope": "group:a/b",
+          "shared": true,
+          "readonly": false
+        },
+        {
+          "url": "https://plur.example.com",
+          "token": "t",
+          "scope": "group:a/c",
+          "shared": false,
+          "readonly": false,
+          "dial": "always",
+          "description": "d",
+          "covers": [
+            "x"
+          ],
+          "sensitivity": {
+            "forbid": [
+              "secrets"
+            ],
+            "allow": []
+          },
+          "future": 1
+        },
+        {
+          "url": "https://plur.example.com",
+          "token_env": "PLUR_T",
+          "scope": "group:a/d",
+          "shared": false,
+          "readonly": false,
+          "dial": "<undefined>",
+          "covers": "<undefined>",
+          "sensitivity": "<undefined>"
+        }
+      ]
+    }
+  },
+  {
+    "schema": "PlurConfigSchema",
+    "name": "reject: config store with both path and url",
+    "success": false,
+    "paths": [
+      "stores.0"
+    ],
+    "messages": [
+      "StoreEntry requires exactly one of path or url"
+    ]
+  },
+  {
+    "schema": "PlurConfigSchema",
+    "name": "reject: config bad backend",
+    "success": false,
+    "paths": [
+      "backend"
+    ],
+    "messages": []
+  },
+  {
+    "schema": "PlurConfigSchema",
+    "name": "reject: config bad threshold",
+    "success": false,
+    "paths": [
+      "dedup.threshold"
+    ],
+    "messages": []
+  },
+  {
+    "schema": "PlurConfigSchema",
+    "name": "config postgres catches bad numbers",
+    "success": true,
+    "data": {
+      "postgres": {
+        "url": "postgres://x",
+        "hnsw_m": "<undefined>",
+        "ef_search": "<undefined>",
+        "max_connections": 4
+      }
+    }
+  },
+  {
+    "schema": "PlurConfigSchema",
+    "name": "config scope_routing catches bad values",
+    "success": true,
+    "data": {
+      "scope_routing": {
+        "match_threshold": "<undefined>",
+        "weight_tag": 1,
+        "allow_shared_auto_route": "<undefined>"
+      }
+    }
+  },
+  {
+    "schema": "DedupConfigSchema",
+    "name": "dedup config empty",
+    "success": true,
+    "data": {}
+  },
+  {
+    "schema": "TensionsConfigSchema",
+    "name": "tensions config empty",
+    "success": true,
+    "data": {}
+  },
+  {
+    "schema": "StoreEntrySchema",
+    "name": "store entry minimal path",
+    "success": true,
+    "data": {
+      "path": "/x",
+      "scope": "global",
+      "shared": false,
+      "readonly": false
+    }
+  },
+  {
+    "schema": "StoreEntrySchema",
+    "name": "store entry sensitivity empty object",
+    "success": true,
+    "data": {
+      "path": "/x",
+      "scope": "global",
+      "shared": false,
+      "readonly": false,
+      "sensitivity": {
+        "forbid": [
+          "secrets",
+          "infra"
+        ],
+        "allow": []
+      }
+    }
+  },
+  {
+    "schema": "StoreEntrySchema",
+    "name": "store entry url with port and path",
+    "success": true,
+    "data": {
+      "url": "http://localhost:8080/api",
+      "scope": "s",
+      "shared": false,
+      "readonly": false
+    }
+  },
+  {
+    "schema": "StoreEntrySchema",
+    "name": "reject: store entry neither path nor url",
+    "success": false,
+    "paths": [
+      "(root)"
+    ],
+    "messages": [
+      "StoreEntry requires exactly one of path or url"
+    ]
+  },
+  {
+    "schema": "StoreEntrySchema",
+    "name": "reject: store entry bad url",
+    "success": false,
+    "paths": [
+      "url"
+    ],
+    "messages": []
+  },
+  {
+    "schema": "StoreEntrySchema",
+    "name": "reject: store entry missing scope",
+    "success": false,
+    "paths": [
+      "scope"
+    ],
+    "messages": []
+  },
+  {
+    "schema": "ServerStoreEntrySchema",
+    "name": "server entry minimal",
+    "success": true,
+    "data": {
+      "url": "https://plur.example.com",
+      "readonly": false,
+      "scopes": [
+        "group:a/b"
+      ],
+      "enterprise": {}
+    }
+  },
+  {
+    "schema": "ServerStoreEntrySchema",
+    "name": "server entry malformed values dropped",
+    "success": true,
+    "data": {
+      "url": "https://plur.example.com",
+      "token": "t",
+      "readonly": false,
+      "scope": "group:a/b",
+      "scopes": [
+        "group:a/b"
+      ],
+      "pinned_scopes": "<undefined>",
+      "enterprise": {},
+      "scope_settings": {
+        "group:a/b": {
+          "dial": "never",
+          "covers": [
+            "c"
+          ],
+          "sensitivity": {
+            "forbid": [
+              "infra"
+            ],
+            "allow": []
+          },
+          "extra": 1
+        }
+      },
+      "discovery": {
+        "discovered_at": "t",
+        "scopes_status": "<undefined>",
+        "gitlab_host": null,
+        "project_paths": "<undefined>",
+        "key_expires_at": null,
+        "status": "<undefined>",
+        "extra": true
+      },
+      "future_key": "kept"
+    }
+  },
+  {
+    "schema": "ServerStoreEntrySchema",
+    "name": "server entry scopes not a list",
+    "success": true,
+    "data": {
+      "url": "https://plur.example.com",
+      "readonly": false,
+      "scopes": [],
+      "enterprise": {
+        "hello_engram_id": "ENG-1",
+        "other": 2
+      }
+    }
+  },
+  {
+    "schema": "ServerStoreEntrySchema",
+    "name": "reject: server entry bad url",
+    "success": false,
+    "paths": [
+      "url"
+    ],
+    "messages": []
+  },
+  {
+    "schema": "DiscoveryCacheSchema",
+    "name": "discovery cache project_paths bad value",
+    "success": true,
+    "data": {
+      "project_paths": "<undefined>"
+    }
+  },
+  {
+    "schema": "DiscoveryCacheSchema",
+    "name": "discovery cache project_paths valid",
+    "success": true,
+    "data": {
+      "project_paths": {
+        "a": "project:a"
+      },
+      "username": "u",
+      "status": "ok"
+    }
+  },
+  {
+    "schema": "ScopeSettingsSchema",
+    "name": "scope settings bad shapes",
+    "success": true,
+    "data": {
+      "dial": "<undefined>",
+      "description": "<undefined>",
+      "covers": "<undefined>",
+      "sensitivity": "<undefined>"
+    }
+  },
+  {
+    "schema": "ScopeMetadataSchema",
+    "name": "scope metadata minimal",
+    "success": true,
+    "data": {
+      "scope": "group:a/b",
+      "description": "team",
+      "covers": []
+    }
+  },
+  {
+    "schema": "ScopeMetadataSchema",
+    "name": "scope metadata nulls",
+    "success": true,
+    "data": {
+      "scope": "group:a/b",
+      "description": "",
+      "covers": [],
+      "sensitivity": "<undefined>",
+      "injection_policy": "<undefined>",
+      "owner": "<undefined>"
+    }
+  },
+  {
+    "schema": "ScopeMetadataSchema",
+    "name": "scope metadata full",
+    "success": true,
+    "data": {
+      "scope": "s",
+      "description": "d",
+      "covers": [
+        "a"
+      ],
+      "sensitivity": {
+        "forbid": [
+          "secrets",
+          "infra"
+        ],
+        "allow": [
+          "x"
+        ]
+      },
+      "injection_policy": "always",
+      "owner": "o"
+    }
+  },
+  {
+    "schema": "ScopeMetadataSchema",
+    "name": "reject: scope metadata control chars",
+    "success": false,
+    "paths": [
+      "covers.1",
+      "description"
+    ],
+    "messages": [
+      "must not contain control characters or newlines (directive-surface hardening, #345)"
+    ]
+  },
+  {
+    "schema": "ScopeMetadataSchema",
+    "name": "reject: scope metadata missing description",
+    "success": false,
+    "paths": [
+      "description"
+    ],
+    "messages": []
+  },
+  {
+    "schema": "ScopeSensitivitySchema",
+    "name": "sensitivity empty",
+    "success": true,
+    "data": {
+      "forbid": [
+        "secrets",
+        "infra"
+      ],
+      "allow": []
+    }
+  },
+  {
+    "schema": "ScopeSensitivitySchema",
+    "name": "sensitivity all unknown",
+    "success": true,
+    "data": {
+      "forbid": [
+        "secrets",
+        "infra"
+      ],
+      "allow": [],
+      "extra": "kept"
+    }
+  },
+  {
+    "schema": "TensionRecordSchema",
+    "name": "tension defaults",
+    "success": true,
+    "data": {
+      "id": "T-1",
+      "engram_a": "a",
+      "engram_b": "b",
+      "statement_a": "x",
+      "statement_b": "y",
+      "confidence": 0.7,
+      "reason": "r",
+      "detected_at": "t",
+      "status": "detected",
+      "resolved_by": null,
+      "resolved_at": null,
+      "category": "factual"
+    }
+  },
+  {
+    "schema": "TensionRecordSchema",
+    "name": "reject: tension confidence above 1",
+    "success": false,
+    "paths": [
+      "confidence"
+    ],
+    "messages": []
+  },
+  {
+    "schema": "MetaFieldSchema",
+    "name": "meta field defaults",
+    "success": true,
+    "data": {
+      "structure": {
+        "goal_type": "g",
+        "constraint_type": "c",
+        "outcome_type": "o",
+        "template": "t",
+        "structure_type": "goal-constraint-outcome"
+      },
+      "evidence": [
+        {
+          "engram_id": "a",
+          "domain": "d",
+          "mapping_rationale": "m",
+          "alignment_score": 0.5
+        },
+        {
+          "engram_id": "b",
+          "domain": "e",
+          "mapping_rationale": "m",
+          "alignment_score": 0.6
+        }
+      ],
+      "domain_coverage": {
+        "validated": [
+          "d"
+        ],
+        "failed": [],
+        "predicted": []
+      },
+      "falsification": {
+        "expected_conditions": "x",
+        "expected_exceptions": "y"
+      },
+      "confidence": {
+        "evidence_count": 2,
+        "domain_count": 2,
+        "structural_depth": 2,
+        "validation_ratio": 0,
+        "composite": 0.5
+      },
+      "hierarchy": {
+        "level": "mop",
+        "parent": null,
+        "children": []
+      },
+      "pipeline_version": "1"
+    }
+  },
+  {
+    "schema": "MetaFieldSchema",
+    "name": "reject: meta field one evidence",
+    "success": false,
+    "paths": [
+      "confidence",
+      "domain_coverage",
+      "evidence",
+      "falsification",
+      "hierarchy",
+      "pipeline_version",
+      "structure"
+    ],
+    "messages": []
+  },
+  {
+    "schema": "CapsuleHeaderSchema",
+    "name": "capsule header",
+    "success": true,
+    "data": {
+      "schema": "plur.capsule/1",
+      "product_type": "engram-pack",
+      "manifest_summary": {
+        "name": "p",
+        "version": "1",
+        "engram_count": 2,
+        "license": "cc-by-sa-4.0"
+      },
+      "payload": {
+        "compression": "gzip",
+        "size_compressed": 1,
+        "size_uncompressed": 2,
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "created_at": "2026-06-01T10:00:00+02:00",
+      "producer": {
+        "tool": "plur",
+        "version": "0.22.1"
+      },
+      "signer": null
+    }
+  },
+  {
+    "schema": "CapsuleHeaderSchema",
+    "name": "capsule header Z timestamp with millis",
+    "success": true,
+    "data": {
+      "schema": "plur.capsule/1",
+      "product_type": "skill",
+      "manifest_summary": {
+        "name": "p",
+        "version": "1",
+        "engram_count": 0,
+        "license": "mit"
+      },
+      "payload": {
+        "compression": "none",
+        "size_compressed": 1,
+        "size_uncompressed": 1,
+        "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "created_at": "2026-06-01T10:00:00.123Z",
+      "producer": {
+        "tool": "plur",
+        "version": "1"
+      },
+      "signer": {
+        "algo": "ed25519",
+        "public_key": "k"
+      }
+    }
+  },
+  {
+    "schema": "CapsuleHeaderSchema",
+    "name": "reject: capsule header bad sha and date",
+    "success": false,
+    "paths": [
+      "created_at",
+      "payload.sha256"
+    ],
+    "messages": [
+      "sha256 must be 64 lowercase hex chars"
+    ]
+  },
+  {
+    "schema": "FolderMapSchema",
+    "name": "folder map",
+    "success": true,
+    "data": {
+      "version": 1,
+      "folders": [
+        {
+          "path": "~/work",
+          "plur": "remote-only",
+          "scope": "group:a/b",
+          "trusted": true,
+          "extra": 1
+        }
+      ],
+      "other": "kept"
+    }
+  },
+  {
+    "schema": "FolderMapSchema",
+    "name": "folder map null folders",
+    "success": true,
+    "data": {
+      "folders": null
+    }
+  },
+  {
+    "schema": "FolderMapSchema",
+    "name": "reject: folder map bad entries",
+    "success": false,
+    "paths": [
+      "folders.0.path",
+      "folders.0.plur",
+      "folders.1",
+      "folders.2.path",
+      "folders.2.trusted",
+      "version"
+    ],
+    "messages": []
+  },
+  {
+    "schema": "RemoteRowSchema",
+    "name": "remote row",
+    "success": true,
+    "data": {
+      "id": "ENG-2026-0101-001",
+      "scope": "group:a/b",
+      "status": "active",
+      "statement": "s",
+      "confidence_score": null,
+      "rationale": null,
+      "extra": {
+        "a": 1
+      }
+    }
+  },
+  {
+    "schema": "RemoteRowSchema",
+    "name": "reject: remote row drifted fields",
+    "success": false,
+    "paths": [
+      "commitment",
+      "scope",
+      "status",
+      "type"
+    ],
+    "messages": []
+  }
+]

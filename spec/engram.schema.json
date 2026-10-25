@@ -192,13 +192,13 @@
         "last_accessed"
       ],
       "additionalProperties": false,
-      "description": "ACT-R activation parameters driving decay and ranking. STABLE.",
       "default": {
         "retrieval_strength": 0.7,
         "storage_strength": 1,
         "frequency": 0,
         "last_accessed": ""
-      }
+      },
+      "description": "ACT-R activation parameters driving decay and ranking. STABLE."
     },
     "relations": {
       "type": "object",

@@ -1,0 +1,114 @@
+{
+  "@context": {
+    "prov": "http://www.w3.org/ns/prov#",
+    "engram": "https://plur.ai/ns/engram#",
+    "pa": "https://w3id.org/prov-agent#",
+    "odrl": "http://www.w3.org/ns/odrl/2/",
+    "xsd": "http://www.w3.org/2001/XMLSchema#"
+  },
+  "@graph": [
+    {
+      "@id": "engram:record/pack/fixture-pack@1.0.0",
+      "@type": [
+        "prov:Bundle",
+        "prov:Entity"
+      ],
+      "prov:generatedAtTime": {
+        "@value": "2026-10-25T17:38:41.494Z",
+        "@type": "xsd:dateTime"
+      },
+      "engram:describes": {
+        "@id": "engram:pack/fixture-pack@1.0.0"
+      },
+      "engram:recordIsSelfContained": true,
+      "engram:historyEvents": 0
+    },
+    {
+      "@id": "engram:pack/fixture-pack@1.0.0",
+      "@type": [
+        "prov:Entity",
+        "prov:Collection",
+        "engram:Pack"
+      ],
+      "engram:packName": "fixture-pack",
+      "engram:packVersion": "1.0.0",
+      "prov:generatedAtTime": {
+        "@value": "2026-10-25T17:38:41.494Z",
+        "@type": "xsd:dateTime"
+      },
+      "prov:wasGeneratedBy": {
+        "@id": "engram:act/assemble-fixture-pack-1.0.0"
+      },
+      "prov:hadMember": [
+        {
+          "@id": "engram:ENG-2026-10-25-001"
+        }
+      ],
+      "engram:engramCount": 1,
+      "engram:claimClassCounts": {
+        "unstated": 1
+      },
+      "engram:licenseChosenCount": 0,
+      "engram:licenseDefaultedCount": 1,
+      "engram:licensesChosen": [],
+      "engram:license": "cc0-1.0",
+      "odrl:hasPolicy": {
+        "@type": "odrl:Set",
+        "odrl:uid": "https://creativecommons.org/publicdomain/zero/1.0/",
+        "odrl:permission": [
+          {
+            "odrl:action": [
+              "odrl:use",
+              "odrl:reproduce",
+              "odrl:distribute",
+              "odrl:derive"
+            ]
+          }
+        ],
+        "engram:licenseRecognised": true
+      },
+      "engram:memberLicensesDiffer": true,
+      "engram:note": "This licence covers the pack as a collection. The engrams inside carry their own licences, which are not all the same as this one, and a reuser has to satisfy both. Neither overrides the other.",
+      "engram:earliestEngram": "2026-10-25T17:38:41.262Z",
+      "engram:latestEngram": "2026-10-25T17:38:41.262Z",
+      "engram:packIntegrity": "sha256:v2:44219c47fce89c13b9c8798a22afea8b8b7e1911014facaa5557139d1c46d426",
+      "prov:wasAttributedTo": {
+        "@id": "engram:agent/fixture"
+      }
+    },
+    {
+      "@id": "engram:agent/fixture",
+      "@type": "prov:Agent"
+    },
+    {
+      "@id": "engram:act/assemble-fixture-pack-1.0.0",
+      "@type": [
+        "prov:Activity",
+        "engram:AssemblePack"
+      ],
+      "prov:startedAtTime": {
+        "@value": "2026-10-25T17:38:41.494Z",
+        "@type": "xsd:dateTime"
+      },
+      "prov:endedAtTime": {
+        "@value": "2026-10-25T17:38:41.494Z",
+        "@type": "xsd:dateTime"
+      },
+      "prov:generated": {
+        "@id": "engram:pack/fixture-pack@1.0.0"
+      },
+      "prov:wasAssociatedWith": {
+        "@id": "engram:agent/fixture"
+      }
+    },
+    {
+      "@id": "engram:ENG-2026-10-25-001",
+      "@type": [
+        "prov:Entity",
+        "engram:Engram"
+      ],
+      "engram:engramType": "procedural",
+      "engram:contentHash": "sha256:95dcd65d49f2938481460c84b23e9cb89c0565b4d2d9b91312cf7de86af37adb"
+    }
+  ]
+}
