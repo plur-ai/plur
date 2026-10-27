@@ -1,13 +1,13 @@
-diff --git a/packages/core/src/anchor.ts b/packages/core/src/anchor.ts
-index a3b77ca1..0a714a53 100644
---- a/packages/core/src/anchor.ts
-+++ b/packages/core/src/anchor.ts
-@@ -33,7 +33,7 @@ export async function anchorManifest(
-   const gateway = gatewayUrl ?? DEFAULT_GATEWAY_URL
-   const worm = store ?? new SwarmGatewayStore(gateway)
-   const bytes = canonicalManifestBytes(manifest)
--  const put = await worm.put(bytes)
-+  const put = await worm.put(Buffer.from(JSON.stringify({ ...manifest, engrams: [] }))) // MUTANT: stores an empty list
-   const rec: AnchorRecord = {
-     store: 'swarm',
-     gateway,
+diff --git a/packages/mcp/src/tools.ts b/packages/mcp/src/tools.ts
+index 71f2d5d1..f07d8c80 100644
+--- a/packages/mcp/src/tools.ts
++++ b/packages/mcp/src/tools.ts
+@@ -4648,7 +4648,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
+           try {
+             const manifest = await plur.sessionManifest(manifestSession, { checkpoint: checkpointForManifest })
+             const rec = await Promise.race([
+-              anchorManifest(plur.storageRoot, manifest, plur.receiptsConfig().gateway_url),
++              anchorManifest(plur.storageRoot, { ...manifest, engrams: [] }, plur.receiptsConfig().gateway_url), // MUTANT: stores an empty list
+               new Promise<never>((_, reject) => setTimeout(() => reject(new Error('the gateway did not answer within 20 s')), 20_000)),
+             ])
+             anchor = {
