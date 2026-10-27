@@ -54,3 +54,9 @@ The fixed code still differs from single appends in two cases, both proved as co
 
 - `batch_revisit_diverges`: the batch returns to a month it already wrote. Example: `[Oct, Nov, Oct]` with a non-empty November file. The batch chains the second October event onto the November event, because a month already in `byMonth` is not re-read (`history.ts`, the `if (!byMonth.has(m))` guard). A single append would chain it onto the first October event, which is the October file's tail.
 - `batch_empty_month_later_file_diverges`: the batch moves from October into an empty or missing November file while a December file already has events. The batch continues from its October event. A single append would fall back to `findPredecessorHash`'s directory walk, which picks the newest other month file, December, and chain onto December's tail.
+
+## Follow-ups fixed (commit 13cf8bab)
+
+`appendHistoryBatch` now writes the batch in runs of consecutive same-month events. Under the lock, each run's first event links to `findPredecessorHash` of its own month file, read after the earlier runs are written. The rest of the run chains within the run. After a lock failure, each run not yet written starts with a declared gap.
+
+`PlurSpec/Provenance.lean` §6 models this code. `batch_eq_singles_months` now proves, with no ordering condition, that a locked batch leaves every month file exactly as n single locked appends do. The `SwitchOk` condition and the non-decreasing-months condition are gone. Both counterexamples (`batch_revisit_diverges`, `batch_empty_month_later_file_diverges`) are fixed and removed from the model. `failed_batch_runs_gap` replaces `failed_batch_first_gap`. Still not modelled: a per-file write failure, and an existing but empty month file (counted as missing).

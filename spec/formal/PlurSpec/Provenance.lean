@@ -12,8 +12,9 @@ Models, as the code does it (not as it should), the provenance work landing in 0
     `prev = null`, `onPrev(null)`, and the event is written anyway. (§1, §2)
   - `appendHistoryBatch`: under the lock, `firstPrev = findPredecessorHash(firstFile)`
     and each event chains onto the one before it, in order; on lock failure
-    `firstPrev = null`. Since the F1 fix (commit 50f36cc7) a move into another month
-    file that has events re-reads that file's tail under the lock (null without it).
+    `firstPrev = null`. Since commit 13cf8bab (F1 and its follow-ups) the batch is
+    written in runs of one month file, each run's first event linked to the tail a
+    single append would read after the earlier runs (null without the lock).
     The head cache is invalidated afterwards, which only sends the next lookup to the
     authoritative tail-seek, so the model reads the head off the log.
     (§3 within one month file; §6 across month files)
@@ -39,10 +40,9 @@ in the model. Wherever a theorem needs collision freedom it takes `HashInjective
 (or `RecInjective rh`) as a hypothesis — there is no axiom.
 
 Findings: `spec/formal/findings/provenance-2026-10-27.md`. F2 is documented below as
-the counterexample `gap_after_genesis_is_fork` (§4). F1 is fixed; §6 proves the fixed
-batch equals single appends across month files under stated conditions, and gives the
-two out-of-order cases outside them as counterexamples (`batch_revisit_diverges`,
-`batch_empty_month_later_file_diverges`).
+the counterexample `gap_after_genesis_is_fork` (§4). F1 and its follow-ups are fixed;
+§6 proves a locked batch equals single appends across month files in every order
+(`batch_eq_singles_months`).
 -/
 
 namespace PlurSpec.Provenance
@@ -139,12 +139,6 @@ theorem batch_eq_singles (h : HashFn C H) :
   | c :: cs, l => by
       rw [batch_cons, List.foldl_cons]
       exact batch_eq_singles h cs _
-
-/-- A batch whose lock failed: the first event is a declared gap; every later one links
-to the event the batch itself just wrote, never to a tail. -/
-theorem failed_batch_first_gap (h : HashFn C H) (l : List (Event C H)) (c : C) (cs : List C) :
-    appendBatch h .failed l (c :: cs) = (append h .failed l c) ++ chainFrom h (some (h c none)) cs := by
-  simp [appendBatch, append, appendStamped, chainFrom, prevFor, stamp]
 
 /-! ### Chain linkage -/
 
@@ -523,12 +517,12 @@ theorem checkpoint_head_present (l : List (Event C H)) (r : H) (hr : prevFor .ta
       refine ⟨x, List.mem_of_getLast? hlast, ?_⟩
       simpa [hlast] using hr
 
-/-! ## 6. Month files (the fixed `appendHistoryBatch`, commit 50f36cc7)
+/-! ## 6. Month files (`appendHistoryBatch` in runs, commit 13cf8bab)
 
 The history directory is one event list per month (`Files`); `N` bounds every month
 that has a file. An empty list stands for a missing file. (The code would also list
 an existing EMPTY file in its directory walk and read a null tail from it; the model
-treats such a file as missing.)
+treats such a file as missing — for single appends and batches alike.)
 
 `findPred` is `findPredecessorHash(dir, file)` under the chain lock, where the
 validated cache and sidecar can only return the true tail, so it is the tail-seek:
@@ -537,21 +531,17 @@ tail of the newest OTHER month file (`newestBelow`: months newest first, the cur
 one skipped, the first file found decides — a legacy tail gives null, no further
 walk).
 
-The fixed batch (`bstep`): the first event's `prev` is `findPred` of its month.
-When the month changes to one this batch has not written and whose file has events,
-`prev` is re-read with `findPred` (that file's own tail; files are written only after
-the loop, so the read sees the disk as it was). Otherwise — same month, a month the
-batch already wrote, or an empty/missing file — the chain continues from the batch's
-previous event.
+The batch (`runs`, `lockedRuns`, `gapRuns`): the events are split into runs of
+consecutive events for one month file. Under the lock, run by run, the run's first
+event links to `findPred` of its month read AFTER the earlier runs are written, and
+the rest of the run chains within the run. On lock failure, every run not yet
+written starts with a declared gap (`prev = null`); runs already written under the
+lock are not written again (`batchFiles h N done`, `done` = runs written under the
+lock).
 
-Proved (`batch_eq_singles_months`): with the batch's months non-decreasing and, at
-each move into an empty month file, no file with events in a later month than the
-one the batch is leaving (`SwitchOk`), a locked batch leaves every month file exactly
-as n single locked appends do. Not covered, and shown to diverge:
-`batch_revisit_diverges` (the batch returns to a month it already wrote) and
-`batch_empty_month_later_file_diverges` (it moves into an empty month while a later
-month file has events). Both need out-of-order timestamps; the one caller,
-`recordIdRenames`, stamps a whole batch with one timestamp. -/
+Proved without ordering conditions (`batch_eq_singles_months`): a locked batch leaves
+every month file exactly as n single locked appends do. A per-file write failure
+(`ok = false`, the run's line not landing) is not modelled. -/
 
 abbrev Files (C H : Type) := Nat → List (Event C H)
 
@@ -564,42 +554,37 @@ def newestBelow (S : Files C H) (m : Nat) : Nat → Option H
 def findPred (S : Files C H) (N m : Nat) : Option H :=
   if (S m).isEmpty then newestBelow S m N else head (S m)
 
-/-- Append one event to month `m`'s file. -/
-def upd (S : Files C H) (m : Nat) (e : Event C H) : Files C H :=
-  fun k => if k = m then S k ++ [e] else S k
+/-- Append events to month `m`'s file. -/
+def appendRun (S : Files C H) (m : Nat) (es : List (Event C H)) : Files C H :=
+  fun k => if k = m then S k ++ es else S k
 
 /-- One single locked `appendHistory` of an event with month `x.1`. -/
 def sstep (h : HashFn C H) (N : Nat) (S : Files C H) (x : Nat × C) : Files C H :=
-  upd S x.1 (stamp h (findPred S N x.1) x.2)
+  appendRun S x.1 [stamp h (findPred S N x.1) x.2]
 
 def singleFiles (h : HashFn C H) (N : Nat) (D : Files C H) (evs : List (Nat × C)) : Files C H :=
   evs.foldl (sstep h N) D
 
-/-- The loop state of `writeAll`: what will be written, `month`, `prev`, `byMonth`'s keys. -/
-structure BState (C H : Type) where
-  files : Files C H
-  month : Nat
-  prev : Option H
-  visited : List Nat
+/-- Split into runs of consecutive events of one month (each run non-empty). -/
+def runs : List (Nat × C) → List (Nat × List C)
+  | [] => []
+  | x :: xs =>
+    match runs xs with
+    | [] => [(x.1, [x.2])]
+    | r :: rs => if x.1 = r.1 then (x.1, x.2 :: r.2) :: rs else (x.1, [x.2]) :: r :: rs
 
-/-- The `prev` the fixed loop gives an event of month `m` (`D` = the disk before the batch). -/
-def bprev (D : Files C H) (N : Nat) (s : BState C H) (m : Nat) : Option H :=
-  if m ≠ s.month ∧ m ∉ s.visited ∧ (D m).isEmpty = false then findPred D N m else s.prev
+/-- Runs written under the lock: `writeRun(run, findPredecessorHash(dir, runFile))`. -/
+def lockedRuns (h : HashFn C H) (N : Nat) (S : Files C H) (rs : List (Nat × List C)) : Files C H :=
+  rs.foldl (fun S r => appendRun S r.1 (chainFrom h (findPred S N r.1) r.2)) S
 
-def bstep (h : HashFn C H) (D : Files C H) (N : Nat) (s : BState C H) (x : Nat × C) : BState C H :=
-  { files := upd s.files x.1 (stamp h (bprev D N s x.1) x.2), month := x.1,
-    prev := some (h x.2 (bprev D N s x.1)), visited := x.1 :: s.visited }
+/-- Runs written after a lock failure: `writeRun(run, null)`. -/
+def gapRuns (h : HashFn C H) (S : Files C H) (rs : List (Nat × List C)) : Files C H :=
+  rs.foldl (fun S r => appendRun S r.1 (chainFrom h none r.2)) S
 
-/-- A locked `appendHistoryBatch`: `firstPrev = findPred` of the first event's month. -/
-def batchFiles (h : HashFn C H) (D : Files C H) (N : Nat) : List (Nat × C) → Files C H
-  | [] => D
-  | x :: xs => ((x :: xs).foldl (bstep h D N) ⟨D, x.1, findPred D N x.1, []⟩).files
-
-/-- At every move into an empty month file, no later month file has events. -/
-def SwitchOk (D : Files C H) : Nat → List (Nat × C) → Prop
-  | _, [] => True
-  | mp, x :: xs =>
-      (mp < x.1 → (D x.1).isEmpty = true → ∀ k, mp < k → k ≠ x.1 → D k = []) ∧ SwitchOk D x.1 xs
+/-- `appendHistoryBatch`: the first `done` runs under the lock, the rest after it failed. -/
+def batchFiles (h : HashFn C H) (N : Nat) (D : Files C H) (done : Nat) (evs : List (Nat × C)) :
+    Files C H :=
+  gapRuns h (lockedRuns h N D ((runs evs).take done)) ((runs evs).drop done)
 
 theorem newestBelow_eq (S : Files C H) (m j : Nat) (hj : j ≠ m) (hS : (S j).isEmpty = false)
     (hlater : ∀ k, j < k → k ≠ m → S k = []) :
@@ -619,142 +604,81 @@ theorem findPred_tail (S : Files C H) (N m : Nat) (h : (S m).isEmpty = false) :
     findPred S N m = head (S m) := by
   simp [findPred, h]
 
-theorem upd_self (S : Files C H) (m : Nat) (e : Event C H) : upd S m e m = S m ++ [e] := by
-  simp [upd]
+theorem findPred_after_append (S : Files C H) (N m : Nat) (e : Event C H) :
+    findPred (appendRun S m [e]) N m = e.hash := by
+  unfold findPred appendRun; simp [head]
 
-theorem findPred_upd_self (S : Files C H) (N m : Nat) (e : Event C H) :
-    findPred (upd S m e) N m = e.hash := by
-  unfold findPred; rw [upd_self]; simp [head]
+theorem appendRun_append (S : Files C H) (m : Nat) (es fs : List (Event C H)) :
+    appendRun (appendRun S m es) m fs = appendRun S m (es ++ fs) := by
+  funext k; by_cases hk : k = m <;> simp [appendRun, hk]
 
-theorem upd_ne (S : Files C H) (m k : Nat) (e : Event C H) (hk : k ≠ m) : upd S m e k = S k := by
-  simp [upd, hk]
+theorem appendRun_nil (S : Files C H) (m : Nat) : appendRun S m [] = S := by
+  funext k; by_cases hk : k = m <;> simp [appendRun, hk]
 
-/-- The simulation: the batch's state against the single appends' files. -/
-def Inv (D : Files C H) (N : Nat) (s : BState C H) (S : Files C H) : Prop :=
-  s.files = S ∧ s.prev = findPred S N s.month ∧ (∀ k, k ∉ s.visited → S k = D k) ∧
-    (∀ k ∈ s.visited, k ≤ s.month) ∧ (S s.month).isEmpty = false ∧ s.month < N
+/-- Single appends of one run, from the state where `findPred` of its month is `p`:
+the run lands chained from `p`, exactly as `writeRun(run, p)` writes it. -/
+theorem singles_of_run (h : HashFn C H) (N m : Nat) :
+    ∀ (cs : List C) (S : Files C H) (p : Option H), findPred S N m = p →
+      (cs.map (fun c => (m, c))).foldl (sstep h N) S = appendRun S m (chainFrom h p cs)
+  | [], S, _, _ => by simp [chainFrom, appendRun_nil]
+  | c :: cs, S, p, hp => by
+      simp only [List.map_cons, List.foldl_cons]
+      have hs : sstep h N S (m, c) = appendRun S m [stamp h p c] := by simp [sstep, hp]
+      rw [hs, singles_of_run h N m cs _ (some (h c p)) (by rw [findPred_after_append]; rfl),
+        appendRun_append]
+      rfl
 
-theorem bprev_eq (D : Files C H) (N : Nat) (s : BState C H) (S : Files C H) (m : Nat)
-    (hi : Inv D N s S) (hle : s.month ≤ m) (hm : m < N)
-    (hsw : s.month < m → (D m).isEmpty = true → ∀ k, s.month < k → k ≠ m → D k = []) :
-    bprev D N s m = findPred S N m := by
-  obtain ⟨_, hprev, hun, hvis, hne, hN⟩ := hi
-  by_cases hsame : m = s.month
-  · subst hsame; simp [bprev, hprev]
-  · have hlt : s.month < m := by omega
-    have hnv : m ∉ s.visited := fun hv => by have := hvis m hv; omega
-    have hSm : S m = D m := hun m hnv
-    cases hD : (D m).isEmpty with
-    | false =>
-        have hS' : (S m).isEmpty = false := by rw [hSm]; exact hD
-        simp [bprev, hsame, hnv, hD, findPred_tail D N m hD, findPred_tail S N m hS', hSm]
-    | true =>
-        have hSe : (S m).isEmpty = true := by rw [hSm]; exact hD
-        have hcond : ¬ (m ≠ s.month ∧ m ∉ s.visited ∧ (D m).isEmpty = false) := by
-          rintro ⟨_, _, h3⟩; rw [hD] at h3; cases h3
-        simp only [bprev, hcond, ↓reduceIte]
-        rw [hprev, findPred_tail S N s.month hne]
-        simp only [findPred, hSe, ↓reduceIte]
-        refine (newestBelow_eq S m s.month (Ne.symm hsame) hne ?_ N hN).symm
-        intro k hk hkm
-        have hkv : k ∉ s.visited := fun hv => by have := hvis k hv; omega
-        rw [hun k hkv]; exact hsw hlt hD k hk hkm
+/-- The runs, read back event by event, are the batch. -/
+theorem runs_flatten : ∀ (evs : List (Nat × C)),
+    (runs evs).flatMap (fun r => r.2.map (fun c => (r.1, c))) = evs
+  | [] => rfl
+  | (m, c) :: xs => by
+      have ih := runs_flatten xs
+      unfold runs
+      cases hr : runs xs with
+      | nil => rw [hr] at ih; simp at ih; simp [ih]
+      | cons r rs =>
+          obtain ⟨m', cs⟩ := r
+          rw [hr] at ih
+          by_cases hx : m = m'
+          · subst hx; simp [← ih]
+          · simp [hx, ← ih]
 
-theorem inv_step (h : HashFn C H) (D : Files C H) (N : Nat) (s : BState C H) (S : Files C H)
-    (x : Nat × C) (hi : Inv D N s S) (hle : s.month ≤ x.1) (hm : x.1 < N)
-    (hsw : s.month < x.1 → (D x.1).isEmpty = true → ∀ k, s.month < k → k ≠ x.1 → D k = []) :
-    Inv D N (bstep h D N s x) (sstep h N S x) := by
-  have hp := bprev_eq D N s S x.1 hi hle hm hsw
-  obtain ⟨hf, _, hun, hvis, _, _⟩ := hi
-  refine ⟨?_, ?_, ?_, ?_, ?_, hm⟩
-  · simp [bstep, sstep, hf, hp]
-  · simp only [bstep, sstep, findPred_upd_self, stamp, hp]
-  · intro k hk
-    simp only [bstep, List.mem_cons, not_or] at hk
-    simp only [sstep]; rw [upd_ne _ _ _ _ hk.1]; exact hun k hk.2
-  · intro k hk
-    simp only [bstep, List.mem_cons] at hk
-    rcases hk with hk | hk
-    · simp [bstep, hk]
-    · have := hvis k hk; simp only [bstep]; omega
-  · simp [bstep, sstep, upd_self]
+theorem foldl_flatMap {α β γ : Type} (f : α → List β) (g : γ → β → γ) :
+    ∀ (rs : List α) (s : γ), (rs.flatMap f).foldl g s = rs.foldl (fun s r => (f r).foldl g s) s
+  | [], _ => rfl
+  | r :: rs, s => by simp [List.flatMap_cons, List.foldl_append, foldl_flatMap f g rs]
 
-theorem sim (h : HashFn C H) (D : Files C H) (N : Nat) :
-    ∀ (xs : List (Nat × C)) (s : BState C H) (S : Files C H),
-      Inv D N s S → (∀ e ∈ xs, s.month ≤ e.1 ∧ e.1 < N) →
-      xs.Pairwise (fun a b => a.1 ≤ b.1) → SwitchOk D s.month xs →
-      (xs.foldl (bstep h D N) s).files = xs.foldl (sstep h N) S
-  | [], s, S, hi, _, _, _ => hi.1
-  | x :: xs, s, S, hi, hb, hp, hsw => by
+/-- Batch equivalence across month files, in every order: a locked batch (every run
+written under the lock) leaves every month file exactly as n single locked appends
+do — the same events, the same `prev` and `hash` links. -/
+theorem batch_eq_singles_months (h : HashFn C H) (N : Nat) (D : Files C H)
+    (evs : List (Nat × C)) :
+    batchFiles h N D (runs evs).length evs = singleFiles h N D evs := by
+  simp only [batchFiles, List.take_length, List.drop_length, gapRuns, List.foldl_nil, singleFiles]
+  conv => rhs; rw [← runs_flatten evs]
+  rw [foldl_flatMap]
+  unfold lockedRuns
+  generalize runs evs = rs
+  induction rs generalizing D with
+  | nil => rfl
+  | cons r rs ih =>
       simp only [List.foldl_cons]
-      have hx := hb x (by simp)
-      have hi' := inv_step h D N s S x hi hx.1 hx.2 hsw.1
-      apply sim h D N xs _ _ hi'
-      · intro e he
-        exact ⟨by simp only [bstep]; exact (List.pairwise_cons.mp hp).1 e he, (hb e (by simp [he])).2⟩
-      · exact (List.pairwise_cons.mp hp).2
-      · simpa [bstep] using hsw.2
+      rw [singles_of_run h N r.1 r.2 D _ rfl]
+      exact ih _
 
-/-- Batch equivalence across month files: a locked batch whose months are in order,
-and which never moves into an empty month file while a later month file has events,
-leaves every month file exactly as n single locked appends do. -/
-theorem batch_eq_singles_months (h : HashFn C H) (D : Files C H) (N : Nat) (x : Nat × C)
-    (xs : List (Nat × C)) (hN : ∀ e ∈ x :: xs, e.1 < N)
-    (hp : (x :: xs).Pairwise (fun a b => a.1 ≤ b.1)) (hsw : SwitchOk D x.1 xs) :
-    batchFiles h D N (x :: xs) = singleFiles h N D (x :: xs) := by
-  simp only [batchFiles, singleFiles, List.foldl_cons]
-  have h0 : bprev D N ⟨D, x.1, findPred D N x.1, []⟩ x.1 = findPred D N x.1 := by simp [bprev]
-  have hi : Inv D N (bstep h D N ⟨D, x.1, findPred D N x.1, []⟩ x) (sstep h N D x) := by
-    refine ⟨by simp only [bstep, sstep, h0], ?_, ?_, ?_, ?_, hN x (by simp)⟩
-    · simp only [bstep, sstep, h0, findPred_upd_self, stamp]
-    · intro k hk
-      simp only [bstep, List.mem_cons, not_or] at hk
-      simp only [sstep]; rw [upd_ne _ _ _ _ hk.1]
-    · intro k hk; simp [bstep] at hk; simp [bstep, hk]
-    · simp [bstep, sstep, upd_self]
-  apply sim h D N xs _ _ hi
-  · intro e he
-    exact ⟨by simp only [bstep]; exact (List.pairwise_cons.mp hp).1 e he, hN e (by simp [he])⟩
-  · exact (List.pairwise_cons.mp hp).2
-  · simpa [bstep] using hsw
-
-/-- Not covered: a batch that returns to a month it already wrote continues from its
-previous event, while a single append links to that month file's tail. -/
-theorem batch_revisit_diverges (h : HashFn C H) (hinj : HashInjective h) (D : Files C H)
-    (N m1 m2 : Nat) (c1 c2 c3 : C) (hm : m1 ≠ m2) (h2 : (D m2).isEmpty = false) (hc : c1 ≠ c2) :
-    batchFiles h D N [(m1, c1), (m2, c2), (m1, c3)] ≠ singleFiles h N D [(m1, c1), (m2, c2), (m1, c3)] := by
-  intro heq
-  have := congrArg (fun F => ((F m1).getLast?).map Event.prev) heq
-  simp [batchFiles, singleFiles, bstep, sstep, bprev, upd, findPred, hm, Ne.symm hm, h2, stamp,
-    head] at this
-  exact hc (hinj _ _ _ _ this.symm).1
-
-/-- Not covered: a batch moving into an empty month file continues from its previous
-event, while a single append falls back to the newest other month file — a LATER one
-here, when it has events. -/
-theorem batch_empty_month_later_file_diverges (h : HashFn C H) (D : Files C H)
-    (N m1 m2 m3 : Nat) (c1 c2 : C) (h12 : m1 < m2) (h23 : m2 < m3) (h3N : m3 < N)
-    (hD2 : D m2 = []) (hD3 : (D m3).isEmpty = false) (hlater : ∀ k, m3 < k → k ≠ m2 → D k = [])
-    (hdiff : head (D m3) ≠ some (h c1 (findPred D N m1))) :
-    ((batchFiles h D N [(m1, c1), (m2, c2)] m2).getLast?).map Event.prev ≠
-      ((singleFiles h N D [(m1, c1), (m2, c2)] m2).getLast?).map Event.prev := by
-  have h21 : m2 ≠ m1 := by omega
-  generalize hp1 : findPred D N m1 = p1 at *
-  have e2 : upd D m1 (stamp h p1 c1) m2 = [] := by rw [upd_ne _ _ _ _ h21, hD2]
-  have e3 : upd D m1 (stamp h p1 c1) m3 = D m3 := upd_ne _ _ _ _ (by omega)
-  have hS1 : findPred (upd D m1 (stamp h p1 c1)) N m2 = head (D m3) := by
-    unfold findPred
-    simp only [e2, List.isEmpty_nil, ↓reduceIte]
-    rw [newestBelow_eq _ m2 m3 (by omega) (by rw [e3]; exact hD3) ?_ N h3N, e3]
-    intro k hk hkm
-    rw [upd_ne _ _ _ _ (by omega)]; exact hlater k hk hkm
-  have hb1 : bprev D N ⟨D, m1, p1, []⟩ m1 = p1 := by simp [bprev]
-  have hb2 : bprev D N ⟨upd D m1 (stamp h p1 c1), m1, some (h c1 p1), [m1]⟩ m2 = some (h c1 p1) := by
-    simp [bprev, h21, hD2]
-  simp only [batchFiles, singleFiles, List.foldl_cons, List.foldl_nil, bstep, sstep]
-  rw [hp1, hb1, hb2, hS1, upd_self, upd_self]
-  simp [stamp]
-  exact fun heq => hdiff heq.symm
+/-- After a lock failure, every run not yet written starts with a declared gap: the
+first event of each such run has `prev = none`, and the rest chain within the run. -/
+theorem failed_batch_runs_gap (h : HashFn C H) (N : Nat) (D : Files C H) (done : Nat)
+    (evs : List (Nat × C)) :
+    batchFiles h N D done evs =
+      ((runs evs).drop done).foldl (fun S r => appendRun S r.1 (chainFrom h none r.2))
+        (lockedRuns h N D ((runs evs).take done)) ∧
+    ∀ r ∈ (runs evs).drop done, ∀ c cs, r.2 = c :: cs →
+      chainFrom h none r.2 = stamp h none c :: chainFrom h (some (h c none)) cs := by
+  refine ⟨rfl, ?_⟩
+  intro r _ c cs hr
+  rw [hr]; rfl
 
 /-! ## 7. Building a session manifest (`buildSessionManifest`) -/
 
