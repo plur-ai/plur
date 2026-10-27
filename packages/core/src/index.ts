@@ -1,4 +1,5 @@
 import * as fs from 'fs'
+import { buildSessionManifest, verifySessionManifest, type SessionManifest, type ManifestVerification } from './session-manifest.js'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { randomUUID, createHash } from 'crypto'
 import { tmpdir, hostname, homedir } from 'os'
@@ -304,7 +305,10 @@ export { selectModel, selectModelForOperation, resolveOperationTier, type ModelT
 export { recallAuto, type AutoSearchResult, type SearchStrategy } from './search-orchestrator.js'
 export { generateProfile, getProfileForInjection, loadProfileCache, saveProfileCache, markProfileDirty, profileNeedsRegeneration, type ProfileCache } from './profile.js'
 export { formatLayer1, formatLayer2, formatLayer3, formatWithLayer, assignLayer, type InjectionLayer } from './inject.js'
-export { appendHistory, readHistory, listHistoryMonths, readHistoryForEngram, generateEventId, generateInjectionId, computeQueryHash, findLatestInjectionFor, countInjectionEvents, readCoInjections, type HistoryEvent, type InjectionEventCounts, type InjectionSource, type CoInjectionData, type CoInjectionEvent, type CoInjectionReadResult } from './history.js'
+export { SwarmGatewayStore, GatewayError, DEFAULT_GATEWAY_URL, type NotarySignature, type GatewayDocument } from './swarm-store.js'
+export { anchorManifest, type AnchorRecord } from './anchor.js'
+export { computeRecordHash, buildSessionManifest, verifySessionManifest, canonicalManifestBytes, SESSION_MANIFEST_SCHEMA, RECORD_HASH_FIELDS, type SessionManifest, type ManifestEntry, type ManifestRole, type ManifestCheck, type ManifestVerification, type WormStore, type WormPutResult } from './session-manifest.js'
+export { appendHistory, readHistory, listHistoryMonths, readHistoryForEngram, generateEventId, generateInjectionId, computeQueryHash, findLatestInjectionFor, countInjectionEvents, readCoInjections, computeEventHash, canonicalEventBytes, sortKeysDeep, tailSeekLastHash, readChainHead, clearChainHeadMemCache, hashEngramsFile, attestStore, countEngramsInStore, emitCheckpoint, appendHistoryStamped, type HistoryEvent, type CheckpointData, type CheckpointSigningOptions, type InjectionEventCounts, type InjectionSource, type CoInjectionData, type CoInjectionEvent, type CoInjectionReadResult } from './history.js'
 export { computeReceipt } from './receipt.js'
 export type { Receipt, ReceiptInput, ReceiptTopEntry } from './receipt.js'
 import type { Receipt } from './receipt.js'
@@ -422,6 +426,8 @@ export type { SyncResult, SyncStatus, SyncRemoteType } from './sync.js'
  * neither a lock nor an atomic replace; re-implementing them per package is how
  * the two drift, and the drift is always in the unsafe direction.
  */
+export { verifyChain, hashStoreFile, type ChainVerifyOutcome, type ChainVerifyResult, type ChainBreak, type ChainFork, type BreakReason, type VerifyChainOptions, type SignatureResult, type SignatureVerdict } from './verify-chain.js'
+export { initActorKey, loadPrivateKeyBuffer, signWithActorKey, verifySignature, loadKeysRegistry, lookupPublicKey, registerPublicKey, keyFingerprint, privateKeyPath, keysRegistryPath, type PublicKeyEntry, type KeysRegistry } from './actor-keys.js'
 export { atomicWrite, withLock } from './sync.js'
 /**
  * Owner-only protection (#1631): `writeConfigFile` is how config.yaml is
@@ -447,8 +453,8 @@ export {
   type RunImportOptions, type ImportFromOptions,
 } from './importers/index.js'
 export { CapabilityCanary, type Capability, type CanaryStatus } from './capability-canary.js'
-export type { Engram, PreviousVersionRef } from './schemas/engram.js'
-export { ExtractionProvenanceSchema, getExtractionProvenance, type ExtractionProvenance } from './schemas/engram.js'
+export type { Engram, PreviousVersionRef, MeasuredUnder } from './schemas/engram.js'
+export { ExtractionProvenanceSchema, getExtractionProvenance, type ExtractionProvenance, MeasuredUnderSchema } from './schemas/engram.js'
 export type { Episode } from './schemas/episode.js'
 export type { PackManifest } from './schemas/pack.js'
 export { shortPackIntegrity, isTransientPackDir } from './packs.js'
@@ -578,6 +584,16 @@ export interface StatusResult {
   pack_count: number
   storage_root: string
   config: PlurConfig
+  /**
+   * The `provenance.origin` this instance stamps on every engram it writes
+   * (#1049). Surfaced because `provenance.identity` otherwise has no
+   * user-facing surface at all — it is absent from the README, the docs, the
+   * `plur init` template, the CLI and the MCP schemas, so in practice every
+   * engram would ship as `agent:unidentified` and nobody would know why.
+   * Shows the effective value, including a constructor override.
+   */
+  provenance_identity: string
+
   locked_count?: number
   tension_count?: number
   versioned_engram_count?: number
@@ -1667,6 +1683,13 @@ export class Plur {
      * stranding anyone who genuinely knows what their store does.
      */
     allowUnprotectedStore?: boolean
+    /**
+     * Provenance configuration for this instance (#1048 / #1049).
+     * Merged into the loaded config so tests and programmatic callers can
+     * supply identity without writing a config.yaml. Config-file values take
+     * lower priority than these options-level overrides.
+     */
+    provenance?: { identity?: string }
   }) {
     this.paths = detectPlurStorage(options?.path)
     this._readonly = options?.readonly === true
@@ -1903,6 +1926,53 @@ export class Plur {
    * MCP server's payload-drop forensic log (plur-ai/plur#772), which must write
    * next to the store the dropped call was aimed at.
    */
+  /**
+   * Record what a recall returned to a session (#1657), so the session's
+   * manifest can list it. Called by the surfaces that answer an agent's recall
+   * (MCP, CLI) — not by `recall()` itself, which inject and dedup also call.
+   * Ids and a query hash only; never the query text. Best-effort: returns
+   * whether the event was written.
+   */
+  recordRecall(input: { session_id?: string; ids: readonly string[]; query: string; source?: 'recall' | 'recall_hybrid' }): boolean {
+    if (!input.session_id || input.ids.length === 0) return false
+    return this._appendHistory({
+      event: 'recall_returned',
+      engram_id: '',
+      timestamp: new Date().toISOString(),
+      data: {
+        ids: [...input.ids],
+        query_hash: computeQueryHash(input.query),
+        source: input.source ?? 'recall',
+        session_id: input.session_id,
+      },
+    })
+  }
+
+  /**
+   * The session memory manifest (#1657): which engrams were in this session's
+   * context, with hashes that can be checked later. Local and offline.
+   */
+  async sessionManifest(sessionId: string, opts?: { checkpoint?: SessionManifest['checkpoint'] }): Promise<SessionManifest> {
+    return buildSessionManifest({
+      root: this.paths.root,
+      sessionId,
+      actor: this._configuredIdentity() ?? ATTRIBUTION_UNIDENTIFIED,
+      engrams: await this._loadAllEngrams(),
+      checkpoint: opts?.checkpoint,
+    })
+  }
+
+  /** Where session manifests are anchored (#1657). `off` unless the user turned it on. */
+  receiptsConfig(): { store: 'off' | 'swarm'; gateway_url?: string } {
+    const r = (this.config as { receipts?: { store?: 'off' | 'swarm'; gateway_url?: string } }).receipts
+    return { store: r?.store === 'swarm' ? 'swarm' : 'off', ...(r?.gateway_url ? { gateway_url: r.gateway_url } : {}) }
+  }
+
+  /** Re-hash every engram a manifest lists against this store (#1657). */
+  async verifyManifest(manifest: SessionManifest): Promise<ManifestVerification> {
+    return verifySessionManifest(manifest, await this._loadAllEngrams())
+  }
+
   get storageRoot(): string {
     return this.paths.root
   }
@@ -3455,9 +3525,22 @@ export class Plur {
   private _buildSourceEntry(scope: string, context?: LearnContext): {
     scope: string; session_id: string | null; stored_at: string
   } {
+    // One emptiness rule. `??` alone let
+    // `session_id: ''` win over a genuine `session_episode_id` and persist as
+    // the empty string, while provenance fourteen lines down treated an empty
+    // identity as absent. Two different notions of "empty" in one change is how
+    // a field ends up meaning different things at two call sites.
+    const present = (v: unknown): v is string => typeof v === 'string' && v.length > 0
+    // Only `session_id` is a session in the provenance sense. `session` selects
+    // the default scope and can hold an internal registry key (#1562) or
+    // NO_SESSION, so it is never recorded here.
+    const sessionId = context?.session_id
     return {
       scope,
-      session_id: context?.session_episode_id ?? null,
+      // session_id takes precedence over session_episode_id (#1048).
+      session_id: present(sessionId) ? sessionId
+        : present(context?.session_episode_id) ? context!.session_episode_id!
+        : null,
       stored_at: new Date().toISOString(),
     }
   }
@@ -13206,6 +13289,7 @@ Generate an improved version of the procedure that prevents this failure. Return
       episode_count: episodes.length,
       pack_count: packs.length,
       storage_root: this.paths.root,
+      provenance_identity: this._configuredIdentity() ?? 'agent:unidentified',
       config: this.config,
       locked_count: lockedCount,
       tension_count: unresolvedTensions,
@@ -16202,7 +16286,7 @@ Generate an improved version of the procedure that prevents this failure. Return
    * session pins it to "no session scope" (unscoped writes auto-route), which
    * is distinct from never having registered it (inherits the process slot).
    */
-  setSessionScope(scope: string | null, opts?: { session?: string }): void {
+  setSessionScope(scope: string | null, opts?: { session_id?: string; session?: string }): void {
     this._sessionScopes.set(scope, opts?.session)
   }
 
@@ -16245,7 +16329,7 @@ Generate an improved version of the procedure that prevents this failure. Return
    * Get the session-level default scope for `opts.session`, or the process-wide
    * one when no session is named. Returns null if not set.
    */
-  getSessionScope(opts?: { session?: string }): string | null {
+  getSessionScope(opts?: { session_id?: string; session?: string }): string | null {
     return this._sessionScopes.get(opts?.session)
   }
 
@@ -16254,7 +16338,7 @@ Generate an improved version of the procedure that prevents this failure. Return
    * deployment would otherwise retain one entry per session it has ever served.
    * Omitting `session` clears the process-wide slot.
    */
-  clearSessionScope(opts?: { session?: string }): void {
+  clearSessionScope(opts?: { session_id?: string; session?: string }): void {
     this._sessionScopes.clear(opts?.session)
   }
 

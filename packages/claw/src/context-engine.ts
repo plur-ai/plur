@@ -414,7 +414,9 @@ export class PlurContextEngine implements ContextEngine {
     // retried for the rest of the session.
     seen.add(key)
     try {
-      await this.plur.learnRouted(statement, context)
+      // #1048: claw already keys dedup and the session scope on this session,
+      // so the engram records it in sources[].session_id.
+      await this.plur.learnRouted(statement, { session_id: sessionKey, ...context })
     } catch (err) {
       seen.delete(key)
       throw err

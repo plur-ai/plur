@@ -1,0 +1,50 @@
+{
+  "_comment": "Canonical-bytes test vectors for #1051 hash-chain history. Each vector records the input event (without hash field), the canonical UTF-8 JSON bytes, and the expected SHA-256 hex. Two implementations that agree on sortKeysDeep + JSON.stringify(no-space) must produce these hashes.",
+  "spec": {
+    "algorithm": "SHA-256",
+    "encoding": "lowercase hex, 64 chars",
+    "canonical_form": "JSON.stringify(sortKeysDeep(event_without_hash_field), null, 0)",
+    "key_sort": "UTF-16 code unit order (JavaScript Array.prototype.sort default)",
+    "float_policy": "timestamps must be ISO-8601 strings; a float in a chained event is a spec violation"
+  },
+  "vectors": [
+    {
+      "name": "cjk-content",
+      "description": "Event with CJK (Japanese) content in data.statement. Validates that non-ASCII characters are preserved verbatim in canonical bytes and hash correctly.",
+      "input": {
+        "event": "engram_created",
+        "engram_id": "ENG-2026-0101-001",
+        "timestamp": "2026-01-01T00:00:00.000Z",
+        "data": {
+          "statement": "日本語のテスト記録",
+          "type": "behavioral"
+        },
+        "prev": null
+      },
+      "canonical_bytes": "{\"data\":{\"statement\":\"日本語のテスト記録\",\"type\":\"behavioral\"},\"engram_id\":\"ENG-2026-0101-001\",\"event\":\"engram_created\",\"prev\":null,\"timestamp\":\"2026-01-01T00:00:00.000Z\"}",
+      "sha256": "b252e6b38f8a651b12a566bae304b03a6f3af8370d45285999bbae7d777c5eff"
+    },
+    {
+      "name": "nested-data",
+      "description": "Event with nested objects and arrays in data. Validates that sortKeysDeep recurses into nested objects (nested.count < nested.meta < nested.tags by UTF-16 order), and that the prev field (predecessor hash from cjk-content) is included in canonical bytes.",
+      "input": {
+        "event": "engram_updated",
+        "engram_id": "ENG-2026-0101-002",
+        "timestamp": "2026-01-01T00:01:00.000Z",
+        "data": {
+          "top_level": "value",
+          "nested": {
+            "tags": ["a", "b"],
+            "count": 3,
+            "meta": {
+              "active": true
+            }
+          }
+        },
+        "prev": "b252e6b38f8a651b12a566bae304b03a6f3af8370d45285999bbae7d777c5eff"
+      },
+      "canonical_bytes": "{\"data\":{\"nested\":{\"count\":3,\"meta\":{\"active\":true},\"tags\":[\"a\",\"b\"]},\"top_level\":\"value\"},\"engram_id\":\"ENG-2026-0101-002\",\"event\":\"engram_updated\",\"prev\":\"b252e6b38f8a651b12a566bae304b03a6f3af8370d45285999bbae7d777c5eff\",\"timestamp\":\"2026-01-01T00:01:00.000Z\"}",
+      "sha256": "37a75402d49bb970710019c424b459e98a2dfcfba492187e2d45b8da6bf791cb"
+    }
+  ]
+}
