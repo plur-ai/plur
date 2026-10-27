@@ -756,14 +756,33 @@ export function appendHistoryBatch(root: string, events: readonly HistoryEvent[]
   // (#1051): every event gets prev/hash, in order, under the chain lock, so a
   // batch is indistinguishable in the log from the same events appended one by
   // one. Only the fsync is shared.
-  const writeAll = (firstPrev: string | null): boolean => {
+  const writeAll = (firstPrev: string | null, locked: boolean): boolean => {
     let prev = firstPrev
+    let month = events[0].timestamp.slice(0, 7)
     const byMonth = new Map<string, string[]>()
     for (const ev of events) {
+      const m = ev.timestamp.slice(0, 7)
+      if (m !== month) {
+        // Another month file: link to that file's own tail, exactly as a
+        // single append of this event would (formal finding F1,
+        // spec/formal/findings/provenance-2026-10-27.md). Read before any of
+        // this batch is written, which is also what single appends in order
+        // would see for a file none of the earlier events went to. Without the
+        // lock there is no tail worth reading: declare a gap.
+        month = m
+        if (!byMonth.has(m)) {
+          const file = join(historyDir, `${m}.jsonl`)
+          let hasTail = false
+          try { hasTail = fs.statSync(file).size > 0 } catch { /* no file yet */ }
+          // An empty or missing file has no tail of its own; a single append
+          // would fall back to the newest earlier event, which is the batch's
+          // previous event, so the chain simply continues.
+          if (hasTail) prev = locked ? findPredecessorHash(historyDir, file) : null
+        }
+      }
       ev.prev = prev
       ev.hash = computeEventHash(ev)
       prev = ev.hash
-      const m = ev.timestamp.slice(0, 7)
       byMonth.set(m, [...(byMonth.get(m) ?? []), JSON.stringify(ev) + '\n'])
     }
     let ok = true
@@ -800,12 +819,12 @@ export function appendHistoryBatch(root: string, events: readonly HistoryEvent[]
   let result = false
   try {
     withLock(join(historyDir, 'chain'), () => {
-      result = writeAll(findPredecessorHash(historyDir, firstFile))
+      result = writeAll(findPredecessorHash(historyDir, firstFile), true)
     }, { maxRetries: 12, baseDelay: 2 })
   } catch {
     // Same rule as appendHistory: without the lock, declare a gap rather than
     // chain from a tail read without exclusion.
-    result = writeAll(null)
+    result = writeAll(null, false)
   }
   return result
 }

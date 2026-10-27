@@ -1,0 +1,13 @@
+diff --git a/packages/core/src/session-manifest.ts b/packages/core/src/session-manifest.ts
+index 7b22084a..20b2238e 100644
+--- a/packages/core/src/session-manifest.ts
++++ b/packages/core/src/session-manifest.ts
+@@ -113,7 +113,7 @@ export function buildSessionManifest(input: BuildManifestInput): SessionManifest
+   for (const month of listHistoryMonths(root)) {
+     for (const ev of readHistory(root, month)) {
+       if (sessionOf(ev) !== sessionId) continue
+-      if (ev.event === 'co_injection' || ev.event === 'recall_returned') {
++      if (ev.event === 'co_injection') { // MUTANT: recalls are not listed
+         seen(ev.timestamp)
+         const ids = (ev.data as { ids?: unknown }).ids
+         if (Array.isArray(ids)) {

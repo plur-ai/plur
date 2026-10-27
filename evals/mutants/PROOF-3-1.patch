@@ -1,0 +1,13 @@
+diff --git a/packages/core/src/session-manifest.ts b/packages/core/src/session-manifest.ts
+index 7b22084a..984fb089 100644
+--- a/packages/core/src/session-manifest.ts
++++ b/packages/core/src/session-manifest.ts
+@@ -29,7 +29,7 @@ export const SESSION_MANIFEST_SCHEMA = 'plur/session-manifest/v1'
+ 
+ /** The engram fields `record_hash` covers. Bookkeeping (counts, timestamps, activation) is excluded: it changes on every read. */
+ export const RECORD_HASH_FIELDS = [
+-  'statement', 'rationale', 'type', 'scope', 'domain', 'commitment', 'tags',
++  'statement', /* MUTANT: rationale not covered */ 'type', 'scope', 'domain', 'commitment', 'tags',
+   'provenance', 'attribution', 'claim_class', 'polarity',
+ ] as const
+ 

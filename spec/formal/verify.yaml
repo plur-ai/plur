@@ -189,3 +189,11 @@ models:
       - packages/core/src/index.ts
       - packages/cli/src/commands/learn.ts
       - packages/mcp/src/tools.ts
+  - model: PlurSpec/Provenance.lean
+    covers:
+      - packages/core/src/history.ts
+      - packages/core/src/verify-chain.ts
+      - packages/core/src/session-manifest.ts
+      - packages/cli/src/commands/verify-manifest.ts
+      - packages/core/src/index.ts
+      - packages/mcp/src/tools.ts

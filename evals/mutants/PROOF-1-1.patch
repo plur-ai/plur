@@ -1,0 +1,13 @@
+diff --git a/packages/core/src/verify-chain.ts b/packages/core/src/verify-chain.ts
+index b92e46b1..6cb18dbc 100644
+--- a/packages/core/src/verify-chain.ts
++++ b/packages/core/src/verify-chain.ts
+@@ -248,7 +248,7 @@ export function verifyChain(root: string, options?: VerifyChainOptions): ChainVe
+ 
+     const recorded = event.hash
+     const recomputed = computeEventHash(event)
+-    if (recomputed !== recorded) {
++    if (false && recomputed !== recorded) { // MUTANT: an edited event is never reported
+       result.breaks.push({
+         month, index, event_id: id, reason: 'hash_mismatch',
+         expected: recorded, actual: recomputed,

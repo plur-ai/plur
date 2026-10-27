@@ -1,0 +1,13 @@
+diff --git a/packages/mcp/src/tools.ts b/packages/mcp/src/tools.ts
+index 71f2d5d1..3d19e6b0 100644
+--- a/packages/mcp/src/tools.ts
++++ b/packages/mcp/src/tools.ts
+@@ -4644,7 +4644,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
+         // never fatal: the session still ends and the manifest stays local.
+         let anchor: Record<string, unknown> | undefined
+         const manifestSession = _resolveInjectionSession(args)
+-        if (manifestSession && plur.receiptsConfig().store === 'swarm') {
++        if (manifestSession) { // MUTANT: uploads whatever the setting
+           try {
+             const manifest = await plur.sessionManifest(manifestSession, { checkpoint: checkpointForManifest })
+             const rec = await Promise.race([

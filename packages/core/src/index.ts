@@ -585,12 +585,12 @@ export interface StatusResult {
   storage_root: string
   config: PlurConfig
   /**
-   * The `provenance.origin` this instance stamps on every engram it writes
-   * (#1049). Surfaced because `provenance.identity` otherwise has no
+   * The identity this instance records as `attribution.asserted_by` on every
+   * engram it writes (`provenance.identity` in config.yaml, #1049). Surfaced because `provenance.identity` otherwise has no
    * user-facing surface at all — it is absent from the README, the docs, the
    * `plur init` template, the CLI and the MCP schemas, so in practice every
    * engram would ship as `agent:unidentified` and nobody would know why.
-   * Shows the effective value, including a constructor override.
+   * `agent:unidentified` when none is configured.
    */
   provenance_identity: string
 
@@ -1683,13 +1683,6 @@ export class Plur {
      * stranding anyone who genuinely knows what their store does.
      */
     allowUnprotectedStore?: boolean
-    /**
-     * Provenance configuration for this instance (#1048 / #1049).
-     * Merged into the loaded config so tests and programmatic callers can
-     * supply identity without writing a config.yaml. Config-file values take
-     * lower priority than these options-level overrides.
-     */
-    provenance?: { identity?: string }
   }) {
     this.paths = detectPlurStorage(options?.path)
     this._readonly = options?.readonly === true

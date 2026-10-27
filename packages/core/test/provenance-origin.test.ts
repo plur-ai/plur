@@ -89,10 +89,8 @@ describe('Wave 1: session_id threading + provenance.origin (#1048)', () => {
 
   describe('attribution — identity configured', () => {
     it('uses config.provenance.identity as asserted_by when set', async () => {
-      const plur = new Plur({
-        path: dir,
-        provenance: { identity: 'agent:claude-code' },
-      })
+      writeFileSync(join(dir, 'config.yaml'), 'provenance:\n  identity: agent:claude-code\n')
+      const plur = new Plur({ path: dir })
       const engram = await plur.learn('attribution with configured identity')
       expect(engram.attribution?.asserted_by).toBe('agent:claude-code')
     })
@@ -100,10 +98,8 @@ describe('Wave 1: session_id threading + provenance.origin (#1048)', () => {
 
   describe('_buildEngramShape (learnRouted path)', () => {
     it('records attribution and session_id on the shaped engram returned by learnRouted', async () => {
-      const plur = new Plur({
-        path: dir,
-        provenance: { identity: 'agent:nightshift' },
-      })
+      writeFileSync(join(dir, 'config.yaml'), 'provenance:\n  identity: agent:nightshift\n')
+      const plur = new Plur({ path: dir })
       const result = await plur.learnRouted('learnRouted provenance test', {
         session_id: 'route-sess-1',
         domain: 'plur.test',
@@ -118,10 +114,8 @@ describe('Wave 1: session_id threading + provenance.origin (#1048)', () => {
 
   describe('YAML round-trip', () => {
     it('attribution and sources[].session_id survive a save/reload cycle', async () => {
-      const plur = new Plur({
-        path: dir,
-        provenance: { identity: 'agent:test' },
-      })
+      writeFileSync(join(dir, 'config.yaml'), 'provenance:\n  identity: agent:test\n')
+      const plur = new Plur({ path: dir })
       const written = await plur.learn('yaml round-trip for provenance', {
         session_id: 'round-trip-sess',
       })
@@ -141,26 +135,24 @@ describe('Wave 1: session_id threading + provenance.origin (#1048)', () => {
 // ── The defects the review found: attribution that never reached production ──
 
 describe('#1048 review findings', () => {
-  it('the constructor identity survives a config reload', async () => {
-    // THE DEFECT: the override was merged INTO this.config, and the next
-    // `this.config = loadConfig(...)` threw it away. _resolveUnscopedScope calls
-    // reloadConfigIfChanged() on every unscoped learn(), so one config.yaml
-    // mtime change reverted an explicitly configured identity to
-    // "agent:unidentified" — silently, and it defeats the whole epic.
+  it('the configured identity survives a config reload', async () => {
+    // Main reads the identity from config.yaml (`provenance.identity`); the
+    // branch's constructor override is not carried over. What must hold is
+    // that a reload (any config.yaml mtime change) keeps it.
     const dir = mkdtempSync(join(tmpdir(), 'prov-reload-'))
-    const p = new Plur({ path: dir, provenance: { identity: 'agent:ctor' } } as never)
+    const cfg = join(dir, 'config.yaml')
+    writeFileSync(cfg, 'provenance:\n  identity: agent:ctor\n')
+    const p = new Plur({ path: dir } as never)
 
     const first = await p.learn('a statement written before any reload', { type: 'behavioral' })
     expect((first as never as { attribution?: { asserted_by?: string } }).attribution?.asserted_by).toBe('agent:ctor')
 
-    // Touch config.yaml so the next unscoped learn reloads it.
-    const cfg = join(dir, 'config.yaml')
-    writeFileSync(cfg, (existsSync(cfg) ? readFileSync(cfg, 'utf8') : '') + '\n# touched\n')
+    writeFileSync(cfg, readFileSync(cfg, 'utf8') + '\n# touched\n')
 
     const second = await p.learn('a statement written after the reload', { type: 'behavioral' })
     expect(
       (second as never as { attribution?: { asserted_by?: string } }).attribution?.asserted_by,
-      'the constructor identity must survive loadConfig',
+      'the configured identity must survive loadConfig',
     ).toBe('agent:ctor')
     rmSync(dir, { recursive: true, force: true })
   })

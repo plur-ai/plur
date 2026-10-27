@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.23.0 (unreleased)
+
+Memory you can prove.
+
+### Provable history
+
+- The history log is hash-chained: every event carries its own hash and the
+  hash of the one before it. `plur verify` says whether the history was edited
+  outside PLUR — exit 0 clean, 1 broken (each break and fork named), 2 could not
+  read it, which is never reported as clean. (#1051, #1053)
+- `plur checkpoint` and every session end write a checkpoint that binds the
+  chain head to a hash of the store. With a key from `plur keys init`, the
+  checkpoint is signed (Ed25519), and `plur verify --signatures` checks it.
+  (#1052, #1055, #1056) See `docs/auditability.md` (#1057).
+- Every save records the session it came from in `sources[].session_id`.
+  (#1048)
+
+### Session memory manifest
+
+- `plur manifest --session <id>` lists the memories an agent had in context in
+  one session — given at injection, returned to a recall, or saved — with a
+  hash over each memory's content fields. Never their text, scope names, tags
+  or domains. (#1657)
+- `plur verify --manifest <file|reference>` re-hashes each listed memory:
+  MATCH, CHANGED (an edited rationale counts), or NOT AVAILABLE. (#1657)
+
+### Swarm storage (opt-in)
+
+- With `receipts.store: swarm` in `config.yaml`, ending a session stores its
+  manifest on Swarm through the provenance gateway's free tier, signed by the
+  gateway's notary, and returns the reference. `plur verify --manifest
+  <reference>` checks it from any machine, including the notary signature.
+  Off by default: no network call of any kind unless it is turned on. A
+  free-tier upload stays downloadable for about a day. (#1657)
+
 ## 0.22.1
 
 Sign-in cleanup works for an older sign-in to the same server.
