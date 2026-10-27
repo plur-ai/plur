@@ -43,3 +43,14 @@ Scenario: `new Plur({ path, provenance: { identity: 'agent:x' } })` with no iden
 - **F1 fixed** in `packages/core/src/history.ts` (`appendHistoryBatch`): when a batch moves into another month file that already has events, the next event links to that file's own tail, as a single append would; into an empty file the chain continues from the batch's previous event. Regression test: `packages/core/test/history-batch-chain.test.ts` (same links as single appends, within a month and across a boundary). The model's `batch_cross_month_diverges*` counterexamples describe the code before this fix.
 - **F3 fixed**: the unused `provenance: { identity }` constructor option is removed from `Plur`'s options; identity comes from `config.yaml` (`provenance.identity`), and the `provenance-origin` tests now set it there.
 - **F2 open** (low): a declared gap right after genesis is also listed as a fork of genesis. It is never reported as tampering. Left for a follow-up issue.
+
+## Model of the F1 fix (2026-10-27)
+
+`PlurSpec/Provenance.lean` §6 now models the fixed `appendHistoryBatch` (`history.ts`, `writeAll`). It replaces the old `batch_cross_month_diverges*` counterexamples. `findPredecessorHash` under the lock is the definition `findPred`: the tail of the event's own month file when that file has events, otherwise the tail of the newest other month file (an empty file counts as missing).
+
+Proved, `batch_eq_singles_months`: a locked batch leaves every month file exactly as n single locked appends do, under two conditions. The batch's months must be non-decreasing. At each move into an empty month file, no later month file may have events (`SwitchOk`).
+
+The fixed code still differs from single appends in two cases, both proved as counterexamples. Both need out-of-order timestamps, and the only caller, `recordIdRenames`, uses one timestamp per batch, so both are latent:
+
+- `batch_revisit_diverges`: the batch returns to a month it already wrote. Example: `[Oct, Nov, Oct]` with a non-empty November file. The batch chains the second October event onto the November event, because a month already in `byMonth` is not re-read (`history.ts`, the `if (!byMonth.has(m))` guard). A single append would chain it onto the first October event, which is the October file's tail.
+- `batch_empty_month_later_file_diverges`: the batch moves from October into an empty or missing November file while a December file already has events. The batch continues from its October event. A single append would fall back to `findPredecessorHash`'s directory walk, which picks the newest other month file, December, and chain onto December's tail.

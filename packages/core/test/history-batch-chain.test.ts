@@ -68,4 +68,25 @@ describe('appendHistoryBatch chains like single appends', () => {
     expect(l[2][1], 'the first November event does not link to the last October event').toBe(l[1][2])
     expect(verifyChain(a).status).toBe('verified')
   })
+
+  function same(seedTimes: string[], batchTimes: string[]) {
+    const a = fresh(), b = fresh()
+    for (const root of [a, b]) seedTimes.forEach((t, i) => appendHistory(root, ev(`seed${i}`, t)))
+    const batch = batchTimes.map((t, i) => ev(`e${i}`, t))
+    clearChainHeadMemCache()
+    appendHistoryBatch(a, batch.map(e => ({ ...e, data: { ...e.data } })))
+    clearChainHeadMemCache()
+    for (const e of batch) appendHistory(b, { ...e, data: { ...e.data } })
+    expect(links(a), `batch ${batchTimes.join(', ')} over ${seedTimes.join(', ')} linked differently from single appends`).toEqual(links(b))
+  }
+
+  it('returning to a month the batch already wrote (formal follow-up: revisit)', () => {
+    same(['2026-10-01T00:00:00.000Z', '2026-11-01T00:00:00.000Z'],
+      ['2026-10-02T00:00:00.000Z', '2026-11-02T00:00:00.000Z', '2026-10-03T00:00:00.000Z'])
+  })
+
+  it('moving into an empty month while a later month has events (formal follow-up)', () => {
+    same(['2026-10-01T00:00:00.000Z', '2026-12-01T00:00:00.000Z'],
+      ['2026-10-02T00:00:00.000Z', '2026-11-02T00:00:00.000Z'])
+  })
 })

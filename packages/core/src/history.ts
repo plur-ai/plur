@@ -753,59 +753,49 @@ export function appendHistoryBatch(root: string, events: readonly HistoryEvent[]
   if (events.length === 0) return true
   const historyDir = join(root, 'history')
   // The batch is one link per event in the same hash chain as appendHistory
-  // (#1051): every event gets prev/hash, in order, under the chain lock, so a
-  // batch is indistinguishable in the log from the same events appended one by
-  // one. Only the fsync is shared.
-  const writeAll = (firstPrev: string | null, locked: boolean): boolean => {
+  // (#1051), and must write exactly the links the same events appended one by
+  // one would. It is written in runs of consecutive events for one month file:
+  // within a run each event links to the one before it; the first event of
+  // each run links to what `findPredecessorHash` reads from disk after the
+  // earlier runs are written — the same read a single append makes, so a batch
+  // that crosses months, returns to a month, or moves into an empty month
+  // (formal findings F1 and its follow-ups, spec/formal/findings/
+  // provenance-2026-10-27.md) links as single appends do. One write and one
+  // fsync per run, under the chain lock.
+  const runs: HistoryEvent[][] = []
+  for (const ev of events) {
+    const last = runs.at(-1)
+    if (last && last[0].timestamp.slice(0, 7) === ev.timestamp.slice(0, 7)) last.push(ev)
+    else runs.push([ev])
+  }
+  const writeRun = (run: HistoryEvent[], firstPrev: string | null): boolean => {
     let prev = firstPrev
-    let month = events[0].timestamp.slice(0, 7)
-    const byMonth = new Map<string, string[]>()
-    for (const ev of events) {
-      const m = ev.timestamp.slice(0, 7)
-      if (m !== month) {
-        // Another month file: link to that file's own tail, exactly as a
-        // single append of this event would (formal finding F1,
-        // spec/formal/findings/provenance-2026-10-27.md). Read before any of
-        // this batch is written, which is also what single appends in order
-        // would see for a file none of the earlier events went to. Without the
-        // lock there is no tail worth reading: declare a gap.
-        month = m
-        if (!byMonth.has(m)) {
-          const file = join(historyDir, `${m}.jsonl`)
-          let hasTail = false
-          try { hasTail = fs.statSync(file).size > 0 } catch { /* no file yet */ }
-          // An empty or missing file has no tail of its own; a single append
-          // would fall back to the newest earlier event, which is the batch's
-          // previous event, so the chain simply continues.
-          if (hasTail) prev = locked ? findPredecessorHash(historyDir, file) : null
-        }
-      }
+    const lines: string[] = []
+    for (const ev of run) {
       ev.prev = prev
       ev.hash = computeEventHash(ev)
       prev = ev.hash
-      byMonth.set(m, [...(byMonth.get(m) ?? []), JSON.stringify(ev) + '\n'])
+      lines.push(JSON.stringify(ev) + '\n')
     }
+    const filePath = join(historyDir, `${run[0].timestamp.slice(0, 7)}.jsonl`)
     let ok = true
-    for (const [month, lines] of byMonth) {
-      const filePath = join(historyDir, `${month}.jsonl`)
+    try {
+      const fd = fs.openSync(filePath, 'a')
       try {
-        const fd = fs.openSync(filePath, 'a')
-        try {
-          fs.writeSync(fd, lines.join(''))
-          try { fs.fsyncSync(fd) } catch { /* append landed; durability is best-effort */ }
-        } finally {
-          fs.closeSync(fd)
-        }
-      } catch (err) {
-        ok = false
-        if (!warnedHistoryPaths.has(filePath)) {
-          warnedHistoryPaths.add(filePath)
-          logger.warning(`[plur] history could not be written to ${filePath}: ${(err as Error).message}. The operation itself succeeded.`)
-        }
+        fs.writeSync(fd, lines.join(''))
+        try { fs.fsyncSync(fd) } catch { /* append landed; durability is best-effort */ }
+      } finally {
+        fs.closeSync(fd)
+      }
+    } catch (err) {
+      ok = false
+      if (!warnedHistoryPaths.has(filePath)) {
+        warnedHistoryPaths.add(filePath)
+        logger.warning(`[plur] history could not be written to ${filePath}: ${(err as Error).message}. The operation itself succeeded.`)
       }
     }
-    // The head cache is not updated from here; dropping it sends the next
-    // append to the authoritative tail-seek, which is slower and always right.
+    // The head cache is not updated from here; dropping it sends the next read
+    // (the next run's, or the next append's) to the authoritative tail-seek.
     invalidateChainHead(historyDir)
     return ok
   }
@@ -815,16 +805,22 @@ export function appendHistoryBatch(root: string, events: readonly HistoryEvent[]
     logger.warning(`[plur] history directory ${historyDir} could not be created: ${(err as Error).message}. The operation itself succeeded.`)
     return false
   }
-  const firstFile = join(historyDir, `${events[0].timestamp.slice(0, 7)}.jsonl`)
-  let result = false
+  let result = true
+  let done = 0
   try {
     withLock(join(historyDir, 'chain'), () => {
-      result = writeAll(findPredecessorHash(historyDir, firstFile), true)
+      for (const run of runs) {
+        const file = join(historyDir, `${run[0].timestamp.slice(0, 7)}.jsonl`)
+        if (!writeRun(run, findPredecessorHash(historyDir, file))) result = false
+        done++
+      }
     }, { maxRetries: 12, baseDelay: 2 })
   } catch {
     // Same rule as appendHistory: without the lock, declare a gap rather than
-    // chain from a tail read without exclusion.
-    result = writeAll(null, false)
+    // chain from a tail read without exclusion — once per run, where a single
+    // append would have read a tail.
+    // Runs already written under the lock are not written again.
+    for (const run of runs.slice(done)) if (!writeRun(run, null)) result = false
   }
   return result
 }
