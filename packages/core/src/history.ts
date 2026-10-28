@@ -15,6 +15,8 @@ export interface HistoryEvent {
     | 'engram_rekeyed'
     /** Engrams a recall returned to a session (#1657). `data.ids`, `data.session_id`, `data.query_hash`, `data.source`. */
     | 'recall_returned'
+    /** A sync pull changed memories this machine did not write (review 1). `data.engram_ids` names them; `data.cause`. */
+    | 'store_synced'
   /**
    * Engram this event belongs to. Session-level events
    * (`session_scope_changed`) carry no engram — they use `''`, which by
@@ -606,7 +608,9 @@ export function appendHistoryStamped(
   }
 
   const date = event.timestamp.slice(0, 7) // YYYY-MM
-  const filePath = join(historyDir, `${date}.jsonl`)
+  // Recomputed under the lock (targetMonthFile): an event stamped before a
+  // month boundary that another writer already crossed joins the newest file.
+  let filePath = join(historyDir, `${date}.jsonl`)
 
   // Hash-chain linkage (#1051) under exclusion. Reading the tail and appending
   // from it must be one atomic step, or two writers chain from the same
@@ -628,6 +632,7 @@ export function appendHistoryStamped(
   let onPrevFailure: unknown
   let written = false
   const stampAndWrite = (): void => {
+    filePath = targetMonthFile(historyDir, date)
     dropTornTail(historyDir, filePath)
     const predecessorHash = findPredecessorHash(historyDir, filePath)
     event.prev = predecessorHash // null when gap or genesis
@@ -762,11 +767,47 @@ export function appendHistoryStamped(
       throw onPrevErr
     }
     event.hash = computeEventHash(event)
+    filePath = targetMonthFile(historyDir, date)
     // Without the lock a torn tail is not ours to truncate (another writer may
     // be mid-append), so start on a fresh line instead of gluing onto it.
     written = writeEventLine((endsMidLine(filePath) ? '\n' : '') + JSON.stringify(event) + '\n', false)
   }
   return written
+}
+
+/**
+ * The month file an event stamped in `ownMonth` is appended to: its own, or
+ * the newest month file that already has events when that one is later
+ * (code review of 0.23, finding 5).
+ *
+ * Timestamps are taken before the chain lock (learn() stamps `now` before its
+ * awaits), so a writer can stamp 23:59:59 on the 31st and get the lock after
+ * another writer started the next month's file. Appending to its own, older
+ * file chained it onto that file's tail — a predecessor the new month's first
+ * event already claimed — and verify, reading months in order, reported a fork
+ * and a prev_mismatch on a history nobody edited. Joining the newest file
+ * keeps the log one chain in file order; the event keeps its own timestamp.
+ */
+function targetMonthFile(historyDir: string, ownMonth: string): string {
+  let newest = ownMonth
+  try {
+    for (const f of fs.readdirSync(historyDir)) {
+      if (!f.endsWith('.jsonl')) continue
+      const m = f.slice(0, -'.jsonl'.length)
+      if (m > newest) {
+        try { if (fs.statSync(join(historyDir, f)).size > 0) newest = m } catch { /* vanished */ }
+      }
+    }
+  } catch { /* unreadable dir: the append below reports it */ }
+  return join(historyDir, `${newest}.jsonl`)
+}
+
+/** Number of memory groups a checkpoint fingerprints separately (review 2). */
+export const STORE_BUCKETS = 64
+
+/** The group a memory id falls into, 0..STORE_BUCKETS-1, from a hash of the id. */
+export function storeBucketOf(id: string): number {
+  return createHash('sha256').update(id).digest()[0] % STORE_BUCKETS
 }
 
 /** True when the file exists, is non-empty, and its last byte is not a newline. */
@@ -800,6 +841,19 @@ function endsMidLine(filePath: string): boolean {
  * the append below still starts on its own line.
  */
 function dropTornTail(historyDir: string, filePath: string): void {
+  if (!endsMidLine(filePath)) return
+  // A writer without the lock (the gap path, or a pre-0.23 process still
+  // running) may be mid-append right now: its line is one write, visible in
+  // part for a moment. Watch the size briefly; a fragment that is still
+  // growing is not dead and is left alone (code review of 0.23, finding 7) —
+  // the kernel finishes that write before ours lands.
+  try {
+    const size0 = fs.statSync(filePath).size
+    const until = Date.now() + 25
+    while (Date.now() < until) {
+      if (fs.statSync(filePath).size !== size0) return
+    }
+  } catch { return }
   if (!endsMidLine(filePath)) return
   try {
     const st = fs.statSync(filePath)
@@ -845,7 +899,7 @@ export function appendHistoryBatch(root: string, events: readonly HistoryEvent[]
     if (last && last[0].timestamp.slice(0, 7) === ev.timestamp.slice(0, 7)) last.push(ev)
     else runs.push([ev])
   }
-  const writeRun = (run: HistoryEvent[], firstPrev: string | null): boolean => {
+  const writeRun = (run: HistoryEvent[], firstPrev: string | null, filePath: string): boolean => {
     let prev = firstPrev
     const lines: string[] = []
     for (const ev of run) {
@@ -854,7 +908,6 @@ export function appendHistoryBatch(root: string, events: readonly HistoryEvent[]
       prev = ev.hash
       lines.push(JSON.stringify(ev) + '\n')
     }
-    const filePath = join(historyDir, `${run[0].timestamp.slice(0, 7)}.jsonl`)
     let ok = true
     try {
       const fd = fs.openSync(filePath, 'a')
@@ -887,9 +940,9 @@ export function appendHistoryBatch(root: string, events: readonly HistoryEvent[]
   try {
     withLock(join(historyDir, 'chain'), () => {
       for (const run of runs) {
-        const file = join(historyDir, `${run[0].timestamp.slice(0, 7)}.jsonl`)
+        const file = targetMonthFile(historyDir, run[0].timestamp.slice(0, 7))
         dropTornTail(historyDir, file)
-        if (!writeRun(run, findPredecessorHash(historyDir, file))) result = false
+        if (!writeRun(run, findPredecessorHash(historyDir, file), file)) result = false
         done++
       }
     }, { maxRetries: 12, baseDelay: 2 })
@@ -898,7 +951,7 @@ export function appendHistoryBatch(root: string, events: readonly HistoryEvent[]
     // chain from a tail read without exclusion — once per run, where a single
     // append would have read a tail.
     // Runs already written under the lock are not written again.
-    for (const run of runs.slice(done)) if (!writeRun(run, null)) result = false
+    for (const run of runs.slice(done)) if (!writeRun(run, null, targetMonthFile(historyDir, run[0].timestamp.slice(0, 7)))) result = false
   }
   return result
 }
@@ -938,8 +991,12 @@ export interface CheckpointData {
   event_hash?: string | null
   chain_head: string | null
   store_hash: string
+  /** Per-group fingerprints of the same records (see attestStore); absent on checkpoints written before them. */
+  store_buckets?: string[]
   engram_count: number
   actor: string
+  /** The session this checkpoint closed, when a session end wrote it (code review of 0.23, finding 6). */
+  session_id?: string
   /**
    * Ed25519 signature over the checkpoint's canonical bytes, base64-encoded.
    * Present only when the acting identity has a key configured (#1056).
@@ -984,7 +1041,7 @@ export function hashEngramsFile(engramsPath: string): string {
  * @returns the canonical store hash and the active engram count, from one read.
  * @throws if the store cannot be read or parsed.
  */
-export function attestStore(engramsPath: string): { store_hash: string; engram_count: number } {
+export function attestStore(engramsPath: string): { store_hash: string; engram_count: number; store_buckets: string[] } {
   const raw = fs.readFileSync(engramsPath, 'utf8')
 
   // Hash the CONTENT, not the bytes.
@@ -1024,7 +1081,62 @@ export function attestStore(engramsPath: string): { store_hash: string; engram_c
     .map(e => ({ id: String(e.id ?? ''), status: String(e.status ?? 'active'), record: computeRecordHash(e as unknown as Engram) }))
     .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : a.record < b.record ? -1 : a.record > b.record ? 1 : 0))
   const store_hash = createHash('sha256').update(canonicalBytesOf({ kind: 'plur/store-records/v1', records })).digest('hex')
-  return { store_hash, engram_count }
+  // The same records split into STORE_BUCKETS groups by a hash of the id, each
+  // fingerprinted (16 hex). Verify uses them to localise a difference: a group
+  // that changed must hold a memory history names as changed since the
+  // checkpoint, or the change was made behind PLUR's back (code review of
+  // 0.23, finding 2 — one recorded learn used to excuse every difference).
+  const groups: Array<typeof records> = Array.from({ length: STORE_BUCKETS }, () => [])
+  for (const r of records) groups[storeBucketOf(r.id)].push(r)
+  const store_buckets = groups.map(g => createHash('sha256').update(canonicalBytesOf(g)).digest('hex').slice(0, 16))
+  return { store_hash, engram_count, store_buckets }
+}
+
+/**
+ * Each memory's attested record (status + record hash) by id, or null when the
+ * store cannot be read. What `recordStoreSync` compares across a sync pull.
+ */
+export function storeRecordMap(engramsPath: string): Map<string, string> | null {
+  try {
+    const parsed = yaml.load(fs.readFileSync(engramsPath, 'utf8'))
+    const list = (Array.isArray(parsed) ? parsed : (parsed as { engrams?: unknown[] } | null)?.engrams) as Array<Record<string, unknown> | null> | undefined
+    if (!Array.isArray(list)) return null
+    const out = new Map<string, string>()
+    for (const e of list) {
+      if (!e || typeof e !== 'object' || typeof e.id !== 'string') continue
+      out.set(e.id, `${String(e.status ?? 'active')}:${computeRecordHash(e as unknown as Engram)}`)
+    }
+    return out
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Record the memories a sync pull changed, as one `store_synced` event naming
+ * their ids (code review of 0.23, finding 1).
+ *
+ * History is not synced, so memories another machine learned arrive in
+ * engrams.yaml with no local event; against the newest checkpoint that looked
+ * exactly like an edit made behind PLUR's back, and `plur verify` reported
+ * every multi-machine store as broken. The pull is PLUR's own operation, so
+ * it is recorded like any other write. Ids only — never content. Best-effort,
+ * like every history append.
+ */
+export function recordStoreSync(root: string, before: Map<string, string> | null, cause: string): void {
+  if (before === null) return
+  const after = storeRecordMap(join(root, 'engrams.yaml'))
+  if (after === null) return
+  const changed = new Set<string>()
+  for (const [id, v] of after) if (before.get(id) !== v) changed.add(id)
+  for (const id of before.keys()) if (!after.has(id)) changed.add(id)
+  if (changed.size === 0) return
+  appendHistory(root, {
+    event: 'store_synced',
+    engram_id: '',
+    timestamp: new Date().toISOString(),
+    data: { engram_ids: [...changed].sort(), cause },
+  })
 }
 
 /**
@@ -1128,6 +1240,7 @@ export function emitCheckpoint(
   actor: string,
   timestamp?: string,
   signing?: CheckpointSigningOptions,
+  sessionId?: string,
 ): CheckpointData {
   const ts = timestamp ?? new Date().toISOString()
 
@@ -1150,7 +1263,7 @@ export function emitCheckpoint(
   // So the predecessor is read once, inside the same lock that appends, and the
   // payload is built from it. `appendHistoryWithPrev` is appendHistory's own
   // critical section, entered once.
-  appendHistoryStamped(root, event, prev => {
+  const written = appendHistoryStamped(root, event, prev => {
     // Attest INSIDE the chain lock, from ONE read.
     //
     // Two bindings are being made here and both are load-bearing:
@@ -1179,8 +1292,8 @@ export function emitCheckpoint(
     //
     // A throw here aborts the checkpoint rather than writing an unattested one
     // — see the onPrevFailure handling in appendHistoryStamped.
-    const { store_hash, engram_count } = attestStore(engramsPath)
-    const data: CheckpointData = { chain_head: prev, store_hash, engram_count, actor }
+    const { store_hash, engram_count, store_buckets } = attestStore(engramsPath)
+    const data: CheckpointData = { chain_head: prev, store_hash, store_buckets, engram_count, actor, ...(sessionId ? { session_id: sessionId } : {}) }
     event.data = data as unknown as Record<string, unknown>
 
     // Sign the checkpoint (#1056) if a key is available. The signature is
@@ -1222,7 +1335,10 @@ export function emitCheckpoint(
   // so they must be added explicitly to the return value (#1056).
   return {
     ...(event.data as unknown as CheckpointData),
-    event_hash: event.hash ?? null,
+    // A line that never reached the file has no hash to anchor (code review of
+    // 0.23, finding 3): returning the one computed in memory let `plur
+    // checkpoint` print it and a session end upload it, naming no event.
+    event_hash: written ? event.hash ?? null : null,
     signature: event.signature,
     signer: event.signer,
   }
