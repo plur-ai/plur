@@ -427,7 +427,7 @@ export type { SyncResult, SyncStatus, SyncRemoteType } from './sync.js'
  * the two drift, and the drift is always in the unsafe direction.
  */
 export { verifyChain, hashStoreFile, type ChainVerifyOutcome, type ChainVerifyResult, type ChainBreak, type ChainFork, type BreakReason, type VerifyChainOptions, type SignatureResult, type SignatureVerdict } from './verify-chain.js'
-export { initActorKey, loadPrivateKeyBuffer, signWithActorKey, verifySignature, loadKeysRegistry, lookupPublicKey, registerPublicKey, keyFingerprint, privateKeyPath, keysRegistryPath, type PublicKeyEntry, type KeysRegistry } from './actor-keys.js'
+export { initActorKey, loadPrivateKeyBuffer, signWithActorKey, verifySignature, loadKeysRegistry, lookupPublicKey, registerPublicKey, keyFingerprint, privateKeyPath, keysRegistryPath, safeFileName, type PublicKeyEntry, type KeysRegistry } from './actor-keys.js'
 export { atomicWrite, withLock } from './sync.js'
 /**
  * Owner-only protection (#1631): `writeConfigFile` is how config.yaml is
@@ -16283,7 +16283,7 @@ Generate an improved version of the procedure that prevents this failure. Return
    * session pins it to "no session scope" (unscoped writes auto-route), which
    * is distinct from never having registered it (inherits the process slot).
    */
-  setSessionScope(scope: string | null, opts?: { session_id?: string; session?: string }): void {
+  setSessionScope(scope: string | null, opts?: { session?: string }): void {
     this._sessionScopes.set(scope, opts?.session)
   }
 
@@ -16326,7 +16326,7 @@ Generate an improved version of the procedure that prevents this failure. Return
    * Get the session-level default scope for `opts.session`, or the process-wide
    * one when no session is named. Returns null if not set.
    */
-  getSessionScope(opts?: { session_id?: string; session?: string }): string | null {
+  getSessionScope(opts?: { session?: string }): string | null {
     return this._sessionScopes.get(opts?.session)
   }
 
@@ -16335,7 +16335,7 @@ Generate an improved version of the procedure that prevents this failure. Return
    * deployment would otherwise retain one entry per session it has ever served.
    * Omitting `session` clears the process-wide slot.
    */
-  clearSessionScope(opts?: { session_id?: string; session?: string }): void {
+  clearSessionScope(opts?: { session?: string }): void {
     this._sessionScopes.clear(opts?.session)
   }
 

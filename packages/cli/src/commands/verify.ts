@@ -75,6 +75,14 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   outputText(`  chain head        : ${r.chain_head ?? '(none — no chained events)'}`)
   outputText(`  checkpoints       : ${r.checkpoints_checked}`)
 
+  // Set by core when the store's content changed after the newest checkpoint
+  // and the history records the changes: ordinary use, not a break.
+  const changed = (r as { store_changed_since_checkpoint?: { month: string; index: number; events_since: number } | null }).store_changed_since_checkpoint
+  if (changed) {
+    outputText('')
+    outputText(`  store changed since the newest checkpoint (${changed.month} #${changed.index}); ${changed.events_since} recorded change(s) explain it. Run \`plur checkpoint\` to attest the current state.`)
+  }
+
   if (r.torn_tail) {
     outputText('')
     outputText(`  in-flight write: ${r.torn_tail.month} line ${r.torn_tail.line} is incomplete.`)
@@ -102,10 +110,13 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       outputText('    which means events below it were rewritten wholesale.')
     }
     if (b.reason === 'store_hash_mismatch') {
-      outputText('    The newest checkpoint attests a store that is not the one on disk.')
-      outputText('    The chain itself is intact — engrams.yaml changed under it. That is')
-      outputText('    expected if you have learned anything since; run `plur checkpoint`')
-      outputText('    to attest the current state. If you have NOT, the store was replaced.')
+      outputText('    The memories in engrams.yaml differ from what the newest checkpoint')
+      outputText('    attested, and no change recorded in the history since explains it:')
+      outputText('    the store was edited or replaced outside PLUR (or deleted).')
+    }
+    if (b.reason === 'signature_invalid') {
+      outputText('    The checkpoint signature does not verify against the key registered for')
+      outputText('    its signer. A re-generated key for the same identity also does this.')
     }
     if (b.reason === 'declared_gap') {
       outputText('    A writer could not take the chain lock and declared a gap rather')

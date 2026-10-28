@@ -5,7 +5,10 @@
  *   0  every engram this store holds matches, and a downloaded manifest's
  *      content hash and notary signature check out
  *   1  at least one engram CHANGED, or the downloaded bytes or signature do not check
- *   2  cannot verify: no such file, not a manifest, or the gateway could not be reached
+ *   2  cannot verify: no such file, not a manifest, the gateway could not be
+ *      reached, the stored document has no notary signature or no notary
+ *      address to check it against, or none of the listed engrams is in this
+ *      store
  *
  * NOT AVAILABLE (an engram this store does not hold) is counted and shown,
  * never turned into a pass or a failure: it is an unknown.
@@ -50,11 +53,15 @@ export async function runManifest(target: string | undefined, args: string[], fl
       bytes = Buffer.from(doc.data, 'base64')
       const actual = createHash('sha256').update(bytes).digest('hex')
       const sig = doc.signatures?.[0]
+      // No signature, or no notary to compare it with, is not a pass: the
+      // bytes matching their own hash proves nothing about who stored them.
+      if (!sig) return cannot(flags, `the stored document carries no notary signature${pinnedNotary ? ` (expected one from ${pinnedNotary})` : ''}`)
       let expected: string | null = pinnedNotary ?? null
       let notarySource: 'pinned' | 'gateway' | null = pinnedNotary ? 'pinned' : null
-      if (!expected && sig) { expected = await store.notaryAddress(); notarySource = expected ? 'gateway' : null }
-      const notary = sig ? checkNotarySignature(sig, doc) : null
-      if (notary && expected && notary.recovered && notary.recovered.toLowerCase() !== expected.toLowerCase()) {
+      if (!expected) { expected = await store.notaryAddress(); notarySource = expected ? 'gateway' : null }
+      if (!expected) return cannot(flags, 'no notary address to check the signature against: the gateway names none; pass --notary <address>')
+      const notary = checkNotarySignature(sig, doc)
+      if (notary.recovered && notary.recovered.toLowerCase() !== expected.toLowerCase()) {
         notary.signature_ok = false
         notary.error = `signed by ${notary.recovered}, expected notary ${expected}`
       }
@@ -71,8 +78,14 @@ export async function runManifest(target: string | undefined, args: string[], fl
   let v
   try { v = await plur.verifyManifest(manifest) } catch (err) { return cannot(flags, (err as Error).message) }
 
-  const integrityOk = integrity === null || (integrity.content_hash_ok && (integrity.notary === null || integrity.notary.signature_ok))
-  const ok = v.ok && integrityOk
+  const integrityOk = integrity === null || (integrity.content_hash_ok && integrity.notary !== null && integrity.notary.signature_ok)
+  // Listed engrams of which none matched and none changed: nothing was checked,
+  // which is not a pass (0.23 audit, finding 12).
+  const nothingChecked = v.results.length > 0 && v.counts.MATCH === 0 && v.counts.CHANGED === 0
+  if (integrityOk && nothingChecked) {
+    return cannot(flags, `none of the ${v.results.length} listed engram(s) is in this store, so nothing could be checked; run this where those memories are held`)
+  }
+  const ok = v.counts.CHANGED === 0 && integrityOk
   if (shouldOutputJson(flags)) {
     outputJson({ status: ok ? 'verified' : 'broken', source, integrity, ...v })
   } else {

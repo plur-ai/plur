@@ -63,7 +63,7 @@ argument beyond this store.
 Each acting identity can have an Ed25519 key pair:
 
 ```
-Private key: ~/.plur/keys/<identity>.key   — PKCS#8 DER, mode 0600
+Private key: ~/.plur/keys/<identity>.key   — PKCS#8 DER, mode 0600 (identity percent-encoded, e.g. agent%3Amiles.key)
 Public key:  <store-root>/keys.yaml        — SPKI DER base64, per-identity registry
 ```
 
@@ -73,8 +73,12 @@ Generate a key pair:
 plur keys init [--identity <name>] [--keys-dir <dir>]
 ```
 
-`plur keys init` is idempotent: calling it again returns the existing public key
-without overwriting. `plur keys list` prints all registered public keys.
+It needs an identity: `--identity`, or `provenance.identity` in config.yaml.
+Without one it refuses, since checkpoints are only signed for a configured
+identity. `plur keys init` is idempotent: calling it again returns the existing
+public key without overwriting. A `keys.yaml` that will not parse is never
+overwritten; registering refuses until it is fixed. `plur keys list` prints all
+registered public keys.
 
 When an acting identity has a key, `plur checkpoint` adds:
 

@@ -21,10 +21,14 @@ Memory you can prove.
 
 - `plur manifest --session <id>` lists the memories an agent had in context in
   one session — given at injection, returned to a recall, or saved — with a
-  hash over each memory's content fields. Never their text, scope names, tags
-  or domains. (#1657)
+  hash over each memory's content fields. Never their text, scope names, tags,
+  domains or a hash of the bare statement. It does carry the session id and
+  the configured identity. (#1657)
 - `plur verify --manifest <file|reference>` re-hashes each listed memory:
-  MATCH, CHANGED (an edited rationale counts), or NOT AVAILABLE. (#1657)
+  MATCH, CHANGED (an edited rationale counts), or NOT AVAILABLE. A check where
+  none of the listed memories is held here cannot verify (exit 2). A
+  downloaded manifest verifies only with a notary signature that covers it,
+  from the pinned notary (`--notary`) or the one the gateway names. (#1657)
 
 ### Swarm storage (opt-in)
 

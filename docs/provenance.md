@@ -446,7 +446,17 @@ plur manifest --session <id> --out session.json     # local, offline
 plur verify --manifest session.json                  # MATCH / CHANGED / NOT AVAILABLE per memory
 ```
 
-The manifest never contains memory text, scope names, tags or domains.
+The manifest never contains memory text, scope names, tags or domains, and no
+hash of the bare statement (that would let anyone test a guessed text). What it
+does contain, and what an upload therefore publishes: the memory ids, one
+record hash per memory, each memory's role, the session id, the time window,
+the configured identity (`provenance.identity`, as `actor`) and, when written at
+session end, that session's checkpoint. The record hashes are unsalted: someone
+who already holds a memory's every content field can confirm it is on the list.
+
+The checkpoint is included when the manifest is built by `plur_session_end`,
+which writes the checkpoint first. A manifest built later with
+`plur manifest --session <id>` does not carry it.
 
 ### Storing it on Swarm (opt-in)
 
@@ -470,6 +480,13 @@ plur verify --manifest <reference>
 which downloads the manifest, checks it against its content hash, recovers the
 notary's signature locally, and checks each listed memory the verifying store
 holds. Memories it does not hold are reported as NOT AVAILABLE, never as a match.
+
+It answers verified (exit 0) only when the signature covers the stored data and
+was made by the notary: the one you pin with `--notary <address>`, or else the
+one the gateway names. No signature, or no notary address to compare with, is
+"cannot verify" (exit 2), as is a check where none of the listed memories is
+held by the verifying store; a signature by anyone else, or one over other
+fields, is "broken" (exit 1).
 
 Set `receipts.store: off` where the Datacore provenance module already anchors
 the manifest inside its own agent receipt, so nothing is uploaded twice.

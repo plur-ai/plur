@@ -70,7 +70,15 @@ async function runInit(args: string[], flags: GlobalFlags): Promise<void> {
   const configuredIdentity = status.provenance_identity
   const identity = identityOverride
     ?? (configuredIdentity && configuredIdentity !== 'agent:unidentified' ? configuredIdentity : undefined)
-    ?? 'agent:unidentified'
+  // A key for `agent:unidentified` is never used: checkpoints are only signed
+  // for a configured identity (0.23 audit, finding 16).
+  if (!identity || identity === 'agent:unidentified') {
+    outputText('plur keys init: no identity to make a key for.')
+    outputText('  Set `provenance.identity` in your PLUR config.yaml (e.g. `provenance:\n    identity: agent:miles`),')
+    outputText('  or pass --identity <name>. Checkpoints are signed only for a configured identity.')
+    process.exitCode = 1
+    return
+  }
 
   // Keys directory: --keys-dir > default (<store-root>/keys).
   // When the store lives at ~/.plur, this is ~/.plur/keys — the canonical path

@@ -70,3 +70,20 @@ describe('receipts.stamp_id', () => {
     expect(new Plur({ path: bad, autoDiscover: false }).receiptsConfig()).toEqual({ store: 'swarm' })
   })
 })
+
+describe('gateway body read is bounded (0.23 audit, finding 18)', () => {
+  it('a gateway that sends headers and then stalls the body times out', async () => {
+    const { createServer } = await import('http')
+    const srv = createServer((_req, res) => { res.writeHead(200, { 'content-type': 'application/json' }); res.write('{') })
+    await new Promise<void>(r => srv.listen(0, '127.0.0.1', () => r()))
+    const url = `http://127.0.0.1:${(srv.address() as { port: number }).port}`
+    const t0 = Date.now()
+    try {
+      await expect(new SwarmGatewayStore(url, { timeoutMs: 300 }).document('ab'.repeat(32))).rejects.toThrow()
+      expect(Date.now() - t0).toBeLessThan(3000)
+    } finally {
+      srv.closeAllConnections()
+      srv.close()
+    }
+  })
+})

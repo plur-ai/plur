@@ -11,6 +11,7 @@ import { mkdirSync, writeFileSync, chmodSync } from 'fs'
 import { join } from 'path'
 import { canonicalManifestBytes, type SessionManifest, type WormStore } from './session-manifest.js'
 import { SwarmGatewayStore, DEFAULT_GATEWAY_URL } from './swarm-store.js'
+import { safeFileName } from './actor-keys.js'
 
 export interface AnchorRecord {
   store: 'swarm'
@@ -48,8 +49,7 @@ export async function anchorManifest(
   try {
     const dir = join(root, 'receipts')
     mkdirSync(dir, { recursive: true, mode: 0o700 })
-    const safe = manifest.session_id.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 96) || 'session'
-    const file = join(dir, `${safe}.json`)
+    const file = join(dir, `${safeFileName(manifest.session_id)}.json`)
     writeFileSync(file, JSON.stringify({ ...rec, manifest }, null, 2) + '\n', { mode: 0o600 })
     try { chmodSync(file, 0o600) } catch { /* best-effort on filesystems without modes */ }
   } catch { /* the upload succeeded; a missing local record is not a failed anchor */ }

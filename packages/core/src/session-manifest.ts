@@ -8,9 +8,12 @@
  *  - written  — engrams whose `sources[].session_id` is the session.
  *
  * Each listed engram carries `record_hash`, a SHA-256 over the canonical form
- * of its content fields (not only the statement, which is all `content_hash`
- * covers), so `verifySessionManifest` can tell an edited rationale from an
- * untouched engram.
+ * of its content fields, so `verifySessionManifest` can tell an edited
+ * rationale from an untouched engram. There is deliberately no hash of the
+ * bare statement (`content_hash`): it is unsalted, so a published one would
+ * let anyone confirm a guessed memory text (0.23 audit, finding 3). The record
+ * hash is unsalted too, but covers rationale, tags, provenance and attribution
+ * (with their timestamps), which a guesser does not have.
  *
  * What a manifest says: these engrams were in the agent's context when it
  * acted. It never says they caused the action.
@@ -55,7 +58,6 @@ export interface ManifestEntry {
   role: ManifestRole
   /** null when the engram is not in the local store (a team store, or since removed). */
   record_hash: string | null
-  content_hash: string | null
   reason?: 'not in local store'
 }
 
@@ -83,6 +85,8 @@ export interface BuildManifestInput {
 }
 
 function sessionOf(ev: HistoryEvent): string | undefined {
+  // A history line can parse to JSON null or a scalar; it is no session's event.
+  if (!ev || typeof ev !== 'object') return undefined
   const s = (ev.data as { session_id?: unknown } | undefined)?.session_id
   return typeof s === 'string' ? s : undefined
 }
@@ -144,13 +148,8 @@ export function buildSessionManifest(input: BuildManifestInput): SessionManifest
 
   const entries: ManifestEntry[] = order.map(id => {
     const e = byId.get(id)
-    if (!e) return { id, role: roles.get(id)!, record_hash: null, content_hash: null, reason: 'not in local store' }
-    return {
-      id,
-      role: roles.get(id)!,
-      record_hash: computeRecordHash(e),
-      content_hash: (e as { content_hash?: string }).content_hash ?? null,
-    }
+    if (!e) return { id, role: roles.get(id)!, record_hash: null, reason: 'not in local store' }
+    return { id, role: roles.get(id)!, record_hash: computeRecordHash(e) }
   })
 
   return {
@@ -175,7 +174,11 @@ export interface ManifestVerification {
   session_id: string
   results: Array<{ id: string; role: ManifestRole; status: ManifestCheck; detail?: string }>
   counts: Record<ManifestCheck, number>
-  /** True when every engram the verifier holds still matches. NOT AVAILABLE entries do not make this false; they are counted. */
+  /**
+   * True when nothing CHANGED and, if any engram is listed, at least one
+   * matched. NOT AVAILABLE entries are counted; a check in which every listed
+   * engram is NOT AVAILABLE checked nothing, so it is not ok (audit finding 12).
+   */
   ok: boolean
 }
 
@@ -193,11 +196,12 @@ export function verifySessionManifest(manifest: SessionManifest, engrams: readon
     if (entry.record_hash === null) { status = 'NOT AVAILABLE'; detail = 'the manifest has no hash for it (not in the writer\'s local store)' }
     else if (!e) { status = 'NOT AVAILABLE'; detail = 'not in this store' }
     else if (computeRecordHash(e) === entry.record_hash) status = 'MATCH'
-    else { status = 'CHANGED'; detail = (e as { content_hash?: string }).content_hash === entry.content_hash ? 'statement unchanged, other fields edited' : 'statement edited' }
+    else { status = 'CHANGED'; detail = 'edited since the manifest was made' }
     counts[status]++
     return { id: entry.id, role: entry.role, status, ...(detail ? { detail } : {}) }
   })
-  return { session_id: manifest.session_id, results, counts, ok: counts.CHANGED === 0 }
+  const nothingChecked = results.length > 0 && counts.MATCH === 0 && counts.CHANGED === 0
+  return { session_id: manifest.session_id, results, counts, ok: counts.CHANGED === 0 && !nothingChecked }
 }
 
 /**

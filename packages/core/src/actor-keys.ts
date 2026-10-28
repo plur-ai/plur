@@ -55,8 +55,25 @@ export interface KeysRegistry {
  * `keysDir` is typically `<store-root>/keys` or `~/.plur/keys`.
  */
 export function privateKeyPath(identity: string, keysDir: string): string {
-  const safeName = identity.replace(/[^a-zA-Z0-9._:-]/g, '_')
-  return join(keysDir, `${safeName}${KEY_FILE_SUFFIX}`)
+  return join(keysDir, `${safeFileName(identity)}${KEY_FILE_SUFFIX}`)
+}
+
+/**
+ * A file name for an identity or session id, on every platform.
+ *
+ * Reversible percent-encoding: every byte outside [A-Za-z0-9._-] becomes %XX
+ * (decodeURIComponent undoes it). A plain replacement made `agent/x` and
+ * `agent_x` share a file and kept `:`, which on NTFS names an alternate data
+ * stream (0.23 audit, finding 17). Names longer than 120 characters keep a
+ * readable prefix and a hash of the whole id, so they cannot collide either.
+ */
+export function safeFileName(id: string): string {
+  const enc = Array.from(id, ch => /[A-Za-z0-9._-]/.test(ch)
+    ? ch
+    : Array.from(Buffer.from(ch, 'utf8'), b => '%' + b.toString(16).toUpperCase().padStart(2, '0')).join(''),
+  ).join('')
+  if (enc.length <= 120) return enc || '%00'
+  return `${enc.slice(0, 100)}-${crypto.createHash('sha256').update(id).digest('hex').slice(0, 16)}`
 }
 
 /**
@@ -247,11 +264,17 @@ export function registerPublicKey(
   const timestamp = addedAt ?? new Date().toISOString()
   const registryPath = keysRegistryPath(storeRoot)
 
+  // A registry that will not parse is refused, never replaced: starting from
+  // an empty list here deleted every other registered identity on the next
+  // `plur keys init` (0.23 audit, finding 15).
   let registry: KeysRegistry
   try {
     registry = loadKeysRegistry(storeRoot)
-  } catch {
-    registry = { keys: [] }
+  } catch (err) {
+    throw new Error(
+      `[plur] ${registryPath} cannot be read (${(err as Error).message}); it was left as it is. ` +
+      `Fix or move it, then register the key again.`,
+    )
   }
 
   const idx = registry.keys.findIndex(k => k.identity === identity)

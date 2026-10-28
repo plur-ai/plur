@@ -61,6 +61,13 @@ export function checkNotarySignature(signature: NotarySignature, doc: Record<str
     claimed_signer: signature.signer ?? null,
     timestamp: signature.timestamp ?? null,
   }
+  // A signature that does not cover `data` attests some other field, not the
+  // manifest: a real notary signature (and its timestamp) from another document
+  // could otherwise be replayed onto a forged one.
+  if (signature.hashed_fields && !signature.hashed_fields.includes('data')) {
+    out.error = `the signature covers ${JSON.stringify(signature.hashed_fields)}, not the stored data`
+    return out
+  }
   const computed = computeDataHash(signature, doc)
   out.data_hash_ok = computed === signature.data_hash
   const fmt = signature.signed_message_format ?? '{data_hash}|{timestamp}'

@@ -70,19 +70,28 @@ export class SwarmGatewayStore implements WormStore {
     const ctrl = new AbortController()
     const timer = setTimeout(() => ctrl.abort(), this.opts.timeoutMs ?? 30_000)
     let res: Response
+    let text: string
+    // The abort timer covers the body as well as the headers: a gateway that
+    // sends headers and then stalls must not hang the caller (0.23 audit, 18).
     try {
-      res = await f(this.baseUrl.replace(/\/+$/, '') + path, {
-        method,
-        body: body as BodyInit | undefined,
-        headers: { 'User-Agent': USER_AGENT, Accept: 'application/json', 'X-Payment-Mode': 'free', ...headers },
-        signal: ctrl.signal,
-      })
-    } catch (err) {
-      throw new GatewayError(`gateway unreachable: ${(err as Error).message}`, undefined, 'CONNECTION_FAILED')
+      try {
+        res = await f(this.baseUrl.replace(/\/+$/, '') + path, {
+          method,
+          body: body as BodyInit | undefined,
+          headers: { 'User-Agent': USER_AGENT, Accept: 'application/json', 'X-Payment-Mode': 'free', ...headers },
+          signal: ctrl.signal,
+        })
+      } catch (err) {
+        throw new GatewayError(`gateway unreachable: ${(err as Error).message}`, undefined, 'CONNECTION_FAILED')
+      }
+      try {
+        text = await res.text()
+      } catch (err) {
+        throw new GatewayError(`gateway response not read in time: ${(err as Error).message}`, res.status, 'CONNECTION_FAILED')
+      }
     } finally {
       clearTimeout(timer)
     }
-    const text = await res.text()
     let json: any
     try { json = text ? JSON.parse(text) : {} } catch { json = undefined }
     if (!res.ok) {
