@@ -14,8 +14,11 @@ Memory you can prove.
   chain head to a hash of the store. With a key from `plur keys init`, the
   checkpoint is signed (Ed25519), and `plur verify --signatures` checks it.
   (#1052, #1055, #1056) See `docs/auditability.md` (#1057).
-- Every save records the session it came from in `sources[].session_id`.
-  (#1048)
+- Every save records the session it came from in `sources[].session_id`, and
+  each writer is attributed to its configured `provenance.identity`.
+  (#1048, #1049)
+- Together these are the provenance ladder (#1047): from recorded origin, to a
+  history whose edits are visible, to checkpoints a named actor signed.
 
 ### Session memory manifest
 
