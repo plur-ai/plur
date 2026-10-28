@@ -1,0 +1,13 @@
+diff --git a/packages/core/src/session-manifest.ts b/packages/core/src/session-manifest.ts
+index 0cb5680b..35dac8f7 100644
+--- a/packages/core/src/session-manifest.ts
++++ b/packages/core/src/session-manifest.ts
+@@ -194,7 +194,7 @@ export function verifySessionManifest(manifest: SessionManifest, engrams: readon
+     let status: ManifestCheck
+     let detail: string | undefined
+     if (entry.record_hash === null) { status = 'NOT AVAILABLE'; detail = 'the manifest has no hash for it (not in the writer\'s local store)' }
+-    else if (!e) { status = 'NOT AVAILABLE'; detail = 'not in this store' }
++    else if (!e) { status = 'MATCH' /* MUTANT: missing counts as a match */; detail = 'not in this store' }
+     else if (computeRecordHash(e) === entry.record_hash) status = 'MATCH'
+     else { status = 'CHANGED'; detail = 'edited since the manifest was made' }
+     counts[status]++

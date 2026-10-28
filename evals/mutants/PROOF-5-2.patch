@@ -1,0 +1,13 @@
+diff --git a/packages/cli/src/lib/notary.ts b/packages/cli/src/lib/notary.ts
+index b4e5ffbf..0206f101 100644
+--- a/packages/cli/src/lib/notary.ts
++++ b/packages/cli/src/lib/notary.ts
+@@ -68,7 +68,7 @@ export function checkNotarySignature(signature: NotarySignature, doc: Record<str
+     out.error = `the signature covers ${JSON.stringify(signature.hashed_fields)}, not the stored data`
+     return out
+   }
+-  const computed = computeDataHash(signature, doc)
++  const computed = computeDataHash(signature, { ...doc, data: '' }) // MUTANT: hashes the wrong field
+   out.data_hash_ok = computed === signature.data_hash
+   const fmt = signature.signed_message_format ?? '{data_hash}|{timestamp}'
+   if (fmt !== '{data_hash}|{timestamp}') {
