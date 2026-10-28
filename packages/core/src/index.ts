@@ -1956,9 +1956,13 @@ export class Plur {
   }
 
   /** Where session manifests are anchored (#1657). `off` unless the user turned it on. */
-  receiptsConfig(): { store: 'off' | 'swarm'; gateway_url?: string } {
-    const r = (this.config as { receipts?: { store?: 'off' | 'swarm'; gateway_url?: string } }).receipts
-    return { store: r?.store === 'swarm' ? 'swarm' : 'off', ...(r?.gateway_url ? { gateway_url: r.gateway_url } : {}) }
+  receiptsConfig(): { store: 'off' | 'swarm'; gateway_url?: string; stamp_id?: string } {
+    const r = (this.config as { receipts?: { store?: 'off' | 'swarm'; gateway_url?: string; stamp_id?: string } }).receipts
+    return {
+      store: r?.store === 'swarm' ? 'swarm' : 'off',
+      ...(r?.gateway_url ? { gateway_url: r.gateway_url } : {}),
+      ...(r?.stamp_id ? { stamp_id: r.stamp_id } : {}),
+    }
   }
 
   /** Re-hash every engram a manifest lists against this store (#1657). */

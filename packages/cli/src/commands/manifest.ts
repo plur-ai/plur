@@ -48,7 +48,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     exit(2, 'Anchoring is off. To store manifests on Swarm, set `receipts:\n  store: swarm` in your PLUR config.yaml. Only ids and hashes are uploaded, to a public network.')
   }
   try {
-    const rec = await anchorManifest(plur.storageRoot, manifest, receipts.gateway_url)
+    const rec = await anchorManifest(plur.storageRoot, manifest, receipts)
     if (shouldOutputJson(flags)) {
       outputJson({ ...rec, manifest })
     } else {
@@ -58,7 +58,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       outputText(`  engrams: ${manifest.engrams.length}`)
       outputText('')
       outputText(`Check it from any machine:  plur verify --manifest ${rec.reference}`)
-      outputText('A free-tier upload stays downloadable for about a day.')
+      if (!receipts.stamp_id) outputText('A free-tier upload stays downloadable for about a day; set receipts.stamp_id to a bought stamp to keep uploads longer.')
     }
   } catch (err) {
     exit(1, `plur manifest: the upload failed — ${(err as Error).message}. Nothing was stored; the manifest is unchanged locally.`)

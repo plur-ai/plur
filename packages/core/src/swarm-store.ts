@@ -62,7 +62,7 @@ export class SwarmGatewayStore implements WormStore {
   readonly name = 'swarm'
   constructor(
     private readonly baseUrl: string = DEFAULT_GATEWAY_URL,
-    private readonly opts: { timeoutMs?: number; fetchImpl?: FetchLike } = {},
+    private readonly opts: { timeoutMs?: number; fetchImpl?: FetchLike; stampId?: string } = {},
   ) {}
 
   private async request(method: string, path: string, body?: Uint8Array | string, headers: Record<string, string> = {}): Promise<any> {
@@ -97,9 +97,15 @@ export class SwarmGatewayStore implements WormStore {
   }
 
   async put(bytes: Buffer): Promise<WormPutResult> {
-    const pool = await this.request('POST', '/api/v1/pool/acquire', JSON.stringify({ size: 'small' }), { 'Content-Type': 'application/json' })
-    const stamp = pool?.batch_id
-    if (typeof stamp !== 'string' || !stamp) throw new GatewayError('the gateway pool returned no stamp', undefined, 'POOL_EXHAUSTED')
+    // A stamp the user bought (receipts.stamp_id) outlives the free pool
+    // stamps, which expire in about a day. PLUR never buys one itself: the
+    // gateway's /api/v1/stamps endpoints do that.
+    let stamp = this.opts.stampId
+    if (!stamp) {
+      const pool = await this.request('POST', '/api/v1/pool/acquire', JSON.stringify({ size: 'small' }), { 'Content-Type': 'application/json' })
+      stamp = pool?.batch_id
+      if (typeof stamp !== 'string' || !stamp) throw new GatewayError('the gateway pool returned no stamp', undefined, 'POOL_EXHAUSTED')
+    }
     const contentHash = createHash('sha256').update(bytes).digest('hex')
     const doc = { data: bytes.toString('base64'), content_hash: contentHash, stamp_id: stamp }
     const boundary = '----plur' + randomUUID().replace(/-/g, '')

@@ -33,7 +33,10 @@ Memory you can prove.
   gateway's notary, and returns the reference. `plur verify --manifest
   <reference>` checks it from any machine, including the notary signature.
   Off by default: no network call of any kind unless it is turned on. A
-  free-tier upload stays downloadable for about a day. (#1657)
+  free-tier upload stays downloadable for about a day; set
+  `receipts.stamp_id` to a postage stamp bought through the gateway's stamp
+  endpoints and uploads use it instead, for as long as it is paid. PLUR never
+  buys stamps itself. (#1657)
 
 ## 0.22.1
 

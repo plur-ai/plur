@@ -27,11 +27,11 @@ export interface AnchorRecord {
 export async function anchorManifest(
   root: string,
   manifest: SessionManifest,
-  gatewayUrl?: string,
+  receipts: { gateway_url?: string; stamp_id?: string } = {},
   store?: WormStore,
 ): Promise<AnchorRecord> {
-  const gateway = gatewayUrl ?? DEFAULT_GATEWAY_URL
-  const worm = store ?? new SwarmGatewayStore(gateway)
+  const gateway = receipts.gateway_url ?? DEFAULT_GATEWAY_URL
+  const worm = store ?? new SwarmGatewayStore(gateway, receipts.stamp_id ? { stampId: receipts.stamp_id } : {})
   const bytes = canonicalManifestBytes(manifest)
   const put = await worm.put(bytes)
   const rec: AnchorRecord = {

@@ -542,6 +542,8 @@ export const PlurConfigSchema = z.object({
   receipts: z.object({
     store: z.enum(['off', 'swarm']).catch('off'),
     gateway_url: z.string().url().optional().catch(undefined),
+    /** A postage stamp (batch id) bought through the gateway's stamp endpoints; used instead of a free pool stamp. */
+    stamp_id: z.string().regex(/^[0-9a-fA-F]{64}$/).optional().catch(undefined),
   }).partial().optional(),
 }).partial()
 

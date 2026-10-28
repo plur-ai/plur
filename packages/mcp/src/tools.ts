@@ -4648,7 +4648,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
           try {
             const manifest = await plur.sessionManifest(manifestSession, { checkpoint: checkpointForManifest })
             const rec = await Promise.race([
-              anchorManifest(plur.storageRoot, manifest, plur.receiptsConfig().gateway_url),
+              anchorManifest(plur.storageRoot, manifest, plur.receiptsConfig()),
               new Promise<never>((_, reject) => setTimeout(() => reject(new Error('the gateway did not answer within 20 s')), 20_000)),
             ])
             anchor = {

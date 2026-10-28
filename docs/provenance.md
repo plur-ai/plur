@@ -454,6 +454,7 @@ The manifest never contains memory text, scope names, tags or domains.
 # ~/.plur/config.yaml
 receipts:
   store: swarm          # default: off — no network call of any kind
+  stamp_id: <64 hex>    # optional: a postage stamp you bought; without it, a free one-day stamp
 ```
 
 With this set, ending a session (MCP `plur_session_end`) uploads that session's
@@ -483,8 +484,11 @@ does not prove who the agent was; a checkpoint signed with the actor's key does
 that, and only for an actor whose public key you trust.
 
 **A free-tier upload is short-lived** (about a day before its stamp expires), so
-a free-tier reference is a demonstration, not an archive. Longer storage needs a
-bought stamp, which this release does not handle.
+a free-tier reference is a demonstration, not an archive. For longer storage, buy
+a postage stamp through the gateway (`POST /api/v1/stamps/`, free tier or paid
+over x402; `PATCH /api/v1/stamps/<id>/extend` to keep it alive) and set its batch
+id as `receipts.stamp_id`. An upload lives as long as its stamp is paid. PLUR
+never buys or extends a stamp itself.
 
 **Hashes are of the memories as they are when the manifest is built**, not as
 they were at the moment each entered the session. Build (or anchor) it at
