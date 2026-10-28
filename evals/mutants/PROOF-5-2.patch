@@ -1,10 +1,10 @@
 diff --git a/packages/cli/src/lib/notary.ts b/packages/cli/src/lib/notary.ts
-index d773f1f6..4e55ff81 100644
+index b4e5ffbf..0206f101 100644
 --- a/packages/cli/src/lib/notary.ts
 +++ b/packages/cli/src/lib/notary.ts
-@@ -61,7 +61,7 @@ export function checkNotarySignature(signature: NotarySignature, doc: Record<str
-     claimed_signer: signature.signer ?? null,
-     timestamp: signature.timestamp ?? null,
+@@ -68,7 +68,7 @@ export function checkNotarySignature(signature: NotarySignature, doc: Record<str
+     out.error = `the signature covers ${JSON.stringify(signature.hashed_fields)}, not the stored data`
+     return out
    }
 -  const computed = computeDataHash(signature, doc)
 +  const computed = computeDataHash(signature, { ...doc, data: '' }) // MUTANT: hashes the wrong field

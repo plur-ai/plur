@@ -1,14 +1,13 @@
 diff --git a/packages/core/src/session-manifest.ts b/packages/core/src/session-manifest.ts
-index 7b22084a..01414910 100644
+index 0cb5680b..797bebb4 100644
 --- a/packages/core/src/session-manifest.ts
 +++ b/packages/core/src/session-manifest.ts
-@@ -150,7 +150,8 @@ export function buildSessionManifest(input: BuildManifestInput): SessionManifest
-       role: roles.get(id)!,
-       record_hash: computeRecordHash(e),
-       content_hash: (e as { content_hash?: string }).content_hash ?? null,
--    }
-+      scope: e.scope, // MUTANT: the list carries the scope name
-+    } as ManifestEntry
+@@ -149,7 +149,7 @@ export function buildSessionManifest(input: BuildManifestInput): SessionManifest
+   const entries: ManifestEntry[] = order.map(id => {
+     const e = byId.get(id)
+     if (!e) return { id, role: roles.get(id)!, record_hash: null, reason: 'not in local store' }
+-    return { id, role: roles.get(id)!, record_hash: computeRecordHash(e) }
++    return { id, role: roles.get(id)!, record_hash: computeRecordHash(e), scope: e.scope /* MUTANT: the list carries the scope name */ } as ManifestEntry
    })
  
    return {
