@@ -59,6 +59,7 @@ capabilities:
     kind: deterministic
     today: broken
     evidence: 'Eval written red 2026-10-28 for #1787 (target 0.23.0), before the code. evals/recall REC-8: a store with role ''primary'' offering searchVector (meaning) and searchBM25 (keyword), the StorageAdapter names #1787 uses. Today recallHybridWithMeta asks neither (0 calls each), reads the whole store once through loadFiltered() in _hybridCandidates/_filterEngrams and ranks in memory with hybridSearchWithMeta, so the store''s meaning-only hit ranks 5th instead of top two; only the PGLite index takes the database path (_pgliteHybridRecall). load(), loadCached() and loadFiltered() all count as loading every memory; loadByIds (reactivation) does not. Control (a store without the searches) is green. Mutants wait for the implementation: there is no code path yet to plant a bug in.'
+    decided: 'Owner decision 2026-10-28: a read limited to one scope (loadFiltered without an id list) still counts as loading every memory; that read is the cost #1787 removes.'
 
 
 - key: learn
