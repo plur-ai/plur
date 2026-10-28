@@ -77,7 +77,7 @@ export class SwarmGatewayStore implements WormStore {
       try {
         res = await f(this.baseUrl.replace(/\/+$/, '') + path, {
           method,
-          body: body as BodyInit | undefined,
+          body: body as RequestInit['body'],
           headers: { 'User-Agent': USER_AGENT, Accept: 'application/json', 'X-Payment-Mode': 'free', ...headers },
           signal: ctrl.signal,
         })
