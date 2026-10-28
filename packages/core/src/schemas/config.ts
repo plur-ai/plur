@@ -2,6 +2,27 @@ import { z } from 'zod'
 import { ScopeSensitivitySchema } from './scope-metadata.js'
 
 /**
+ * `.partial()` with the meaning these schemas were written for: an absent key
+ * stays absent, even when the field declares a `.default()`.
+ *
+ * zod 3 never applied a default inside `.optional()`, so in a `.partial()`
+ * object the defaults below only document the runtime fallbacks (which live
+ * in the code that reads the config). zod 4 applies them, which would fill
+ * every unset key on load and write them all back into config.yaml. Dropping
+ * the default under the optional restores the zod 3 result exactly: a value
+ * that is present is parsed by the same schema, an absent one stays absent.
+ */
+function partialKeepAbsent<S extends z.ZodRawShape>(schema: z.ZodObject<S>) {
+  const typed = schema.partial()
+  const shape: Record<string, z.ZodType> = {}
+  for (const [key, field] of Object.entries(schema.shape) as [string, z.ZodType][]) {
+    const inner = field instanceof z.ZodDefault || field instanceof z.ZodPrefault ? field.unwrap() as z.ZodType : field
+    shape[key] = inner.optional()
+  }
+  return z.object(shape) as unknown as typeof typed
+}
+
+/**
  * A store can be either:
  *   - filesystem (path) — historical default; YAML or SQLite
  *   - remote (url + token) — speaks to a PLUR Enterprise server over HTTP
@@ -95,7 +116,7 @@ export const DiscoveryCacheSchema = z.object({
   discovered_at: z.string().optional().catch(undefined),
   scopes_status: z.enum(['ok', 'not_synced']).optional().catch(undefined),
   gitlab_host: z.string().nullable().optional().catch(undefined),
-  project_paths: z.record(z.string()).optional().catch(undefined),
+  project_paths: z.record(z.string(), z.string()).optional().catch(undefined),
   username: z.string().optional().catch(undefined),
   org_id: z.string().optional().catch(undefined),
   // absent = unknown; null = no expiry (these are different values — never conflate them)
@@ -149,25 +170,25 @@ export const ServerStoreEntrySchema = z.object({
       if (!obj) return undefined
       return Object.fromEntries(Object.entries(obj).filter(([, v]) => plainObjectOr(undefined)(v) !== undefined))
     },
-    z.record(ScopeSettingsSchema).optional(),
+    z.record(z.string(), ScopeSettingsSchema).optional(),
   ),
   discovery: z.preprocess(plainObjectOr(undefined), DiscoveryCacheSchema.optional()),
 }).passthrough()
 
 export type ServerStoreEntry = z.infer<typeof ServerStoreEntrySchema>
 
-export const LlmTierConfigSchema = z.object({
+export const LlmTierConfigSchema = partialKeepAbsent(z.object({
   dedup_tier: z.enum(['fast', 'balanced', 'thorough']).default('fast'),
   profile_tier: z.enum(['fast', 'balanced', 'thorough']).default('balanced'),
   meta_tier: z.enum(['fast', 'balanced', 'thorough']).default('thorough'),
-}).partial()
+}))
 
-export const ProfileConfigSchema = z.object({
+export const ProfileConfigSchema = partialKeepAbsent(z.object({
   enabled: z.boolean().default(true),
   cache_ttl_hours: z.number().default(24),
-}).partial()
+}))
 
-export const DedupConfigSchema = z.object({
+export const DedupConfigSchema = partialKeepAbsent(z.object({
   enabled: z.boolean().default(true),
   /**
    * Similarity at or above which a near-duplicate is flagged in the write
@@ -179,7 +200,7 @@ export const DedupConfigSchema = z.object({
    */
   threshold: z.number().min(0).max(1).default(0.85),
   mode: z.enum(['llm', 'cosine', 'off']).default('llm'),
-}).partial()
+}))
 
 
 /**
@@ -192,9 +213,9 @@ export const DedupConfigSchema = z.object({
  * binary. Disable for low-resource environments or strict-offline setups
  * where the first-run model download is unwanted.
  */
-export const EmbeddingsConfigSchema = z.object({
+export const EmbeddingsConfigSchema = partialKeepAbsent(z.object({
   enabled: z.boolean().default(true),
-}).partial()
+}))
 
 
 /**
@@ -220,9 +241,9 @@ export const EmbeddingsConfigSchema = z.object({
  * binary-quantized retrieval only makes sense paired with the #220
  * cross-encoder rerank pass.
  */
-export const VectorConfigSchema = z.object({
+export const VectorConfigSchema = partialKeepAbsent(z.object({
   precision: z.enum(['float32', 'halfvec']),
-}).partial()
+}))
 
 
 /**
@@ -241,7 +262,7 @@ export const VectorConfigSchema = z.object({
  * the requested limit, because pgvector's default (40) sits below most useful
  * limits and silently truncates the result set.
  */
-export const PostgresConfigSchema = z.object({
+export const PostgresConfigSchema = partialKeepAbsent(z.object({
   url: z.string().optional()
     .describe('libpq connection string. Prefer PLUR_POSTGRES_URL so credentials stay out of config.yaml.'),
   schema: z.string().optional().describe('Schema owning the PLUR tables (default: plur).'),
@@ -250,7 +271,7 @@ export const PostgresConfigSchema = z.object({
   hnsw_ef_construction: z.number().int().positive().optional().catch(undefined),
   ef_search: z.number().int().positive().optional().catch(undefined),
   max_connections: z.number().int().positive().optional().catch(undefined),
-}).partial()
+}))
 
 
 /**
@@ -271,7 +292,7 @@ export const PostgresConfigSchema = z.object({
 // 0.5 for the process (so unscoped writes start auto-routing at the default
 // gate). `.catch(undefined)` drops only the bad field instead, mirroring the
 // per-entry tolerance philosophy the stores array already follows.
-export const ScopeRoutingConfigSchema = z.object({
+export const ScopeRoutingConfigSchema = partialKeepAbsent(z.object({
   /** Minimum confidence to auto-route an unscoped write. Default: 0.5. */
   match_threshold: z.number().min(0).max(1).optional().catch(undefined),
   /** Per-tag weight in the ranker. Default: 0.5. */
@@ -303,7 +324,7 @@ export const ScopeRoutingConfigSchema = z.object({
    * gate does not protect that path.
    */
   allow_shared_auto_route: z.boolean().optional().catch(undefined),
-}).partial()
+}))
 
 export type ScopeRoutingConfig = z.infer<typeof ScopeRoutingConfigSchema>
 
@@ -322,7 +343,7 @@ export type ScopeRoutingConfig = z.infer<typeof ScopeRoutingConfigSchema>
  * OFF by default: the dated judge prompt is the default mechanism, and a
  * blanket multiplier can bury genuine corrections made weeks apart.
  */
-export const TensionsConfigSchema = z.object({
+export const TensionsConfigSchema = partialKeepAbsent(z.object({
   temporal_domains: z.array(z.string()).default([]),
   snapshot_pairs: z.enum(['skip', 'floor']).default('skip'),
   /**
@@ -333,10 +354,10 @@ export const TensionsConfigSchema = z.object({
    */
   measured_under_pairs: z.enum(['skip', 'floor']).default('skip'),
   temporal_discount: z.boolean().default(false),
-}).partial()
+}))
 
 
-export const PlurConfigSchema = z.object({
+export const PlurConfigSchema = partialKeepAbsent(z.object({
   auto_learn: z.boolean().default(true),
   auto_capture: z.boolean().default(true),
   injection_budget: z.number().default(2000),
@@ -366,8 +387,8 @@ export const PlurConfigSchema = z.object({
      * 2000 and `pinned_ratio` of 0.5, a 500-token hard tier.
      */
     pinned_hard_ratio: z.number().min(0).max(1).default(0.5),
-  }).default({}),
-  dedup: DedupConfigSchema.default({}),
+  }).prefault({}),
+  dedup: DedupConfigSchema.prefault({}),
   /**
    * When to write a provenance record (#966).
    *
@@ -421,9 +442,9 @@ export const PlurConfigSchema = z.object({
      * may present it as though something did.
      */
     identity: z.string().optional(),
-  }).default({}),
+  }).prefault({}),
   /** Temporal-aware tension scan tuning (#240). See {@link TensionsConfigSchema}. */
-  tensions: TensionsConfigSchema.default({}),
+  tensions: TensionsConfigSchema.prefault({}),
   /**
    * Cross-scope recurrence ladder policy (#176, #1268).
    *
@@ -437,7 +458,7 @@ export const PlurConfigSchema = z.object({
    */
   recurrence: z.object({
     max_commitment: z.enum(['locked', 'decided']).default('locked'),
-  }).default({}),
+  }).prefault({}),
   /**
    * Expiry handling at injection time (#347). `hard` (default) skips any
    * engram whose `temporal.valid_until` is in the past. `soft` keeps
@@ -449,7 +470,7 @@ export const PlurConfigSchema = z.object({
   expiry: z.object({
     mode: z.enum(['hard', 'soft']).default('hard'),
     grace_days: z.number().default(30),
-  }).default({}),
+  }).prefault({}),
   decay_baseline: z.string().optional(),
   allow_secrets: z.boolean().default(false),
   index: z.boolean().default(true),
@@ -471,10 +492,10 @@ export const PlurConfigSchema = z.object({
    * Env override: PLUR_BACKEND=yaml|sqlite|pglite|postgres.
    */
   backend: z.enum(['yaml', 'sqlite', 'pglite', 'postgres']).optional(),
-  embeddings: EmbeddingsConfigSchema.default({}),
-  vector: VectorConfigSchema.default({}),
+  embeddings: EmbeddingsConfigSchema.prefault({}),
+  vector: VectorConfigSchema.prefault({}),
   /** Server-Postgres backend settings (ADR-0005). See {@link PostgresConfigSchema}. */
-  postgres: PostgresConfigSchema.default({}),
+  postgres: PostgresConfigSchema.prefault({}),
   stores: z.array(StoreEntrySchema).default([]),
   /**
    * Shared scopes the user has explicitly dismissed from the "authorized but
@@ -483,8 +504,8 @@ export const PlurConfigSchema = z.object({
    * `plur scopes --reoffer` clears this list.
    */
   dismissed_scopes: z.array(z.string()).default([]),
-  llm: LlmTierConfigSchema.default({}),
-  profile: ProfileConfigSchema.default({}),
+  llm: LlmTierConfigSchema.prefault({}),
+  profile: ProfileConfigSchema.prefault({}),
   registry_url: z.string().url().optional(),
   /**
    * Where a genuinely-unscoped write lands when nothing else decides its scope
@@ -517,7 +538,7 @@ export const PlurConfigSchema = z.object({
    * Scope-routing tuning — optional overrides for the deterministic ranker (#362).
    * See {@link ScopeRoutingConfigSchema} for per-field semantics.
    */
-  scope_routing: ScopeRoutingConfigSchema.default({}),
+  scope_routing: ScopeRoutingConfigSchema.prefault({}),
   /**
    * Git-sync remote semantics (#640). `personal` (default) mirrors every
    * non-`scope:local` engram to the remote — private included — which is
@@ -527,9 +548,9 @@ export const PlurConfigSchema = z.object({
    * private-visibility engrams never reach a shared/team remote, by
    * construction. Config lives in config.yaml (machine-local, never synced).
    */
-  sync: z.object({
+  sync: partialKeepAbsent(z.object({
     remote_type: z.enum(['personal', 'shared']).optional(),
-  }).partial().default({}),
+  })).prefault({}),
   /**
    * Anchoring session manifests in write-once storage (#1657). `off` (the
    * default) makes no network call of any kind. `swarm` uploads a session's
@@ -539,12 +560,12 @@ export const PlurConfigSchema = z.object({
    * tool (the Datacore provenance module) already anchors the manifest, so
    * nothing is uploaded twice.
    */
-  receipts: z.object({
+  receipts: partialKeepAbsent(z.object({
     store: z.enum(['off', 'swarm']).catch('off'),
     gateway_url: z.string().url().optional().catch(undefined),
     /** A postage stamp (batch id) bought through the gateway's stamp endpoints; used instead of a free pool stamp. */
     stamp_id: z.string().regex(/^[0-9a-fA-F]{64}$/).optional().catch(undefined),
-  }).partial().optional(),
-}).partial()
+  })).optional(),
+}))
 
 export type PlurConfig = z.infer<typeof PlurConfigSchema>

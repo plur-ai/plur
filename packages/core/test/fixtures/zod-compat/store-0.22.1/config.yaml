@@ -1,0 +1,13 @@
+auto_learn: true
+injection:
+  spread_cap: 4
+dedup:
+  mode: 'off'
+index: false
+stores:
+  - path: __WORK__/team
+    scope: group:example/team
+    shared: true
+    description: Example team store
+    covers:
+      - example

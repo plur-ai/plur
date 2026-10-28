@@ -1,0 +1,55 @@
+engrams:
+  - id: ENG-2026-10-25-001
+    version: 2
+    status: active
+    consolidated: false
+    type: procedural
+    scope: global
+    visibility: public
+    statement: Run pnpm -r build after switching branches
+    rationale: A partial rebuild leaves stale dist imports
+    domain: software.build
+    activation:
+      retrieval_strength: 0.7
+      storage_strength: 1
+      frequency: 0
+      last_accessed: "2026-10-25"
+    feedback_signals:
+      positive: 0
+      negative: 0
+      neutral: 0
+    knowledge_type:
+      memory_class: procedural
+      cognitive_level: apply
+    knowledge_anchors: []
+    associations: []
+    derivation_count: 1
+    tags:
+      - pnpm
+      - build
+    pack: null
+    abstract: null
+    derived_from: null
+    attribution:
+      asserted_by: unidentified
+      runtime:
+        name: fixture
+        version: 0.22.1
+    dual_coding:
+      example: pnpm -r build
+    polarity: null
+    content_hash: 95dcd65d49f2938481460c84b23e9cb89c0565b4d2d9b91312cf7de86af37adb
+    commitment: decided
+    created_at: "2026-10-25T17:38:41.262Z"
+    updated_at: "2026-10-25T17:38:41.262Z"
+    write_count: 1
+    injection_count: 0
+    sources:
+      - scope: global
+        session_id: null
+        stored_at: "2026-10-25T17:38:41.262Z"
+    recurrence_count: 0
+    engram_version: 1
+    episode_ids: []
+    structured_data:
+      _scopeSource: explicit
