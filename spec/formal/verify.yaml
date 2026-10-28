@@ -195,5 +195,6 @@ models:
       - packages/core/src/verify-chain.ts
       - packages/core/src/session-manifest.ts
       - packages/cli/src/commands/verify-manifest.ts
+      - packages/cli/src/lib/notary.ts
       - packages/core/src/index.ts
       - packages/mcp/src/tools.ts
