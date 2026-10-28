@@ -530,6 +530,21 @@ export const PlurConfigSchema = z.object({
   sync: z.object({
     remote_type: z.enum(['personal', 'shared']).optional(),
   }).partial().default({}),
+  /**
+   * Anchoring session manifests in write-once storage (#1657). `off` (the
+   * default) makes no network call of any kind. `swarm` uploads a session's
+   * manifest — fingerprints only, never engram text, scope names, tags or
+   * domains — through the provenance gateway's free tier. Core never uploads;
+   * the CLI and MCP surfaces do, when this says so. Set `off` where an outside
+   * tool (the Datacore provenance module) already anchors the manifest, so
+   * nothing is uploaded twice.
+   */
+  receipts: z.object({
+    store: z.enum(['off', 'swarm']).catch('off'),
+    gateway_url: z.string().url().optional().catch(undefined),
+    /** A postage stamp (batch id) bought through the gateway's stamp endpoints; used instead of a free pool stamp. */
+    stamp_id: z.string().regex(/^[0-9a-fA-F]{64}$/).optional().catch(undefined),
+  }).partial().optional(),
 }).partial()
 
 export type PlurConfig = z.infer<typeof PlurConfigSchema>

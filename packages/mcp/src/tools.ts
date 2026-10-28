@@ -6,6 +6,7 @@ import { folderMapAdvice } from './folder-map-advice.js'
 import type { LlmFunction, MetaField, TensionStatus, RerankerEvalResult, HistoryEvent, Receipt, RemoteStoreStatusEntry, RecallRemoteReport, RemoteOnlyStatus } from '@plur-ai/core'
 import { RemoteOnlyWriteError, remoteOnlySessionLine, remoteOnlyUnservedNotice } from '@plur-ai/core'
 import { enterpriseRecoveryHint } from '@plur-ai/core'
+import { emitCheckpoint, signWithActorKey, anchorManifest } from '@plur-ai/core'
 import { recordTelemetry } from './telemetry.js'
 import { VERSION } from './version.js'
 import { startBackgroundDiscovery, discoverySummary, discoveryWarnings, serverEndpointKeys, isDiscoveryEnabled } from './background-discovery.js'
@@ -140,7 +141,39 @@ function attachRemoteStoreDegradation(response: Record<string, unknown>, plur: P
  * #341 reranker surfacing all live here once — the alias adds only its
  * deprecation notice, so the two cannot drift before the 0.18 removal.
  */
+/** The session-end upload outlived its 20 s budget; the upload itself is not cancelled. */
+class AnchorTimeout extends Error {
+  constructor() { super('the gateway did not answer within 20 s') }
+}
+
+/**
+ * plur_recall, with what it returned recorded for the session manifest (#1657):
+ * ids and a query hash, only when a session resolves. Recording is
+ * best-effort and never changes the reply.
+ *
+ * The session is resolved now, the write happens after the reply: the history
+ * append takes the chain lock (which busy-waits under contention) and fsyncs,
+ * and neither may hold up a recall (0.23 audit, finding 5).
+ */
 const recallHandler: ToolDefinition['handler'] = async (args, plur) => {
+  const result = await recallHandlerInner(args, plur)
+  try {
+    const res = result as { results?: Array<{ id?: unknown }> }
+    const ids = (res.results ?? []).map(r => r.id).filter((id): id is string => typeof id === 'string')
+    const record = {
+      session_id: _resolveInjectionSession(args),
+      ids,
+      query: String(args.query ?? ''),
+      source: ((args.mode as string | undefined) === 'keyword' ? 'recall' : 'recall_hybrid') as 'recall' | 'recall_hybrid',
+    }
+    setImmediate(() => {
+      try { plur.recordRecall(record) } catch { /* recording what was returned must never fail the recall */ }
+    })
+  } catch { /* recording what was returned must never fail the recall */ }
+  return result
+}
+
+const recallHandlerInner: ToolDefinition['handler'] = async (args, plur) => {
   // #1586 audit L1: the deadline starts HERE, before this handler awaits
   // anything (workspace resolution asks the client for its roots), so the
   // reply is bounded end to end, not from the moment core starts.
@@ -1658,6 +1691,10 @@ function getAllToolDefinitions(): ToolDefinition[] {
           // is not part of one). The workspace's answer where the session
           // gives none, or its roots changed (#1562, #1563 review round 2).
           session,
+          // #1048: the session recorded in sources[].session_id. Separate from
+          // `session` above, which may be an internal registry key or
+          // NO_SESSION and only selects the default scope.
+          session_id: _resolveInjectionSession(args),
           llm,
         }
         // Route through learnRouted FIRST so remote-scope writes get
@@ -2007,6 +2044,9 @@ function getAllToolDefinitions(): ToolDefinition[] {
             valid_from: e.valid_from as string | undefined,
             valid_until: e.valid_until as string | undefined,
             measured_under: e.measured_under as Record<string, string> | undefined,
+            // Batch writes are session writes too — without this every engram
+            // from plur_learn_batch lands with sources[].session_id null.
+            session_id: _resolveInjectionSession(args),
           },
         }))
         const maxLlmCalls = typeof args.max_llm_calls === 'number' ? args.max_llm_calls : undefined
@@ -4581,6 +4621,75 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
         } catch (err) {
           outbox_error = (err as Error).message
         }
+        // Emit a checkpoint event (#1052) — best-effort, never fails the session.
+        // Hashes the store at session-end time; the checkpoint chains onto the
+        // last history event written during this session (engrams learned above).
+        let checkpoint_hash: string | undefined
+        let checkpointForManifest: { event_hash: string; store_hash?: string; signer?: string; signature?: string } | undefined
+        try {
+          const plurRoot = plur.storageRoot
+          const engramsPath = join(plurRoot, 'engrams.yaml')
+          // Signed with the actor's key when one exists (#1056); unsigned is a
+          // valid L2 checkpoint, and signWithActorKey returns null without a key.
+          const identity = (await plur.status()).provenance_identity
+          const signing = identity && identity !== 'agent:unidentified'
+            ? { identity, sign: (data: Buffer) => signWithActorKey(data, identity, join(plurRoot, 'keys')) }
+            : undefined
+          const cp = emitCheckpoint(plurRoot, engramsPath, 'session_end', undefined, signing)
+          // The checkpoint's own hash, not the store's. Returning store_hash
+          // under this name told callers to anchor the wrong digest.
+          checkpoint_hash = cp.event_hash ?? undefined
+          if (cp.event_hash) {
+            checkpointForManifest = {
+              event_hash: cp.event_hash,
+              store_hash: cp.store_hash,
+              ...(cp.signer ? { signer: cp.signer } : {}),
+              ...(cp.signature ? { signature: cp.signature } : {}),
+            }
+          }
+        } catch { /* checkpoint is best-effort */ }
+
+        // Opt-in anchoring (#1657): with `receipts.store: swarm`, this
+        // session's manifest — ids and hashes, with the checkpoint above —
+        // goes to Swarm through the provenance gateway. Off by default; no
+        // network call of any kind when off. A failed upload is reported,
+        // never fatal: the session still ends and the manifest stays local.
+        let anchor: Record<string, unknown> | undefined
+        // endSession was resolved before the session was dropped above; an
+        // id-less call re-resolved here would find no session and silently
+        // upload nothing (0.23 audit, finding 4).
+        const manifestSession = endSession
+        if (manifestSession && plur.receiptsConfig().store === 'swarm') {
+          let timer: ReturnType<typeof setTimeout> | undefined
+          try {
+            const manifest = await plur.sessionManifest(manifestSession, { checkpoint: checkpointForManifest })
+            const rec = await Promise.race([
+              anchorManifest(plur.storageRoot, manifest, plur.receiptsConfig()),
+              new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new AnchorTimeout()), 20_000) }),
+            ])
+            anchor = {
+              store: 'swarm',
+              reference: rec.reference,
+              manifest_sha256: rec.content_hash,
+              engrams: manifest.engrams.length,
+              ...(rec.signer ? { notary: rec.signer, notarised_at: rec.timestamp } : {}),
+              verify: `plur verify --manifest ${rec.reference}`,
+              note: plur.receiptsConfig().stamp_id
+                ? 'Fingerprints only. Stored with your configured stamp; it stays downloadable while that stamp is paid.'
+                : 'Fingerprints only. A free-tier upload stays downloadable for about a day; set receipts.stamp_id to a bought stamp to keep it longer.',
+            }
+          } catch (err) {
+            anchor = err instanceof AnchorTimeout
+              ? {
+                  store: 'swarm',
+                  error: err.message,
+                  note: `The upload may still finish in the background; if it does, its receipt lands in ${join(plur.storageRoot, 'receipts')}. Otherwise run \`plur manifest --session ${manifestSession} --anchor\` to retry.`,
+                }
+              : { store: 'swarm', error: (err as Error).message, note: `Nothing was uploaded; run \`plur manifest --session ${manifestSession} --anchor\` to retry.` }
+          } finally {
+            if (timer) clearTimeout(timer)
+          }
+        }
 
         return {
           engrams_created,
@@ -4589,6 +4698,8 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
           ...(engrams_failed.length ? { engrams_failed } : {}),
           episode_id: episode?.id ?? null,
           total_engrams: status.engram_count,
+          ...(checkpoint_hash !== undefined ? { checkpoint_hash } : {}),
+          ...(anchor ? { anchor } : {}),
           ...(injection_summary ? { injection_summary } : {}),
           ...(unsent > 0 ? {
             outbox: {

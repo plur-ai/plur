@@ -428,13 +428,88 @@ ours. `spec/examples/check.py` runs those checks.
 
 ---
 
-## What this does not do yet
+## Proving what an agent had in mind
 
-**It does not prove who wrote a record.** Signing is not implemented, and this
-does not pretend otherwise.
+Since 0.23 the history log is hash-chained and checkpoints can be signed with
+the writer's own key, so `plur verify` can say whether the history was edited
+outside PLUR (exit 0 clean, 1 broken and where, 2 could not read it). See
+[auditability.md](auditability.md).
 
-**It does not make the history log tamper-proof.** The log can be edited. A
-record built from an edited log inherits the edit.
+A **session memory manifest** lists the memories an agent had in context in one
+session: given to it at injection, returned to its recalls, or saved by it.
+Each carries a hash over the memory's content fields (statement, rationale,
+type, scope, domain, commitment, tags, provenance, attribution), so an edit to
+any of them is caught later, not only an edit to the statement.
 
-Both are deliberate. See the profile for why, and what would have to happen
-first.
+```bash
+plur manifest --session <id> --out session.json     # local, offline
+plur verify --manifest session.json                  # MATCH / CHANGED / NOT AVAILABLE per memory
+```
+
+The manifest never contains memory text, scope names, tags or domains, and no
+hash of the bare statement (that would let anyone test a guessed text). What it
+does contain, and what an upload therefore publishes: the memory ids, one
+record hash per memory, each memory's role, the session id, the time window,
+the configured identity (`provenance.identity`, as `actor`) and, when written at
+session end, that session's checkpoint. The record hashes are unsalted: someone
+who already holds a memory's every content field can confirm it is on the list.
+
+The checkpoint is included when the manifest is built by `plur_session_end`,
+which writes the checkpoint first. A manifest built later with
+`plur manifest --session <id>` does not carry it.
+
+### Storing it on Swarm (opt-in)
+
+```yaml
+# ~/.plur/config.yaml
+receipts:
+  store: swarm          # default: off — no network call of any kind
+  stamp_id: <64 hex>    # optional: a postage stamp you bought; without it, a free one-day stamp
+```
+
+With this set, ending a session (MCP `plur_session_end`) uploads that session's
+manifest through the public provenance gateway (`provenance-gateway.datafund.io`,
+free tier) and returns its Swarm reference; `plur manifest --session <id> --anchor`
+does the same by hand. The gateway's notary signs the upload. Anyone with the
+reference can then run, on any machine:
+
+```bash
+plur verify --manifest <reference>
+```
+
+which downloads the manifest, checks it against its content hash, recovers the
+notary's signature locally, and checks each listed memory the verifying store
+holds. Memories it does not hold are reported as NOT AVAILABLE, never as a match.
+
+It answers verified (exit 0) only when the signature covers the stored data and
+was made by the notary: the one you pin with `--notary <address>`, or else the
+one the gateway names. No signature, or no notary address to compare with, is
+"cannot verify" (exit 2), as is a check where none of the listed memories is
+held by the verifying store; a signature by anyone else, or one over other
+fields, is "broken" (exit 1).
+
+Set `receipts.store: off` where the Datacore provenance module already anchors
+the manifest inside its own agent receipt, so nothing is uploaded twice.
+
+## What this does not do
+
+**A manifest says which memories were in the agent's context when it acted. It
+never says they caused the action.**
+
+**The notary signature proves the gateway saw these bytes at that time.** It
+does not prove who the agent was; a checkpoint signed with the actor's key does
+that, and only for an actor whose public key you trust.
+
+**A free-tier upload is short-lived** (about a day before its stamp expires), so
+a free-tier reference is a demonstration, not an archive. For longer storage, buy
+a postage stamp through the gateway (`POST /api/v1/stamps/`, free tier or paid
+over x402; `PATCH /api/v1/stamps/<id>/extend` to keep it alive) and set its batch
+id as `receipts.stamp_id`. An upload lives as long as its stamp is paid. PLUR
+never buys or extends a stamp itself.
+
+**Hashes are of the memories as they are when the manifest is built**, not as
+they were at the moment each entered the session. Build (or anchor) it at
+session end, as `plur_session_end` does.
+
+**A rewrite that recomputes every hash in the log is internally consistent.**
+Only an anchored checkpoint, held somewhere you do not control, closes that gap.

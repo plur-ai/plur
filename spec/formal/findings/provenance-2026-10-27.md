@@ -1,0 +1,83 @@
+# Provenance (PLUR 0.23) — `PlurSpec/Provenance.lean`
+
+Scope: the history hash chain (`history.ts` `appendHistoryStamped`, `appendHistoryBatch`, `emitCheckpoint`), `verify-chain.ts` `verifyChain`, `session-manifest.ts` (`buildSessionManifest`, `computeRecordHash`, `verifySessionManifest`), `cli/src/commands/verify-manifest.ts` exit codes, and opt-in anchoring (`index.ts` `receiptsConfig`, `mcp/src/tools.ts` plur_session_end). Hashes are opaque; collision freedom is a hypothesis on each theorem that needs it (`HashInjective`, `RecInjective`), never an axiom.
+
+## Holds
+
+- Chain linkage: after any sequence of locked appends, single or batch, every event's `prev` is the hash of the event before it (`locked_run_links`). A lock-failure append sets `prev = none` whatever the log holds (`failed_append_is_gap`). A failed-lock batch has a gap on its first event only, and each later event links to the one the batch just wrote (`failed_batch_first_gap`).
+- Batch equivalence, within one month file: a locked batch writes exactly what n locked single appends write (`batch_eq_singles`). Across month files it does not; see F1.
+- Verification: a log written only by locked appends has no break (`locked_run_verifies`). Under any mix of lock outcomes, every break reported is a `declared_gap` (`any_run_only_gaps`). One gap after a clean chain gives exactly one break, at the gap event (`single_gap_reported`). Editing the content of a sealed event without recomputing its hash gives `hash_mismatch` at that index (`tamper_detected`).
+- Checkpoints: `chain_head` is the `prev` the event chains onto, on both lock paths (`checkpoint_head_is_prev`). A locked checkpoint's head is carried by an event already in the log (`checkpoint_head_present`).
+- Manifest: a written engram is listed as `written` whatever role the log gave it (`written_overrides`). `ok = false` holds exactly when some entry is CHANGED, or engrams are listed and every one is NOT AVAILABLE (`ok_false_iff_changed`, since commit c21b371e; see below). An engram missing from the writer's store or the verifier's store is NOT AVAILABLE and never MATCH (`writer_absent_not_available`, `verifier_absent_not_available`, `not_available_never_match`). An edit to any covered field turns MATCH into CHANGED (`covered_edit_changed`, `field_edit_changed`). A bookkeeping-only edit keeps MATCH (`bookkeeping_edit_matches`).
+- `plur verify --manifest`: it exits 0 only when the manifest is ok and its integrity checks pass (`exit_zero_iff`, `exit_zero_iff_ok`). It exits 2 only when it cannot verify (`exit_two_iff_cannot`), and cannot-verify never exits 0 (`cannot_never_zero`). A bad content hash or a failed notary signature exits 1 (`bad_integrity_not_zero`). Restated for commit c21b371e; see below.
+- Network: session end uploads only when the receipts store is `swarm` and a session resolves (`uploads_iff`). Any config value other than the literal `swarm` makes no call (`default_no_network`).
+
+Boundary, not a defect: `computeRecordHash` drops `undefined`, `null` and empty arrays before hashing. A change between those three "empty" forms is therefore invisible. The model treats the covered record as already normalised.
+
+## F1 — a batch across month files is not the same as single appends (latent, low)
+
+`packages/core/src/history.ts:799-803`: `appendHistoryBatch` reads `findPredecessorHash(historyDir, firstFile)` once, for the first event's month. The loop at `history.ts:760-765` then chains every later event onto the event before it, including events that go into a different month file. `findPredecessorHash` (`history.ts:458-464`) chains a single append onto the tail of that event's own month file whenever the file has content. The claim at `history.ts:756-758` ("a batch is indistinguishable in the log from the same events appended one by one") therefore fails in this case.
+
+Concrete scenario:
+1. `history/2026-11.jsonl` already holds an event `x`. This happens after clock skew, or when a writer passed an explicit November timestamp.
+2. A batch `[e1 @ 2026-10-31T23:59Z, e2 @ 2026-11-01T00:00Z]` is appended.
+3. The batch sets `e2.prev = hash(e1)`. Two single appends would set `e2.prev = hash(x)`, the tail of the November file.
+4. `verifyChain` walks October and then November, so it sees `… e1, x, e2` and reports `prev_mismatch` on `e2`. That reason is the tampering label, but nothing was tampered with.
+
+Model: `batch_cross_month_diverges`, and `batch_cross_month_diverges_legacy` for the case where the November tail is a legacy event. Not reachable today: the only caller, `recordIdRenames` (`packages/core/src/engrams.ts:289`), stamps every event with one timestamp. Possible fixes: re-read the head when the month changes inside the batch, or split the batch per month. Source not changed.
+
+## F2 — one declared gap is also reported as a fork (low, mislabel) — fixed except the ambiguous case (commit d067f808)
+
+`packages/core/src/verify-chain.ts:285` keys every chained event under `prev ?? GENESIS_CLAIM`, and `:315` reports a fork for any key claimed twice. A lock-failure event has `prev = null`, the same key as the genesis event. In a store whose first chained event is genesis, a single lock failure therefore yields a `declared_gap` break and also a fork naming the genesis event and the gap event, although no two events claim one predecessor. It is not reported as tampering, but the result says "fork" where there was one sequential lock failure. The existing test (`verify-chain.test.ts` "reports prev:null mid-chain as declared_gap") checks the reasons but not `forks`, so it passes either way.
+
+Model (original): `gap_after_genesis_is_fork`. Possible fix: count a null `prev` as a genesis claim only when no chained event precedes it.
+
+**Status: fixed except the ambiguous case** (commit d067f808, release-audit finding 9). `verifyChain` now counts a null `prev` as a genesis claim only while every chained event so far had `prev = null` (`allGenesisSoFar`). Modelled as `claims` / `ReportsFork`. Proved: a lock failure after a chain with at least one real link adds no claim (`gap_after_link_adds_no_claim`, `gap_after_link_no_new_fork`), and a log written by locked appends from empty with two or more events, then one lock failure, reports no fork, given `HashInjective` (`locked_log_gap_reports_no_fork`). Still reported, kept as a counterexample: a gap right after a lone genesis event (`gap_after_lone_genesis_reports_fork`, the `t = []` case of `gap_after_genesis_is_fork`). From the log alone that case cannot be told from two writers racing on an empty store, which is a real fork. `gap_after_genesis_is_fork` itself is about the log (`HasFork`: two chained events with `prev = null`) and stays true; the change is in what is reported.
+
+## F3 — the constructor's `provenance` option is never read (found while drift-checking, outside the model)
+
+`packages/core/src/index.ts:1692` declares `provenance?: { identity?: string }` on the `Plur` constructor options, documented as "Merged into the loaded config". `StatusResult.provenance_identity` (`index.ts:587-595`) says it "Shows the effective value, including a constructor override". Nothing in the constructor reads `options.provenance`, and `_configuredIdentity()` (`index.ts:3418-3421`) reads only `this.config.provenance.identity`.
+
+Scenario: `new Plur({ path, provenance: { identity: 'agent:x' } })` with no identity in config.yaml. `status().provenance_identity` reports `agent:unidentified`, and new engrams are attributed to the unidentified marker. Found by reading the code; not run. The check that would settle it is that one-line test. Source not changed.
+
+## Resolution (2026-10-27, same day)
+
+- **F1 fixed** in `packages/core/src/history.ts` (`appendHistoryBatch`): when a batch moves into another month file that already has events, the next event links to that file's own tail, as a single append would; into an empty file the chain continues from the batch's previous event. Regression test: `packages/core/test/history-batch-chain.test.ts` (same links as single appends, within a month and across a boundary). The model's `batch_cross_month_diverges*` counterexamples describe the code before this fix.
+- **F3 fixed**: the unused `provenance: { identity }` constructor option is removed from `Plur`'s options; identity comes from `config.yaml` (`provenance.identity`), and the `provenance-origin` tests now set it there.
+- **F2 open** (low): a declared gap right after genesis is also listed as a fork of genesis. It is never reported as tampering. Left for a follow-up issue. *(Fixed except the ambiguous case in commit d067f808; see F2 above and the section below.)*
+
+## Model of the F1 fix (2026-10-27)
+
+`PlurSpec/Provenance.lean` §6 now models the fixed `appendHistoryBatch` (`history.ts`, `writeAll`). It replaces the old `batch_cross_month_diverges*` counterexamples. `findPredecessorHash` under the lock is the definition `findPred`: the tail of the event's own month file when that file has events, otherwise the tail of the newest other month file (an empty file counts as missing).
+
+Proved, `batch_eq_singles_months`: a locked batch leaves every month file exactly as n single locked appends do, under two conditions. The batch's months must be non-decreasing. At each move into an empty month file, no later month file may have events (`SwitchOk`).
+
+The fixed code still differs from single appends in two cases, both proved as counterexamples. Both need out-of-order timestamps, and the only caller, `recordIdRenames`, uses one timestamp per batch, so both are latent:
+
+- `batch_revisit_diverges`: the batch returns to a month it already wrote. Example: `[Oct, Nov, Oct]` with a non-empty November file. The batch chains the second October event onto the November event, because a month already in `byMonth` is not re-read (`history.ts`, the `if (!byMonth.has(m))` guard). A single append would chain it onto the first October event, which is the October file's tail.
+- `batch_empty_month_later_file_diverges`: the batch moves from October into an empty or missing November file while a December file already has events. The batch continues from its October event. A single append would fall back to `findPredecessorHash`'s directory walk, which picks the newest other month file, December, and chain onto December's tail.
+
+## Follow-ups fixed (commit 13cf8bab)
+
+`appendHistoryBatch` now writes the batch in runs of consecutive same-month events. Under the lock, each run's first event links to `findPredecessorHash` of its own month file, read after the earlier runs are written. The rest of the run chains within the run. After a lock failure, each run not yet written starts with a declared gap.
+
+`PlurSpec/Provenance.lean` §6 models this code. `batch_eq_singles_months` now proves, with no ordering condition, that a locked batch leaves every month file exactly as n single locked appends do. The `SwitchOk` condition and the non-decreasing-months condition are gone. Both counterexamples (`batch_revisit_diverges`, `batch_empty_month_later_file_diverges`) are fixed and removed from the model. `failed_batch_runs_gap` replaces `failed_batch_first_gap`. Still not modelled: a per-file write failure, and an existing but empty month file (counted as missing).
+
+## Commit d067f808 (0.23 release audit findings 7, 8, 9)
+
+Findings are numbered as in `5-plur/1-tracks/engineering/reports/2026-10-28-plur-0.23-release-audit-report.md`. `PlurSpec/Provenance.lean` now models the code after this commit.
+
+- **Finding 7: an event from a pre-0.23 process left the next event unlinked.** Under the lock, the predecessor is now the hash of the last CHAINED event (`history.ts` `lastChainedHash`, used by `tailSeekLastHash`). Events with no hash are stepped over. Before, the predecessor was the last event's hash, which is null when that event is legacy. In the model, `prevFor .taken l = lastChained none l` (it was `head l`), and §6's `findPred` / `newestBelow` use the same. On a sealed log, where every event is chained, the two agree (`lastChained_sealed`, `lastChained_none_sealed`), so every earlier theorem still holds. Some now take `Sealed` as an extra hypothesis: `links_locked_append`, `links_locked_batch`, `locked_run_links`, `linksOrGap_append`. New: a locked append adds no break to any log, legacy events included (`locked_append_adds_no_break`). It links past legacy events (`locked_append_skips_legacy`). A clean chain, then legacy events, then a locked append, verifies clean (`legacy_interleave_verifies`). `checkpoint_head_present` still holds, now through `lastChained_mem`.
+- **Finding 8: a lock holder's link past an unlocked gap was a `prev_mismatch`.** `verifyChain` now tracks `beforeGap`: the expected prev in force when a run of declared gaps began. An event whose `prev` equals it is not a mismatch. In the model, `walk` takes `beforeGap` as a second state (`nextBg`, `lastBg`). Still proved: `locked_run_verifies`, `any_run_only_gaps`, `single_gap_reported`, and `tamper_detected`, now for any `expectedPrev` and `beforeGap`, so an edit is still a `hash_mismatch`. New: in the interleaving `l ++ [gap] ++ [holder linking to head l] ++ [next linking to holder]`, exactly one break is reported, the declared gap (`holder_past_gap_single_break`). That interleaving after a locked log reports no fork (`holder_past_gap_no_fork`, given `HashInjective`). A link past a gap excuses only `beforeGap`. An event whose `prev` is neither the expected prev nor `beforeGap` is still a `prev_mismatch`: `walk_prevMismatch` proves this in general, and `link_past_gap_other_is_mismatch` proves it in the gap interleaving.
+- **Finding 9 (= F2): every declared gap was also a genesis fork.** Fixed except the ambiguous case; see F2 above.
+- **Store hash, content only.** `attestStore` now hashes each engram's id, status and record hash instead of the raw file bytes. A store change that history records after the checkpoint is reported in `store_changed_since_checkpoint` rather than as a break. The model keeps `store_hash` opaque (`CheckpointData.store_hash : S`) and does not walk the store check, so nothing in it changes.
+- **Not modelled.** The other changes in this commit are outside the model: torn final lines dropped under the lock, malformed lines and unreadable stores reported as `cannot_verify`, the `signature_invalid` reason, the tail-seek's 1 MiB window ceiling, and a line that will not parse stopping the tail-seek scan.
+
+## Commit c21b371e (manifest verification, 0.23 release audit)
+
+`PlurSpec/Provenance.lean` §8 and §9 now model the code after this commit. `packages/cli/src/lib/notary.ts` is added to the model's `covers` in `verify.yaml`.
+
+- **A check of nothing is not a pass (audit finding 12).** `verifySessionManifest`'s `ok` is now `CHANGED = 0` and not `nothingChecked`. `nothingChecked` means engrams are listed but none MATCHED and none CHANGED. In the model this is `nothingChecked` / `manifestOk`. Proved: `ok` is false exactly when some entry is CHANGED, or engrams are listed and every one is NOT AVAILABLE (`ok_false_iff_changed`, `nothingChecked_iff`). An empty manifest is still ok (`empty_manifest_ok`). A manifest none of whose engrams is held is not ok (`all_not_available_not_ok`).
+- **`plur verify --manifest` exit codes.** A downloaded document with no notary signature, or with no expected notary address (no `--notary` pin and the gateway names none), is cannot-verify, exit 2 (`no_signature_cannot`, `no_notary_address_cannot`). Listed engrams none of which is in this store, with integrity passing, also exit 2 (`nothing_checked_cannot`). Otherwise the result is ok when `CHANGED = 0` and integrity is ok. For a download, integrity needs the content hash to match and a signature that is present, covers `data`, verifies, and is from the expected notary (`integrityOk`, `sigOk`). Proved: exit 0 iff checked with nothing changed, something checked and integrity ok (`exit_zero_iff`). Stated against the manifest check: exit 0 iff `manifestOk` and `integrityOk` (`exit_zero_iff_ok`). Exit 2 iff an early cannot-verify, a missing signature or notary address, or nothing checked with integrity passing (`exit_two_iff_cannot`). A bad content hash or a failed signature exits 1 (`bad_integrity_not_zero`). A signature whose `hashed_fields` omit `"data"` fails (`signature_must_cover_data`).
+- **Order matters, and the model follows the code.** When integrity fails AND nothing was checked, the exit is 1 (broken), not 2. The nothing-checked return is guarded by `integrityOk`.
+- **`content_hash` removed from manifest entries (audit finding 3).** The model never had it, so nothing changes. The CHANGED detail text is not modelled.

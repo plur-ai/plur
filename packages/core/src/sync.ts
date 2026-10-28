@@ -54,6 +54,7 @@ config.yaml
 secrets.yaml
 agent-keystore.json
 *.token
+keys/
 
 # PLUR — derived/cache files (regenerated automatically)
 embeddings/

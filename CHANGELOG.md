@@ -1,5 +1,50 @@
 # Changelog
 
+## 0.23.0 (unreleased)
+
+Memory you can prove. (#1790)
+
+### Provable history
+
+- The history log is hash-chained: every event carries its own hash and the
+  hash of the one before it. `plur verify` says whether the history was edited
+  outside PLUR — exit 0 clean, 1 broken (each break and fork named), 2 could not
+  read it, which is never reported as clean. (#1051, #1053)
+- `plur checkpoint` and every session end write a checkpoint that binds the
+  chain head to a hash of the store. With a key from `plur keys init`, the
+  checkpoint is signed (Ed25519), and `plur verify --signatures` checks it.
+  (#1052, #1055, #1056) See `docs/auditability.md` (#1057).
+- Every save records the session it came from in `sources[].session_id`, and
+  each writer is attributed to its configured `provenance.identity`.
+  (#1048, #1049)
+- Together these are the provenance ladder (#1047): from recorded origin, to a
+  history whose edits are visible, to checkpoints a named actor signed.
+
+### Session memory manifest
+
+- `plur manifest --session <id>` lists the memories an agent had in context in
+  one session — given at injection, returned to a recall, or saved — with a
+  hash over each memory's content fields. Never their text, scope names, tags,
+  domains or a hash of the bare statement. It does carry the session id and
+  the configured identity. (#1657)
+- `plur verify --manifest <file|reference>` re-hashes each listed memory:
+  MATCH, CHANGED (an edited rationale counts), or NOT AVAILABLE. A check where
+  none of the listed memories is held here cannot verify (exit 2). A
+  downloaded manifest verifies only with a notary signature that covers it,
+  from the pinned notary (`--notary`) or the one the gateway names. (#1657)
+
+### Swarm storage (opt-in)
+
+- With `receipts.store: swarm` in `config.yaml`, ending a session stores its
+  manifest on Swarm through the provenance gateway's free tier, signed by the
+  gateway's notary, and returns the reference. `plur verify --manifest
+  <reference>` checks it from any machine, including the notary signature.
+  Off by default: no network call of any kind unless it is turned on. A
+  free-tier upload stays downloadable for about a day; set
+  `receipts.stamp_id` to a postage stamp bought through the gateway's stamp
+  endpoints and uploads use it instead, for as long as it is paid. PLUR never
+  buys stamps itself. (#1657)
+
 ## 0.22.1
 
 Sign-in cleanup works for an older sign-in to the same server.

@@ -103,6 +103,10 @@ const ALWAYS_ASYNC = new Set([
   // writes the discovery cache. Network I/O, so it could never have been sync;
   // new in this release, so there is no pre-0.16 call site to rewrite.
   'refreshServerScopes',
+  // Born async (#1657) — the session memory manifest and its check read every
+  // engram through the async PrimaryStore seam, so they could never have been
+  // sync; new in 0.23, so there is no pre-0.16 call site to rewrite.
+  'sessionManifest', 'verifyManifest',
   // Born async (#1631, plan B Task 5) — registers a company server entry and
   // reads the outbox (listOutbox is async) for the queued-save counts; new in
   // this release, so there is no pre-0.16 call site to rewrite.

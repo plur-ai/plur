@@ -63,6 +63,14 @@ export interface LearnContext {
    * a complete provenance record unreachable through the public API.
    */
   license?: string
+  /**
+   * The session that produced this write, recorded in `sources[].session_id`
+   * (#1048). Provenance only: it never selects a scope. `session` below picks
+   * the per-session default scope and may hold an internal registry key or
+   * `NO_SESSION`, neither of which is a session anybody could look up, so the
+   * two stay separate fields.
+   */
+  session_id?: string
   /** Always-load flag — bypass keyword-relevance gate during injection. */
   pinned?: boolean
   /**
@@ -130,7 +138,7 @@ export interface LearnContext {
    * than one session concurrently — without it, `setSessionScope()` is a single
    * shared field and one session's scope silently becomes another's (see
    * `session-scopes.ts`). Never persisted on the engram; it selects a scope, it
-   * is not part of one.
+   * is not part of one. The session recorded in provenance is `session_id`.
    */
   session?: string
 }
