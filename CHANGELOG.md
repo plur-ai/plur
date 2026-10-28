@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.23.0 (unreleased)
+## 0.23.0
 
 Memory you can prove. (#1790)
 
