@@ -16,13 +16,13 @@
       "description": "Human-readable explanation of what this scope is for. Surfaced VERBATIM in scope/store discovery — bounded in length and free of control chars/newlines so a hostile remote cannot inject instructions (#345). An explicit null reads as empty, so a server serialising an unset column does not fail the row; the key itself is still required (#843)."
     },
     "covers": {
+      "maxItems": 32,
       "type": "array",
       "items": {
         "type": "string",
         "maxLength": 120,
         "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F\\u2028\\u2029]*$"
       },
-      "maxItems": 32,
       "default": [],
       "description": "Topics, domains, or areas this scope is the home for. Advisory; helps an agent pick the right scope and is surfaced in discovery. Each entry is length-bounded and control-char-free, and the list is capped, for the same directive-surface reason as `description` (#345)."
     },

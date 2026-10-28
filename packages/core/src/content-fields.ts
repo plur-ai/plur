@@ -56,6 +56,8 @@ export const LEARN_CONTEXT_FIELD_ROLES = {
   valid_from: 'control',
   valid_until: 'control',
   session: 'control',
+  // Persisted in sources[].session_id (#1048), so it is text on the engram.
+  session_id: 'content',
   domain: 'content',
   source: 'content',
   tags: 'content',

@@ -1,0 +1,13 @@
+diff --git a/packages/mcp/src/tools.ts b/packages/mcp/src/tools.ts
+index 93d84f2c..4922a4c5 100644
+--- a/packages/mcp/src/tools.ts
++++ b/packages/mcp/src/tools.ts
+@@ -4664,7 +4664,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
+           try {
+             const manifest = await plur.sessionManifest(manifestSession, { checkpoint: checkpointForManifest })
+             const rec = await Promise.race([
+-              anchorManifest(plur.storageRoot, manifest, plur.receiptsConfig()),
++              anchorManifest(plur.storageRoot, { ...manifest, engrams: [] }, plur.receiptsConfig()), // MUTANT: stores an empty list
+               new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new AnchorTimeout()), 20_000) }),
+             ])
+             anchor = {

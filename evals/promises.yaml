@@ -439,6 +439,37 @@ capabilities:
     today: broken
     evidence: 'Eval 2026-10-18 (evals/history HIS-2, re-audit B-01). Expected counts are derived from the memory ids present in the inject reply text, not from injected_ids. Core inject + core receipt holds. Through the MCP plur_inject tool, both the MCP plur_receipt and the core receipt fail: ''the receipt says 4 distinct memories were retrieved; the replies delivered 1 that are still stored (listed as given but absent from the reply text ...)''. Cause: co_injection records every injected id (core index.ts:8047) while the MCP inject replies drop the constraints section (tools.ts:2186, :2233) — the INJ-7 defect. receipt.ts:170 defines retrieval as selection; fixing INJ-7 makes selection and delivery agree. receipt.test.ts. Open issue 1394.'
 
+- key: provenance
+  name: Proof of what my agent remembered
+  what_it_does: I can show which memories my agent had when it acted, and that neither they nor their history were changed afterwards; with Swarm storage on, anyone can check that without trusting me.
+  # Drafted 2026-10-27 for 0.23 (owner goal: promises updated for the provenance release). Wording awaits code-owner approval.
+  promises:
+  - id: PROOF-1
+    promise: If someone edits my memory history behind PLUR's back, checking it says the history is broken and where; a history it could not read is never reported as clean.
+    kind: deterministic
+    today: holds
+    evidence: evals/provenance PROOF-1 (verifyChain on a store written through learn()); history-chain.test.ts, verify-chain.test.ts.
+  - id: PROOF-2
+    promise: For any session I can get the list of memories my agent had in context — given to it, looked up, or saved — and the list carries none of their text, scope names, tags or domains.
+    kind: deterministic
+    today: holds
+    evidence: evals/provenance PROOF-2 (inject + recall record + learn with session_id; canonical manifest bytes searched for every text, scope, tag and domain used).
+  - id: PROOF-3
+    promise: If a memory on a session's list is changed afterwards — even only its reason — checking the list says that memory changed, and the untouched ones still match.
+    kind: deterministic
+    today: holds
+    evidence: evals/provenance PROOF-3 (rationale-only edit and statement edit both CHANGED; a store without the memory gives NOT AVAILABLE, never MATCH).
+  - id: PROOF-4
+    promise: Unless I turn Swarm storage on, ending a session uploads nothing; no proof leaves my machine by default.
+    kind: deterministic
+    today: holds
+    evidence: evals/provenance PROOF-4 (MCP plur_session_end with no receipts setting and with store off; a counting gateway stub and a fetch spy see no call).
+  - id: PROOF-5
+    promise: When I turn Swarm storage on, ending a session stores that session's list on Swarm; with the reference anyone can fetch it, check the notary's signature and that the list is unchanged, and check each memory against a store that holds it.
+    kind: deterministic
+    today: holds
+    evidence: evals/provenance PROOF-5 (MCP plur_session_end with a stub gateway that signs like the notary; signature recovered locally; a copied store matches, then catches an edit). Live gateway checked by hand 2026-10-27 (reference a8e688e3…, notary 0x0856…c63A).
+
 - key: agent-tools
   name: The tools my agent uses
   what_it_does: My agent reaches memory through a small set of tools; everything else is one call away, and failures are reported plainly.

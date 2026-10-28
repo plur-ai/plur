@@ -1,5 +1,6 @@
 import { Plur, recordEvent, flushIfNeeded, extractSelfReportedLearnings } from '@plur-ai/core'
 import { CLAW_VERSION } from './version.js'
+import { createHash } from 'node:crypto'
 import type { LearnContext } from '@plur-ai/core'
 import type {
   ContextEngine, ContextEngineInfo, AssembleResult, IngestResult,
@@ -8,6 +9,11 @@ import type {
 } from './types.js'
 import { extractLearnings, isCorrection } from './learner.js'
 import { assembleContext } from './assembler.js'
+
+/** A stable, non-identifying session id for provenance: `oc:` + 16 hex of sha256(key). */
+function sessionDigest(sessionKey: string): string {
+  return 'oc:' + createHash('sha256').update(sessionKey).digest('hex').slice(0, 16)
+}
 
 // #128: if recordEvent rolled the day, ship yesterday's pending snapshot now
 // (rather than waiting for process exit — long-lived plugin sessions might
@@ -414,7 +420,11 @@ export class PlurContextEngine implements ContextEngine {
     // retried for the rest of the session.
     seen.add(key)
     try {
-      await this.plur.learnRouted(statement, context)
+      // #1048: claw already keys dedup and the session scope on this session,
+      // so the engram records it in sources[].session_id — as a digest: the
+      // OpenClaw key (`user:john:agent:helper`) names a person, and
+      // learnRouted sends the engram to team stores (0.23 audit, finding 20).
+      await this.plur.learnRouted(statement, { session_id: sessionDigest(sessionKey), ...context })
     } catch (err) {
       seen.delete(key)
       throw err
