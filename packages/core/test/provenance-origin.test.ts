@@ -203,7 +203,7 @@ describe('#1048 is wired into the paths that actually write', () => {
     const cases: Array<[string, RegExp]> = [
       ['packages/mcp/src/tools.ts', /session_id: _resolveInjectionSession\(args\)/],
       ['packages/cli/src/commands/learn.ts', /session_id: process\.env\.PLUR_SESSION_ID/],
-      ['packages/claw/src/context-engine.ts', /session_id: sessionKey/],
+      ['packages/claw/src/context-engine.ts', /session_id: sessionDigest\(sessionKey\)/], // a digest, not the raw OpenClaw key (0.23 audit, finding 20)
     ]
     for (const [file, pattern] of cases) {
       const src = readFileSync(j(root, file), 'utf8')
