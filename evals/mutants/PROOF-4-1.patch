@@ -1,0 +1,13 @@
+diff --git a/packages/mcp/src/tools.ts b/packages/mcp/src/tools.ts
+index 93d84f2c..3cde39ad 100644
+--- a/packages/mcp/src/tools.ts
++++ b/packages/mcp/src/tools.ts
+@@ -4659,7 +4659,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
+         // id-less call re-resolved here would find no session and silently
+         // upload nothing (0.23 audit, finding 4).
+         const manifestSession = endSession
+-        if (manifestSession && plur.receiptsConfig().store === 'swarm') {
++        if (manifestSession) { // MUTANT: uploads whatever the setting
+           let timer: ReturnType<typeof setTimeout> | undefined
+           try {
+             const manifest = await plur.sessionManifest(manifestSession, { checkpoint: checkpointForManifest })
