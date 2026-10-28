@@ -2,7 +2,7 @@
 
 ## 0.23.0 (unreleased)
 
-Memory you can prove.
+Memory you can prove. (#1790)
 
 ### Provable history
 
