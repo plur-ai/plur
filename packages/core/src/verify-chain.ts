@@ -29,7 +29,7 @@
  */
 import * as fs from 'node:fs'
 import { join } from 'node:path'
-import { computeEventHash, hashEngramsFile, canonicalEventBytes, listHistoryMonths, type HistoryEvent } from './history.js'
+import { computeEventHash, hashEngramsFile, attestStore, canonicalEventBytes, listHistoryMonths, type HistoryEvent } from './history.js'
 import { lookupPublicKey, verifySignature } from './actor-keys.js'
 
 export type BreakReason =
@@ -39,6 +39,7 @@ export type BreakReason =
   | 'checkpoint_head_missing'  // a checkpoint pins a head the chain no longer contains
   | 'store_hash_mismatch'      // the newest checkpoint attests a store that is not the one on disk
   | 'declared_gap'             // prev is null mid-chain: a writer could not take the lock
+  | 'signature_invalid'        // a checkpoint's signature does not verify against the registered key
 
 /** Result of signature verification for one checkpoint (#1056). */
 export type SignatureVerdict =
@@ -96,6 +97,14 @@ export interface ChainVerifyResult {
    * null means signatures were not checked.
    */
   signatures: SignatureResult[] | null
+  /**
+   * The store's content differs from what the newest checkpoint attested, and
+   * history records changes after that checkpoint that explain it (a learn, an
+   * edit, a retire). Ordinary use since the last checkpoint — reported, never
+   * a break. null when the store matches, or there is no checkpoint. A
+   * difference that history does NOT explain is a `store_hash_mismatch` break.
+   */
+  store_changed_since_checkpoint?: { month: string; index: number; events_since: number } | null
 }
 
 export type ChainVerifyOutcome =
@@ -104,6 +113,13 @@ export type ChainVerifyOutcome =
   | { status: 'cannot_verify'; reason: string; month?: string; line?: number }
 
 interface Scanned { month: string; index: number; event: HistoryEvent }
+
+/** History events that change a memory's content, and so explain a store change after a checkpoint. */
+const CONTENT_EVENTS: ReadonlySet<string> = new Set([
+  'engram_created', 'engram_updated', 'engram_merged', 'engram_retired', 'engram_promoted',
+  'engram_rescoped', 'engram_rekeyed', 'engram_duplicate_absorbed', 'procedure_evolved',
+  'scope_promoted', 'buffer_pruned', 'engram_decremented',
+])
 
 /**
  * Claims key for an event with no predecessor.
@@ -187,6 +203,9 @@ export function verifyChain(root: string, options?: VerifyChainOptions): ChainVe
           line: i + 1,
         }
       }
+      if (event === null || typeof event !== 'object' || Array.isArray(event)) {
+        return { status: 'cannot_verify', reason: 'history line is not an event object', month, line: i + 1 }
+      }
       scanned.push({ month, index: globalIndex++, event })
     }
   }
@@ -202,6 +221,7 @@ export function verifyChain(root: string, options?: VerifyChainOptions): ChainVe
     checkpoints_checked: 0,
     torn_tail: null,
     signatures: verifySignatures ? [] : null,
+    store_changed_since_checkpoint: null,
   }
 
   // Unchained (pre-#1051) events. They carry neither hash nor prev; per runbook
@@ -229,6 +249,16 @@ export function verifyChain(root: string, options?: VerifyChainOptions): ChainVe
   const prevClaims = new Map<string, Scanned[]>()
   let expectedPrev: string | null = null
   let sawFirstChained = false
+  // The chained event before a run of declared gaps. A writer that timed out
+  // on the lock appends its gap event unlocked, possibly after the lock holder
+  // read the tail but before it wrote — so the holder's event links to the
+  // event BEFORE the gap, correctly (0.23 release audit, finding 8). The gap
+  // itself stays a `declared_gap` break; the holder's link is not a mismatch.
+  let beforeGap: string | null | undefined
+  // Every chained event so far claimed no predecessor. Only then is a null
+  // prev a genesis claim (two writers racing on an empty store — a fork); after
+  // a real link it is a declared gap, not a second genesis (formal finding F2).
+  let allGenesisSoFar = true
 
   // Every event, in order. Unchained ones are skipped inside the loop rather
   // than by starting past a leading run — they can appear anywhere.
@@ -259,7 +289,8 @@ export function verifyChain(root: string, options?: VerifyChainOptions): ChainVe
     }
 
     const prev = event.prev ?? null
-    if (sawFirstChained && prev !== expectedPrev) {
+    const linksPastGap = prev !== null && beforeGap !== undefined && prev === beforeGap
+    if (sawFirstChained && prev !== expectedPrev && !linksPastGap) {
       // A null prev mid-chain is what appendHistory writes when it cannot take
       // the chain lock. #1052 calls that "a DECLARED GAP ... never mistaken for
       // tampering", and it is the honest choice -- but reporting it as
@@ -282,10 +313,18 @@ export function verifyChain(root: string, options?: VerifyChainOptions): ChainVe
     // both write `prev: null`, and the result was `forks: []` plus a single
     // prev_mismatch. Keyed under a sentinel that cannot collide with a hash —
     // hashes are 64 hex characters, this is not.
-    const claimKey = prev ?? GENESIS_CLAIM
-    const claims = prevClaims.get(claimKey) ?? []
-    claims.push(scanned[k])
-    prevClaims.set(claimKey, claims)
+    if (prev !== null || allGenesisSoFar) {
+      const claimKey = prev ?? GENESIS_CLAIM
+      const claims = prevClaims.get(claimKey) ?? []
+      claims.push(scanned[k])
+      prevClaims.set(claimKey, claims)
+    }
+    if (prev !== null) allGenesisSoFar = false
+    if (sawFirstChained && prev === null) {
+      if (beforeGap === undefined) beforeGap = expectedPrev
+    } else {
+      beforeGap = undefined
+    }
 
     byHash.set(recorded, scanned[k])
     expectedPrev = recorded
@@ -330,7 +369,7 @@ export function verifyChain(root: string, options?: VerifyChainOptions): ChainVe
   // above cannot see.
   for (const { month, index, event } of scanned) {
     if (event.event !== 'checkpoint') continue
-    const head = (event.data as { chain_head?: unknown }).chain_head
+    const head = (event.data as { chain_head?: unknown } | undefined)?.chain_head
     if (typeof head !== 'string') continue
     if (byHash.has(head)) continue
     result.breaks.push({
@@ -344,23 +383,47 @@ export function verifyChain(root: string, options?: VerifyChainOptions): ChainVe
   // engrams.yaml had been replaced wholesale -- the chain left untouched --
   // verified as OK. Compare the NEWEST checkpoint only: older ones attest older
   // states and are expected to differ.
-  const newestCheckpoint = [...scanned].reverse().find(s => s.event.event === 'checkpoint')
+  //
+  // The store hash attests content only (attestStore), so recalls and
+  // feedback never move it. A difference is then either a change history
+  // records after the checkpoint — ordinary use, reported in
+  // `store_changed_since_checkpoint` — or one it does not, which is the edit
+  // behind PLUR's back the check exists for (0.23 release audit, finding 1).
+  const newestIdx = scanned.map(s => s.event.event).lastIndexOf('checkpoint')
+  const newestCheckpoint = newestIdx >= 0 ? scanned[newestIdx] : undefined
   if (newestCheckpoint) {
-    const attested = (newestCheckpoint.event.data as { store_hash?: unknown }).store_hash
+    const data = (newestCheckpoint.event.data ?? {}) as { store_hash?: unknown; engram_count?: unknown }
+    const attested = data.store_hash
     if (typeof attested === 'string') {
-      const actual = hashStoreFile(join(root, 'engrams.yaml'))
-      // A store that cannot be read is not a mismatch: an absent store is a
-      // real state (nothing learned yet), and an unreadable one is a refusal
-      // the caller already sees through `cannot_verify` on the log itself.
-      if (actual !== null && actual !== attested) {
-        result.breaks.push({
-          month: newestCheckpoint.month,
-          index: newestCheckpoint.index,
-          event_id: '(checkpoint)',
-          reason: 'store_hash_mismatch',
-          expected: attested,
-          actual,
-        })
+      const engramsPath = join(root, 'engrams.yaml')
+      let actual: string | null
+      if (!fs.existsSync(engramsPath)) {
+        // Absent is a real state only when the checkpoint attested nothing.
+        actual = null
+      } else {
+        try {
+          actual = attestStore(engramsPath).store_hash
+        } catch (err) {
+          // Never "verified" over a store that cannot be read (audit finding 11).
+          return { status: 'cannot_verify', reason: `could not read the store the newest checkpoint attests: ${(err as Error).message}` }
+        }
+      }
+      const attestedCount = typeof data.engram_count === 'number' ? data.engram_count : 1
+      const differs = actual === null ? attestedCount > 0 : actual !== attested
+      if (differs) {
+        const since = scanned.slice(newestIdx + 1).filter(s => CONTENT_EVENTS.has(s.event.event)).length
+        if (since > 0 && actual !== null) {
+          result.store_changed_since_checkpoint = { month: newestCheckpoint.month, index: newestCheckpoint.index, events_since: since }
+        } else {
+          result.breaks.push({
+            month: newestCheckpoint.month,
+            index: newestCheckpoint.index,
+            event_id: '(checkpoint)',
+            reason: 'store_hash_mismatch',
+            expected: attested,
+            actual,
+          })
+        }
       }
     }
   }
@@ -418,7 +481,7 @@ export function verifyChain(root: string, options?: VerifyChainOptions): ChainVe
       if (verdict === 'invalid') {
         result.breaks.push({
           month, index, event_id: sigResult.event_id,
-          reason: 'hash_mismatch', // repurposed: signature did not verify
+          reason: 'signature_invalid',
           expected: 'valid Ed25519 signature',
           actual: `invalid signature by ${signer ?? '(unknown)'}`,
         })

@@ -384,13 +384,23 @@ describe('verifyChain — the checkpoint attests the STORE, so verify it', () =>
     } finally { rmSync(dir, { recursive: true, force: true }) }
   })
 
-  it('an absent store is not a mismatch', () => {
+  it('an absent store is not a mismatch when the checkpoint attested no memories', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'vc-attest-'))
+    try {
+      writeFileSync(join(dir, 'engrams.yaml'), 'engrams: []\n', 'utf8')
+      emitCheckpoint(dir, join(dir, 'engrams.yaml'), 'cli')
+      rmSync(join(dir, 'engrams.yaml'))
+      expect(verifyChain(dir).status).toBe('verified')
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  it('an absent store BREAKS when the checkpoint attested memories (0.23 audit, finding 11)', () => {
     const dir = mkdtempSync(join(tmpdir(), 'vc-attest-'))
     try {
       storeWith(dir, ['ENG-001'])
       emitCheckpoint(dir, join(dir, 'engrams.yaml'), 'cli')
       rmSync(join(dir, 'engrams.yaml'))
-      expect(verifyChain(dir).status).toBe('verified')
+      expect(verifyChain(dir).status).toBe('broken')
     } finally { rmSync(dir, { recursive: true, force: true }) }
   })
 })

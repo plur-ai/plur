@@ -4,6 +4,10 @@ import * as yaml from 'js-yaml'
 import { logger } from './logger.js'
 import { join } from 'path'
 import { createHash } from 'crypto'
+// Function-level import: session-manifest imports this module too, and the
+// record hash is only called at checkpoint time, long after both have loaded.
+import { computeRecordHash } from './session-manifest.js'
+import type { Engram } from './schemas/engram.js'
 
 export interface HistoryEvent {
   event: 'engram_created' | 'engram_updated' | 'engram_merged' | 'feedback_received' | 'engram_retired' | 'engram_decremented' | 'engram_promoted' | 'engram_rescoped' | 'failure_reported' | 'procedure_evolved' | 'recurrence_detected' | 'contradiction_detected' | 'scope_promoted' | 'buffer_pruned' | 'weekly_review' | 'engram_route_failed' | 'co_injection' | 'injection_outcome' | 'session_scope_changed' | 'dedup_near_duplicate' | 'engram_duplicate_absorbed' | 'checkpoint'
@@ -348,6 +352,38 @@ const TAIL_WINDOW = 8192
  */
 const TAIL_MAX_WINDOW = 1024 * 1024
 
+/**
+ * The hash of the last CHAINED event in `text`, scanning backwards.
+ *
+ * Steps over events with no hash — written by a PLUR older than #1051 that is
+ * still running against the same store (an MCP server not yet restarted after
+ * an upgrade) — because `verifyChain` expects the next chained event to link
+ * to the last chained one, skipping those (0.23 release audit, finding 7).
+ * Returning null on them made every such interleave a declared gap plus a
+ * genesis fork on a history nobody edited. A line that will not parse still
+ * stops the scan (null: a gap) — under the lock a torn final line has already
+ * been dropped (dropTornTail), so what is left is corruption, not a crash.
+ *
+ * @returns the hash; null when a line will not parse; undefined when the text
+ *          holds no chained event at all.
+ */
+function lastChainedHash(text: string): string | null | undefined {
+  const lines = text.split('\n')
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i].trim()
+    if (line.length === 0) continue
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(line)
+    } catch {
+      return null // malformed JSON — treat as unreadable
+    }
+    const hash = (parsed as { hash?: unknown } | null)?.hash
+    if (typeof hash === 'string' && hash.length === 64) return hash
+  }
+  return undefined
+}
+
 export function tailSeekLastHash(filePath: string): string | null {
   try {
     let stat: fs.Stats
@@ -381,32 +417,19 @@ export function tailSeekLastHash(filePath: string): string | null {
       // trailing terminator first: a JSONL file ends in a newline, so the naive
       // "does the window contain a newline" test is satisfied by that byte
       // alone and slicing from it yields an empty string.
+      //
+      // Keep every COMPLETE line in the window (drop only the leading
+      // fragment), so the scan below can step back over events that carry no
+      // hash; grow the window when none of them does.
       const body = text.replace(/\n+$/, '')
-      const lastBoundary = body.lastIndexOf('\n')
-      if (lastBoundary !== -1) {
-        text = body.slice(lastBoundary + 1)
-        break
+      const firstBoundary = body.indexOf('\n')
+      if (firstBoundary !== -1) {
+        const found = lastChainedHash(body.slice(firstBoundary + 1))
+        if (found !== undefined) return found
       }
       if (window >= TAIL_MAX_WINDOW) return null // documented gap, never an OOM
     }
-    // Scan backwards for the last non-empty line
-    const lines = text.split('\n')
-    for (let i = lines.length - 1; i >= 0; i--) {
-      const line = lines[i].trim()
-      if (line.length === 0) continue
-      try {
-        const parsed = JSON.parse(line) as Record<string, unknown>
-        if (typeof parsed.hash === 'string' && parsed.hash.length === 64) {
-          return parsed.hash
-        }
-        // Last event exists but has no hash (legacy event) — this is a gap in
-        // the chain. Return null to signal "predecessor found but unchained".
-        return null
-      } catch {
-        return null // malformed JSON — treat as unreadable
-      }
-    }
-    return null
+    return lastChainedHash(text) ?? null
   } catch {
     return null
   }
@@ -605,6 +628,7 @@ export function appendHistoryStamped(
   let onPrevFailure: unknown
   let written = false
   const stampAndWrite = (): void => {
+    dropTornTail(historyDir, filePath)
     const predecessorHash = findPredecessorHash(historyDir, filePath)
     event.prev = predecessorHash // null when gap or genesis
     // Payload built from the predecessor this append will actually use, before
@@ -738,9 +762,62 @@ export function appendHistoryStamped(
       throw onPrevErr
     }
     event.hash = computeEventHash(event)
-    written = writeEventLine(JSON.stringify(event) + '\n', false)
+    // Without the lock a torn tail is not ours to truncate (another writer may
+    // be mid-append), so start on a fresh line instead of gluing onto it.
+    written = writeEventLine((endsMidLine(filePath) ? '\n' : '') + JSON.stringify(event) + '\n', false)
   }
   return written
+}
+
+/** True when the file exists, is non-empty, and its last byte is not a newline. */
+function endsMidLine(filePath: string): boolean {
+  try {
+    const st = fs.statSync(filePath)
+    if (st.size === 0) return false
+    const fd = fs.openSync(filePath, 'r')
+    try {
+      const b = Buffer.alloc(1)
+      fs.readSync(fd, b, 0, 1, st.size - 1)
+      return b[0] !== 0x0a
+    } finally {
+      fs.closeSync(fd)
+    }
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Drop an incomplete final line, under the chain lock (0.23 release audit,
+ * finding 6).
+ *
+ * A writer killed mid-append leaves a fragment with no newline. Appending
+ * after it glued the next event onto the fragment: that event was lost to
+ * every reader, and `plur verify` refused the file from then on. Every
+ * chaining writer holds this lock, so a fragment seen here is a dead write,
+ * not one in flight; truncating it is what .datacore/lib/ledger/log.py does
+ * for the same reason. Best-effort: a failure leaves the file as it was, and
+ * the append below still starts on its own line.
+ */
+function dropTornTail(historyDir: string, filePath: string): void {
+  if (!endsMidLine(filePath)) return
+  try {
+    const st = fs.statSync(filePath)
+    const window = Math.min(st.size, TAIL_MAX_WINDOW)
+    const buf = Buffer.alloc(window)
+    const fd = fs.openSync(filePath, 'r+')
+    try {
+      fs.readSync(fd, buf, 0, window, st.size - window)
+      const nl = buf.lastIndexOf(0x0a)
+      if (nl === -1 && window < st.size) return // fragment longer than the ceiling: leave it
+      const keep = nl === -1 ? 0 : st.size - window + nl + 1
+      fs.ftruncateSync(fd, keep)
+      logger.warning(`[plur] history: dropped an incomplete final line (${st.size - keep} bytes) in ${filePath} left by an interrupted write.`)
+    } finally {
+      fs.closeSync(fd)
+    }
+    invalidateChainHead(historyDir)
+  } catch { /* leave the file as it was */ }
 }
 
 /**
@@ -782,7 +859,7 @@ export function appendHistoryBatch(root: string, events: readonly HistoryEvent[]
     try {
       const fd = fs.openSync(filePath, 'a')
       try {
-        fs.writeSync(fd, lines.join(''))
+        fs.writeSync(fd, (endsMidLine(filePath) ? '\n' : '') + lines.join(''))
         try { fs.fsyncSync(fd) } catch { /* append landed; durability is best-effort */ }
       } finally {
         fs.closeSync(fd)
@@ -811,6 +888,7 @@ export function appendHistoryBatch(root: string, events: readonly HistoryEvent[]
     withLock(join(historyDir, 'chain'), () => {
       for (const run of runs) {
         const file = join(historyDir, `${run[0].timestamp.slice(0, 7)}.jsonl`)
+        dropTornTail(historyDir, file)
         if (!writeRun(run, findPredecessorHash(historyDir, file))) result = false
         done++
       }
@@ -842,7 +920,8 @@ const warnedHistoryPaths = new Set<string>()
  *                 Redundant with the HistoryEvent.prev field, but kept in
  *                 data so the payload is self-contained without parsing chain
  *                 linkage separately.
- *   store_hash  — SHA-256 of the engrams.yaml bytes at checkpoint time,
+ *   store_hash  — SHA-256 over each engram's id, status and record hash
+ *                 (its content, not its usage counters; see attestStore),
  *                 hex-encoded. Never computed on append (hot path) — only
  *                 computed when a checkpoint is explicitly requested.
  *   engram_count — count of active (non-retired) engrams at checkpoint time.
@@ -927,9 +1006,25 @@ export function attestStore(engramsPath: string): { store_hash: string; engram_c
   //
   // Depends on sortKeysDeep honouring toJSON: js-yaml parses ISO timestamps
   // into Date objects, which without that fix canonicalise to `{}`.
+  //
+  // And it attests each memory's CONTENT, not its usage (0.23 release audit,
+  // finding 1). A recall, an injection or feedback rewrites engrams.yaml with
+  // new activation, frequency and feedback counts; with every session end now
+  // writing a checkpoint, hashing those made `plur verify` report BROKEN after
+  // ordinary use. Each engram is reduced to its id, its status and the record
+  // hash a session manifest carries (`computeRecordHash`: statement, rationale,
+  // type, scope, domain, commitment, tags, provenance, attribution, claim
+  // class, polarity) — exactly what a change made behind PLUR's back would
+  // alter, and nothing a read moves.
   const parsed = yaml.load(raw)
-  const store_hash = createHash('sha256').update(canonicalBytesOf(parsed)).digest('hex')
-  return { store_hash, engram_count: countActive(parsed, engramsPath) }
+  const engram_count = countActive(parsed, engramsPath)
+  const list = (Array.isArray(parsed) ? parsed : (parsed as { engrams: unknown[] }).engrams) as Array<Record<string, unknown> | null>
+  const records = list
+    .filter((e): e is Record<string, unknown> => e !== null && typeof e === 'object')
+    .map(e => ({ id: String(e.id ?? ''), status: String(e.status ?? 'active'), record: computeRecordHash(e as unknown as Engram) }))
+    .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : a.record < b.record ? -1 : a.record > b.record ? 1 : 0))
+  const store_hash = createHash('sha256').update(canonicalBytesOf({ kind: 'plur/store-records/v1', records })).digest('hex')
+  return { store_hash, engram_count }
 }
 
 /**
