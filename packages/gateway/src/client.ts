@@ -49,6 +49,15 @@ export function isDefaultGateway(url: string | undefined): boolean {
  * caller cannot verify unless the user explicitly trusts the notary the
  * gateway names about itself (`--trust-gateway-notary`).
  */
+export function expectedNotaryFor(
+  gatewayUrl: string | undefined,
+  pinned: string | undefined,
+): { address: string; source: 'pinned' | 'default' } | null {
+  if (pinned) return { address: pinned, source: 'pinned' }
+  if (isDefaultGateway(gatewayUrl)) return { address: DEFAULT_NOTARY_ADDRESS, source: 'default' }
+  return null
+}
+
 /**
  * Whether the signer a gateway reports for an upload is the notary expected
  * for that gateway (code review of 0.23, R5). A comparison of addresses only —
@@ -59,15 +68,6 @@ export function isDefaultGateway(url: string | undefined): boolean {
 export function notaryClaim(gatewayUrl: string | undefined, signer: string, pinned?: string): { expected: boolean | null; address: string } {
   const exp = expectedNotaryFor(gatewayUrl, pinned)
   return { expected: exp ? exp.address.toLowerCase() === signer.toLowerCase() : null, address: signer }
-}
-
-export function expectedNotaryFor(
-  gatewayUrl: string | undefined,
-  pinned: string | undefined,
-): { address: string; source: 'pinned' | 'default' } | null {
-  if (pinned) return { address: pinned, source: 'pinned' }
-  if (isDefaultGateway(gatewayUrl)) return { address: DEFAULT_NOTARY_ADDRESS, source: 'default' }
-  return null
 }
 
 const USER_AGENT = 'plur (session-manifest)'
@@ -139,7 +139,8 @@ export class ProvenanceGateway implements WormStore {
       const detail = json?.detail
       const message = typeof detail === 'string' ? detail : detail?.message ?? `HTTP ${res.status}`
       const code = json?.code ?? detail?.code
-      const ra = Number(res.headers.get('retry-after'))
+      const raHeader = res.headers.get('retry-after')
+      const ra = raHeader === null ? NaN : Number(raHeader)
       throw new GatewayError(message, res.status, code ?? (res.status === 429 ? 'RATE_LIMITED' : undefined), Number.isFinite(ra) ? ra : undefined)
     }
     if (json === undefined) throw new GatewayError('gateway returned non-JSON', res.status, 'BAD_RESPONSE')
@@ -184,7 +185,7 @@ export class ProvenanceGateway implements WormStore {
           sigs = (await this.document(reference)).signatures ?? []
         } catch (err) {
           const ra = err instanceof GatewayError && err.status === 429 ? err.retryAfter : undefined
-          if (attempt === 0 && ra !== undefined && ra <= 5) { await new Promise(r => setTimeout(r, ra * 1000)); continue }
+          if (attempt === 0 && ra !== undefined && ra > 0 && ra <= 5) { await new Promise(r => setTimeout(r, ra * 1000)); continue }
           break
         }
       }

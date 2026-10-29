@@ -753,7 +753,7 @@ const SESSION_TTL_MS = 8 * 60 * 60 * 1000
 function notaryFields(rec: { signer?: string; timestamp?: string; signature_pending?: boolean }, gatewayUrl: string | undefined): Record<string, unknown> {
   if (!rec.signer) {
     return rec.signature_pending
-      ? { notary_pending: 'the notary signature is on the stored document but could not be read back yet (gateway rate limit); plur verify --manifest reads it' }
+      ? { notary_pending: 'the stored document could not be read back to show its notary signature; plur verify --manifest <ref> checks whether it was signed' }
       : {}
   }
   const claim = notaryClaim(gatewayUrl, rec.signer)

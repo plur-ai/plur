@@ -796,6 +796,10 @@ function targetMonthFile(historyDir: string, ownMonth: string): string {
   // capture every later append (code review of 0.23, R3). That is normally
   // zero or one stat — no directory listing on the hot path (R8).
   const current = new Date().toISOString().slice(0, 7)
+  // An event stamped after the current month is written to the current month
+  // file (its timestamp unchanged), so no month file beyond today ever starts
+  // a second chain that findPredecessorHash would then walk to.
+  if (ownMonth > current) return join(historyDir, `${current}.jsonl`)
   let newest = ownMonth
   for (let m = nextMonth(ownMonth); m <= current; m = nextMonth(m)) {
     try { if (fs.statSync(join(historyDir, `${m}.jsonl`)).size > 0) newest = m } catch { /* no file for that month */ }

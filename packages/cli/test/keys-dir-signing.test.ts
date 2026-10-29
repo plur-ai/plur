@@ -91,6 +91,7 @@ describe('plur checkpoint --session with no value (second review, R11)', () => {
       writeFileSync(j(store, 'engrams.yaml'), 'engrams: []\n')
       const r = spawnSync(process.execPath, [builtCliPath(j(__dirname, '..')), 'checkpoint', '--session'], { env: { ...process.env, PLUR_PATH: store }, encoding: 'utf8' })
       expect(r.status, r.stdout + r.stderr).not.toBe(0)
+      expect(r.stdout + r.stderr, 'refused for the wrong reason (a crash passes a bare exit-code check)').toContain('--session needs a session id')
     } finally { rmSync(store, { recursive: true, force: true }) }
   })
 })

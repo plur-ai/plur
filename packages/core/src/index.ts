@@ -11281,13 +11281,15 @@ export class Plur {
         // Recorded like every other store change PLUR makes (code review of
         // 0.23, R2), so `plur verify` can tell it from an edit behind PLUR's
         // back. Ids only.
-        const kept = new Set(active.map(e => e.id))
+        // Every removed row, by identity — a retired row can share its id with
+        // a kept one, and it must still be named.
+        const kept = new Set(active)
         try {
           this._appendHistory({
             event: 'store_compacted',
             engram_id: '',
             timestamp: new Date().toISOString(),
-            data: { engram_ids: engrams.filter(e => !kept.has(e.id)).map(e => e.id) },
+            data: { engram_ids: [...new Set(engrams.filter(e => !kept.has(e)).map(e => e.id))] },
           })
         } catch { /* history is an audit trail, never a gate on the write */ }
         await this._syncIndex()

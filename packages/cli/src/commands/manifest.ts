@@ -51,7 +51,9 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   try {
     const rec = await anchorManifest(plur.storageRoot, manifest, receipts)
     if (shouldOutputJson(flags)) {
-      outputJson({ ...rec, manifest })
+      // The same notary claim the text and session end report (third review).
+      const claim = rec.signer ? notaryClaim(receipts.gateway_url, rec.signer) : null
+      outputJson({ ...rec, ...(claim ? { notary_expected: claim.expected } : {}), manifest })
     } else {
       outputText(`Stored on Swarm: ${rec.reference}`)
       outputText(`  manifest sha256: ${rec.content_hash}`)
@@ -62,7 +64,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
         else if (claim.expected === false) outputText(`  WARNING: signed by ${rec.signer}, which is NOT the expected notary for this gateway`)
         else outputText(`  signed by ${rec.signer}; no notary is known for this gateway — check with plur verify --manifest <ref> --notary <address>`)
       } else if (rec.signature_pending) {
-        outputText('  the notary signature could not be read back yet (gateway rate limit); plur verify --manifest reads it')
+        outputText('  the stored document could not be read back to show its notary signature; plur verify --manifest <ref> checks whether it was signed')
       }
       if (rec.expires_at) outputText(`  stored until about ${rec.expires_at} (when its postage stamp runs out)`)
       outputText(`  engrams: ${manifest.engrams.length}`)

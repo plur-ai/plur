@@ -21,7 +21,7 @@
 import { join } from 'path'
 import { existsSync } from 'fs'
 import { createPlur, type GlobalFlags } from '../plur.js'
-import { shouldOutputJson, outputJson, outputText } from '../output.js'
+import { shouldOutputJson, outputJson, outputText, exit } from '../output.js'
 import { emitCheckpoint, signWithActorKey, keysDirFor } from '@plur-ai/core'
 
 export async function run(args: string[], flags: GlobalFlags & { signatures?: boolean }): Promise<void> {

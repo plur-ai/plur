@@ -231,3 +231,26 @@ describe('second review: a relative PLUR_KEYS_DIR (R10)', () => {
     }
   })
 })
+
+describe('third review', () => {
+  it('a future-stamped event joins the current month file and the chain stays one', () => {
+    const root = fresh()
+    appendHistory(root, { event: 'engram_created', engram_id: 'ENG-A1', timestamp: new Date().toISOString(), data: {} })
+    appendHistory(root, { event: 'engram_created', engram_id: 'ENG-SKEW1', timestamp: '2099-03-01T00:00:00.000Z', data: {} })
+    appendHistory(root, { event: 'engram_created', engram_id: 'ENG-A2', timestamp: new Date().toISOString(), data: {} })
+    expect(readdirSync(join(root, 'history')).filter(f => f.endsWith('.jsonl')), 'a month file beyond today was created').toEqual([`${new Date().toISOString().slice(0, 7)}.jsonl`])
+    const out = verifyChain(root)
+    expect(out.status, JSON.stringify(out)).toBe('verified')
+  })
+
+  it('an id mentioned inside free text does not excuse an edit to that memory', async () => {
+    const { root } = await storeWith(4)
+    emitCheckpoint(root, join(root, 'engrams.yaml'), 'session_end')
+    const doc = load(root)
+    const victim = doc.engrams[2]
+    victim.statement = 'Rewritten by hand'
+    save(root, doc)
+    appendHistory(root, { event: 'engram_duplicate_absorbed', engram_id: '', timestamp: new Date().toISOString(), data: { incoming_preview: `see ${victim.id} for the original wording` } })
+    expect(verifyChain(root).status).toBe('broken')
+  })
+})

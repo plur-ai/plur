@@ -124,10 +124,19 @@ function eventEngramIds(ev: HistoryEvent): string[] {
   const out: string[] = []
   if (typeof ev.engram_id === 'string' && ev.engram_id) out.push(ev.engram_id)
   const d = (ev.data ?? {}) as Record<string, unknown>
-  if (Array.isArray(d.engram_ids)) for (const x of d.engram_ids) if (typeof x === 'string') out.push(x)
+  // Fields that name an engram are read verbatim, whatever the id's shape
+  // (rekeys and server ids need not look like ENG-…).
+  for (const key of ID_FIELDS) {
+    const v = d[key]
+    if (typeof v === 'string') out.push(v)
+    else if (Array.isArray(v)) for (const x of v) if (typeof x === 'string') out.push(x)
+  }
+  // Anywhere else, only a value that IS an id counts — never an id mentioned
+  // inside free text such as a statement preview or a reason, which would let
+  // an event about one memory excuse an edit to another (third review).
   const walk = (v: unknown, depth: number): void => {
     if (depth > 6) return
-    if (typeof v === 'string') { for (const m of v.match(ENGRAM_ID_SHAPE) ?? []) out.push(m) }
+    if (typeof v === 'string') { if (WHOLE_ENGRAM_ID.test(v)) out.push(v) }
     else if (Array.isArray(v)) for (const x of v) walk(x, depth + 1)
     else if (v && typeof v === 'object') for (const x of Object.values(v)) walk(x, depth + 1)
   }
@@ -135,7 +144,9 @@ function eventEngramIds(ev: HistoryEvent): string[] {
   return out
 }
 
-const ENGRAM_ID_SHAPE = /\b(?:ENG|ABS|META)-[A-Za-z0-9-]+/g
+const ID_FIELDS = ['engram_ids', 'ids', 'supersedes', 'merged', 'sources', 'from', 'to', 'target', 'target_id',
+  'merged_into', 'superseded_by', 'replaced_by', 'old_id', 'new_id', 'absorbed', 'rescoped_to', 'promoted_from']
+const WHOLE_ENGRAM_ID = /^(?:ENG|ABS|META)-[A-Za-z0-9-]+$/
 
 /** History events that change a memory's content, and so explain a store change after a checkpoint. */
 const CONTENT_EVENTS: ReadonlySet<string> = new Set([
