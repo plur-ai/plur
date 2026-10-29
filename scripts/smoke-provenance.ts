@@ -3,7 +3,7 @@
  *
  *   pnpm -r build && npx tsx scripts/smoke-provenance.ts
  *
- * Each scene is one claim the explainer (docs/provenance-explainer.md) makes,
+ * Each scene is one claim the explainer (storyboard in plur-space: content/provenance-explainer/storyboard.md) makes,
  * checked the way a viewer would see it: through the MCP tools an agent calls
  * and the `plur` commands a person types. Nothing is mocked; the session list
  * is stored on Swarm through the gateway and read back by reference.

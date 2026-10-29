@@ -7,7 +7,7 @@ import type { LlmFunction, MetaField, TensionStatus, RerankerEvalResult, History
 import { RemoteOnlyWriteError, remoteOnlySessionLine, remoteOnlyUnservedNotice } from '@plur-ai/core'
 import { enterpriseRecoveryHint } from '@plur-ai/core'
 import { emitCheckpoint, signWithActorKey, keysDirFor } from '@plur-ai/core'
-import { anchorManifest, notaryClaim } from '@plur-ai/gateway'
+import { anchorManifest, notaryClaim, EXPERIMENTAL_NOTE } from '@plur-ai/gateway'
 import { recordTelemetry } from './telemetry.js'
 import { VERSION } from './version.js'
 import { startBackgroundDiscovery, discoverySummary, discoveryWarnings, serverEndpointKeys, isDiscoveryEnabled } from './background-discovery.js'
@@ -4733,6 +4733,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
               ...notaryFields(rec, plur.receiptsConfig().gateway_url),
               ...(rec.expires_at ? { stored_until: rec.expires_at } : {}),
               verify: `plur verify --manifest ${rec.reference}`,
+              experimental: EXPERIMENTAL_NOTE,
               note: plur.receiptsConfig().stamp_id
                 ? 'Fingerprints only. Stored with your configured stamp; it stays downloadable while that stamp is paid.'
                 : 'Fingerprints only. A free-tier upload stays downloadable for about a day; set receipts.stamp_id to a bought stamp to keep it longer.',
@@ -4742,9 +4743,10 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
               ? {
                   store: 'swarm',
                   error: err.message,
+                  experimental: EXPERIMENTAL_NOTE,
                   note: `The upload may still finish in the background; if it does, its receipt lands in ${join(plur.storageRoot, 'receipts')}. Otherwise run \`plur manifest --session ${manifestSession} --anchor\` to retry.`,
                 }
-              : { store: 'swarm', error: (err as Error).message, note: `Nothing was uploaded; run \`plur manifest --session ${manifestSession} --anchor\` to retry.` }
+              : { store: 'swarm', error: (err as Error).message, experimental: EXPERIMENTAL_NOTE, note: `Nothing was uploaded; run \`plur manifest --session ${manifestSession} --anchor\` to retry.` }
           } finally {
             if (timer) clearTimeout(timer)
           }

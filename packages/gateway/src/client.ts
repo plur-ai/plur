@@ -28,6 +28,9 @@ import { createHash, randomUUID } from 'crypto'
 import type { WormStore, WormPutResult } from '@plur-ai/core'
 
 export const DEFAULT_GATEWAY_URL = 'https://provenance-gateway.datafund.io'
+
+/** Shown with every manifest upload and check while the feature is a test release. */
+export const EXPERIMENTAL_NOTE = 'Experimental: session manifests and Swarm storage are a test feature in 0.23. The manifest format, the gateway and its notary may change.'
 /**
  * The notary the default gateway signs with. A signature on a document
  * downloaded from the default gateway is checked against THIS address, not the

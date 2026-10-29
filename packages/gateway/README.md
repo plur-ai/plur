@@ -11,5 +11,8 @@ no Swarm or Bee client and depends on none. The gateway address is a user
 setting (`receipts.gateway_url` in `config.yaml`); `DEFAULT_GATEWAY_URL` is the
 default we ship.
 
+Experimental in 0.23: every upload and check carries `EXPERIMENTAL_NOTE`, so
+users see that the manifest format, the gateway and its notary may change.
+
 It lives outside `@plur-ai/core` because core makes no provenance network calls
 (`packages/core/test/no-gateway-network-in-core.test.ts`).
