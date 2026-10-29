@@ -21,6 +21,8 @@ export interface AnchorRecord {
   signer?: string
   signature?: string
   timestamp?: string
+  /** When the stamp runs out (gateway estimate); the proof can disappear after. */
+  expires_at?: string
   session_id: string
   uploaded_at: string
 }
@@ -43,6 +45,7 @@ export async function anchorManifest(
     ...(put.signer ? { signer: put.signer } : {}),
     ...(put.signature ? { signature: put.signature } : {}),
     ...(put.timestamp ? { timestamp: put.timestamp } : {}),
+    ...(put.expires_at ? { expires_at: put.expires_at } : {}),
     session_id: manifest.session_id,
     uploaded_at: new Date().toISOString(),
   }

@@ -25,12 +25,11 @@ import { join, resolve, dirname } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { Client } from '../packages/mcp/node_modules/@modelcontextprotocol/client/dist/index.mjs'
-import { InMemoryTransport } from '../packages/mcp/node_modules/@modelcontextprotocol/server/dist/index.mjs'
-import { Plur } from '../packages/core/src/index.js'
-import { createServer } from '../packages/mcp/src/server.js'
+import { StdioClientTransport } from '../packages/mcp/node_modules/@modelcontextprotocol/client/dist/stdio.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const CLI = join(ROOT, 'packages/cli/dist/index.js')
+const MCP = join(ROOT, 'packages/mcp/dist/index.js')
 const GATEWAY = process.env.PLUR_SMOKE_GATEWAY || 'https://provenance-gateway.datafund.io'
 const STAMP = process.env.PLUR_SMOKE_STAMP || ''
 // A downloaded list must be signed by a notary the verifier names itself:
@@ -63,14 +62,17 @@ function plur(store: string, args: string[]): { code: number; json: any; text: s
   return { code: r.status ?? -1, json, text: (r.stdout || '') + (r.stderr || '') }
 }
 
+/** The real MCP server, as an agent's client starts it: the built binary over stdio. */
 async function mcp(store: string) {
-  const p = new Plur({ path: store, autoDiscover: false })
-  await p.ready()
-  const server = await createServer(p as any, { profile: 'lean' })
-  const [ct, st] = InMemoryTransport.createLinkedPair()
-  await server.connect(st)
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [MCP],
+    cwd: process.cwd(),
+    env: { ...process.env, PLUR_PATH: store } as Record<string, string>,
+    stderr: 'ignore',
+  })
   const client = new Client({ name: 'provenance-smoke', version: '1.0.0' })
-  await client.connect(ct)
+  await client.connect(transport)
   return {
     async call(name: string, args: Record<string, unknown> = {}) {
       const res: any = await client.callTool({ name, arguments: args })
@@ -84,7 +86,7 @@ async function mcp(store: string) {
 }
 
 async function main(): Promise<number> {
-  if (!existsSync(CLI)) { console.error('build first: pnpm -r build'); return 2 }
+  if (!existsSync(CLI) || !existsSync(MCP)) { console.error('build first: pnpm -r build'); return 2 }
   console.log(`Provenance smoke ${RUN}\n  gateway: ${GATEWAY}\n  stamp:   ${STAMP || '(free tier, ~1 day)'}`)
   try {
     const h = await fetch(GATEWAY.replace(/\/+$/, '') + '/health', { signal: AbortSignal.timeout(15_000) })
@@ -123,6 +125,7 @@ async function main(): Promise<number> {
   const ref = anchor?.reference as string
   check(/^[0-9a-f]{64}$/.test(ref ?? ''), 'a Swarm reference came back', ref)
   check(!!anchor?.notary, 'the gateway notary signed it', anchor?.notary ?? '')
+  check(typeof anchor?.stored_until === 'string', 'it says how long the proof stays stored', anchor?.stored_until ?? 'not reported')
   if (!ref) return 1
 
   const doc = await (await fetch(`${GATEWAY.replace(/\/+$/, '')}/api/v1/data/${ref}`)).json() as any

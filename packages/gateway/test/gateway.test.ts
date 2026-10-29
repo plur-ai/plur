@@ -113,3 +113,23 @@ describe('receipt file names (0.23 audit, finding 17)', () => {
     expect(files.some(f => f.includes(':'))).toBe(false)
   })
 })
+
+describe('the real gateway answers an upload with the reference only (0.23 smoke, scene 2)', () => {
+  it('the notary signature and the stamp expiry are read back from the stored document', async () => {
+    const sig = { type: 'notary', signer: '0x' + '11'.repeat(20), signature: '0x' + '22'.repeat(65), timestamp: '2026-10-29T00:00:00Z', data_hash: 'aa' }
+    const calls: string[] = []
+    const impl = (async (url: string | URL | Request, init?: RequestInit) => {
+      const u = String(url).replace(/^https?:\/\/[^/]+/, '')
+      calls.push(`${init?.method ?? 'GET'} ${u.split('?')[0]}`)
+      const body = (init?.method ?? 'GET') === 'POST'
+        ? { reference: 'ef'.repeat(32), message: 'Data uploaded successfully', expires_at: '2026-10-30T11:14:25Z' }
+        : { data: 'e30=', content_hash: 'x', stamp_id: 'cd'.repeat(32), signatures: [sig] }
+      return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } })
+    }) as typeof fetch
+    const put = await new ProvenanceGateway('https://gw.test', { fetchImpl: impl, stampId: 'cd'.repeat(32) }).put(Buffer.from('{}'))
+    expect(put.signer, 'the signer was not read back').toBe(sig.signer)
+    expect(put.timestamp).toBe(sig.timestamp)
+    expect(put.expires_at, 'the stamp expiry was dropped').toBe('2026-10-30T11:14:25Z')
+    expect(calls).toEqual(['POST /api/v1/data/', `GET /api/v1/data/${'ef'.repeat(32)}`])
+  })
+})

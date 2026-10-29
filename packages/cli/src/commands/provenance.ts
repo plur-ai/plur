@@ -1,6 +1,6 @@
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { shouldOutputJson, outputJson, outputText, exit } from '../output.js'
-import { summariseProvenance, renderProvenanceSummary } from '@plur-ai/core'
+import { summariseProvenance, renderProvenanceSummary, readHistoryForEngram } from '@plur-ai/core'
 
 /**
  * Where a memory came from (#980).
@@ -75,6 +75,15 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
 
   const summary = summariseProvenance(record as any)
   const saved = write ? await plur.writeProvenance(id) : undefined
+  // The story of this memory (0.23 explainer, scene 4): the sessions that
+  // saved it, and what its history records since. Ids and event names only.
+  const engram = await plur.getById(id)
+  const sessions = [...new Set(((engram as { sources?: Array<{ session_id?: unknown }> } | null)?.sources ?? [])
+    .map(s => s?.session_id).filter((s): s is string => typeof s === 'string' && s.length > 0))]
+  let history: Array<{ event: string; at: string }> = []
+  try {
+    history = readHistoryForEngram(plur.storageRoot, id).map(e => ({ event: e.event, at: e.timestamp }))
+  } catch { /* no readable history: reported as an empty list */ }
 
   if (shouldOutputJson(flags) || wantsRecord) {
     // Structured values, never the padded display lines. A consumer must not
@@ -84,6 +93,8 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       engram_id: id,
       ...summary.fields,
       ...(matchCount > 1 ? { match_count: matchCount, matched, other_matches: alternatives } : {}),
+      sessions,
+      history,
       not_recorded: summary.missing,
       complete: summary.complete,
       ...(wantsRecord ? { record } : {}),
@@ -93,6 +104,9 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   }
 
   const lines = [renderProvenanceSummary(summary)]
+  lines.push('')
+  lines.push(`  Saved in session: ${sessions.length > 0 ? sessions.join(', ') : 'not recorded'}`)
+  lines.push(`  History: ${history.length === 0 ? 'no events recorded' : history.map(h => `${h.event} ${h.at}`).join('; ')}`)
   if (matchCount > 1) {
     lines.push('')
     // Name the one that was picked. Quoting only the rejected candidates lets a

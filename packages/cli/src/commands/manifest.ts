@@ -56,6 +56,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       outputText(`Stored on Swarm: ${rec.reference}`)
       outputText(`  manifest sha256: ${rec.content_hash}`)
       if (rec.signer) outputText(`  signed by the gateway notary ${rec.signer} at ${rec.timestamp}`)
+      if (rec.expires_at) outputText(`  stored until about ${rec.expires_at} (when its postage stamp runs out)`)
       outputText(`  engrams: ${manifest.engrams.length}`)
       outputText('')
       outputText(`Check it from any machine:  plur verify --manifest ${rec.reference}`)

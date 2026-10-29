@@ -12,7 +12,7 @@ bought postage stamp).
 | # | Scene | What the viewer sees | What it promises | Checked by |
 |---|-------|----------------------|------------------|------------|
 | 1 | An agent works with its memory | A session starts with memories given to the agent; it looks something up; it saves a new memory with its reason | PLUR records which memories were in play, by session | session id, recall, saved id |
-| 2 | The session ends; its list is stored on Swarm | `plur_session_end` returns a Swarm reference and the notary's signature | The list is stored on a public, write-once network, signed with a timestamp — fingerprints only, never the text | reference returned, notary present, stored bytes name every id and contain no memory text |
+| 2 | The session ends; its list is stored on Swarm | `plur_session_end` returns a Swarm reference, the notary's signature, and how long the proof stays stored | The list is stored on a public, write-once network, signed with a timestamp — fingerprints only, never the text | reference returned, notary present, stored bytes name every id and contain no memory text |
 | 3 | Anyone with the reference can check it | On another machine with the same memories: `plur verify --manifest <ref>` → OK | Given / looked up / saved, each memory still matches; the notary signature checks out locally | exit 0, signature valid, roles injected / recalled / written, all MATCH |
 | 4 | What happened with one memory | `plur provenance <id>` | Where a memory came from: the session that saved it, and its history since | output names the session |
 | 5 | A quiet edit is caught | Someone changes only the reason behind one memory; verify again | The check names exactly the memory that changed | exit 1, one CHANGED, the edited one |

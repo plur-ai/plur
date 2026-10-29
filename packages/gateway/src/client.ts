@@ -157,14 +157,22 @@ export class ProvenanceGateway implements WormStore {
     })
     const reference = res?.reference
     if (typeof reference !== 'string' || !reference) throw new GatewayError('upload response has no reference', undefined, 'BAD_RESPONSE')
-    const sigs: NotarySignature[] = res.signatures ?? res.signed_document?.signatures ?? []
-    const sig = sigs[0]
+    let sigs: NotarySignature[] | undefined = res.signatures ?? res.signed_document?.signatures
+    // The live gateway answers an upload with the reference (and the stamp's
+    // expiry) only; the notary signature is on the stored document. Read it
+    // back once, best-effort: the upload has already succeeded either way.
+    if (sigs === undefined) {
+      try { sigs = (await this.document(reference)).signatures } catch { sigs = [] }
+    }
+    const sig = sigs?.[0]
+    const expiresAt = typeof res.expires_at === 'string' ? res.expires_at : undefined
     return {
       reference,
       content_hash: contentHash,
       ...(sig?.signer ? { signer: sig.signer } : {}),
       ...(sig?.signature ? { signature: sig.signature } : {}),
       ...(sig?.timestamp ? { timestamp: sig.timestamp } : {}),
+      ...(expiresAt ? { expires_at: expiresAt } : {}),
     }
   }
 

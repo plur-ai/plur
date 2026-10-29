@@ -216,6 +216,8 @@ export interface WormPutResult {
   signer?: string
   signature?: string
   timestamp?: string
+  /** When the stamp used runs out, as the store estimates it; the data can disappear after. */
+  expires_at?: string
 }
 
 export interface WormStore {

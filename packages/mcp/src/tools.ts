@@ -4711,6 +4711,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
               manifest_sha256: rec.content_hash,
               engrams: manifest.engrams.length,
               ...(rec.signer ? { notary: rec.signer, notarised_at: rec.timestamp } : {}),
+              ...(rec.expires_at ? { stored_until: rec.expires_at } : {}),
               verify: `plur verify --manifest ${rec.reference}`,
               note: plur.receiptsConfig().stamp_id
                 ? 'Fingerprints only. Stored with your configured stamp; it stays downloadable while that stamp is paid.'
