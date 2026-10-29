@@ -27,6 +27,9 @@ import { emitCheckpoint, signWithActorKey, keysDirFor } from '@plur-ai/core'
 export async function run(args: string[], flags: GlobalFlags & { signatures?: boolean }): Promise<void> {
   const si = args.indexOf('--session')
   const sessionId = si >= 0 && args[si + 1] && !args[si + 1].startsWith('--') ? args[si + 1] : undefined
+  // `--session` with no value is a mistake, not a request for a session-less
+  // checkpoint (code review of 0.23, R11).
+  if (si >= 0 && !sessionId) exit(1, 'plur checkpoint: --session needs a session id (plur checkpoint --session <id>).')
   // Write engine needed: emitCheckpoint calls appendHistory (a write).
   const plur = createPlur(flags)
   const status = await plur.status()

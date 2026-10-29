@@ -1,6 +1,6 @@
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { shouldOutputJson, outputJson, outputText, exit } from '../output.js'
-import { summariseProvenance, renderProvenanceSummary, readHistoryForEngram } from '@plur-ai/core'
+import { summariseProvenance, renderProvenanceSummary } from '@plur-ai/core'
 
 /**
  * Where a memory came from (#980).
@@ -82,7 +82,9 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     .map(s => s?.session_id).filter((s): s is string => typeof s === 'string' && s.length > 0))]
   let history: Array<{ event: string; at: string }> = []
   try {
-    history = readHistoryForEngram(plur.storageRoot, id).map(e => ({ event: e.event, at: e.timestamp }))
+    // getEngramHistory, not the raw log: it withholds history in remote-only
+    // folders and includes a team engram's old-form ids (code review of 0.23, R6).
+    history = plur.getEngramHistory(id).map(e => ({ event: e.event, at: e.timestamp }))
   } catch { /* no readable history: reported as an empty list */ }
 
   if (shouldOutputJson(flags) || wantsRecord) {

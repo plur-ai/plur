@@ -9569,7 +9569,7 @@ export class Plur {
       const engrams = await this._loadTargeted([updated.id])
       const idx = engrams.findIndex(e => e.id === updated.id)
       if (idx === -1) return null
-      const recordBefore = computeRecordHash(engrams[idx])
+      const recordBefore = `${engrams[idx].status ?? 'active'}:${computeRecordHash(engrams[idx])}`
       // A row still queued for a remote store that moves into a personal scope
       // takes the spelling a fresh write would (`_canonicalPersonalScope`, as
       // in learn), BEFORE the leak guard, so the guard scans the scope the
@@ -9630,7 +9630,7 @@ export class Plur {
             data: { reason: null, via: 'update' },
           })
         } catch { /* history is an audit trail, never a gate on the write */ }
-      } else if (computeRecordHash(toWrite) !== recordBefore) {
+      } else if (`${toWrite.status ?? 'active'}:${computeRecordHash(toWrite)}` !== recordBefore) {
         // A content edit through PLUR is recorded (code review of 0.23): it
         // used to leave no history event, so to `plur verify` it looked the
         // same as an edit made behind PLUR's back. Ids only; an update that
@@ -11278,6 +11278,18 @@ export class Plur {
       if (removed > 0) {
         // Removing retired engrams IS this method (audit #794 shrink guard).
         await this._writeEngrams(this.paths.engrams, active, { allowShrink: true })
+        // Recorded like every other store change PLUR makes (code review of
+        // 0.23, R2), so `plur verify` can tell it from an edit behind PLUR's
+        // back. Ids only.
+        const kept = new Set(active.map(e => e.id))
+        try {
+          this._appendHistory({
+            event: 'store_compacted',
+            engram_id: '',
+            timestamp: new Date().toISOString(),
+            data: { engram_ids: engrams.filter(e => !kept.has(e.id)).map(e => e.id) },
+          })
+        } catch { /* history is an audit trail, never a gate on the write */ }
         await this._syncIndex()
       }
       return { removed, remaining: active.length }

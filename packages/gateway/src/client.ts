@@ -49,6 +49,18 @@ export function isDefaultGateway(url: string | undefined): boolean {
  * caller cannot verify unless the user explicitly trusts the notary the
  * gateway names about itself (`--trust-gateway-notary`).
  */
+/**
+ * Whether the signer a gateway reports for an upload is the notary expected
+ * for that gateway (code review of 0.23, R5). A comparison of addresses only —
+ * a claim, not a verification: the signature itself is checked by `plur
+ * verify --manifest`. `expected` is null when no notary is known for the
+ * gateway (not the default one, nothing pinned).
+ */
+export function notaryClaim(gatewayUrl: string | undefined, signer: string, pinned?: string): { expected: boolean | null; address: string } {
+  const exp = expectedNotaryFor(gatewayUrl, pinned)
+  return { expected: exp ? exp.address.toLowerCase() === signer.toLowerCase() : null, address: signer }
+}
+
 export function expectedNotaryFor(
   gatewayUrl: string | undefined,
   pinned: string | undefined,
@@ -161,8 +173,22 @@ export class ProvenanceGateway implements WormStore {
     // The live gateway answers an upload with the reference (and the stamp's
     // expiry) only; the notary signature is on the stored document. Read it
     // back once, best-effort: the upload has already succeeded either way.
+    // On the free tier (about 3 requests a minute) this read-back can be the
+    // request over the limit: a short Retry-After is waited out once, a long
+    // one is not, and the result says the signature is still to be read
+    // (code review of 0.23, R4) — `plur verify --manifest` reads it later.
+    let pending = false
     if (sigs === undefined) {
-      try { sigs = (await this.document(reference)).signatures } catch { sigs = [] }
+      for (let attempt = 0; attempt < 2 && sigs === undefined; attempt++) {
+        try {
+          sigs = (await this.document(reference)).signatures ?? []
+        } catch (err) {
+          const ra = err instanceof GatewayError && err.status === 429 ? err.retryAfter : undefined
+          if (attempt === 0 && ra !== undefined && ra <= 5) { await new Promise(r => setTimeout(r, ra * 1000)); continue }
+          break
+        }
+      }
+      if (sigs === undefined) { sigs = []; pending = true }
     }
     const sig = sigs?.[0]
     const expiresAt = typeof res.expires_at === 'string' ? res.expires_at : undefined
@@ -173,6 +199,7 @@ export class ProvenanceGateway implements WormStore {
       ...(sig?.signature ? { signature: sig.signature } : {}),
       ...(sig?.timestamp ? { timestamp: sig.timestamp } : {}),
       ...(expiresAt ? { expires_at: expiresAt } : {}),
+      ...(pending ? { signature_pending: true } : {}),
     }
   }
 

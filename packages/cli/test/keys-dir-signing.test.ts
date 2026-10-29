@@ -77,3 +77,20 @@ describe('plur checkpoint when the checkpoint line cannot be written (0.23 code 
     expect(cp.stdout).not.toMatch(/anchor this/)
   })
 })
+
+describe('plur checkpoint --session with no value (second review, R11)', () => {
+  it('is refused, not written as a checkpoint without a session', async () => {
+    const { mkdtempSync, writeFileSync, rmSync } = await import('node:fs')
+    const { tmpdir } = await import('node:os')
+    const { join: j } = await import('node:path')
+    const { spawnSync } = await import('node:child_process')
+    const { builtCliPath } = await import('./helpers/built-cli.js')
+    const store = mkdtempSync(j(tmpdir(), 'plur-cp-nosess-'))
+    try {
+      writeFileSync(j(store, 'config.yaml'), 'backend: yaml\n')
+      writeFileSync(j(store, 'engrams.yaml'), 'engrams: []\n')
+      const r = spawnSync(process.execPath, [builtCliPath(j(__dirname, '..')), 'checkpoint', '--session'], { env: { ...process.env, PLUR_PATH: store }, encoding: 'utf8' })
+      expect(r.status, r.stdout + r.stderr).not.toBe(0)
+    } finally { rmSync(store, { recursive: true, force: true }) }
+  })
+})

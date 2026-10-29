@@ -17,6 +17,8 @@ export interface HistoryEvent {
     | 'recall_returned'
     /** A sync pull changed memories this machine did not write (review 1). `data.engram_ids` names them; `data.cause`. */
     | 'store_synced'
+    /** compact() removed retired rows (code review of 0.23, R2). `data.engram_ids` names them. */
+    | 'store_compacted'
   /**
    * Engram this event belongs to. Session-level events
    * (`session_scope_changed`) carry no engram — they use `''`, which by
@@ -789,17 +791,22 @@ export function appendHistoryStamped(
  * keeps the log one chain in file order; the event keeps its own timestamp.
  */
 function targetMonthFile(historyDir: string, ownMonth: string): string {
+  // Only months after this one and no later than the current month count: a
+  // file stamped in the future (a skewed clock, a caller's timestamp) must not
+  // capture every later append (code review of 0.23, R3). That is normally
+  // zero or one stat — no directory listing on the hot path (R8).
+  const current = new Date().toISOString().slice(0, 7)
   let newest = ownMonth
-  try {
-    for (const f of fs.readdirSync(historyDir)) {
-      if (!f.endsWith('.jsonl')) continue
-      const m = f.slice(0, -'.jsonl'.length)
-      if (m > newest) {
-        try { if (fs.statSync(join(historyDir, f)).size > 0) newest = m } catch { /* vanished */ }
-      }
-    }
-  } catch { /* unreadable dir: the append below reports it */ }
+  for (let m = nextMonth(ownMonth); m <= current; m = nextMonth(m)) {
+    try { if (fs.statSync(join(historyDir, `${m}.jsonl`)).size > 0) newest = m } catch { /* no file for that month */ }
+  }
   return join(historyDir, `${newest}.jsonl`)
+}
+
+function nextMonth(ym: string): string {
+  const [y, m] = ym.split('-').map(Number)
+  if (!Number.isFinite(y) || !Number.isFinite(m)) return '9999-99'
+  return m >= 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, '0')}`
 }
 
 /** Number of memory groups a checkpoint fingerprints separately (review 2). */
@@ -848,10 +855,15 @@ function dropTornTail(historyDir: string, filePath: string): void {
   // growing is not dead and is left alone (code review of 0.23, finding 7) —
   // the kernel finishes that write before ours lands.
   try {
-    const size0 = fs.statSync(filePath).size
-    const until = Date.now() + 25
-    while (Date.now() < until) {
-      if (fs.statSync(filePath).size !== size0) return
+    const st0 = fs.statSync(filePath)
+    // A fragment untouched for 2 s is a dead write. A fresher one is watched
+    // for a few ms (sleeping, not spinning: code review of 0.23, R8).
+    if (Date.now() - st0.mtimeMs < 2000) {
+      const nap = new Int32Array(new SharedArrayBuffer(4))
+      for (let i = 0; i < 5; i++) {
+        Atomics.wait(nap, 0, 0, 5)
+        if (fs.statSync(filePath).size !== st0.size) return
+      }
     }
   } catch { return }
   if (!endsMidLine(filePath)) return
@@ -1075,10 +1087,7 @@ export function attestStore(engramsPath: string): { store_hash: string; engram_c
   // alter, and nothing a read moves.
   const parsed = yaml.load(raw)
   const engram_count = countActive(parsed, engramsPath)
-  const list = (Array.isArray(parsed) ? parsed : (parsed as { engrams: unknown[] }).engrams) as Array<Record<string, unknown> | null>
-  const records = list
-    .filter((e): e is Record<string, unknown> => e !== null && typeof e === 'object')
-    .map(e => ({ id: String(e.id ?? ''), status: String(e.status ?? 'active'), record: computeRecordHash(e as unknown as Engram) }))
+  const records = storeRecords(parsed)
     .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : a.record < b.record ? -1 : a.record > b.record ? 1 : 0))
   const store_hash = createHash('sha256').update(canonicalBytesOf({ kind: 'plur/store-records/v1', records })).digest('hex')
   // The same records split into STORE_BUCKETS groups by a hash of the id, each
@@ -1099,17 +1108,25 @@ export function attestStore(engramsPath: string): { store_hash: string; engram_c
 export function storeRecordMap(engramsPath: string): Map<string, string> | null {
   try {
     const parsed = yaml.load(fs.readFileSync(engramsPath, 'utf8'))
-    const list = (Array.isArray(parsed) ? parsed : (parsed as { engrams?: unknown[] } | null)?.engrams) as Array<Record<string, unknown> | null> | undefined
+    const list = Array.isArray(parsed) ? parsed : (parsed as { engrams?: unknown[] } | null)?.engrams
     if (!Array.isArray(list)) return null
-    const out = new Map<string, string>()
-    for (const e of list) {
-      if (!e || typeof e !== 'object' || typeof e.id !== 'string') continue
-      out.set(e.id, `${String(e.status ?? 'active')}:${computeRecordHash(e as unknown as Engram)}`)
-    }
-    return out
+    return new Map(storeRecords(parsed).map(r => [r.id, `${r.status}:${r.record}`]))
   } catch {
     return null
   }
+}
+
+/**
+ * Each engram reduced to what a checkpoint attests: id, status, record hash.
+ * One definition for attestStore and storeRecordMap, so a pull is named in
+ * exactly the terms verify fingerprints (code review of 0.23, R9).
+ */
+function storeRecords(parsed: unknown): Array<{ id: string; status: string; record: string }> {
+  const list = (Array.isArray(parsed) ? parsed : (parsed as { engrams?: unknown[] } | null)?.engrams) as Array<Record<string, unknown> | null> | undefined
+  if (!Array.isArray(list)) return []
+  return list
+    .filter((e): e is Record<string, unknown> => e !== null && typeof e === 'object')
+    .map(e => ({ id: String(e.id ?? ''), status: String(e.status ?? 'active'), record: computeRecordHash(e as unknown as Engram) }))
 }
 
 /**

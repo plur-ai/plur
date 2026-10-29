@@ -114,29 +114,32 @@ export type ChainVerifyOutcome =
 
 interface Scanned { month: string; index: number; event: HistoryEvent }
 
-/** Every engram id a history event names: its own, and the ones its data lists or points at. */
+/**
+ * Every engram id a history event names: its own, and any id-shaped string
+ * anywhere in its data (code review of 0.23, R7) — event writers and verify
+ * share no field list that could drift. Ids from sync pulls of stores with
+ * free-form ids are named in `data.engram_ids`, read here verbatim.
+ */
 function eventEngramIds(ev: HistoryEvent): string[] {
   const out: string[] = []
   if (typeof ev.engram_id === 'string' && ev.engram_id) out.push(ev.engram_id)
   const d = (ev.data ?? {}) as Record<string, unknown>
-  for (const key of ['engram_ids', 'ids', 'supersedes', 'merged', 'sources']) {
-    const v = d[key]
-    if (Array.isArray(v)) {
-      for (const x of v) if (typeof x === 'string') out.push(x)
-    } else if (typeof v === 'string') {
-      out.push(v)
-    }
+  if (Array.isArray(d.engram_ids)) for (const x of d.engram_ids) if (typeof x === 'string') out.push(x)
+  const walk = (v: unknown, depth: number): void => {
+    if (depth > 6) return
+    if (typeof v === 'string') { for (const m of v.match(ENGRAM_ID_SHAPE) ?? []) out.push(m) }
+    else if (Array.isArray(v)) for (const x of v) walk(x, depth + 1)
+    else if (v && typeof v === 'object') for (const x of Object.values(v)) walk(x, depth + 1)
   }
-  for (const key of ['from', 'to', 'target', 'target_id', 'merged_into', 'superseded_by', 'replaced_by', 'old_id', 'new_id', 'absorbed']) {
-    const v = d[key]
-    if (typeof v === 'string') out.push(v)
-  }
+  walk(d, 0)
   return out
 }
 
+const ENGRAM_ID_SHAPE = /\b(?:ENG|ABS|META)-[A-Za-z0-9-]+/g
+
 /** History events that change a memory's content, and so explain a store change after a checkpoint. */
 const CONTENT_EVENTS: ReadonlySet<string> = new Set([
-  'store_synced',
+  'store_synced', 'store_compacted',
   'engram_created', 'engram_updated', 'engram_merged', 'engram_retired', 'engram_promoted',
   'engram_rescoped', 'engram_rekeyed', 'engram_duplicate_absorbed', 'procedure_evolved',
   'scope_promoted', 'buffer_pruned', 'engram_decremented',

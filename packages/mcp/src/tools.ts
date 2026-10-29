@@ -7,7 +7,7 @@ import type { LlmFunction, MetaField, TensionStatus, RerankerEvalResult, History
 import { RemoteOnlyWriteError, remoteOnlySessionLine, remoteOnlyUnservedNotice } from '@plur-ai/core'
 import { enterpriseRecoveryHint } from '@plur-ai/core'
 import { emitCheckpoint, signWithActorKey, keysDirFor } from '@plur-ai/core'
-import { anchorManifest } from '@plur-ai/gateway'
+import { anchorManifest, notaryClaim } from '@plur-ai/gateway'
 import { recordTelemetry } from './telemetry.js'
 import { VERSION } from './version.js'
 import { startBackgroundDiscovery, discoverySummary, discoveryWarnings, serverEndpointKeys, isDiscoveryEnabled } from './background-discovery.js'
@@ -748,6 +748,23 @@ const _sessionTelemetry = new Map<string, SessionTelemetry>()
 
 /** TTL for unclosed sessions: 8 hours. Prevents unbounded memory if session_end is never called. */
 const SESSION_TTL_MS = 8 * 60 * 60 * 1000
+
+/** How a session-end upload reports its notary: a claim checked against the expected address only. */
+function notaryFields(rec: { signer?: string; timestamp?: string; signature_pending?: boolean }, gatewayUrl: string | undefined): Record<string, unknown> {
+  if (!rec.signer) {
+    return rec.signature_pending
+      ? { notary_pending: 'the notary signature is on the stored document but could not be read back yet (gateway rate limit); plur verify --manifest reads it' }
+      : {}
+  }
+  const claim = notaryClaim(gatewayUrl, rec.signer)
+  if (claim.expected === true) return { notary: rec.signer, notarised_at: rec.timestamp }
+  return {
+    notary_claimed: rec.signer,
+    notary_check: claim.expected === false
+      ? 'NOT the expected notary for this gateway — do not treat this upload as notarised'
+      : 'no notary is known for this gateway; check with plur verify --manifest <ref> --notary <address>',
+  }
+}
 
 /**
  * Expired sessions whose telemetry an id-only sweep already dropped, but whose
@@ -4710,7 +4727,10 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
               reference: rec.reference,
               manifest_sha256: rec.content_hash,
               engrams: manifest.engrams.length,
-              ...(rec.signer ? { notary: rec.signer, notarised_at: rec.timestamp } : {}),
+              // Named as the notary only when the signer is the one expected for
+              // this gateway (code review of 0.23, R5); the signature itself is
+              // checked by `plur verify --manifest`.
+              ...notaryFields(rec, plur.receiptsConfig().gateway_url),
               ...(rec.expires_at ? { stored_until: rec.expires_at } : {}),
               verify: `plur verify --manifest ${rec.reference}`,
               note: plur.receiptsConfig().stamp_id

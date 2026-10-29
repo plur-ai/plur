@@ -97,14 +97,19 @@ describe('review 3: a checkpoint that was not written has no hash', () => {
 describe('review 5: an event stamped before the newest month joins the newest month', () => {
   it('appends to the newest month file and links to its tail, so nothing forks', () => {
     const root = fresh()
-    appendHistory(root, { event: 'engram_created', engram_id: 'ENG-OCT', timestamp: '2026-10-31T23:59:58.000Z', data: {} })
-    appendHistory(root, { event: 'engram_created', engram_id: 'ENG-NOV', timestamp: '2026-11-01T00:00:00.000Z', data: {} })
+    // Relative to today: the boundary between last month and this one.
+    const now = new Date()
+    const cur = now.toISOString().slice(0, 7)
+    const prevDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 0, 23, 59, 58))
+    const prev = prevDate.toISOString().slice(0, 7)
+    appendHistory(root, { event: 'engram_created', engram_id: 'ENG-PREV', timestamp: prevDate.toISOString(), data: {} })
+    appendHistory(root, { event: 'engram_created', engram_id: 'ENG-CUR', timestamp: `${cur}-01T00:00:00.000Z`, data: {} })
     // A writer that took its timestamp before midnight and got the lock after.
-    appendHistory(root, { event: 'engram_created', engram_id: 'ENG-LATE', timestamp: '2026-10-31T23:59:59.999Z', data: {} })
+    appendHistory(root, { event: 'engram_created', engram_id: 'ENG-LATE', timestamp: `${prev}-${String(prevDate.getUTCDate()).padStart(2, '0')}T23:59:59.999Z`, data: {} })
     const out = verifyChain(root)
     expect(out.status, JSON.stringify(out)).toBe('verified')
-    const nov = readFileSync(join(root, 'history', '2026-11.jsonl'), 'utf8')
-    expect(nov, 'the late event was not written after the November tail').toContain('ENG-LATE')
+    const newest = readFileSync(join(root, 'history', `${cur}.jsonl`), 'utf8')
+    expect(newest, 'the late event was not written after the newest month tail').toContain('ENG-LATE')
   })
 })
 
@@ -153,5 +158,76 @@ describe('review 1, end to end: two machines syncing through a git remote', () =
     const out = verifyChain(a)
     expect(out.status, JSON.stringify(out)).toBe('verified')
     void pa
+  })
+})
+
+describe('second review of the fix branch', () => {
+  it('R1: an un-retire through PLUR is a recorded change', async () => {
+    const { root, plur } = await storeWith(3)
+    const id = load(root).engrams[0].id
+    await plur.forget(id)
+    emitCheckpoint(root, join(root, 'engrams.yaml'), 'session_end')
+    const row = load(root).engrams.find(e => e.id === id)!
+    await plur.updateEngram({ ...(await plur.getById(id))!, ...row, status: 'active' } as any)
+    expect(load(root).engrams.find(e => e.id === id)!.status, 'precondition: un-retired').toBe('active')
+    const out = verifyChain(root)
+    expect(out.status, JSON.stringify(out)).toBe('verified')
+  })
+
+  it('R2: compact() records the retired memories it removes', async () => {
+    const { root, plur } = await storeWith(3)
+    const id = load(root).engrams[0].id
+    await plur.forget(id)
+    emitCheckpoint(root, join(root, 'engrams.yaml'), 'session_end')
+    await plur.compact()
+    expect(load(root).engrams.some(e => e.id === id), 'precondition: compacted away').toBe(false)
+    const out = verifyChain(root)
+    expect(out.status, JSON.stringify(out)).toBe('verified')
+  })
+
+  it('R3: a future-stamped month file does not capture later appends', () => {
+    const root = fresh()
+    const now = new Date().toISOString()
+    appendHistory(root, { event: 'engram_created', engram_id: 'ENG-NOW', timestamp: now, data: {} })
+    appendHistory(root, { event: 'engram_created', engram_id: 'ENG-SKEW', timestamp: '2099-03-01T00:00:00.000Z', data: {} })
+    appendHistory(root, { event: 'engram_created', engram_id: 'ENG-AFTER', timestamp: new Date().toISOString(), data: {} })
+    const own = readFileSync(join(root, 'history', `${now.slice(0, 7)}.jsonl`), 'utf8')
+    expect(own, 'an event stamped now went into the far-future file').toContain('ENG-AFTER')
+  })
+
+  it('R7: an event naming a memory under any key explains its group', async () => {
+    const { root } = await storeWith(3)
+    emitCheckpoint(root, join(root, 'engrams.yaml'), 'session_end')
+    const doc = load(root)
+    doc.engrams[1].statement = 'Changed by an operation that names it in a nested field'
+    save(root, doc)
+    appendHistory(root, { event: 'engram_updated', engram_id: '', timestamp: new Date().toISOString(), data: { detail: { moved: { to: doc.engrams[1].id } } } })
+    const out = verifyChain(root)
+    expect(out.status, JSON.stringify(out)).toBe('verified')
+  })
+
+  it('R9: a numeric id changed by a pull is still named', async () => {
+    const { storeRecordMap, recordStoreSync } = await import('../src/history.js')
+    const root = fresh()
+    writeFileSync(join(root, 'engrams.yaml'), 'engrams:\n  - id: 12345\n    statement: numeric id\n    type: behavioral\n    status: active\n')
+    const before = storeRecordMap(join(root, 'engrams.yaml'))
+    writeFileSync(join(root, 'engrams.yaml'), 'engrams:\n  - id: 12345\n    statement: numeric id, edited on the other machine\n    type: behavioral\n    status: active\n')
+    recordStoreSync(root, before, 'sync-pull')
+    const month = readdirSync(join(root, 'history')).filter(f => f.endsWith('.jsonl'))[0]
+    expect(readFileSync(join(root, 'history', month), 'utf8')).toContain('"12345"')
+  })
+})
+
+describe('second review: a relative PLUR_KEYS_DIR (R10)', () => {
+  it('resolves against the store, not the process working directory', async () => {
+    const { keysDirFor } = await import('../src/actor-keys.js')
+    const prev = process.env.PLUR_KEYS_DIR
+    process.env.PLUR_KEYS_DIR = 'my-keys'
+    try {
+      expect(keysDirFor('/stores/a')).toBe(join('/stores/a', 'my-keys'))
+    } finally {
+      if (prev === undefined) delete process.env.PLUR_KEYS_DIR
+      else process.env.PLUR_KEYS_DIR = prev
+    }
   })
 })

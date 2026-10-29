@@ -23,6 +23,8 @@ export interface AnchorRecord {
   timestamp?: string
   /** When the stamp runs out (gateway estimate); the proof can disappear after. */
   expires_at?: string
+  /** The notary signature was not read back yet; `plur verify --manifest` reads it. */
+  signature_pending?: boolean
   session_id: string
   uploaded_at: string
 }
@@ -46,6 +48,7 @@ export async function anchorManifest(
     ...(put.signature ? { signature: put.signature } : {}),
     ...(put.timestamp ? { timestamp: put.timestamp } : {}),
     ...(put.expires_at ? { expires_at: put.expires_at } : {}),
+    ...(put.signature_pending ? { signature_pending: true } : {}),
     session_id: manifest.session_id,
     uploaded_at: new Date().toISOString(),
   }

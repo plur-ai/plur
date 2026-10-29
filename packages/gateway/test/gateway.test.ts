@@ -133,3 +133,42 @@ describe('the real gateway answers an upload with the reference only (0.23 smoke
     expect(calls).toEqual(['POST /api/v1/data/', `GET /api/v1/data/${'ef'.repeat(32)}`])
   })
 })
+
+describe('second review: the read-back on the free tier (R4)', () => {
+  function gw(readback: Array<{ status: number; body: unknown; headers?: Record<string, string> }>) {
+    const calls: string[] = []
+    const impl = (async (url: string | URL | Request, init?: RequestInit) => {
+      const m = init?.method ?? 'GET'
+      calls.push(m)
+      if (m === 'POST') return new Response(JSON.stringify({ reference: 'ef'.repeat(32), expires_at: '2026-10-30T00:00:00Z' }), { status: 200 })
+      const r = readback.shift()!
+      return new Response(JSON.stringify(r.body), { status: r.status, headers: r.headers })
+    }) as typeof fetch
+    return { calls, impl }
+  }
+  const signed = { data: 'e30=', content_hash: 'x', signatures: [{ signer: '0x' + '11'.repeat(20), signature: '0x' + '22'.repeat(65), timestamp: 't' }] }
+
+  it('a 429 with a short Retry-After is waited out once', async () => {
+    const g = gw([{ status: 429, body: { detail: 'slow down' }, headers: { 'retry-after': '1' } }, { status: 200, body: signed }])
+    const put = await new ProvenanceGateway('https://gw.test', { fetchImpl: g.impl, stampId: 'cd'.repeat(32) }).put(Buffer.from('{}'))
+    expect(put.signer).toBe(signed.signatures[0].signer)
+    expect(g.calls).toEqual(['POST', 'GET', 'GET'])
+  })
+
+  it('when the signature cannot be read back the upload still succeeds and says so', async () => {
+    const g = gw([{ status: 429, body: { detail: 'slow down' }, headers: { 'retry-after': '60' } }])
+    const put = await new ProvenanceGateway('https://gw.test', { fetchImpl: g.impl, stampId: 'cd'.repeat(32) }).put(Buffer.from('{}'))
+    expect(put.reference).toBe('ef'.repeat(32))
+    expect(put.signer).toBeUndefined()
+    expect(put.signature_pending, 'a missing read-back was not reported').toBe(true)
+  })
+})
+
+describe('second review: who counts as the notary at upload time (R5)', () => {
+  it('notaryClaim says whether the signer is the expected notary — a claim, not a verification', async () => {
+    const { notaryClaim, DEFAULT_GATEWAY_URL, DEFAULT_NOTARY_ADDRESS } = await import('../src/index.js')
+    expect(notaryClaim(DEFAULT_GATEWAY_URL, DEFAULT_NOTARY_ADDRESS.toLowerCase())).toEqual({ expected: true, address: DEFAULT_NOTARY_ADDRESS.toLowerCase() })
+    expect(notaryClaim(DEFAULT_GATEWAY_URL, '0x' + '99'.repeat(20)).expected).toBe(false)
+    expect(notaryClaim('https://other.example', '0x' + '99'.repeat(20)).expected).toBe(null)
+  })
+})
