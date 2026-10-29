@@ -428,7 +428,18 @@ ours. `spec/examples/check.py` runs those checks.
 
 ---
 
-## Proving what an agent had in mind
+## Proving what an agent had in mind (experimental)
+
+> **Experimental in 0.23.** Everything in this section is a test release: it
+> works and is tested end to end, but the manifest format, the provenance
+> gateway and its notary may change. Every manifest upload and check prints a
+> line saying so (`experimental` in JSON output).
+>
+> **None of it needs Swarm.** The hash-chained history, checkpoints (signed
+> with your own key after `plur keys init`), and session manifests written to
+> a file and checked with `plur verify --manifest <file>` all stay on your
+> machine. Swarm storage only adds a copy that someone else can fetch, signed
+> and timestamped by the gateway's notary.
 
 Since 0.23 the history log is hash-chained and checkpoints can be signed with
 the writer's own key, so `plur verify` can say whether the history was edited
@@ -458,7 +469,7 @@ The checkpoint is included when the manifest is built by `plur_session_end`,
 which writes the checkpoint first. A manifest built later with
 `plur manifest --session <id>` does not carry it.
 
-### Storing it on Swarm (opt-in)
+### Storing it on Swarm (opt-in, experimental)
 
 ```yaml
 # ~/.plur/config.yaml

@@ -4,6 +4,13 @@
 
 Memory you can prove. (#1790)
 
+**Experimental.** Provenance in 0.23 (the hash-chained history, checkpoints,
+session manifests) and storing manifests on Swarm are a test release. They
+work and are tested end to end, but the manifest format, the provenance
+gateway and its notary may still change, and Swarm storage runs through a
+gateway that is itself moving networks. Every manifest upload and check says
+so. Nothing leaves the machine unless you turn Swarm storage on.
+
 ### Provable history
 
 - The history log is hash-chained: every event carries its own hash and the
@@ -23,7 +30,7 @@ Memory you can prove. (#1790)
 - Together these are the provenance ladder (#1047): from recorded origin, to a
   history whose edits are visible, to checkpoints a named actor signed.
 
-### Session memory manifest
+### Session memory manifest (experimental)
 
 - `plur manifest --session <id>` lists the memories an agent had in context in
   one session — given at injection, returned to a recall, or saved — with a
@@ -39,7 +46,7 @@ Memory you can prove. (#1790)
   `--trust-gateway-notary`. Memories saved from session-end suggestions are
   on that session's list. (#1657)
 
-### Swarm storage (opt-in)
+### Swarm storage (opt-in, experimental)
 
 - With `receipts.store: swarm` in `config.yaml`, ending a session stores its
   manifest on Swarm through the provenance gateway's free tier, signed by the

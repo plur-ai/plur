@@ -16,7 +16,7 @@ import { writeFileSync } from 'fs'
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { shouldOutputJson, outputJson, outputText, exit } from '../output.js'
 import { canonicalManifestBytes } from '@plur-ai/core'
-import { anchorManifest, notaryClaim } from '@plur-ai/gateway'
+import { anchorManifest, notaryClaim, EXPERIMENTAL_NOTE } from '@plur-ai/gateway'
 
 const USAGE = 'Usage: plur manifest --session <id> [--out <file>] [--anchor] [--json]'
 
@@ -53,7 +53,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     if (shouldOutputJson(flags)) {
       // The same notary claim the text and session end report (third review).
       const claim = rec.signer ? notaryClaim(receipts.gateway_url, rec.signer) : null
-      outputJson({ ...rec, ...(claim ? { notary_expected: claim.expected } : {}), manifest })
+      outputJson({ ...rec, ...(claim ? { notary_expected: claim.expected } : {}), manifest, experimental: EXPERIMENTAL_NOTE })
     } else {
       outputText(`Stored on Swarm: ${rec.reference}`)
       outputText(`  manifest sha256: ${rec.content_hash}`)
@@ -71,6 +71,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       outputText('')
       outputText(`Check it from any machine:  plur verify --manifest ${rec.reference}`)
       if (!receipts.stamp_id) outputText('A free-tier upload stays downloadable for about a day; set receipts.stamp_id to a bought stamp to keep uploads longer.')
+      outputText(EXPERIMENTAL_NOTE)
     }
   } catch (err) {
     exit(1, `plur manifest: the upload failed — ${(err as Error).message}. Nothing was stored; the manifest is unchanged locally.`)

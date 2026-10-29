@@ -25,15 +25,16 @@ import { createHash } from 'crypto'
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { shouldOutputJson, outputJson, outputText } from '../output.js'
 import type { SessionManifest } from '@plur-ai/core'
-import { ProvenanceGateway, DEFAULT_GATEWAY_URL, expectedNotaryFor } from '@plur-ai/gateway'
+import { ProvenanceGateway, DEFAULT_GATEWAY_URL, EXPERIMENTAL_NOTE, expectedNotaryFor } from '@plur-ai/gateway'
 import { checkNotarySignature, type NotaryCheck } from '../lib/notary.js'
 
 function cannot(flags: GlobalFlags, reason: string): void {
-  if (shouldOutputJson(flags)) outputJson({ status: 'cannot_verify', reason })
+  if (shouldOutputJson(flags)) outputJson({ status: 'cannot_verify', reason, experimental: EXPERIMENTAL_NOTE })
   else {
     outputText('plur verify --manifest: CANNOT VERIFY')
     outputText(`  reason: ${reason}`)
     outputText('  This is NOT a clean result: nothing is asserted either way.')
+    outputText(`  ${EXPERIMENTAL_NOTE}`)
   }
   process.exitCode = 2
 }
@@ -101,7 +102,7 @@ export async function runManifest(target: string | undefined, args: string[], fl
   }
   const ok = v.counts.CHANGED === 0 && integrityOk
   if (shouldOutputJson(flags)) {
-    outputJson({ status: ok ? 'verified' : 'broken', source, integrity, ...v })
+    outputJson({ status: ok ? 'verified' : 'broken', source, integrity, ...v, experimental: EXPERIMENTAL_NOTE })
   } else {
     outputText(ok ? 'plur verify --manifest: OK' : 'plur verify --manifest: BROKEN')
     outputText(`  session : ${v.session_id}`)
@@ -123,6 +124,7 @@ export async function runManifest(target: string | undefined, args: string[], fl
     outputText('')
     outputText('  These engrams were in the agent\'s context when it acted. The manifest')
     outputText('  does not say they caused anything.')
+    outputText(`  ${EXPERIMENTAL_NOTE}`)
   }
   process.exitCode = ok ? 0 : 1
 }

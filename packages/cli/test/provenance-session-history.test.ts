@@ -1,6 +1,6 @@
 /**
  * `plur provenance <id>` says which session saved a memory and what happened
- * to it since (0.23 explainer, scene 4: docs/provenance-explainer.md).
+ * to it since (0.23 explainer, scene 4; the storyboard lives in plur-space, content/provenance-explainer/storyboard.md).
  */
 import { describe, it, expect, afterEach } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'

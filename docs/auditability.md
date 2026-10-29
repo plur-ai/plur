@@ -1,5 +1,8 @@
 # Auditability
 
+> **Experimental in 0.23.** The ladder works and is tested end to end, but its
+> formats may still change. All of it is local; nothing here needs a network.
+
 PLUR provides a three-level provenance ladder over the engram store. Each level
 extends the previous one without replacing it.
 
