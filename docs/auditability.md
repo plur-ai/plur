@@ -63,15 +63,19 @@ argument beyond this store.
 Each acting identity can have an Ed25519 key pair:
 
 ```
-Private key: ~/.plur/keys/<identity>.key   — PKCS#8 DER, mode 0600 (identity percent-encoded, e.g. agent%3Amiles.key)
+Private key: $PLUR_KEYS_DIR/<identity>.key, else <store-root>/keys/<identity>.key — PKCS#8 DER, mode 0600 (identity percent-encoded, e.g. agent%3Amiles.key)
 Public key:  <store-root>/keys.yaml        — SPKI DER base64, per-identity registry
 ```
 
 Generate a key pair:
 
 ```
-plur keys init [--identity <name>] [--keys-dir <dir>]
+plur keys init [--identity <name>]
 ```
+
+The private key goes to `PLUR_KEYS_DIR` if set, else `<store-root>/keys`, the
+same folder `plur checkpoint` and session end sign from. There is no
+`--keys-dir` flag: set `PLUR_KEYS_DIR` for every PLUR process instead.
 
 It needs an identity: `--identity`, or `provenance.identity` in config.yaml.
 Without one it refuses, since checkpoints are only signed for a configured

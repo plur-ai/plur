@@ -33,6 +33,9 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const CLI = join(ROOT, 'packages/cli/dist/index.js')
 const GATEWAY = process.env.PLUR_SMOKE_GATEWAY || 'https://provenance-gateway.datafund.io'
 const STAMP = process.env.PLUR_SMOKE_STAMP || ''
+// A downloaded list must be signed by a notary the verifier names itself:
+// pinned here, or for the default gateway its known notary (0.23 review, finding 9).
+const NOTARY_ARGS = process.env.PLUR_SMOKE_NOTARY ? ['--notary', process.env.PLUR_SMOKE_NOTARY] : []
 const RUN = `smoke-${Date.now().toString(36)}`
 
 const temps: string[] = []
@@ -136,7 +139,7 @@ async function main(): Promise<number> {
   cpSync(join(agent, 'history'), join(auditor, 'history'), { recursive: true })
   scene(3, 'Anyone with the reference can check it',
     'Weeks later someone asks what the agent knew. On another machine holding the same memories, one command fetches the list from Swarm, checks the notary signature, and checks every memory.')
-  const v = plur(auditor, ['verify', '--manifest', ref])
+  const v = plur(auditor, ['verify', '--manifest', ref, ...NOTARY_ARGS])
   check(v.code === 0 && v.json?.status === 'verified', 'verify by reference: OK (exit 0)', `exit ${v.code}`)
   check(v.json?.integrity?.notary?.signature_ok === true, 'the notary signature checks out', v.json?.integrity?.notary?.recovered ?? '')
   const roles = new Map<string, string>((v.json?.results ?? []).map((r: any) => [r.id, r.role]))
@@ -156,7 +159,7 @@ async function main(): Promise<number> {
     'If someone later changes a memory — even only the reason behind it — the check says exactly which one changed.')
   const path = join(auditor, 'engrams.yaml')
   writeFileSync(path, readFileSync(path, 'utf8').replace('agreed in review', 'decided alone'))
-  const v2 = plur(auditor, ['verify', '--manifest', ref])
+  const v2 = plur(auditor, ['verify', '--manifest', ref, ...NOTARY_ARGS])
   const changed = (v2.json?.results ?? []).filter((r: any) => r.status === 'CHANGED').map((r: any) => r.id)
   check(v2.code === 1, 'verify says changed (exit 1)', `exit ${v2.code}`)
   check(changed.length === 1 && changed[0] === savedId, 'only the edited memory is flagged', changed.join(', '))
@@ -187,7 +190,7 @@ async function main(): Promise<number> {
   scene(8, 'A store that does not hold the memories cannot vouch for them',
     'Checking needs the memories themselves; a stranger with only the reference learns that it is signed, not what it says.')
   const stranger = tempStore('stranger', 'backend: yaml\n')
-  const s = plur(stranger, ['verify', '--manifest', ref])
+  const s = plur(stranger, ['verify', '--manifest', ref, ...NOTARY_ARGS])
   check(s.code === 2, 'verify elsewhere: cannot verify (exit 2), never OK', `exit ${s.code}`)
 
   return failures === 0 ? 0 : 1

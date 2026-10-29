@@ -32,6 +32,7 @@ export default defineConfig({
       'packages/dsh',
       'packages/opencode',
       'packages/ui',
+      'packages/gateway',
       'packages/migrate',
       {
         test: {

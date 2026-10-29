@@ -79,6 +79,18 @@ export function safeFileName(id: string): string {
 /**
  * Derive the path for the store's public key registry.
  */
+/**
+ * The one folder private signing keys live in: `PLUR_KEYS_DIR` if set, else
+ * `<store>/keys`. `plur keys init`, `plur checkpoint` and the MCP session end
+ * all resolve it here, so the key that was made is the key that signs (0.23
+ * code review, finding 8: a `--keys-dir` flag on init alone wrote keys where
+ * signing never looked).
+ */
+export function keysDirFor(storeRoot: string): string {
+  const env = process.env.PLUR_KEYS_DIR
+  return env && env.trim() ? env : join(storeRoot, 'keys')
+}
+
 export function keysRegistryPath(storeRoot: string): string {
   return join(storeRoot, 'keys.yaml')
 }

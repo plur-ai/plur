@@ -4,13 +4,12 @@
  * free stamp from the gateway pool. PLUR never buys stamps.
  */
 import { describe, it, expect, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync } from 'fs'
+import { mkdtempSync, rmSync, readdirSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
-import { SwarmGatewayStore } from '../src/swarm-store.js'
+import { ProvenanceGateway, isDefaultGateway, expectedNotaryFor, DEFAULT_GATEWAY_URL, DEFAULT_NOTARY_ADDRESS } from '../src/client.js'
 import { anchorManifest } from '../src/anchor.js'
-import { Plur } from '../src/index.js'
-import type { SessionManifest } from '../src/session-manifest.js'
+import type { SessionManifest, WormStore } from '@plur-ai/core'
 
 const STAMP = 'cd'.repeat(32)
 
@@ -38,13 +37,13 @@ const manifest = { schema: 'plur/session-manifest/v1', session_id: 's1', engrams
 describe('receipts.stamp_id', () => {
   it('without a stamp, an upload takes one from the gateway pool', async () => {
     const f = recordingFetch()
-    await new SwarmGatewayStore('https://gw.test', { fetchImpl: f.impl }).put(Buffer.from('{}'))
+    await new ProvenanceGateway('https://gw.test', { fetchImpl: f.impl }).put(Buffer.from('{}'))
     expect(f.calls[0]).toBe('POST /api/v1/pool/acquire')
   })
 
   it('with a stamp, the upload uses it and never touches the pool', async () => {
     const f = recordingFetch()
-    await new SwarmGatewayStore('https://gw.test', { fetchImpl: f.impl, stampId: STAMP }).put(Buffer.from('{}'))
+    await new ProvenanceGateway('https://gw.test', { fetchImpl: f.impl, stampId: STAMP }).put(Buffer.from('{}'))
     expect(f.calls.some(c => c.includes('/pool/')), `pool was used: ${f.calls}`).toBe(false)
     expect(f.calls).toEqual([`POST /api/v1/data/?stamp_id=${STAMP}&sign=notary`])
   })
@@ -61,14 +60,6 @@ describe('receipts.stamp_id', () => {
     expect(f.calls).toEqual([`POST /api/v1/data/?stamp_id=${STAMP}&sign=notary`])
   })
 
-  it('config.yaml receipts.stamp_id is read; a malformed one is ignored, not fatal', async () => {
-    const good = fresh()
-    writeFileSync(join(good, 'config.yaml'), `receipts:\n  store: swarm\n  stamp_id: ${STAMP}\n`)
-    expect(new Plur({ path: good, autoDiscover: false }).receiptsConfig()).toEqual({ store: 'swarm', stamp_id: STAMP })
-    const bad = fresh()
-    writeFileSync(join(bad, 'config.yaml'), `receipts:\n  store: swarm\n  stamp_id: not-a-stamp\n`)
-    expect(new Plur({ path: bad, autoDiscover: false }).receiptsConfig()).toEqual({ store: 'swarm' })
-  })
 })
 
 describe('gateway body read is bounded (0.23 audit, finding 18)', () => {
@@ -79,11 +70,46 @@ describe('gateway body read is bounded (0.23 audit, finding 18)', () => {
     const url = `http://127.0.0.1:${(srv.address() as { port: number }).port}`
     const t0 = Date.now()
     try {
-      await expect(new SwarmGatewayStore(url, { timeoutMs: 300 }).document('ab'.repeat(32))).rejects.toThrow()
+      await expect(new ProvenanceGateway(url, { timeoutMs: 300 }).document('ab'.repeat(32))).rejects.toThrow()
       expect(Date.now() - t0).toBeLessThan(3000)
     } finally {
       srv.closeAllConnections()
       srv.close()
     }
+  })
+})
+
+describe('the default gateway', () => {
+  it('is recognised with or without a trailing slash; any other address is not', () => {
+    expect(isDefaultGateway(undefined)).toBe(true)
+    expect(isDefaultGateway(DEFAULT_GATEWAY_URL + '/')).toBe(true)
+    expect(isDefaultGateway('https://gw.example.org')).toBe(false)
+  })
+})
+
+describe('which notary a downloaded manifest must be signed by (0.23 review, finding 9)', () => {
+  it('a pinned notary always wins', () => {
+    expect(expectedNotaryFor('https://gw.example.org', '0xabc')).toEqual({ address: '0xabc', source: 'pinned' })
+    expect(expectedNotaryFor(DEFAULT_GATEWAY_URL, '0xabc')).toEqual({ address: '0xabc', source: 'pinned' })
+  })
+  it('the default gateway means the default notary, never what the gateway says about itself', () => {
+    expect(expectedNotaryFor(DEFAULT_GATEWAY_URL, undefined)).toEqual({ address: DEFAULT_NOTARY_ADDRESS, source: 'default' })
+  })
+  it('any other gateway has no known notary unless the user pins one', () => {
+    expect(expectedNotaryFor('https://gw.example.org', undefined)).toBeNull()
+  })
+})
+
+describe('receipt file names (0.23 audit, finding 17)', () => {
+  it('receipt file names do not collide for a.b and a_b', async () => {
+    const root = fresh()
+    const store: WormStore = { name: 'stub', put: async () => ({ reference: 'ef'.repeat(32) }), get: async () => ({ bytes: Buffer.alloc(0) }) }
+    const m = (s: string) => ({ schema: 'plur/session-manifest/v1', session_id: s, actor: 'unidentified', window: { from: null, to: null }, engrams: [], created_at: 'x' }) as unknown as SessionManifest
+    await anchorManifest(root, m('a.b'), {}, store)
+    await anchorManifest(root, m('a_b'), {}, store)
+    await anchorManifest(root, m('a:b'), {}, store)
+    const files = readdirSync(join(root, 'receipts'))
+    expect(files).toHaveLength(3)
+    expect(files.some(f => f.includes(':'))).toBe(false)
   })
 })

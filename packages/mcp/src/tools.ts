@@ -6,7 +6,8 @@ import { folderMapAdvice } from './folder-map-advice.js'
 import type { LlmFunction, MetaField, TensionStatus, RerankerEvalResult, HistoryEvent, Receipt, RemoteStoreStatusEntry, RecallRemoteReport, RemoteOnlyStatus } from '@plur-ai/core'
 import { RemoteOnlyWriteError, remoteOnlySessionLine, remoteOnlyUnservedNotice } from '@plur-ai/core'
 import { enterpriseRecoveryHint } from '@plur-ai/core'
-import { emitCheckpoint, signWithActorKey, anchorManifest } from '@plur-ai/core'
+import { emitCheckpoint, signWithActorKey, keysDirFor } from '@plur-ai/core'
+import { anchorManifest } from '@plur-ai/gateway'
 import { recordTelemetry } from './telemetry.js'
 import { VERSION } from './version.js'
 import { startBackgroundDiscovery, discoverySummary, discoveryWarnings, serverEndpointKeys, isDiscoveryEnabled } from './background-discovery.js'
@@ -4576,8 +4577,12 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
               session: await _writeSession({ ...args, scope }, plur, endSession),
               scope,
               domain: projectDomain,
-              // Link the engram back to the session that produced it (#960).
+              // Link the engram back to the session that produced it (#960),
+              // and record that session in sources[].session_id like
+              // plur_learn does, so the session's own manifest lists it as
+              // written (0.23 code review, finding 4).
               ...(episode ? { session_episode_id: episode.id } : {}),
+              ...(endSession ? { session_id: endSession } : {}),
               // An end-of-session summary is the model's reading of what
               // happened, not something the user stated outright (#963).
               claim_class: 'inferred',
@@ -4662,11 +4667,15 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
           // valid L2 checkpoint, and signWithActorKey returns null without a key.
           const identity = (await plur.status()).provenance_identity
           const signing = identity && identity !== 'agent:unidentified'
-            ? { identity, sign: (data: Buffer) => signWithActorKey(data, identity, join(plurRoot, 'keys')) }
+            ? { identity, sign: (data: Buffer) => signWithActorKey(data, identity, keysDirFor(plurRoot)) }
             : undefined
-          const cp = emitCheckpoint(plurRoot, engramsPath, 'session_end', undefined, signing)
+          // The session id rides in the checkpoint, so a later
+          // `plur manifest --session` finds it (0.23 code review, finding 6).
+          const cp = emitCheckpoint(plurRoot, engramsPath, 'session_end', undefined, signing, endSession)
           // The checkpoint's own hash, not the store's. Returning store_hash
           // under this name told callers to anchor the wrong digest.
+          // A checkpoint whose line was not written has no hash and is never
+          // put in the manifest (0.23 code review, finding 3).
           checkpoint_hash = cp.event_hash ?? undefined
           if (cp.event_hash) {
             checkpointForManifest = {

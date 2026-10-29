@@ -10,16 +10,23 @@
  * This is the CLI surface for Integrity Strength L2 checkpointing per #1047.
  *
  * Usage:
- *   plur checkpoint          Emit a checkpoint and print its hash
- *   plur checkpoint --json   Emit and print full payload as JSON
+ *   plur checkpoint                 Emit a checkpoint and print its hash
+ *   plur checkpoint --session <id>  Record the session it belongs to, so
+ *                                   `plur manifest --session <id>` includes it
+ *   plur checkpoint --json          Emit and print full payload as JSON
+ *
+ * Exits 1 when the checkpoint line could not be written: a hash that no log
+ * contains must never be offered for anchoring (0.23 code review, finding 3).
  */
 import { join } from 'path'
 import { existsSync } from 'fs'
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { shouldOutputJson, outputJson, outputText } from '../output.js'
-import { emitCheckpoint, signWithActorKey } from '@plur-ai/core'
+import { emitCheckpoint, signWithActorKey, keysDirFor } from '@plur-ai/core'
 
-export async function run(_args: string[], flags: GlobalFlags & { signatures?: boolean }): Promise<void> {
+export async function run(args: string[], flags: GlobalFlags & { signatures?: boolean }): Promise<void> {
+  const si = args.indexOf('--session')
+  const sessionId = si >= 0 && args[si + 1] && !args[si + 1].startsWith('--') ? args[si + 1] : undefined
   // Write engine needed: emitCheckpoint calls appendHistory (a write).
   const plur = createPlur(flags)
   const status = await plur.status()
@@ -43,7 +50,7 @@ export async function run(_args: string[], flags: GlobalFlags & { signatures?: b
   // Signing is best-effort: if the key is absent or the identity is unidentified,
   // the checkpoint is still written (unsigned is a valid L2 object).
   const identity = status.provenance_identity
-  const keysDir = join(plurRoot, 'keys')
+  const keysDir = keysDirFor(plurRoot)
   const signingOptions = (identity && identity !== 'agent:unidentified')
     ? { identity, sign: (data: Buffer) => signWithActorKey(data, identity, keysDir) }
     : undefined
@@ -58,12 +65,20 @@ export async function run(_args: string[], flags: GlobalFlags & { signatures?: b
   // of the built CLI.
   let data
   try {
-    data = emitCheckpoint(plurRoot, engramsPath, 'cli', undefined, signingOptions)
+    data = emitCheckpoint(plurRoot, engramsPath, 'cli', undefined, signingOptions, sessionId)
   } catch (err) {
     outputText('Cannot checkpoint: the store could not be read as a store.')
     outputText(`  ${engramsPath}`)
     outputText(`  ${err instanceof Error ? err.message : String(err)}`)
     outputText('  A checkpoint that cannot attest the store is not written at all.')
+    process.exitCode = 1
+    return
+  }
+
+  if (!data.event_hash) {
+    outputText('Checkpoint NOT written: the history log could not be appended to.')
+    outputText(`  ${join(plurRoot, 'history')}`)
+    outputText('  Nothing to anchor. Fix the history folder (disk space, permissions) and run plur checkpoint again.')
     process.exitCode = 1
     return
   }
@@ -78,6 +93,7 @@ export async function run(_args: string[], flags: GlobalFlags & { signatures?: b
       store_hash: data.store_hash,
       engram_count: data.engram_count,
       actor: data.actor,
+      session_id: data.session_id ?? null,
       signer: data.signer ?? null,
       signature: data.signature ?? null,
     })

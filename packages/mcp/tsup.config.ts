@@ -6,4 +6,6 @@ export default defineConfig({
   dts: true,
   clean: true,
   // shebang is in src/index.ts, no banner needed
+  // The provenance gateway client is bundled, not depended on — see packages/gateway/README.md.
+  noExternal: ['@plur-ai/gateway'],
 })

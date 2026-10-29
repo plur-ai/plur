@@ -15,7 +15,8 @@
 import { writeFileSync } from 'fs'
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { shouldOutputJson, outputJson, outputText, exit } from '../output.js'
-import { canonicalManifestBytes, anchorManifest } from '@plur-ai/core'
+import { canonicalManifestBytes } from '@plur-ai/core'
+import { anchorManifest } from '@plur-ai/gateway'
 
 const USAGE = 'Usage: plur manifest --session <id> [--out <file>] [--anchor] [--json]'
 

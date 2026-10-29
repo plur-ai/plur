@@ -1,5 +1,5 @@
 import * as fs from 'fs'
-import { buildSessionManifest, verifySessionManifest, type SessionManifest, type ManifestVerification } from './session-manifest.js'
+import { buildSessionManifest, verifySessionManifest, computeRecordHash, type SessionManifest, type ManifestVerification } from './session-manifest.js'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { randomUUID, createHash } from 'crypto'
 import { tmpdir, hostname, homedir } from 'os'
@@ -305,8 +305,6 @@ export { selectModel, selectModelForOperation, resolveOperationTier, type ModelT
 export { recallAuto, type AutoSearchResult, type SearchStrategy } from './search-orchestrator.js'
 export { generateProfile, getProfileForInjection, loadProfileCache, saveProfileCache, markProfileDirty, profileNeedsRegeneration, type ProfileCache } from './profile.js'
 export { formatLayer1, formatLayer2, formatLayer3, formatWithLayer, assignLayer, type InjectionLayer } from './inject.js'
-export { SwarmGatewayStore, GatewayError, DEFAULT_GATEWAY_URL, type NotarySignature, type GatewayDocument } from './swarm-store.js'
-export { anchorManifest, type AnchorRecord } from './anchor.js'
 export { computeRecordHash, buildSessionManifest, verifySessionManifest, canonicalManifestBytes, SESSION_MANIFEST_SCHEMA, RECORD_HASH_FIELDS, type SessionManifest, type ManifestEntry, type ManifestRole, type ManifestCheck, type ManifestVerification, type WormStore, type WormPutResult } from './session-manifest.js'
 export { appendHistory, readHistory, listHistoryMonths, readHistoryForEngram, generateEventId, generateInjectionId, computeQueryHash, findLatestInjectionFor, countInjectionEvents, readCoInjections, computeEventHash, canonicalEventBytes, sortKeysDeep, tailSeekLastHash, readChainHead, clearChainHeadMemCache, hashEngramsFile, attestStore, countEngramsInStore, emitCheckpoint, appendHistoryStamped, type HistoryEvent, type CheckpointData, type CheckpointSigningOptions, type InjectionEventCounts, type InjectionSource, type CoInjectionData, type CoInjectionEvent, type CoInjectionReadResult } from './history.js'
 export { computeReceipt } from './receipt.js'
@@ -427,7 +425,7 @@ export type { SyncResult, SyncStatus, SyncRemoteType } from './sync.js'
  * the two drift, and the drift is always in the unsafe direction.
  */
 export { verifyChain, hashStoreFile, type ChainVerifyOutcome, type ChainVerifyResult, type ChainBreak, type ChainFork, type BreakReason, type VerifyChainOptions, type SignatureResult, type SignatureVerdict } from './verify-chain.js'
-export { initActorKey, loadPrivateKeyBuffer, signWithActorKey, verifySignature, loadKeysRegistry, lookupPublicKey, registerPublicKey, keyFingerprint, privateKeyPath, keysRegistryPath, safeFileName, type PublicKeyEntry, type KeysRegistry } from './actor-keys.js'
+export { initActorKey, loadPrivateKeyBuffer, signWithActorKey, verifySignature, loadKeysRegistry, lookupPublicKey, registerPublicKey, keyFingerprint, privateKeyPath, keysRegistryPath, keysDirFor, safeFileName, type PublicKeyEntry, type KeysRegistry } from './actor-keys.js'
 export { atomicWrite, withLock } from './sync.js'
 /**
  * Owner-only protection (#1631): `writeConfigFile` is how config.yaml is
@@ -9571,6 +9569,7 @@ export class Plur {
       const engrams = await this._loadTargeted([updated.id])
       const idx = engrams.findIndex(e => e.id === updated.id)
       if (idx === -1) return null
+      const recordBefore = computeRecordHash(engrams[idx])
       // A row still queued for a remote store that moves into a personal scope
       // takes the spelling a fresh write would (`_canonicalPersonalScope`, as
       // in learn), BEFORE the leak guard, so the guard scans the scope the
@@ -9629,6 +9628,19 @@ export class Plur {
             engram_id: toWrite.id,
             timestamp: toWrite.updated_at,
             data: { reason: null, via: 'update' },
+          })
+        } catch { /* history is an audit trail, never a gate on the write */ }
+      } else if (computeRecordHash(toWrite) !== recordBefore) {
+        // A content edit through PLUR is recorded (code review of 0.23): it
+        // used to leave no history event, so to `plur verify` it looked the
+        // same as an edit made behind PLUR's back. Ids only; an update that
+        // moves only usage counters writes nothing.
+        try {
+          this._appendHistory({
+            event: 'engram_updated',
+            engram_id: toWrite.id,
+            timestamp: toWrite.updated_at,
+            data: { via: 'update' },
           })
         } catch { /* history is an audit trail, never a gate on the write */ }
       }
