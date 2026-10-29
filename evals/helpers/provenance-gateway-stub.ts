@@ -57,7 +57,9 @@ export async function startGatewayStub(): Promise<GatewayStub> {
         const signature = { type: 'notary', signer: notary, timestamp, data_hash, signature: personalSign(`${data_hash}|${timestamp}`, NOTARY_KEY), hashed_fields: ['data'], signed_message_format: '{data_hash}|{timestamp}' }
         const reference = createHash('sha256').update(json).digest('hex')
         docs.set(reference, { ...doc, signatures: [signature] })
-        return send(200, { reference, signed_document: { signatures: [signature] } })
+        // As the live gateway answers (checked 2026-10-29): the reference and
+        // the stamp's expiry only; the signature is on the stored document.
+        return send(200, { reference, message: 'Data uploaded successfully', expires_at: '2099-01-01T00:00:00Z' })
       }
       const m = /^\/api\/v1\/data\/([0-9a-f]{64})$/.exec(path)
       if (req.method === 'GET' && m) {
