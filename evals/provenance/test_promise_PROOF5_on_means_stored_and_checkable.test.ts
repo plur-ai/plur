@@ -5,7 +5,7 @@ import { cpSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { Plur, SwarmGatewayStore } from '../../packages/core/src/index.js'
+import { Plur } from '../../packages/core/src/index.js'
 import { checkNotarySignature } from '../../packages/cli/src/lib/notary.js'
 import { mcpSession, type McpSession } from '../helpers/agent-tools-hooks-mcp.js'
 import { startGatewayStub, type GatewayStub } from '../helpers/provenance-gateway-stub.js'
@@ -34,9 +34,9 @@ describe('PROOF-5 with Swarm storage on, the session list is stored and checkabl
     expect(anchor?.reference, 'session end did not report where the list was stored').toMatch(/^[0-9a-f]{64}$/)
     expect(gw.docs.has(anchor.reference), 'the reported reference is not what the gateway stored').toBe(true)
 
-    // Anyone, by reference: fetch, check bytes and signature.
-    const store = new SwarmGatewayStore(gw.url)
-    const doc = await store.document(anchor.reference)
+    // Anyone, by reference: a plain HTTP GET (no PLUR code), then check the
+    // bytes and the signature.
+    const doc = await (await fetch(`${gw.url}/api/v1/data/${anchor.reference}`)).json() as { data: string; content_hash: string; signatures?: any[] }
     const bytes = Buffer.from(String(doc.data), 'base64')
     expect(createHash('sha256').update(bytes).digest('hex'), 'the stored list does not match its own content hash').toBe(doc.content_hash)
     const notary = checkNotarySignature(doc.signatures![0], doc)
