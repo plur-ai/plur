@@ -198,3 +198,5 @@ models:
       - packages/cli/src/lib/notary.ts
       - packages/core/src/index.ts
       - packages/mcp/src/tools.ts
+      - packages/core/src/sync.ts
+      - packages/gateway/src/client.ts

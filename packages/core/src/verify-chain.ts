@@ -29,7 +29,7 @@
  */
 import * as fs from 'node:fs'
 import { join } from 'node:path'
-import { computeEventHash, hashEngramsFile, attestStore, canonicalEventBytes, listHistoryMonths, type HistoryEvent } from './history.js'
+import { computeEventHash, hashEngramsFile, attestStore, canonicalEventBytes, listHistoryMonths, storeBucketOf, STORE_BUCKETS, type HistoryEvent } from './history.js'
 import { lookupPublicKey, verifySignature } from './actor-keys.js'
 
 export type BreakReason =
@@ -114,8 +114,43 @@ export type ChainVerifyOutcome =
 
 interface Scanned { month: string; index: number; event: HistoryEvent }
 
+/**
+ * Every engram id a history event names: its own, and any id-shaped string
+ * anywhere in its data (code review of 0.23, R7) — event writers and verify
+ * share no field list that could drift. Ids from sync pulls of stores with
+ * free-form ids are named in `data.engram_ids`, read here verbatim.
+ */
+function eventEngramIds(ev: HistoryEvent): string[] {
+  const out: string[] = []
+  if (typeof ev.engram_id === 'string' && ev.engram_id) out.push(ev.engram_id)
+  const d = (ev.data ?? {}) as Record<string, unknown>
+  // Fields that name an engram are read verbatim, whatever the id's shape
+  // (rekeys and server ids need not look like ENG-…).
+  for (const key of ID_FIELDS) {
+    const v = d[key]
+    if (typeof v === 'string') out.push(v)
+    else if (Array.isArray(v)) for (const x of v) if (typeof x === 'string') out.push(x)
+  }
+  // Anywhere else, only a value that IS an id counts — never an id mentioned
+  // inside free text such as a statement preview or a reason, which would let
+  // an event about one memory excuse an edit to another (third review).
+  const walk = (v: unknown, depth: number): void => {
+    if (depth > 6) return
+    if (typeof v === 'string') { if (WHOLE_ENGRAM_ID.test(v)) out.push(v) }
+    else if (Array.isArray(v)) for (const x of v) walk(x, depth + 1)
+    else if (v && typeof v === 'object') for (const x of Object.values(v)) walk(x, depth + 1)
+  }
+  walk(d, 0)
+  return out
+}
+
+const ID_FIELDS = ['engram_ids', 'ids', 'supersedes', 'merged', 'sources', 'from', 'to', 'target', 'target_id',
+  'merged_into', 'superseded_by', 'replaced_by', 'old_id', 'new_id', 'absorbed', 'rescoped_to', 'promoted_from']
+const WHOLE_ENGRAM_ID = /^(?:ENG|ABS|META)-[A-Za-z0-9-]+$/
+
 /** History events that change a memory's content, and so explain a store change after a checkpoint. */
 const CONTENT_EVENTS: ReadonlySet<string> = new Set([
+  'store_synced', 'store_compacted',
   'engram_created', 'engram_updated', 'engram_merged', 'engram_retired', 'engram_promoted',
   'engram_rescoped', 'engram_rekeyed', 'engram_duplicate_absorbed', 'procedure_evolved',
   'scope_promoted', 'buffer_pruned', 'engram_decremented',
@@ -392,17 +427,20 @@ export function verifyChain(root: string, options?: VerifyChainOptions): ChainVe
   const newestIdx = scanned.map(s => s.event.event).lastIndexOf('checkpoint')
   const newestCheckpoint = newestIdx >= 0 ? scanned[newestIdx] : undefined
   if (newestCheckpoint) {
-    const data = (newestCheckpoint.event.data ?? {}) as { store_hash?: unknown; engram_count?: unknown }
+    const data = (newestCheckpoint.event.data ?? {}) as { store_hash?: unknown; engram_count?: unknown; store_buckets?: unknown }
     const attested = data.store_hash
     if (typeof attested === 'string') {
       const engramsPath = join(root, 'engrams.yaml')
       let actual: string | null
+      let actualBuckets: string[] | null = null
       if (!fs.existsSync(engramsPath)) {
         // Absent is a real state only when the checkpoint attested nothing.
         actual = null
       } else {
         try {
-          actual = attestStore(engramsPath).store_hash
+          const now = attestStore(engramsPath)
+          actual = now.store_hash
+          actualBuckets = now.store_buckets
         } catch (err) {
           // Never "verified" over a store that cannot be read (audit finding 11).
           return { status: 'cannot_verify', reason: `could not read the store the newest checkpoint attests: ${(err as Error).message}` }
@@ -411,8 +449,20 @@ export function verifyChain(root: string, options?: VerifyChainOptions): ChainVe
       const attestedCount = typeof data.engram_count === 'number' ? data.engram_count : 1
       const differs = actual === null ? attestedCount > 0 : actual !== attested
       if (differs) {
-        const since = scanned.slice(newestIdx + 1).filter(s => CONTENT_EVENTS.has(s.event.event)).length
-        if (since > 0 && actual !== null) {
+        const after = scanned.slice(newestIdx + 1).filter(s => CONTENT_EVENTS.has(s.event.event))
+        const since = after.length
+        // Localise the difference (code review of 0.23, finding 2): every
+        // group whose fingerprint moved must hold a memory that history names
+        // as changed since the checkpoint. Checkpoints written before groups
+        // existed fall back to "any recorded change explains it".
+        const attestedBuckets = Array.isArray(data.store_buckets) && data.store_buckets.length === STORE_BUCKETS ? data.store_buckets as string[] : null
+        let explained = since > 0
+        if (attestedBuckets && actualBuckets) {
+          const named = new Set<number>()
+          for (const s of after) for (const id of eventEngramIds(s.event)) named.add(storeBucketOf(id))
+          explained = attestedBuckets.every((b, i) => b === actualBuckets![i] || named.has(i))
+        }
+        if (explained && actual !== null) {
           result.store_changed_since_checkpoint = { month: newestCheckpoint.month, index: newestCheckpoint.index, events_since: since }
         } else {
           result.breaks.push({

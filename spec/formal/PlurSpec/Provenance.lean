@@ -19,6 +19,13 @@ Models, as the code does it (not as it should), the provenance work landing in 0
     The head cache is invalidated afterwards, which only sends the next lookup to the
     authoritative tail-seek, so the model reads the head off the log.
     (§3 within one month file; §6 across month files)
+  - `targetMonthFile` (commit e52b7e9b, code review of 0.23 finding 5; clamped to the
+    current month in ec5e7fc2 and 4e08fe67): under the lock, single appends and each
+    batch run go to the newest month file in (own month, current month] that has
+    events, else the own month; an event stamped after the current month goes to the
+    current month's file. (§6)
+  - `attestStore` `store_buckets` and `recordStoreSync` (`store_synced`, called from
+    `packages/core/src/sync.ts` after a pull) (commit e52b7e9b). (§11)
   - `emitCheckpoint`: the payload (`chain_head`, `store_hash`, signature) is built inside
     `onPrev`, so `chain_head` is the very `prev` the event chains onto. (§5)
 * `packages/core/src/verify-chain.ts` `verifyChain`: per chained event, `hash_mismatch`
@@ -28,17 +35,20 @@ Models, as the code does it (not as it should), the provenance work landing in 0
   current run of declared gaps began: a lock holder linking past an unlocked gap).
   Legacy events (no hash) are skipped and do not advance the expected `prev`. Forks
   are claims on one `prev`; a null `prev` is a genesis claim only while every chained
-  event so far had a null `prev` (§4). Dangling prev, checkpoint head missing and
-  store hash mismatch are not walked here; §5 shows the checkpoint head a locked
-  append records is in the log. `store_hash` is opaque (`S`); its content-only
-  attestation (d067f808) and `store_changed_since_checkpoint` are not modelled.
+  event so far had a null `prev` (§4). Dangling prev and checkpoint head missing are
+  not walked here; §5 shows the checkpoint head a locked append records is in the log.
+  The store check — `store_hash_mismatch` versus `store_changed_since_checkpoint`,
+  localised to the checkpoint's memory groups since e52b7e9b — is §11, over an
+  abstract store; §5 keeps `store_hash` opaque (`S`).
 * `packages/core/src/session-manifest.ts`: `buildSessionManifest` roles (§7),
   `computeRecordHash` over an abstract covered-field record, `verifySessionManifest`
   (§8).
   Since commit c21b371e: no `content_hash` in entries, and `ok` is false when engrams
   are listed but none was checked (§8).
 * `packages/cli/src/commands/verify-manifest.ts` exit codes and
-  `packages/cli/src/lib/notary.ts` `checkNotarySignature` (§9, commit c21b371e).
+  `packages/cli/src/lib/notary.ts` `checkNotarySignature` (§9, commit c21b371e); the
+  expected notary (`expectedNotaryFor` in `packages/gateway/src/client.ts`, and
+  `--trust-gateway-notary`; commit 7c4d9486, code review of 0.23 finding 9) (§9).
 * `packages/core/src/index.ts` `receiptsConfig()` and `packages/mcp/src/tools.ts`
   plur_session_end anchoring (§10).
 
@@ -49,11 +59,17 @@ in the model. Wherever a theorem needs collision freedom it takes `HashInjective
 
 Findings: `spec/formal/findings/provenance-2026-10-27.md`. F1 and its follow-ups are
 fixed; §6 proves a locked batch equals single appends across month files in every order
-(`batch_eq_singles_months`). F2 is fixed except the ambiguous case (commit d067f808):
+(`batch_eq_singles_months`, unchanged by `targetMonthFile`); since e52b7e9b single
+appends in any timestamp order leave one chain in file order (`sstep_flat`,
+`singles_any_order_verifies`, `finding5_shape_verifies`). F2 is fixed except the
+ambiguous case (commit d067f808):
 `locked_log_gap_reports_no_fork`, with `gap_after_lone_genesis_reports_fork` the kept
 counterexample; `gap_after_genesis_is_fork` stays true of the log. Release-audit
 findings 7 and 8 (d067f808): `locked_append_adds_no_break`, `legacy_interleave_verifies`,
-`holder_past_gap_single_break`, `link_past_gap_other_is_mismatch`.
+`holder_past_gap_single_break`, `link_past_gap_other_is_mismatch`. Code review of 0.23:
+store localisation `unrecorded_edit_reported`, `recorded_changes_never_break`, the limit
+`unrecorded_edit_beside_recorded_undetected` (§11); the notary rule
+`exit_zero_untrusted_signer`, `untrusted_other_gateway_cannot` (§9).
 -/
 
 namespace PlurSpec.Provenance
@@ -1003,33 +1019,48 @@ theorem checkpoint_head_present (l : List (Event C H)) (r : H) (hr : prevFor .ta
   · cases h
   · exact h
 
-/-! ## 6. Month files (`appendHistoryBatch` in runs, commit 13cf8bab)
+/-! ## 6. Month files (`appendHistoryBatch` in runs, commit 13cf8bab; `targetMonthFile`, commit e52b7e9b)
 
 The history directory is one event list per month (`Files`); `N` bounds every month
-that has a file. An empty list stands for a missing file. (The code would also list
-an existing EMPTY file in its directory walk and read a null tail from it; the model
-treats such a file as missing — for single appends and batches alike.)
+that has a file, so `flat S N` (the files oldest first, which is how `verifyChain`
+reads them) is the whole log. An empty list stands for a missing file; an existing
+EMPTY file is treated as missing too, which since e52b7e9b is also what
+`targetMonthFile` does (`size > 0`).
+
+`target S cur m` is `targetMonthFile(dir, ownMonth)` with `cur` the current month
+(`new Date()`; code review of 0.23 finding 5, then R3 and the third review): an event
+stamped after the current month goes to the current month's file; otherwise the
+newest month file in (own month, current month] that has events, else the own month.
+Every append computes it under the chain lock (single appends inside
+`stampAndWrite`, batches per run), so an event stamped before a month boundary that
+another writer already crossed joins the newest file, and no month file beyond today
+is ever started (`noLaterThan_sstep`). The event keeps its own timestamp.
 
 `findPred` is `findPredecessorHash(dir, file)` under the chain lock, where the
 validated cache and sidecar can only return the true tail, so it is the tail-seek:
-the last chained hash of the event's own month file when that file has events
-(`tailSeekLastHash`, which since commit d067f808 steps back over legacy events; null
-when the file holds no chained event), otherwise the same of the newest OTHER month
-file (`newestBelow`: months newest first, the current one skipped, the first file
-found decides — null there means no further walk). The tail-seek's 1 MiB window
-ceiling and a line that will not parse (both null) are not modelled.
+the last chained hash of that file when it has events (`tailSeekLastHash`, which
+since commit d067f808 steps back over legacy events; null when the file holds no
+chained event), otherwise the same of the newest OTHER month file (`newestBelow`:
+months newest first, the current one skipped, the first file found decides — null
+there means no further walk). The tail-seek's 1 MiB window ceiling and a line that
+will not parse (both null) are not modelled.
 
 The batch (`runs`, `lockedRuns`, `gapRuns`): the events are split into runs of
-consecutive events for one month file. Under the lock, run by run, the run's first
-event links to `findPred` of its month read AFTER the earlier runs are written, and
-the rest of the run chains within the run. On lock failure, every run not yet
-written starts with a declared gap (`prev = null`); runs already written under the
-lock are not written again (`batchFiles h N done`, `done` = runs written under the
-lock).
+consecutive events of one month. Under the lock, run by run, the run goes to
+`target` of its month and its first event links to `findPred` of that file, both
+read AFTER the earlier runs are written; the rest of the run chains within the run.
+On lock failure, every run not yet written starts with a declared gap
+(`prev = null`), in the file `target` names; runs already written under the lock are
+not written again (`batchFiles h N done`, `done` = runs written under the lock).
 
-Proved without ordering conditions (`batch_eq_singles_months`): a locked batch leaves
-every month file exactly as n single locked appends do. A per-file write failure
-(`ok = false`, the run's line not landing) is not modelled. -/
+Proved with no ordering condition on the months (`batch_eq_singles_months`): a
+locked batch leaves every month file exactly as n single locked appends do, with the
+one clock reading `cur` for the batch (a month boundary passing DURING one batch is
+not modelled). Proved for single appends with any event timestamps
+(`sstep_flat`, `singles_any_order_chain`): the log read in file order is exactly one
+locked chain, so it verifies clean and reports no fork. The only condition is on the
+clock: it does not step back across a month boundary between appends. A per-file
+write failure (`ok = false`, the run's line not landing) is not modelled. -/
 
 abbrev Files (C H : Type) := Nat → List (Event C H)
 
@@ -1042,16 +1073,35 @@ def newestBelow (S : Files C H) (m : Nat) : Nat → Option H
 def findPred (S : Files C H) (N m : Nat) : Option H :=
   if (S m).isEmpty then newestBelow S m N else lastChained none (S m)
 
+/-- The newest month below `k` later than `m` whose file has events, else `m`. -/
+def newestFrom (S : Files C H) (m : Nat) : Nat → Nat
+  | 0 => m
+  | k + 1 => if m < k ∧ (S k).isEmpty = false then k else newestFrom S m k
+
+/-- `targetMonthFile(dir, ownMonth)` at current month `cur`: the month file an event of
+month `m` joins. `if (ownMonth > current) return current`, else the newest month in
+`(m, cur]` whose file has events, else `m` (`newestFrom S m (cur + 1)`). -/
+def target (S : Files C H) (cur m : Nat) : Nat :=
+  if cur < m then cur else newestFrom S m (cur + 1)
+
 /-- Append events to month `m`'s file. -/
 def appendRun (S : Files C H) (m : Nat) (es : List (Event C H)) : Files C H :=
   fun k => if k = m then S k ++ es else S k
 
-/-- One single locked `appendHistory` of an event with month `x.1`. -/
-def sstep (h : HashFn C H) (N : Nat) (S : Files C H) (x : Nat × C) : Files C H :=
-  appendRun S x.1 [stamp h (findPred S N x.1) x.2]
+/-- One single locked `appendHistory`, at current month `cur`, of an event with month
+`x.1`: to the file `targetMonthFile` names, linked to that file's predecessor. -/
+def sstep (h : HashFn C H) (N cur : Nat) (S : Files C H) (x : Nat × C) : Files C H :=
+  appendRun S (target S cur x.1) [stamp h (findPred S N (target S cur x.1)) x.2]
 
-def singleFiles (h : HashFn C H) (N : Nat) (D : Files C H) (evs : List (Nat × C)) : Files C H :=
-  evs.foldl (sstep h N) D
+/-- Single appends at one current month. -/
+def singleFiles (h : HashFn C H) (N cur : Nat) (D : Files C H) (evs : List (Nat × C)) :
+    Files C H :=
+  evs.foldl (sstep h N cur) D
+
+/-- Single appends, each with its own clock reading: `(cur, month, content)`. -/
+def timedFiles (h : HashFn C H) (N : Nat) (D : Files C H) (tevs : List (Nat × Nat × C)) :
+    Files C H :=
+  tevs.foldl (fun S x => sstep h N x.1 S x.2) D
 
 /-- Split into runs of consecutive events of one month (each run non-empty). -/
 def runs : List (Nat × C) → List (Nat × List C)
@@ -1061,18 +1111,29 @@ def runs : List (Nat × C) → List (Nat × List C)
     | [] => [(x.1, [x.2])]
     | r :: rs => if x.1 = r.1 then (x.1, x.2 :: r.2) :: rs else (x.1, [x.2]) :: r :: rs
 
-/-- Runs written under the lock: `writeRun(run, findPredecessorHash(dir, runFile))`. -/
-def lockedRuns (h : HashFn C H) (N : Nat) (S : Files C H) (rs : List (Nat × List C)) : Files C H :=
-  rs.foldl (fun S r => appendRun S r.1 (chainFrom h (findPred S N r.1) r.2)) S
+/-- Runs written under the lock:
+`file = targetMonthFile(dir, runMonth); writeRun(run, findPredecessorHash(dir, file), file)`. -/
+def lockedRuns (h : HashFn C H) (N cur : Nat) (S : Files C H) (rs : List (Nat × List C)) :
+    Files C H :=
+  rs.foldl (fun S r =>
+    appendRun S (target S cur r.1) (chainFrom h (findPred S N (target S cur r.1)) r.2)) S
 
-/-- Runs written after a lock failure: `writeRun(run, null)`. -/
-def gapRuns (h : HashFn C H) (S : Files C H) (rs : List (Nat × List C)) : Files C H :=
-  rs.foldl (fun S r => appendRun S r.1 (chainFrom h none r.2)) S
+/-- Runs written after a lock failure: `writeRun(run, null, targetMonthFile(dir, runMonth))`. -/
+def gapRuns (h : HashFn C H) (cur : Nat) (S : Files C H) (rs : List (Nat × List C)) : Files C H :=
+  rs.foldl (fun S r => appendRun S (target S cur r.1) (chainFrom h none r.2)) S
 
 /-- `appendHistoryBatch`: the first `done` runs under the lock, the rest after it failed. -/
-def batchFiles (h : HashFn C H) (N : Nat) (D : Files C H) (done : Nat) (evs : List (Nat × C)) :
-    Files C H :=
-  gapRuns h (lockedRuns h N D ((runs evs).take done)) ((runs evs).drop done)
+def batchFiles (h : HashFn C H) (N cur : Nat) (D : Files C H) (done : Nat)
+    (evs : List (Nat × C)) : Files C H :=
+  gapRuns h cur (lockedRuns h N cur D ((runs evs).take done)) ((runs evs).drop done)
+
+theorem ne_nil_of_isEmpty_false {l : List (Event C H)} (h : l.isEmpty = false) : l ≠ [] := by
+  intro hl; subst hl; simp at h
+
+theorem nil_of_isEmpty_true {l : List (Event C H)} (h : l.isEmpty = true) : l = [] := by
+  cases l with
+  | nil => rfl
+  | cons _ _ => simp at h
 
 theorem newestBelow_eq (S : Files C H) (m j : Nat) (hj : j ≠ m) (hS : (S j).isEmpty = false)
     (hlater : ∀ k, j < k → k ≠ m → S k = []) :
@@ -1103,17 +1164,111 @@ theorem appendRun_append (S : Files C H) (m : Nat) (es fs : List (Event C H)) :
 theorem appendRun_nil (S : Files C H) (m : Nat) : appendRun S m [] = S := by
   funext k; by_cases hk : k = m <;> simp [appendRun, hk]
 
-/-- Single appends of one run, from the state where `findPred` of its month is `p`:
-the run lands chained from `p`, exactly as `writeRun(run, p)` writes it. -/
-theorem singles_of_run (h : HashFn C H) (N m : Nat) :
-    ∀ (cs : List C) (S : Files C H) (p : Option H), findPred S N m = p →
-      (cs.map (fun c => (m, c))).foldl (sstep h N) S = appendRun S m (chainFrom h p cs)
+/-! ### `targetMonthFile` -/
+
+theorem empty_of_not_later (S : Files C H) (m k : Nat) (hmk : m < k)
+    (hc : ¬ (m < k ∧ (S k).isEmpty = false)) : S k = [] := by
+  cases hS : (S k).isEmpty
+  · exact absurd ⟨hmk, hS⟩ hc
+  · exact nil_of_isEmpty_true hS
+
+/-- `target` stays on the own month when no later file has events. -/
+theorem newestFrom_self (S : Files C H) (m : Nat) :
+    ∀ n, (∀ k, m < k → k < n → S k = []) → newestFrom S m n = m
+  | 0, _ => rfl
+  | n + 1, h => by
+      have hn : ¬ (m < n ∧ (S n).isEmpty = false) := by
+        rintro ⟨h1, h2⟩; rw [h n h1 (Nat.lt_succ_self n)] at h2; simp at h2
+      simp only [newestFrom]
+      rw [ite_eq_right hn]
+      exact newestFrom_self S m n (fun k h1 h2 => h k h1 (by omega))
+
+/-- `target` is the newest later file with events. -/
+theorem newestFrom_top (S : Files C H) (m t : Nat) (hmt : m < t) (ht : (S t).isEmpty = false) :
+    ∀ n, t < n → (∀ k, t < k → k < n → S k = []) → newestFrom S m n = t
+  | 0, hn, _ => absurd hn (Nat.not_lt_zero _)
+  | n + 1, hn, h => by
+      by_cases hnt : n = t
+      · rw [hnt]; simp only [newestFrom]; rw [ite_eq_left ⟨hmt, ht⟩]
+      · have htn : t < n := by omega
+        have hne : ¬ (m < n ∧ (S n).isEmpty = false) := by
+          rintro ⟨_, h2⟩; rw [h n htn (Nat.lt_succ_self n)] at h2; simp at h2
+        simp only [newestFrom]
+        rw [ite_eq_right hne]
+        exact newestFrom_top S m t hmt ht n htn (fun k h1 h2 => h k h1 (by omega))
+
+/-- What `target` returns: the own month with no later file holding events, or a later
+month whose file has events and after which no file has events. -/
+theorem newestFrom_spec (S : Files C H) (m : Nat) : ∀ n,
+    (newestFrom S m n = m ∧ ∀ k, m < k → k < n → S k = []) ∨
+    (m < newestFrom S m n ∧ newestFrom S m n < n ∧ (S (newestFrom S m n)).isEmpty = false ∧
+      ∀ k, newestFrom S m n < k → k < n → S k = [])
+  | 0 => Or.inl ⟨rfl, fun _ _ hk => absurd hk (Nat.not_lt_zero _)⟩
+  | n + 1 => by
+      by_cases hc : m < n ∧ (S n).isEmpty = false
+      · right
+        have he : newestFrom S m (n + 1) = n := by simp only [newestFrom]; rw [ite_eq_left hc]
+        rw [he]
+        exact ⟨hc.1, Nat.lt_succ_self n, hc.2, fun k h1 h2 => absurd h2 (by omega)⟩
+      · have he : newestFrom S m (n + 1) = newestFrom S m n := by
+          simp only [newestFrom]; rw [ite_eq_right hc]
+        rw [he]
+        rcases newestFrom_spec S m n with ⟨he', hall⟩ | ⟨h1, h2, h3, hall⟩
+        · left
+          refine ⟨he', fun k h1 h2 => ?_⟩
+          by_cases hkn : k = n
+          · rw [hkn] at h1 ⊢; exact empty_of_not_later S m n h1 hc
+          · exact hall k h1 (by omega)
+        · right
+          refine ⟨h1, by omega, h3, fun k hk1 hk2 => ?_⟩
+          by_cases hkn : k = n
+          · rw [hkn]; exact empty_of_not_later S m n (by omega) hc
+          · exact hall k hk1 (by omega)
+
+/-- After appending to the file `target` named, `target` names it again: the events of a
+run, or consecutive single appends of one month, all land in one file (when the file
+was empty and stays the own month, appending makes it the newest file with events). -/
+theorem newestFrom_appendRun (S : Files C H) (N m : Nat) (es : List (Event C H)) :
+    newestFrom (appendRun S (newestFrom S m N) es) m N = newestFrom S m N := by
+  rcases newestFrom_spec S m N with ⟨he, hall⟩ | ⟨h1, h2, h3, hall⟩
+  · rw [he]
+    apply newestFrom_self
+    intro k hk1 hk2
+    have : k ≠ m := by omega
+    simp [appendRun, this, hall k hk1 hk2]
+  · generalize newestFrom S m N = t at h1 h2 h3 hall ⊢
+    apply newestFrom_top _ m t h1 _ N h2
+    · intro k hk1 hk2
+      have : k ≠ t := by omega
+      simp [appendRun, this, hall k hk1 hk2]
+    · cases hS : S t with
+      | nil => rw [hS] at h3; simp at h3
+      | cons a l => simp [appendRun, hS]
+
+theorem target_appendRun (S : Files C H) (cur m : Nat) (es : List (Event C H)) :
+    target (appendRun S (target S cur m) es) cur m = target S cur m := by
+  by_cases hc : cur < m
+  · simp [target, hc]
+  · simp only [target, ite_eq_right hc]
+    exact newestFrom_appendRun S (cur + 1) m es
+
+/-! ### Batch equivalence -/
+
+/-- Single appends of one run, from the state where `findPred` of the file `target`
+names is `p`: the run lands in that file chained from `p`, exactly as
+`writeRun(run, p, file)` writes it. -/
+theorem singles_of_run (h : HashFn C H) (N cur m : Nat) :
+    ∀ (cs : List C) (S : Files C H) (p : Option H), findPred S N (target S cur m) = p →
+      (cs.map (fun c => (m, c))).foldl (sstep h N cur) S =
+        appendRun S (target S cur m) (chainFrom h p cs)
   | [], S, _, _ => by simp [chainFrom, appendRun_nil]
   | c :: cs, S, p, hp => by
       simp only [List.map_cons, List.foldl_cons]
-      have hs : sstep h N S (m, c) = appendRun S m [stamp h p c] := by simp [sstep, hp]
-      rw [hs, singles_of_run h N m cs _ (some (h c p)) (findPred_after_append _ _ _ _ _ rfl),
-        appendRun_append]
+      have hs : sstep h N cur S (m, c) = appendRun S (target S cur m) [stamp h p c] := by
+        simp [sstep, hp]
+      have ht := target_appendRun S cur m [stamp h p c]
+      rw [hs, singles_of_run h N cur m cs _ (some (h c p))
+        (by rw [ht]; exact findPred_after_append _ _ _ _ _ rfl), ht, appendRun_append]
       rfl
 
 /-- The runs, read back event by event, are the batch. -/
@@ -1139,10 +1294,12 @@ theorem foldl_flatMap {α β γ : Type} (f : α → List β) (g : γ → β → 
 
 /-- Batch equivalence across month files, in every order: a locked batch (every run
 written under the lock) leaves every month file exactly as n single locked appends
-do — the same events, the same `prev` and `hash` links. -/
-theorem batch_eq_singles_months (h : HashFn C H) (N : Nat) (D : Files C H)
+do — the same events in the same files, the same `prev` and `hash` links. No
+hypothesis on the order of the months (none was needed since 13cf8bab, and
+`targetMonthFile` adds none). -/
+theorem batch_eq_singles_months (h : HashFn C H) (N cur : Nat) (D : Files C H)
     (evs : List (Nat × C)) :
-    batchFiles h N D (runs evs).length evs = singleFiles h N D evs := by
+    batchFiles h N cur D (runs evs).length evs = singleFiles h N cur D evs := by
   simp only [batchFiles, List.take_length, List.drop_length, gapRuns, List.foldl_nil, singleFiles]
   conv => rhs; rw [← runs_flatten evs]
   rw [foldl_flatMap]
@@ -1152,21 +1309,321 @@ theorem batch_eq_singles_months (h : HashFn C H) (N : Nat) (D : Files C H)
   | nil => rfl
   | cons r rs ih =>
       simp only [List.foldl_cons]
-      rw [singles_of_run h N r.1 r.2 D _ rfl]
+      rw [singles_of_run h N cur r.1 r.2 D _ rfl]
       exact ih _
 
 /-- After a lock failure, every run not yet written starts with a declared gap: the
 first event of each such run has `prev = none`, and the rest chain within the run. -/
-theorem failed_batch_runs_gap (h : HashFn C H) (N : Nat) (D : Files C H) (done : Nat)
+theorem failed_batch_runs_gap (h : HashFn C H) (N cur : Nat) (D : Files C H) (done : Nat)
     (evs : List (Nat × C)) :
-    batchFiles h N D done evs =
-      ((runs evs).drop done).foldl (fun S r => appendRun S r.1 (chainFrom h none r.2))
-        (lockedRuns h N D ((runs evs).take done)) ∧
+    batchFiles h N cur D done evs =
+      ((runs evs).drop done).foldl
+        (fun S r => appendRun S (target S cur r.1) (chainFrom h none r.2))
+        (lockedRuns h N cur D ((runs evs).take done)) ∧
     ∀ r ∈ (runs evs).drop done, ∀ c cs, r.2 = c :: cs →
       chainFrom h none r.2 = stamp h none c :: chainFrom h (some (h c none)) cs := by
   refine ⟨rfl, ?_⟩
   intro r _ c cs hr
   rw [hr]; rfl
+
+/-! ### The log in file order (code review of 0.23, finding 5)
+
+`flat S N` is the log as `verifyChain` reads it: month files oldest first. Before
+e52b7e9b an event stamped in October and appended after November's file had started
+went to the October file, chained onto October's tail — a predecessor November's
+first event had already claimed — so the file-order log forked and had a
+`prev_mismatch`. Now it joins November's file and links to the global last chained
+event.
+
+No month file is later than the current month (`NoLaterThan S cur`): the clamp keeps
+this (`noLaterThan_sstep`) as long as the clock does not step back across a month
+boundary, and an empty history starts with it. A file beyond today written by code
+before the clamp is outside these claims.
+
+One more hypothesis: every month file that has events holds a CHAINED event
+(`ChainedFiles`). A file of only legacy (pre-#1051) events has a null tail-seek, so an
+append to it starts a gap instead of linking past it to an older file. Appends keep
+the hypothesis (`chainedFiles_sstep`); a store whose history began on 0.23 meets it
+from the start. -/
+
+/-- The month files below `n`, oldest first. -/
+def flat (S : Files C H) : Nat → List (Event C H)
+  | 0 => []
+  | n + 1 => flat S n ++ S n
+
+/-- Every month file with events holds a chained event. -/
+def ChainedFiles (S : Files C H) : Prop := ∀ k, S k ≠ [] → ∃ e ∈ S k, e.hash.isSome = true
+
+theorem lastChained_of_chained : ∀ (l : List (Event C H)) (st : Option H),
+    (∃ e ∈ l, e.hash.isSome = true) → lastChained st l = lastChained none l
+  | [], _, ⟨_, he, _⟩ => by simp at he
+  | e :: rest, st, ⟨x, hx, hxs⟩ => by
+      cases he : e.hash with
+      | some r => simp only [lastChained, he]
+      | none =>
+          simp only [lastChained, he]
+          rcases List.mem_cons.mp hx with rfl | hx'
+          · rw [he] at hxs; simp at hxs
+          · exact lastChained_of_chained rest st ⟨x, hx', hxs⟩
+
+theorem flat_congr (S S' : Files C H) : ∀ n, (∀ k, k < n → S k = S' k) → flat S n = flat S' n
+  | 0, _ => rfl
+  | n + 1, h => by
+      simp only [flat]
+      rw [flat_congr S S' n (fun k hk => h k (by omega)), h n (by omega)]
+
+/-- The global last chained event is the last chained event of the newest file. -/
+theorem lastChained_flat_top (S : Files C H) (hc : ChainedFiles S) (j : Nat) (hj : S j ≠ []) :
+    ∀ n, j < n → (∀ k, j < k → k < n → S k = []) →
+      lastChained none (flat S n) = lastChained none (S j)
+  | 0, hn, _ => absurd hn (Nat.not_lt_zero _)
+  | n + 1, hn, h => by
+      simp only [flat]
+      by_cases hnj : n = j
+      · rw [hnj, lastChained_append, lastChained_of_chained _ _ (hc j hj)]
+      · rw [h n (by omega) (by omega), List.append_nil]
+        exact lastChained_flat_top S hc j hj n (by omega) (fun k h1 h2 => h k h1 (by omega))
+
+/-- With the own file and every later file empty, the directory walk finds the global
+last chained event. -/
+theorem newestBelow_flat (S : Files C H) (hc : ChainedFiles S) (m : Nat) (hm : S m = []) :
+    ∀ n, (∀ k, m < k → k < n → S k = []) → newestBelow S m n = lastChained none (flat S n)
+  | 0, _ => rfl
+  | n + 1, h => by
+      simp only [newestBelow, flat]
+      by_cases hc' : n ≠ m ∧ (S n).isEmpty = false
+      · rw [ite_eq_left hc', lastChained_append,
+          lastChained_of_chained (S n) (lastChained none (flat S n))
+            (hc n (ne_nil_of_isEmpty_false hc'.2))]
+      · rw [ite_eq_right hc']
+        have hSn : S n = [] := by
+          by_cases hnm : n = m
+          · rw [hnm]; exact hm
+          · cases hS : (S n).isEmpty
+            · exact absurd ⟨hnm, hS⟩ hc'
+            · exact nil_of_isEmpty_true hS
+        rw [hSn, List.append_nil]
+        exact newestBelow_flat S hc m hm n (fun k h1 h2 => h k h1 (by omega))
+
+/-- No month file later than `cur`. -/
+def NoLaterThan (S : Files C H) (cur : Nat) : Prop := ∀ k, cur < k → S k = []
+
+/-- The predecessor of a file after which no file has events is the global last chained
+event. -/
+theorem findPred_global_of_top (S : Files C H) (N t : Nat) (hc : ChainedFiles S) (ht : t < N)
+    (hall : ∀ k, t < k → k < N → S k = []) :
+    findPred S N t = lastChained none (flat S N) := by
+  unfold findPred
+  cases hS : (S t).isEmpty
+  · rw [ite_eq_right (by simp)]
+    exact (lastChained_flat_top S hc t (ne_nil_of_isEmpty_false hS) N ht hall).symm
+  · rw [ite_eq_left rfl]
+    exact newestBelow_flat S hc t (nil_of_isEmpty_true hS) N hall
+
+/-- The file `targetMonthFile` names is at most the current month and no file after it
+has events. -/
+theorem target_top (S : Files C H) (N cur m : Nat) (hb : NoLaterThan S cur) (hcN : cur < N) :
+    target S cur m < N ∧ target S cur m ≤ cur ∧ ∀ k, target S cur m < k → k < N → S k = [] := by
+  unfold target
+  by_cases hc : cur < m
+  · rw [ite_eq_left hc]
+    exact ⟨hcN, Nat.le_refl _, fun k hk _ => hb k hk⟩
+  · rw [ite_eq_right hc]
+    rcases newestFrom_spec S m (cur + 1) with ⟨he, hall⟩ | ⟨h1, h2, _, hall⟩
+    · rw [he]
+      refine ⟨by omega, by omega, fun k hk1 _ => ?_⟩
+      by_cases hkc : k ≤ cur
+      · exact hall k hk1 (by omega)
+      · exact hb k (by omega)
+    · refine ⟨by omega, by omega, fun k hk1 _ => ?_⟩
+      by_cases hkc : k ≤ cur
+      · exact hall k hk1 (by omega)
+      · exact hb k (by omega)
+
+/-- Under the lock, the predecessor of the file `targetMonthFile` names is the global
+last chained event, and no file after that one has events. -/
+theorem findPred_target_global (S : Files C H) (N cur m : Nat) (hc : ChainedFiles S)
+    (hb : NoLaterThan S cur) (hcN : cur < N) :
+    findPred S N (target S cur m) = lastChained none (flat S N) ∧
+    target S cur m < N ∧ ∀ k, target S cur m < k → k < N → S k = [] := by
+  obtain ⟨h1, _, h3⟩ := target_top S N cur m hb hcN
+  exact ⟨findPred_global_of_top S N _ hc h1 h3, h1, h3⟩
+
+theorem flat_appendRun (S : Files C H) (t : Nat) (es : List (Event C H)) :
+    ∀ n, t < n → (∀ k, t < k → k < n → S k = []) → flat (appendRun S t es) n = flat S n ++ es
+  | 0, hn, _ => absurd hn (Nat.not_lt_zero _)
+  | n + 1, hn, h => by
+      simp only [flat]
+      by_cases hnt : n = t
+      · rw [hnt, flat_congr (appendRun S t es) S t
+          (fun k hk => by simp [appendRun, Nat.ne_of_lt hk])]
+        simp [appendRun]
+      · rw [flat_appendRun S t es n (by omega) (fun k h1 h2 => h k h1 (by omega))]
+        simp [appendRun, hnt, h n (by omega) (by omega)]
+
+/-- Finding 5 fixed: a locked single append, whatever its timestamp, extends the
+file-order log exactly as a §2 locked append extends one list — the event lands at the
+end of the log, linked to the global last chained event. No condition on the event's
+own month: one stamped before an existing later file, or after the current month,
+alike. -/
+theorem sstep_flat (h : HashFn C H) (N cur : Nat) (S : Files C H) (x : Nat × C)
+    (hc : ChainedFiles S) (hb : NoLaterThan S cur) (hcN : cur < N) :
+    flat (sstep h N cur S x) N = append h .taken (flat S N) x.2 := by
+  obtain ⟨hp, ht, hall⟩ := findPred_target_global S N cur x.1 hc hb hcN
+  simp only [sstep, append, appendStamped, prevFor]
+  rw [hp, flat_appendRun S _ _ N ht hall]
+
+/-- (a) The event a locked single append writes links to the global last chained event
+— not to its own month file's tail when a later file already has events. -/
+theorem late_stamp_links_global_last (h : HashFn C H) (N cur : Nat) (S : Files C H)
+    (x : Nat × C) (hc : ChainedFiles S) (hb : NoLaterThan S cur) (hcN : cur < N) :
+    (flat (sstep h N cur S x) N).getLast? = some (stamp h (lastChained none (flat S N)) x.2) := by
+  rw [sstep_flat h N cur S x hc hb hcN]; exact locked_append_links h _ _
+
+theorem chainedFiles_sstep (h : HashFn C H) (N cur : Nat) (S : Files C H) (x : Nat × C)
+    (hc : ChainedFiles S) : ChainedFiles (sstep h N cur S x) := by
+  intro k hk
+  simp only [sstep, appendRun] at hk ⊢
+  by_cases hkt : k = target S cur x.1
+  · rw [ite_eq_left hkt]
+    exact ⟨_, List.mem_append_right _ (List.mem_singleton_self _), by simp [stamp]⟩
+  · rw [ite_eq_right hkt] at hk ⊢; exact hc k hk
+
+/-- The clamp: an append never creates a file later than the current month, so the
+bound carries to any later clock reading. -/
+theorem noLaterThan_sstep (h : HashFn C H) (N cur cur' : Nat) (S : Files C H) (x : Nat × C)
+    (hb : NoLaterThan S cur) (hle : cur ≤ cur') : NoLaterThan (sstep h N cur S x) cur' := by
+  intro k hk
+  have ht : target S cur x.1 ≤ cur := by
+    unfold target
+    by_cases hc : cur < x.1
+    · rw [ite_eq_left hc]; exact Nat.le_refl _
+    · rw [ite_eq_right hc]
+      rcases newestFrom_spec S x.1 (cur + 1) with ⟨he, _⟩ | ⟨_, h2, _, _⟩
+      · rw [he]; omega
+      · omega
+  have hkt : k ≠ target S cur x.1 := by omega
+  simp only [sstep, appendRun, ite_eq_right hkt]
+  exact hb k (by omega)
+
+/-- Single locked appends with any event timestamps, and a clock that does not step
+back across a month boundary (each reading `≥ cur0`, nondecreasing), extend the
+file-order log one locked append at a time. -/
+theorem timed_flat (h : HashFn C H) (N : Nat) :
+    ∀ (tevs : List (Nat × Nat × C)) (S : Files C H) (cur0 : Nat), ChainedFiles S →
+      NoLaterThan S cur0 → (∀ x ∈ tevs, cur0 ≤ x.1 ∧ x.1 < N) →
+      tevs.Pairwise (fun a b => a.1 ≤ b.1) →
+      flat (timedFiles h N S tevs) N =
+        (tevs.map (fun x => x.2.2)).foldl (fun acc c => append h .taken acc c) (flat S N)
+  | [], _, _, _, _, _, _ => rfl
+  | x :: xs, S, cur0, hc, hb, hx, hp => by
+      simp only [timedFiles, List.foldl_cons, List.map_cons]
+      have hx0 := hx x (by simp)
+      have hpx := List.pairwise_cons.mp hp
+      have hb' : NoLaterThan S x.1 := fun k hk => hb k (by omega)
+      have ih := timed_flat h N xs (sstep h N x.1 S x.2) x.1 (chainedFiles_sstep h N x.1 S x.2 hc)
+        (noLaterThan_sstep h N x.1 x.1 S x.2 hb' (Nat.le_refl _))
+        (fun y hy => ⟨hpx.1 y hy, (hx y (by simp [hy])).2⟩) hpx.2
+      simp only [timedFiles] at ih
+      rw [ih, sstep_flat h N x.1 S x.2 hc hb' hx0.2]
+
+/-- No month file has events. -/
+def noFiles : Files C H := fun _ => []
+
+theorem flat_noFiles : ∀ n, flat (noFiles : Files C H) n = []
+  | 0 => rfl
+  | n + 1 => by simp [flat, flat_noFiles n, noFiles]
+
+/-- From an empty history, single locked appends with ANY event timestamps (earlier
+than a file already started, or after the current month) leave a file-order log that
+is one locked chain of their contents. Conditions on the clock only: readings below
+`N` and nondecreasing. -/
+theorem singles_any_order_chain (h : HashFn C H) (N : Nat) (tevs : List (Nat × Nat × C))
+    (hN : ∀ x ∈ tevs, x.1 < N) (hmono : tevs.Pairwise (fun a b => a.1 ≤ b.1)) :
+    flat (timedFiles h N noFiles tevs) N = chainFrom h none (tevs.map (fun x => x.2.2)) := by
+  rw [timed_flat h N tevs noFiles 0 (fun k hk => absurd rfl hk) (fun _ _ => rfl)
+    (fun x hx => ⟨Nat.zero_le _, hN x hx⟩) hmono, flat_noFiles, ← batch_eq_singles]
+  simp [appendBatch, prevFor, lastChained]
+
+section FileOrder
+variable [DecidableEq H]
+
+/-- (a) A locked single append adds no break to the file-order log, whatever its
+timestamp. -/
+theorem late_stamp_adds_no_break (h : HashFn C H) (N cur : Nat) (S : Files C H) (x : Nat × C)
+    (hc : ChainedFiles S) (hb : NoLaterThan S cur) (hcN : cur < N) :
+    walk h none none 0 (flat (sstep h N cur S x) N) = walk h none none 0 (flat S N) := by
+  rw [sstep_flat h N cur S x hc hb hcN]; exact locked_append_adds_no_break h _ _
+
+/-- From an empty history, locked single appends with any event timestamps verify with
+no break. -/
+theorem singles_any_order_verifies (h : HashFn C H) (N : Nat) (tevs : List (Nat × Nat × C))
+    (hN : ∀ x ∈ tevs, x.1 < N) (hmono : tevs.Pairwise (fun a b => a.1 ≤ b.1)) :
+    walk h none none 0 (flat (timedFiles h N noFiles tevs) N) = [] := by
+  rw [singles_any_order_chain h N tevs hN hmono]
+  have hb : appendBatch h .taken [] (tevs.map (fun x => x.2.2)) =
+      chainFrom h none (tevs.map (fun x => x.2.2)) := by
+    simp [appendBatch]; rfl
+  rw [← hb]
+  exact walk_clean h _ none none 0 (sealed_batch h _ .taken [] (by intro e he; simp at he))
+    (links_locked_batch h _ [] (by intro e he; simp at he) trivial)
+    (by intro a _ r hr; cases hr)
+
+omit [DecidableEq H] in
+/-- …and report no fork (`HashInjective` a hypothesis). -/
+theorem singles_any_order_no_fork (h : HashFn C H) (hinj : HashInjective h) (N : Nat)
+    (tevs : List (Nat × Nat × C)) (hN : ∀ x ∈ tevs, x.1 < N)
+    (hmono : tevs.Pairwise (fun a b => a.1 ≤ b.1)) :
+    ¬ ReportsFork (flat (timedFiles h N noFiles tevs) N) := by
+  rw [singles_any_order_chain h N tevs hN hmono]; exact chain_no_fork h hinj _
+
+/-- The counterexample shape of code-review finding 5, now clean: in November (current
+month 11) a November event is written, then an event stamped October. The October
+event joins November's file, October's file stays empty, and the log verifies with no
+break and no reported fork. -/
+theorem finding5_shape_verifies (h : HashFn C H) (hinj : HashInjective h) (c1 c2 : C) :
+    (timedFiles h 12 noFiles [(11, 11, c1), (11, 10, c2)]) 10 = [] ∧
+    walk h none none 0 (flat (timedFiles h 12 noFiles [(11, 11, c1), (11, 10, c2)]) 12) = [] ∧
+    ¬ ReportsFork (flat (timedFiles h 12 noFiles [(11, 11, c1), (11, 10, c2)]) 12) := by
+  have hN : ∀ x ∈ [((11 : Nat), (11 : Nat), c1), (11, 10, c2)], x.1 < 12 := by
+    intro x hx; simp at hx; rcases hx with rfl | rfl <;> simp
+  have hmono : [((11 : Nat), (11 : Nat), c1), (11, 10, c2)].Pairwise (fun a b => a.1 ≤ b.1) := by
+    simp
+  refine ⟨?_, singles_any_order_verifies h 12 _ hN hmono,
+    singles_any_order_no_fork h hinj 12 _ hN hmono⟩
+  have h1 : target (noFiles : Files C H) 11 11 = 11 := by
+    simp only [target, Nat.lt_irrefl, ite_false]
+    exact newestFrom_self _ _ _ (fun k _ _ => rfl)
+  let S1 := sstep h 12 11 (noFiles : Files C H) (11, c1)
+  have h2 : target S1 11 10 = 11 := by
+    simp only [target, show ¬ (11 < 10) by decide, ite_false]
+    refine newestFrom_top S1 10 11 (by decide) ?_ 12 (by decide) ?_
+    · simp [S1, sstep, h1, appendRun]
+    · intro k hk1 hk2; omega
+  show (sstep h 12 11 S1 (10, c2)) 10 = []
+  simp only [sstep, h2, appendRun]
+  simp [S1, sstep, h1, appendRun, noFiles]
+
+/-- The clamp, third review: in October (current month 10) an event stamped November
+is written to October's file, no November file is started, and an October event after
+it links to it — the log verifies with no break and no reported fork. -/
+theorem future_stamp_joins_current (h : HashFn C H) (hinj : HashInjective h) (c1 c2 : C) :
+    (timedFiles h 12 noFiles [(10, 11, c1), (10, 10, c2)]) 11 = [] ∧
+    walk h none none 0 (flat (timedFiles h 12 noFiles [(10, 11, c1), (10, 10, c2)]) 12) = [] ∧
+    ¬ ReportsFork (flat (timedFiles h 12 noFiles [(10, 11, c1), (10, 10, c2)]) 12) := by
+  have hN : ∀ x ∈ [((10 : Nat), (11 : Nat), c1), (10, 10, c2)], x.1 < 12 := by
+    intro x hx; simp at hx; rcases hx with rfl | rfl <;> simp
+  have hmono : [((10 : Nat), (11 : Nat), c1), (10, 10, c2)].Pairwise (fun a b => a.1 ≤ b.1) := by
+    simp
+  refine ⟨?_, singles_any_order_verifies h 12 _ hN hmono,
+    singles_any_order_no_fork h hinj 12 _ hN hmono⟩
+  have hb : NoLaterThan (timedFiles h 12 noFiles [(10, 11, c1), (10, 10, c2)]) 10 := by
+    simp only [timedFiles, List.foldl_cons, List.foldl_nil]
+    exact noLaterThan_sstep h 12 10 10 _ _
+      (noLaterThan_sstep h 12 10 10 _ _ (fun _ _ => rfl) (Nat.le_refl _)) (Nat.le_refl _)
+  exact hb 11 (by decide)
+
+end FileOrder
 
 /-! ## 7. Building a session manifest (`buildSessionManifest`) -/
 
@@ -1368,14 +1825,17 @@ theorem field_edit_changed {F V : Type} (rh : (F → Option V) → K) (hinj : Re
 /-! ## 9. `plur verify --manifest` exit codes (commit c21b371e)
 
 `runManifest` in `packages/cli/src/commands/verify-manifest.ts` and
-`checkNotarySignature` in `packages/cli/src/lib/notary.ts`. -/
+`checkNotarySignature` in `packages/cli/src/lib/notary.ts`. Where the expected notary
+comes from is the rule at the end of this section (`expectedNotary`, `downloadSource`);
+the exit theorems below hold whatever that rule yields. -/
 
 /-- The first notary signature on a downloaded document. `coversData`: its
 `hashed_fields` is absent or includes `"data"` (otherwise `checkNotarySignature`
 returns `signature_ok = false` at once). `checks`: the data hash matches, the message
 format is known, and the recovered address equals the claimed signer. `fromExpected`:
-the recovered address equals the expected notary (pinned with `--notary`, or named by
-the gateway). -/
+the recovered address equals the expected notary (`expectedNotary`: pinned with `--notary`; else
+the default notary for the default gateway; else, only with `--trust-gateway-notary`,
+the address the gateway names). -/
 structure NotarySig where
   coversData : Bool
   checks : Bool
@@ -1386,7 +1846,7 @@ def sigOk (s : NotarySig) : Bool := s.coversData && s.checks && s.fromExpected
 
 /-- Where the manifest came from. A Swarm download carries the content-hash check, the
 first notary signature (`none` = the document has none) and whether an expected notary
-address exists (`--notary`, or the gateway names one). -/
+address exists (`(expectedNotary …).isSome`, see `downloadSource`). -/
 inductive Source where
   | file
   | swarm (contentHashOk : Bool) (sig : Option NotarySig) (expected : Bool)
@@ -1466,8 +1926,9 @@ theorem no_signature_cannot (ch nc c e : Bool) :
     exitCode (.checked ch nc (.swarm c none e)) = 2 := by
   simp [exitCode, preCannot]
 
-/-- A signature with no expected notary address (no pin, the gateway names none) is
-cannot-verify. -/
+/-- A signature with no expected notary address is cannot-verify: no pin and a gateway
+other than the default one, untrusted (`untrusted_other_gateway_cannot`) or trusted
+but naming none. -/
 theorem no_notary_address_cannot (ch nc c : Bool) (s : NotarySig) :
     exitCode (.checked ch nc (.swarm c (some s) false)) = 2 := by
   simp [exitCode, preCannot]
@@ -1506,6 +1967,136 @@ theorem exit_zero_iff_ok (rh : R → K) (store : Nat → Option (Engram R B)) (e
   · rintro ⟨⟨h1, h2⟩, hi⟩
     exact ⟨_, _, _, ⟨rfl, rfl, rfl⟩, h1, h2, hi⟩
 
+/-! ### Which notary a download is checked against (0.23 code review, finding 9)
+
+`expectedNotaryFor(gateway, pinned)` in `packages/gateway/src/client.ts`, then the
+`--trust-gateway-notary` fallback in `runManifest`: the pinned notary (`--notary`);
+else, for the default gateway, the default notary (`DEFAULT_NOTARY_ADDRESS`); else
+nothing — unless `--trust-gateway-notary` accepts the address the gateway reports
+about itself (`notaryAddress()`, `named`). Addresses are compared after lower-casing;
+the model's `A` is the normalised address. `isDefault` is `isDefaultGateway(url)`. -/
+
+inductive NotarySource where
+  | pinned
+  | default_
+  | gateway
+  deriving DecidableEq
+
+def expectedNotary {A : Type} (dflt : A) (isDefault : Bool) (pinned : Option A) (trust : Bool)
+    (named : Option A) : Option (A × NotarySource) :=
+  match pinned with
+  | some a => some (a, .pinned)
+  | none =>
+    if isDefault then some (dflt, .default_)
+    else if trust then named.map (fun a => (a, .gateway)) else none
+
+section Notary
+variable {A : Type}
+
+theorem expected_pinned (dflt : A) (isDefault : Bool) (a : A) (trust : Bool) (named : Option A) :
+    expectedNotary dflt isDefault (some a) trust named = some (a, .pinned) := rfl
+
+/-- The default gateway is checked against the default notary, whatever the gateway
+says about itself and whether or not it is trusted. -/
+theorem expected_default_gateway (dflt : A) (trust : Bool) (named : Option A) :
+    expectedNotary dflt true none trust named = some (dflt, .default_) := rfl
+
+/-- Without `--trust-gateway-notary`, what the gateway reports about itself never
+changes the expected notary. -/
+theorem expected_ignores_gateway_claim (dflt : A) (isDefault : Bool) (pinned : Option A)
+    (named named' : Option A) :
+    expectedNotary dflt isDefault pinned false named = expectedNotary dflt isDefault pinned false named' := by
+  cases pinned <;> cases isDefault <;> rfl
+
+/-- Another gateway, no pin, not trusted: no expected notary. -/
+theorem other_gateway_untrusted_none (dflt : A) (named : Option A) :
+    expectedNotary dflt false none false named = none := rfl
+
+/-- The gateway's own claim is used only when it is trusted, nothing is pinned and the
+gateway is not the default one. -/
+theorem gateway_source_needs_trust (dflt : A) (isDefault : Bool) (pinned : Option A) (trust : Bool)
+    (named : Option A) (a : A) (h : expectedNotary dflt isDefault pinned trust named = some (a, .gateway)) :
+    trust = true ∧ isDefault = false ∧ pinned = none ∧ named = some a := by
+  cases pinned with
+  | some p => simp [expectedNotary] at h
+  | none =>
+      cases isDefault <;> cases trust <;> cases named <;> simp_all [expectedNotary]
+
+/-- A notary signature as `checkNotarySignature` reads it: `coversData`, `checks` (data
+hash, message format, recovery equal to the claimed signer) and the `recovered`
+address. -/
+structure DownloadSig (A : Type) where
+  coversData : Bool
+  checks : Bool
+  recovered : A
+
+/-- The `Source` a download yields: `fromExpected` is the recovered address equalling
+the expected notary; `expected` is whether there is one. -/
+def downloadSource [DecidableEq A] (c : Bool) (sig : Option (DownloadSig A))
+    (exp : Option (A × NotarySource)) : Source :=
+  .swarm c (sig.map fun s => ⟨s.coversData, s.checks,
+    match exp with
+    | some (a, _) => decide (s.recovered = a)
+    | none => false⟩) exp.isSome
+
+variable [DecidableEq A]
+
+/-- §9's exit-0 theorem for a download, with the expected notary spelled out: exit 0
+iff nothing CHANGED, something was checked, the bytes match, and the signature covers
+`data`, checks, and was made by the expected notary. -/
+theorem download_exit_zero_iff (ch nc c : Bool) (sig : Option (DownloadSig A))
+    (exp : Option (A × NotarySource)) :
+    exitCode (.checked ch nc (downloadSource c sig exp)) = 0 ↔
+      ch = false ∧ nc = false ∧ c = true ∧ ∃ s a src, sig = some s ∧ exp = some (a, src) ∧
+        s.coversData = true ∧ s.checks = true ∧ s.recovered = a := by
+  rw [exit_zero_iff]
+  simp only [Outcome.checked.injEq]
+  constructor
+  · rintro ⟨ch', nc', s', ⟨rfl, rfl, rfl⟩, hc, hn, hi⟩
+    refine ⟨hc, hn, ?_⟩
+    cases sig with
+    | none => simp [downloadSource, integrityOk] at hi
+    | some s =>
+        cases exp with
+        | none => simp [downloadSource, integrityOk] at hi
+        | some e =>
+            obtain ⟨a, src⟩ := e
+            simp [downloadSource, integrityOk, sigOk] at hi
+            exact ⟨hi.1, s, a, src, rfl, rfl, hi.2.1.1, hi.2.1.2, hi.2.2⟩
+  · rintro ⟨hc, hn, hcc, s, a, src, rfl, rfl, h1, h2, h3⟩
+    refine ⟨ch, nc, _, ⟨rfl, rfl, rfl⟩, hc, hn, ?_⟩
+    simp [downloadSource, integrityOk, sigOk, hcc, h1, h2, h3]
+
+/-- A download from a gateway that is not the default one, with no `--notary` pin and
+no `--trust-gateway-notary`, is cannot-verify (exit 2), signature or not. -/
+theorem untrusted_other_gateway_cannot (ch nc c : Bool) (dflt : A) (sig : Option (DownloadSig A))
+    (named : Option A) :
+    exitCode (.checked ch nc (downloadSource c sig (expectedNotary dflt false none false named))) = 2 := by
+  cases sig <;> simp [expectedNotary, downloadSource, exitCode, preCannot]
+
+/-- Finding 9, the attack: without `--trust-gateway-notary`, an exit 0 means the
+signature was made by the pinned notary, or (no pin, default gateway) by the default
+notary — never by an address only the gateway vouches for. -/
+theorem exit_zero_untrusted_signer (ch nc c : Bool) (dflt : A) (isDefault : Bool) (pinned : Option A)
+    (sig : Option (DownloadSig A)) (named : Option A)
+    (h : exitCode (.checked ch nc (downloadSource c sig (expectedNotary dflt isDefault pinned false named))) = 0) :
+    ∃ s, sig = some s ∧
+      (pinned = some s.recovered ∨ (pinned = none ∧ isDefault = true ∧ s.recovered = dflt)) := by
+  obtain ⟨_, _, _, s, a, src, hs, he, _, _, hr⟩ := (download_exit_zero_iff ch nc c sig _).mp h
+  refine ⟨s, hs, ?_⟩
+  cases pinned with
+  | some p =>
+      simp [expectedNotary] at he
+      left; rw [he.1, hr]
+  | none =>
+      cases isDefault with
+      | true =>
+          simp [expectedNotary] at he
+          right; exact ⟨rfl, rfl, by rw [hr, he.1]⟩
+      | false => simp [expectedNotary] at he
+
+end Notary
+
 /-! ## 10. Opt-in network (`receiptsConfig`, plur_session_end) -/
 
 inductive ReceiptStore where
@@ -1532,5 +2123,143 @@ theorem default_no_network (raw : Option String) (session : Option String)
     (h : raw ≠ some "swarm") : sessionEndUploads (receiptsConfig raw) session = false := by
   simp [receiptsConfig, h]
   cases session <;> simp [sessionEndUploads]
+
+/-! ## 11. The store check (`verifyChain`, code review of 0.23 finding 2, commit e52b7e9b)
+
+The newest checkpoint attests the store (`store_hash`) and, since e52b7e9b, the same
+records split into `STORE_BUCKETS` = 64 groups by a hash of the id (`storeBucketOf`),
+each fingerprinted (`store_buckets`). When the store's hash differs from the attested
+one, `verifyChain` asks whether the difference is explained: every group whose
+fingerprint moved must hold an id that a content event after the checkpoint names
+(`CONTENT_EVENTS`, including `store_synced`, which a sync pull records, and
+`store_compacted`, which `compact()` records naming every removed row; ids from
+`eventEngramIds`: the event's `engram_id`, the fixed id fields of `data` read
+verbatim, and elsewhere in `data` only string values that are a whole ENG/ABS/META
+id, never an id inside free text). Explained: `store_changed_since_checkpoint`. Otherwise a
+`store_hash_mismatch` break. A checkpoint written before groups existed falls back to
+"any content event since explains it".
+
+Modelled abstractly. A store is `I → Option V` (each id's attested record — status
+and record hash — or absent). `bucket : I → G` is `storeBucketOf` (`G` is `Fin 64` in
+the code; any type here). A group's fingerprint `fp` reads only the records of that
+group (`restrict`); `fp` (16 hex, truncated) and `sh` (the store hash) are collision
+free only as hypotheses (`FpInjective`, `StoreHashInjective`). `after` lists, per
+content event after the checkpoint, the ids it names — `eventEngramIds`' output, so
+which strings count as an id is outside the model, and the theorems hold for any such
+rule. The store being unreadable or
+absent (`cannot_verify`, the `attestedCount` rule) is not modelled. -/
+
+section StoreCheck
+variable {I V G F Hs : Type} [DecidableEq G]
+
+abbrev Store (I V : Type) := I → Option V
+
+/-- The records of group `g` only: what one group fingerprint reads. -/
+def restrict (bucket : I → G) (s : Store I V) (g : G) : Store I V :=
+  fun i => if bucket i = g then s i else none
+
+/-- `attestStore(...).store_buckets`. -/
+def buckets (bucket : I → G) (fp : Store I V → F) (s : Store I V) : G → F :=
+  fun g => fp (restrict bucket s g)
+
+def FpInjective (fp : Store I V → F) : Prop := ∀ a b, fp a = fp b → a = b
+def StoreHashInjective (sh : Store I V → Hs) : Prop := ∀ a b, sh a = sh b → a = b
+
+/-- `attestedBuckets.every((b, i) => b === actualBuckets[i] || named.has(i))`. -/
+def ExplainedBy (bucket : I → G) (fp : Store I V → F) (A : G → F) (s : Store I V)
+    (after : List (List I)) : Prop :=
+  ∀ g, A g = buckets bucket fp s g ∨ ∃ i ∈ after.flatten, bucket i = g
+
+/-- `explained`: by groups when the checkpoint has them, else `since > 0`. -/
+def Explained (bucket : I → G) (fp : Store I V → F) (attested : Option (G → F)) (s : Store I V)
+    (after : List (List I)) : Prop :=
+  match attested with
+  | none => after ≠ []
+  | some A => ExplainedBy bucket fp A s after
+
+/-- A `store_hash_mismatch` break: the store hash differs and the difference is not
+explained. `s0` is the store the checkpoint attested. -/
+def StoreBreak (sh : Store I V → Hs) (bucket : I → G) (fp : Store I V → F) (s0 : Store I V)
+    (attested : Option (G → F)) (s : Store I V) (after : List (List I)) : Prop :=
+  sh s ≠ sh s0 ∧ ¬ Explained bucket fp attested s after
+
+/-- (a) Soundness of localisation: an edit to a memory whose group no recorded event
+names is always reported — whatever else history records. -/
+theorem unrecorded_edit_reported (sh : Store I V → Hs) (bucket : I → G) (fp : Store I V → F)
+    (hsh : StoreHashInjective sh) (hfp : FpInjective fp) (s0 s : Store I V)
+    (after : List (List I)) (i : I) (hi : s i ≠ s0 i)
+    (hnamed : ∀ j ∈ after.flatten, bucket j ≠ bucket i) :
+    StoreBreak sh bucket fp s0 (some (buckets bucket fp s0)) s after := by
+  refine ⟨fun heq => hi (by rw [hsh _ _ heq]), fun hex => ?_⟩
+  have hex' : ExplainedBy bucket fp (buckets bucket fp s0) s after := hex
+  rcases hex' (bucket i) with hb | ⟨j, hj, hji⟩
+  · have hr := congrFun (hfp _ _ hb) i
+    simp [restrict] at hr
+    exact hi hr.symm
+  · exact hnamed j hj hji
+
+/-- (b) Recorded changes alone never break: when every changed memory shares a group
+with an id a content event since the checkpoint names, the check passes. -/
+theorem recorded_changes_never_break (sh : Store I V → Hs) (bucket : I → G) (fp : Store I V → F)
+    (s0 s : Store I V) (after : List (List I))
+    (hrec : ∀ i, s i ≠ s0 i → ∃ j ∈ after.flatten, bucket j = bucket i) :
+    ¬ StoreBreak sh bucket fp s0 (some (buckets bucket fp s0)) s after := by
+  rintro ⟨_, hne⟩
+  apply hne
+  show ExplainedBy bucket fp (buckets bucket fp s0) s after
+  intro g
+  by_cases hg : restrict bucket s0 g = restrict bucket s g
+  · left; simp only [buckets, hg]
+  · right
+    have : ∃ i, restrict bucket s0 g i ≠ restrict bucket s g i :=
+      Classical.byContradiction fun hall =>
+        hg (funext fun i => Classical.byContradiction fun hi => hall ⟨i, hi⟩)
+    obtain ⟨i, hi⟩ := this
+    simp only [restrict] at hi
+    by_cases hbi : bucket i = g
+    · rw [ite_eq_left hbi, ite_eq_left hbi] at hi
+      obtain ⟨j, hj, hji⟩ := hrec i (Ne.symm hi)
+      exact ⟨j, hj, hji.trans hbi⟩
+    · rw [ite_eq_right hbi, ite_eq_right hbi] at hi; exact absurd rfl hi
+
+/-- (b), the plain case: every changed memory is itself named by a content event since
+the checkpoint (PLUR's own writes, and a sync pull's `store_synced`). -/
+theorem named_changes_never_break (sh : Store I V → Hs) (bucket : I → G) (fp : Store I V → F)
+    (s0 s : Store I V) (after : List (List I))
+    (hrec : ∀ i, s i ≠ s0 i → i ∈ after.flatten) :
+    ¬ StoreBreak sh bucket fp s0 (some (buckets bucket fp s0)) s after :=
+  recorded_changes_never_break sh bucket fp s0 s after (fun i hi => ⟨i, hrec i hi, rfl⟩)
+
+/-- An untouched store never breaks, groups or not. -/
+theorem unchanged_store_never_breaks (sh : Store I V → Hs) (bucket : I → G) (fp : Store I V → F)
+    (s0 : Store I V) (attested : Option (G → F)) (after : List (List I)) :
+    ¬ StoreBreak sh bucket fp s0 attested s0 after := fun h => h.1 rfl
+
+/-- (c) The limit, as a counterexample: an unrecorded edit to memory `i` in the same group
+as a recorded change to `j` is not detected. With 64 groups and `storeBucketOf` uniform
+(`sha256(id)[0] % 64`, and 256 is a multiple of 64), one unrecorded edit escapes with
+probability about the share of groups that recorded changes touch: `1/64` (≈1.6%) beside
+one recorded memory, `1 - (63/64)^n` beside `n` — about half at `n = 44`. That is an
+intuition about random ids, not a theorem: someone choosing which memory to edit can
+always pick one in a group that history names. -/
+theorem unrecorded_edit_beside_recorded_undetected (sh : Store I V → Hs) (bucket : I → G)
+    (fp : Store I V → F) (s0 s : Store I V) (after : List (List I)) (i j : I)
+    (hj : j ∈ after.flatten) (hij : bucket i = bucket j)
+    (honly : ∀ k, s k ≠ s0 k → k = i ∨ k = j) :
+    ¬ StoreBreak sh bucket fp s0 (some (buckets bucket fp s0)) s after := by
+  apply recorded_changes_never_break
+  intro k hk
+  rcases honly k hk with rfl | rfl
+  · exact ⟨j, hj, hij.symm⟩
+  · exact ⟨k, hj, rfl⟩
+
+/-- The fallback for a checkpoint written before groups existed: one content event
+explains every difference, an unrecorded edit included (the behaviour finding 2
+reported, still that of old checkpoints until the next one is written). -/
+theorem legacy_checkpoint_one_event_excuses_all (sh : Store I V → Hs) (bucket : I → G)
+    (fp : Store I V → F) (s0 s : Store I V) (after : List (List I)) (hne : after ≠ []) :
+    ¬ StoreBreak sh bucket fp s0 none s after := fun h => h.2 hne
+
+end StoreCheck
 
 end PlurSpec.Provenance

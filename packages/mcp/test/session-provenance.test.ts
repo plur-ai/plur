@@ -56,9 +56,12 @@ describe('session provenance (#960) and retirement reasons (#959)', () => {
     expect(source.session_id).toBeTruthy()
     expect(source.session_id).not.toBeNull()
 
-    // And it points at a real episode, not at the raw session identifier.
-    expect(source.session_id).toMatch(/^EP-/)
-    expect((engram as any).episode_ids).toContain(source.session_id)
+    // It records the session it came from, the same way plur_learn does: an
+    // explicit session id takes precedence over the episode (#1048), so the
+    // session's own manifest lists it as written (0.23 code review, finding 4).
+    // The link to the episode stays, in episode_ids.
+    expect(source.session_id).toBe(session_id)
+    expect((engram as any).episode_ids?.[0]).toMatch(/^EP-/)
   })
 
   it('captures the episode before the engrams, because they point at it', async () => {
@@ -75,7 +78,7 @@ describe('session provenance (#960) and retirement reasons (#959)', () => {
 
     const all = await plur.recall('statement worth keeping')
     const engram = all.find(e => e.statement.includes('A statement worth keeping'))
-    expect((engram as any).sources?.[0]?.session_id).toBe(episode!.id)
+    expect((engram as any).episode_ids).toContain(episode!.id)
   })
 
   it('marks an end-of-session summary as inferred, not asserted', async () => {

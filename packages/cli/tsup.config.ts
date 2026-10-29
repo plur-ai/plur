@@ -8,7 +8,7 @@ export default defineConfig([
     clean: true,
     banner: { js: '#!/usr/bin/env node' },
     // Bundled, not depended on — see packages/ui/README.md.
-    noExternal: ['@plur-ai/ui'],
+    noExternal: ['@plur-ai/ui', '@plur-ai/gateway'],
   },
   {
     // The API @plur-ai/plur-enterprise builds on (no shebang: it is imported, not run).
@@ -25,6 +25,6 @@ export default defineConfig([
     dts: false,
     clean: false,
     outDir: 'dist/commands',
-    noExternal: ['@plur-ai/ui'],
+    noExternal: ['@plur-ai/ui', '@plur-ai/gateway'],
   },
 ])

@@ -25,7 +25,7 @@
 import * as fs from 'node:fs'
 import * as crypto from 'node:crypto'
 import * as yaml from 'js-yaml'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 
 /** Filename suffix for private key files. */
 const KEY_FILE_SUFFIX = '.key'
@@ -79,6 +79,21 @@ export function safeFileName(id: string): string {
 /**
  * Derive the path for the store's public key registry.
  */
+/**
+ * The one folder private signing keys live in: `PLUR_KEYS_DIR` if set, else
+ * `<store>/keys`. `plur keys init`, `plur checkpoint` and the MCP session end
+ * all resolve it here, so the key that was made is the key that signs (0.23
+ * code review, finding 8: a `--keys-dir` flag on init alone wrote keys where
+ * signing never looked).
+ */
+export function keysDirFor(storeRoot: string): string {
+  const env = process.env.PLUR_KEYS_DIR?.trim()
+  // A relative value is taken relative to the store, never to whichever
+  // directory a process happens to run in — `plur keys init` in a shell and the
+  // MCP server an editor starts must find the same keys (code review of 0.23, R10).
+  return env ? resolve(storeRoot, env) : join(storeRoot, 'keys')
+}
+
 export function keysRegistryPath(storeRoot: string): string {
   return join(storeRoot, 'keys.yaml')
 }

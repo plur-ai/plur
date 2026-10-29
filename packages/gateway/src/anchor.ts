@@ -1,5 +1,6 @@
 /**
- * Anchor a session manifest on Swarm and keep a local record of it (#1657).
+ * Store a session manifest through the provenance gateway (which keeps it on
+ * Swarm) and keep a local record of it (#1657).
  *
  * Shared by `plur manifest --anchor` and the MCP server's session end, so both
  * upload the same canonical bytes and write the same record:
@@ -9,9 +10,8 @@
  */
 import { mkdirSync, writeFileSync, chmodSync } from 'fs'
 import { join } from 'path'
-import { canonicalManifestBytes, type SessionManifest, type WormStore } from './session-manifest.js'
-import { SwarmGatewayStore, DEFAULT_GATEWAY_URL } from './swarm-store.js'
-import { safeFileName } from './actor-keys.js'
+import { canonicalManifestBytes, safeFileName, type SessionManifest, type WormStore } from '@plur-ai/core'
+import { ProvenanceGateway, DEFAULT_GATEWAY_URL } from './client.js'
 
 export interface AnchorRecord {
   store: 'swarm'
@@ -21,6 +21,10 @@ export interface AnchorRecord {
   signer?: string
   signature?: string
   timestamp?: string
+  /** When the stamp runs out (gateway estimate); the proof can disappear after. */
+  expires_at?: string
+  /** The notary signature was not read back yet; `plur verify --manifest` reads it. */
+  signature_pending?: boolean
   session_id: string
   uploaded_at: string
 }
@@ -32,7 +36,7 @@ export async function anchorManifest(
   store?: WormStore,
 ): Promise<AnchorRecord> {
   const gateway = receipts.gateway_url ?? DEFAULT_GATEWAY_URL
-  const worm = store ?? new SwarmGatewayStore(gateway, receipts.stamp_id ? { stampId: receipts.stamp_id } : {})
+  const worm = store ?? new ProvenanceGateway(gateway, receipts.stamp_id ? { stampId: receipts.stamp_id } : {})
   const bytes = canonicalManifestBytes(manifest)
   const put = await worm.put(bytes)
   const rec: AnchorRecord = {
@@ -43,6 +47,8 @@ export async function anchorManifest(
     ...(put.signer ? { signer: put.signer } : {}),
     ...(put.signature ? { signature: put.signature } : {}),
     ...(put.timestamp ? { timestamp: put.timestamp } : {}),
+    ...(put.expires_at ? { expires_at: put.expires_at } : {}),
+    ...(put.signature_pending ? { signature_pending: true } : {}),
     session_id: manifest.session_id,
     uploaded_at: new Date().toISOString(),
   }

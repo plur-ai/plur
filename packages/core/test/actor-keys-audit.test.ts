@@ -2,17 +2,15 @@
  * 0.23 release audit, findings 15 and 17.
  * 15: an unparseable keys.yaml is never overwritten (the other identities in it
  *     would be lost); registering refuses with a clear error instead.
- * 17: key and receipt file names are a reversible encoding of the identity /
- *     session id: no ':' (an NTFS alternate data stream), and distinct ids
- *     never share a file.
+ * 17: key file names are a reversible encoding of the identity: no ':' (an
+ *     NTFS alternate data stream), and distinct ids never share a file.
+ *     (Receipt file names: packages/gateway/test/gateway.test.ts.)
  */
 import { describe, it, expect, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, readdirSync } from 'fs'
+import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'fs'
 import { join, basename } from 'path'
 import { tmpdir } from 'os'
 import { privateKeyPath, registerPublicKey, safeFileName } from '../src/actor-keys.js'
-import { anchorManifest } from '../src/anchor.js'
-import type { SessionManifest, WormStore } from '../src/session-manifest.js'
 
 const dirs: string[] = []
 afterEach(() => { for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }) })
@@ -40,15 +38,4 @@ describe('key registry and file names (audit findings 15, 17)', () => {
     expect(decodeURIComponent(safeFileName('user:x/y z'))).toBe('user:x/y z')
   })
 
-  it('receipt file names do not collide for a.b and a_b', async () => {
-    const root = fresh()
-    const store: WormStore = { name: 'stub', put: async () => ({ reference: 'ef'.repeat(32) }), get: async () => ({ bytes: Buffer.alloc(0) }) }
-    const m = (s: string) => ({ schema: 'plur/session-manifest/v1', session_id: s, actor: 'unidentified', window: { from: null, to: null }, engrams: [], created_at: 'x' }) as unknown as SessionManifest
-    await anchorManifest(root, m('a.b'), {}, store)
-    await anchorManifest(root, m('a_b'), {}, store)
-    await anchorManifest(root, m('a:b'), {}, store)
-    const files = readdirSync(join(root, 'receipts'))
-    expect(files).toHaveLength(3)
-    expect(files.some(f => f.includes(':'))).toBe(false)
-  })
 })

@@ -13,7 +13,10 @@ Memory you can prove. (#1790)
 - `plur checkpoint` and every session end write a checkpoint that binds the
   chain head to a hash of the store. With a key from `plur keys init`, the
   checkpoint is signed (Ed25519), and `plur verify --signatures` checks it.
-  (#1052, #1055, #1056) See `docs/auditability.md` (#1057).
+  Private keys live in `PLUR_KEYS_DIR`, else `<store>/keys`, for key creation
+  and signing alike; `plur checkpoint --session <id>` records the session it
+  belongs to, and a checkpoint that could not be written exits 1 with nothing
+  to anchor. (#1052, #1055, #1056) See `docs/auditability.md` (#1057).
 - Every save records the session it came from in `sources[].session_id`, and
   each writer is attributed to its configured `provenance.identity`.
   (#1048, #1049)
@@ -31,7 +34,10 @@ Memory you can prove. (#1790)
   MATCH, CHANGED (an edited rationale counts), or NOT AVAILABLE. A check where
   none of the listed memories is held here cannot verify (exit 2). A
   downloaded manifest verifies only with a notary signature that covers it,
-  from the pinned notary (`--notary`) or the one the gateway names. (#1657)
+  from the pinned notary (`--notary`) or, for the default gateway, its known
+  notary — never the address a gateway reports about itself, unless you pass
+  `--trust-gateway-notary`. Memories saved from session-end suggestions are
+  on that session's list. (#1657)
 
 ### Swarm storage (opt-in)
 
@@ -43,7 +49,9 @@ Memory you can prove. (#1790)
   free-tier upload stays downloadable for about a day; set
   `receipts.stamp_id` to a postage stamp bought through the gateway's stamp
   endpoints and uploads use it instead, for as long as it is paid. PLUR never
-  buys stamps itself. (#1657)
+  buys stamps itself. PLUR only makes HTTP calls to the gateway — no Swarm or
+  Bee client, and none in `@plur-ai/core` — and `receipts.gateway_url` points
+  it at another gateway. (#1657)
 
 ### Security
 

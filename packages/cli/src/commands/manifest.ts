@@ -15,7 +15,8 @@
 import { writeFileSync } from 'fs'
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { shouldOutputJson, outputJson, outputText, exit } from '../output.js'
-import { canonicalManifestBytes, anchorManifest } from '@plur-ai/core'
+import { canonicalManifestBytes } from '@plur-ai/core'
+import { anchorManifest, notaryClaim } from '@plur-ai/gateway'
 
 const USAGE = 'Usage: plur manifest --session <id> [--out <file>] [--anchor] [--json]'
 
@@ -50,11 +51,22 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   try {
     const rec = await anchorManifest(plur.storageRoot, manifest, receipts)
     if (shouldOutputJson(flags)) {
-      outputJson({ ...rec, manifest })
+      // The same notary claim the text and session end report (third review).
+      const claim = rec.signer ? notaryClaim(receipts.gateway_url, rec.signer) : null
+      outputJson({ ...rec, ...(claim ? { notary_expected: claim.expected } : {}), manifest })
     } else {
       outputText(`Stored on Swarm: ${rec.reference}`)
       outputText(`  manifest sha256: ${rec.content_hash}`)
-      if (rec.signer) outputText(`  signed by the gateway notary ${rec.signer} at ${rec.timestamp}`)
+      if (rec.signer) {
+        // An address comparison, not a verification (code review of 0.23, R5).
+        const claim = notaryClaim(receipts.gateway_url, rec.signer)
+        if (claim.expected === true) outputText(`  signed by the gateway notary ${rec.signer} at ${rec.timestamp}`)
+        else if (claim.expected === false) outputText(`  WARNING: signed by ${rec.signer}, which is NOT the expected notary for this gateway`)
+        else outputText(`  signed by ${rec.signer}; no notary is known for this gateway — check with plur verify --manifest <ref> --notary <address>`)
+      } else if (rec.signature_pending) {
+        outputText('  the stored document could not be read back to show its notary signature; plur verify --manifest <ref> checks whether it was signed')
+      }
+      if (rec.expires_at) outputText(`  stored until about ${rec.expires_at} (when its postage stamp runs out)`)
       outputText(`  engrams: ${manifest.engrams.length}`)
       outputText('')
       outputText(`Check it from any machine:  plur verify --manifest ${rec.reference}`)

@@ -10,8 +10,10 @@
  *   Private key: <keys-dir>/<identity>.key  (mode 0600, never in a store or repo)
  *   Public key:  <store-root>/keys.yaml     (tracked, per-store registry)
  *
- * The default keys directory is `<store-root>/keys`.  Use `--keys-dir <dir>`
- * to override (e.g. when the private key lives at `~/.plur/keys`).
+ * The keys directory is `PLUR_KEYS_DIR` if set, else `<store-root>/keys` —
+ * the same folder `plur checkpoint` and the MCP session end sign from
+ * (`keysDirFor`). There is no `--keys-dir` flag: on init alone it wrote keys
+ * where signing never looked (0.23 code review, finding 8).
  *
  * Exit codes: 0 ok, 1 error.
  */
@@ -19,7 +21,7 @@ import { join } from 'path'
 import { homedir } from 'os'
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { shouldOutputJson, outputJson, outputText } from '../output.js'
-import { initActorKey, registerPublicKey, loadKeysRegistry, keyFingerprint } from '@plur-ai/core'
+import { initActorKey, registerPublicKey, loadKeysRegistry, keyFingerprint, keysDirFor } from '@plur-ai/core'
 
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const subcommand = args[0]
@@ -32,7 +34,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     outputText('  init --identity <name> Override the identity for this init')
     outputText('  list                   List registered public keys for this store')
     outputText('')
-    outputText('Keys directory (private keys): <store-root>/keys  (--keys-dir to override)')
+    outputText('Keys directory (private keys): $PLUR_KEYS_DIR, else <store-root>/keys')
     outputText('Public key registry:           <store-root>/keys.yaml')
     return
   }
@@ -52,12 +54,17 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
 }
 
 async function runInit(args: string[], flags: GlobalFlags): Promise<void> {
-  // Parse --identity and --keys-dir overrides.
+  // Parse the --identity override.
   let identityOverride: string | undefined
-  let keysDirOverride: string | undefined
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--identity' && args[i + 1]) { identityOverride = args[++i]; continue }
-    if (args[i] === '--keys-dir' && args[i + 1]) { keysDirOverride = args[++i]; continue }
+  }
+  if (args.includes('--keys-dir')) {
+    outputText('plur keys init: --keys-dir is not supported.')
+    outputText('  Set PLUR_KEYS_DIR instead: keys init, plur checkpoint and session end all read it,')
+    outputText('  so the key made is the key that signs. Without it, keys live in <store-root>/keys.')
+    process.exitCode = 1
+    return
   }
 
   // Read-only engine to get the storage root and configured identity; we do
@@ -80,11 +87,9 @@ async function runInit(args: string[], flags: GlobalFlags): Promise<void> {
     return
   }
 
-  // Keys directory: --keys-dir > default (<store-root>/keys).
-  // When the store lives at ~/.plur, this is ~/.plur/keys — the canonical path
-  // documented in the runbook. `--keys-dir` allows running on a custom store
-  // path without scattering key files next to arbitrary data.
-  const keysDir = keysDirOverride ?? join(storeRoot, 'keys')
+  // Keys directory: PLUR_KEYS_DIR, else <store-root>/keys — the folder
+  // signing reads (keysDirFor).
+  const keysDir = keysDirFor(storeRoot)
 
   let publicKeyB64: string
   try {
