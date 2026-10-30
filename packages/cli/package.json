@@ -1,6 +1,6 @@
 {
   "name": "@plur-ai/cli",
-  "version": "0.22.1",
+  "version": "0.23.0",
   "type": "module",
   "bin": {
     "plur": "dist/index.js"
@@ -41,7 +41,7 @@
     "node": ">=22"
   },
   "license": "Apache-2.0",
-  "description": "PLUR CLI \u2014 persistent memory for AI agents from the command line",
+  "description": "PLUR CLI — persistent memory for AI agents from the command line",
   "keywords": [
     "ai",
     "memory",
