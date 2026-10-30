@@ -54,6 +54,12 @@ capabilities:
     kind: deterministic
     today: holds
     evidence: 'evals/recall REC-7: with PLUR_RECALL_DEADLINE_MS unset and a stub model that answers correctly after 25 s, hybrid search returns the keyword match within 10 s + 5 s margin, with mode not ''hybrid'', degraded_reason ''semantic_deadline'', a plain embedderError and results_complete false. Control: the same store with a fast model gives mode ''hybrid'', complete results. 3 planted bugs killed (REC-7-1..3).'
+  - id: REC-8
+    promise: When the memory store can search by meaning and by keyword itself, hybrid recall uses those searches and does not load every memory; stores that cannot keep working as before.
+    kind: deterministic
+    today: broken
+    evidence: 'Eval written red 2026-10-28 for #1787 (target 0.23.0), before the code. evals/recall REC-8: a store with role ''primary'' offering searchVector (meaning) and searchBM25 (keyword), the StorageAdapter names #1787 uses. Today recallHybridWithMeta asks neither (0 calls each), reads the whole store once through loadFiltered() in _hybridCandidates/_filterEngrams and ranks in memory with hybridSearchWithMeta, so the store''s meaning-only hit ranks 5th instead of top two; only the PGLite index takes the database path (_pgliteHybridRecall). load(), loadCached() and loadFiltered() all count as loading every memory; loadByIds (reactivation) does not. Control (a store without the searches) is green. Mutants wait for the implementation: there is no code path yet to plant a bug in.'
+    decide: 'Decided 2026-10-28 (owner): a read limited to one scope (loadFiltered without an id list) still counts as loading every memory; that read is the cost #1787 removes.'
 
 
 - key: learn
