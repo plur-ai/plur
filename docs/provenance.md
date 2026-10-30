@@ -428,7 +428,18 @@ ours. `spec/examples/check.py` runs those checks.
 
 ---
 
-## Proving what an agent had in mind
+## Proving what an agent had in mind (experimental)
+
+> **Experimental in 0.23.** Everything in this section is a test release: it
+> works and is tested end to end, but the manifest format, the provenance
+> gateway and its notary may change. Every manifest upload and check prints a
+> line saying so (`experimental` in JSON output).
+>
+> **None of it needs Swarm.** The hash-chained history, checkpoints (signed
+> with your own key after `plur keys init`), and session manifests written to
+> a file and checked with `plur verify --manifest <file>` all stay on your
+> machine. Swarm storage only adds a copy that someone else can fetch, signed
+> and timestamped by the gateway's notary.
 
 Since 0.23 the history log is hash-chained and checkpoints can be signed with
 the writer's own key, so `plur verify` can say whether the history was edited
@@ -458,20 +469,23 @@ The checkpoint is included when the manifest is built by `plur_session_end`,
 which writes the checkpoint first. A manifest built later with
 `plur manifest --session <id>` does not carry it.
 
-### Storing it on Swarm (opt-in)
+### Storing it on Swarm (opt-in, experimental)
 
 ```yaml
 # ~/.plur/config.yaml
 receipts:
   store: swarm          # default: off — no network call of any kind
+  gateway_url: <url>    # optional: another provenance gateway; default provenance-gateway.datafund.io
   stamp_id: <64 hex>    # optional: a postage stamp you bought; without it, a free one-day stamp
 ```
 
 With this set, ending a session (MCP `plur_session_end`) uploads that session's
-manifest through the public provenance gateway (`provenance-gateway.datafund.io`,
-free tier) and returns its Swarm reference; `plur manifest --session <id> --anchor`
-does the same by hand. The gateway's notary signs the upload. Anyone with the
-reference can then run, on any machine:
+manifest through the provenance gateway (free tier) and returns its Swarm
+reference; `plur manifest --session <id> --anchor` does the same by hand. The
+gateway stores it on Swarm and its notary signs the upload. PLUR itself only
+makes HTTP calls to the gateway: it carries no Swarm or Bee client, and the
+gateway address is yours to change. Anyone with the reference can then run, on
+any machine:
 
 ```bash
 plur verify --manifest <reference>
@@ -482,11 +496,21 @@ notary's signature locally, and checks each listed memory the verifying store
 holds. Memories it does not hold are reported as NOT AVAILABLE, never as a match.
 
 It answers verified (exit 0) only when the signature covers the stored data and
-was made by the notary: the one you pin with `--notary <address>`, or else the
-one the gateway names. No signature, or no notary address to compare with, is
-"cannot verify" (exit 2), as is a check where none of the listed memories is
-held by the verifying store; a signature by anyone else, or one over other
-fields, is "broken" (exit 1).
+was made by the expected notary:
+
+- the one you pin with `--notary <address>`;
+- otherwise, for the default gateway, its known notary
+  (`0x085656cBb5548B07295d2FeBD2fFCEe596c3c63A`), never the address the gateway
+  reports about itself;
+- for any other gateway, none — pass `--notary`, or `--trust-gateway-notary`
+  to accept the address that gateway names (the result then says so). Letting
+  the gateway that served a document name its own signer would let a
+  compromised gateway vouch for its own forgeries.
+
+No signature, or no notary address to compare with, is "cannot verify"
+(exit 2), as is a check where none of the listed memories is held by the
+verifying store; a signature by anyone else, or one over other fields, is
+"broken" (exit 1).
 
 Set `receipts.store: off` where the Datacore provenance module already anchors
 the manifest inside its own agent receipt, so nothing is uploaded twice.

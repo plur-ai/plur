@@ -6,7 +6,8 @@ import { folderMapAdvice } from './folder-map-advice.js'
 import type { LlmFunction, MetaField, TensionStatus, RerankerEvalResult, HistoryEvent, Receipt, RemoteStoreStatusEntry, RecallRemoteReport, RemoteOnlyStatus } from '@plur-ai/core'
 import { RemoteOnlyWriteError, remoteOnlySessionLine, remoteOnlyUnservedNotice } from '@plur-ai/core'
 import { enterpriseRecoveryHint } from '@plur-ai/core'
-import { emitCheckpoint, signWithActorKey, anchorManifest } from '@plur-ai/core'
+import { emitCheckpoint, signWithActorKey, keysDirFor } from '@plur-ai/core'
+import { anchorManifest, notaryClaim, EXPERIMENTAL_NOTE } from '@plur-ai/gateway'
 import { recordTelemetry } from './telemetry.js'
 import { VERSION } from './version.js'
 import { startBackgroundDiscovery, discoverySummary, discoveryWarnings, serverEndpointKeys, isDiscoveryEnabled } from './background-discovery.js'
@@ -747,6 +748,23 @@ const _sessionTelemetry = new Map<string, SessionTelemetry>()
 
 /** TTL for unclosed sessions: 8 hours. Prevents unbounded memory if session_end is never called. */
 const SESSION_TTL_MS = 8 * 60 * 60 * 1000
+
+/** How a session-end upload reports its notary: a claim checked against the expected address only. */
+function notaryFields(rec: { signer?: string; timestamp?: string; signature_pending?: boolean }, gatewayUrl: string | undefined): Record<string, unknown> {
+  if (!rec.signer) {
+    return rec.signature_pending
+      ? { notary_pending: 'the stored document could not be read back to show its notary signature; plur verify --manifest <ref> checks whether it was signed' }
+      : {}
+  }
+  const claim = notaryClaim(gatewayUrl, rec.signer)
+  if (claim.expected === true) return { notary: rec.signer, notarised_at: rec.timestamp }
+  return {
+    notary_claimed: rec.signer,
+    notary_check: claim.expected === false
+      ? 'NOT the expected notary for this gateway — do not treat this upload as notarised'
+      : 'no notary is known for this gateway; check with plur verify --manifest <ref> --notary <address>',
+  }
+}
 
 /**
  * Expired sessions whose telemetry an id-only sweep already dropped, but whose
@@ -4576,8 +4594,12 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
               session: await _writeSession({ ...args, scope }, plur, endSession),
               scope,
               domain: projectDomain,
-              // Link the engram back to the session that produced it (#960).
+              // Link the engram back to the session that produced it (#960),
+              // and record that session in sources[].session_id like
+              // plur_learn does, so the session's own manifest lists it as
+              // written (0.23 code review, finding 4).
               ...(episode ? { session_episode_id: episode.id } : {}),
+              ...(endSession ? { session_id: endSession } : {}),
               // An end-of-session summary is the model's reading of what
               // happened, not something the user stated outright (#963).
               claim_class: 'inferred',
@@ -4662,11 +4684,15 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
           // valid L2 checkpoint, and signWithActorKey returns null without a key.
           const identity = (await plur.status()).provenance_identity
           const signing = identity && identity !== 'agent:unidentified'
-            ? { identity, sign: (data: Buffer) => signWithActorKey(data, identity, join(plurRoot, 'keys')) }
+            ? { identity, sign: (data: Buffer) => signWithActorKey(data, identity, keysDirFor(plurRoot)) }
             : undefined
-          const cp = emitCheckpoint(plurRoot, engramsPath, 'session_end', undefined, signing)
+          // The session id rides in the checkpoint, so a later
+          // `plur manifest --session` finds it (0.23 code review, finding 6).
+          const cp = emitCheckpoint(plurRoot, engramsPath, 'session_end', undefined, signing, endSession)
           // The checkpoint's own hash, not the store's. Returning store_hash
           // under this name told callers to anchor the wrong digest.
+          // A checkpoint whose line was not written has no hash and is never
+          // put in the manifest (0.23 code review, finding 3).
           checkpoint_hash = cp.event_hash ?? undefined
           if (cp.event_hash) {
             checkpointForManifest = {
@@ -4701,8 +4727,13 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
               reference: rec.reference,
               manifest_sha256: rec.content_hash,
               engrams: manifest.engrams.length,
-              ...(rec.signer ? { notary: rec.signer, notarised_at: rec.timestamp } : {}),
+              // Named as the notary only when the signer is the one expected for
+              // this gateway (code review of 0.23, R5); the signature itself is
+              // checked by `plur verify --manifest`.
+              ...notaryFields(rec, plur.receiptsConfig().gateway_url),
+              ...(rec.expires_at ? { stored_until: rec.expires_at } : {}),
               verify: `plur verify --manifest ${rec.reference}`,
+              experimental: EXPERIMENTAL_NOTE,
               note: plur.receiptsConfig().stamp_id
                 ? 'Fingerprints only. Stored with your configured stamp; it stays downloadable while that stamp is paid.'
                 : 'Fingerprints only. A free-tier upload stays downloadable for about a day; set receipts.stamp_id to a bought stamp to keep it longer.',
@@ -4712,9 +4743,10 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
               ? {
                   store: 'swarm',
                   error: err.message,
+                  experimental: EXPERIMENTAL_NOTE,
                   note: `The upload may still finish in the background; if it does, its receipt lands in ${join(plur.storageRoot, 'receipts')}. Otherwise run \`plur manifest --session ${manifestSession} --anchor\` to retry.`,
                 }
-              : { store: 'swarm', error: (err as Error).message, note: `Nothing was uploaded; run \`plur manifest --session ${manifestSession} --anchor\` to retry.` }
+              : { store: 'swarm', error: (err as Error).message, experimental: EXPERIMENTAL_NOTE, note: `Nothing was uploaded; run \`plur manifest --session ${manifestSession} --anchor\` to retry.` }
           } finally {
             if (timer) clearTimeout(timer)
           }

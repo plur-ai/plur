@@ -68,6 +68,15 @@ describe('session end and recall recording (audit findings 4, 5)', () => {
     expect(hits).toContain('POST /api/v1/data/')
   })
 
+  it('the upload reply says Swarm storage is experimental', async () => {
+    const url = await gateway()
+    writeFileSync(join(dir, 'config.yaml'), `receipts:\n  store: swarm\n  gateway_url: ${url}\n`)
+    plur = new Plur({ path: dir, autoDiscover: false })
+    await callTool('plur_session_start', { task: 'prepare the release notes' })
+    const end = await callTool('plur_session_end', { summary: 'Wrote release notes.', engram_suggestions: [] })
+    expect(end.anchor.experimental).toMatch(/experimental/i)
+  })
+
   it('a held history lock does not hold up the recall reply', async () => {
     plur = new Plur({ path: dir, autoDiscover: false })
     const start = await callTool('plur_session_start', { task: 'release notes' })

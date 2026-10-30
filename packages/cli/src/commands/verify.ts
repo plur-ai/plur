@@ -18,7 +18,7 @@
  *   plur verify                Human-readable report
  *   plur verify --signatures   Also verify Ed25519 signatures on checkpoints (#1056)
  *   plur verify --json         Full structured result
- *   plur verify --manifest <file|swarm reference> [--notary <0x address>]
+ *   plur verify --manifest <file|swarm reference> [--notary <0x address>] [--gateway <url>] [--trust-gateway-notary]
  *                              Re-hash every engram a session manifest lists (#1657):
  *                              MATCH / CHANGED / NOT AVAILABLE per engram. A Swarm
  *                              reference is downloaded through the provenance gateway;

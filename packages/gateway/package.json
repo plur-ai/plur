@@ -1,0 +1,36 @@
+{
+  "name": "@plur-ai/gateway",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@plur-ai/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0"
+  },
+  "license": "Apache-2.0",
+  "description": "HTTP client for the provenance gateway (session manifest uploads and downloads) — internal, bundled into @plur-ai/cli and @plur-ai/mcp",
+  "homepage": "https://plur.ai",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/plur-ai/plur",
+    "directory": "packages/gateway"
+  },
+  "author": "PLUR <info@plur.ai>",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "private": true
+}

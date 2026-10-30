@@ -216,6 +216,10 @@ export interface WormPutResult {
   signer?: string
   signature?: string
   timestamp?: string
+  /** When the stamp used runs out, as the store estimates it; the data can disappear after. */
+  expires_at?: string
+  /** The signature could not be read back yet (rate limit); it is on the stored document. */
+  signature_pending?: boolean
 }
 
 export interface WormStore {

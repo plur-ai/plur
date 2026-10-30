@@ -24,7 +24,8 @@
     "zod": "^4.6.7"
   },
   "devDependencies": {
-    "@types/node": "^25.5.0"
+    "@types/node": "^25.5.0",
+    "@plur-ai/gateway": "workspace:*"
   },
   "license": "Apache-2.0",
   "description": "PLUR MCP server — persistent memory tools for any AI agent",

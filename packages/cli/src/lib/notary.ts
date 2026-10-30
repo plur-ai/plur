@@ -10,7 +10,7 @@
 import { createHash } from 'crypto'
 import { keccak_256 } from '@noble/hashes/sha3'
 import { secp256k1 } from '@noble/curves/secp256k1'
-import type { NotarySignature } from '@plur-ai/core'
+import type { NotarySignature } from '@plur-ai/gateway'
 
 /** The SDK's toCanonicalJson: sorted keys, JSON.stringify for scalars. */
 function canonicalJson(value: unknown): string {

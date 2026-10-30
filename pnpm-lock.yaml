@@ -94,6 +94,9 @@ importers:
         specifier: 0.10.0
         version: 0.10.0
     devDependencies:
+      '@plur-ai/gateway':
+        specifier: workspace:*
+        version: link:../gateway
       '@plur-ai/ui':
         specifier: workspace:*
         version: link:../ui
@@ -206,6 +209,16 @@ importers:
         specifier: ^22.0.0
         version: 22.19.15
 
+  packages/gateway:
+    dependencies:
+      '@plur-ai/core':
+        specifier: workspace:*
+        version: link:../core
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.19.15
+
   packages/mcp:
     dependencies:
       '@modelcontextprotocol/client':
@@ -224,6 +237,9 @@ importers:
         specifier: ^4.6.7
         version: 4.6.7
     devDependencies:
+      '@plur-ai/gateway':
+        specifier: workspace:*
+        version: link:../gateway
       '@types/node':
         specifier: ^25.5.0
         version: 25.5.0

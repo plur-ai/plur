@@ -10,6 +10,13 @@
  *      address to check it against, or none of the listed engrams is in this
  *      store
  *
+ * Which notary a downloaded manifest must be signed by: `--notary <address>`
+ * if given; for the default gateway, the default notary; for any other
+ * gateway, none — unless `--trust-gateway-notary` accepts the address that
+ * gateway reports about itself. Trusting the gateway that served the document
+ * to name its own signer would let a compromised gateway vouch for its own
+ * forgeries (0.23 code review, finding 9).
+ *
  * NOT AVAILABLE (an engram this store does not hold) is counted and shown,
  * never turned into a pass or a failure: it is an unknown.
  */
@@ -17,35 +24,38 @@ import { readFileSync, existsSync } from 'fs'
 import { createHash } from 'crypto'
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { shouldOutputJson, outputJson, outputText } from '../output.js'
-import { SwarmGatewayStore, DEFAULT_GATEWAY_URL, type SessionManifest } from '@plur-ai/core'
+import type { SessionManifest } from '@plur-ai/core'
+import { ProvenanceGateway, DEFAULT_GATEWAY_URL, EXPERIMENTAL_NOTE, expectedNotaryFor } from '@plur-ai/gateway'
 import { checkNotarySignature, type NotaryCheck } from '../lib/notary.js'
 
 function cannot(flags: GlobalFlags, reason: string): void {
-  if (shouldOutputJson(flags)) outputJson({ status: 'cannot_verify', reason })
+  if (shouldOutputJson(flags)) outputJson({ status: 'cannot_verify', reason, experimental: EXPERIMENTAL_NOTE })
   else {
     outputText('plur verify --manifest: CANNOT VERIFY')
     outputText(`  reason: ${reason}`)
     outputText('  This is NOT a clean result: nothing is asserted either way.')
+    outputText(`  ${EXPERIMENTAL_NOTE}`)
   }
   process.exitCode = 2
 }
 
 export async function runManifest(target: string | undefined, args: string[], flags: GlobalFlags): Promise<void> {
-  if (!target || target.startsWith('--')) return cannot(flags, 'usage: plur verify --manifest <file|swarm reference> [--notary <address>]')
+  if (!target || target.startsWith('--')) return cannot(flags, 'usage: plur verify --manifest <file|swarm reference> [--notary <address>] [--gateway <url>] [--trust-gateway-notary]')
   const ni = args.indexOf('--notary')
   const pinnedNotary = ni >= 0 ? args[ni + 1] : undefined
   const gi = args.indexOf('--gateway')
+  const trustGatewayNotary = args.includes('--trust-gateway-notary')
 
   const plur = createPlur(flags, { readonly: true })
   let bytes: Buffer
   let source: { kind: 'file' | 'swarm'; reference?: string } = { kind: 'file' }
-  let integrity: { content_hash_ok: boolean; notary: NotaryCheck | null; expected_notary: string | null; notary_source: 'pinned' | 'gateway' | null } | null = null
+  let integrity: { content_hash_ok: boolean; notary: NotaryCheck | null; expected_notary: string | null; notary_source: 'pinned' | 'default' | 'gateway' | null } | null = null
 
   if (existsSync(target)) {
     bytes = readFileSync(target)
   } else if (/^[0-9a-fA-F]{64}$/.test(target)) {
     const gateway = (gi >= 0 ? args[gi + 1] : undefined) ?? plur.receiptsConfig().gateway_url ?? DEFAULT_GATEWAY_URL
-    const store = new SwarmGatewayStore(gateway)
+    const store = new ProvenanceGateway(gateway)
     source = { kind: 'swarm', reference: target }
     try {
       const doc = await store.document(target)
@@ -56,10 +66,15 @@ export async function runManifest(target: string | undefined, args: string[], fl
       // No signature, or no notary to compare it with, is not a pass: the
       // bytes matching their own hash proves nothing about who stored them.
       if (!sig) return cannot(flags, `the stored document carries no notary signature${pinnedNotary ? ` (expected one from ${pinnedNotary})` : ''}`)
-      let expected: string | null = pinnedNotary ?? null
-      let notarySource: 'pinned' | 'gateway' | null = pinnedNotary ? 'pinned' : null
-      if (!expected) { expected = await store.notaryAddress(); notarySource = expected ? 'gateway' : null }
-      if (!expected) return cannot(flags, 'no notary address to check the signature against: the gateway names none; pass --notary <address>')
+      const known = expectedNotaryFor(gateway, pinnedNotary)
+      let expected: string | null = known?.address ?? null
+      let notarySource: 'pinned' | 'default' | 'gateway' | null = known?.source ?? null
+      if (!expected && trustGatewayNotary) { expected = await store.notaryAddress(); notarySource = expected ? 'gateway' : null }
+      if (!expected) {
+        return cannot(flags, trustGatewayNotary
+          ? 'no notary address to check the signature against: the gateway names none; pass --notary <address>'
+          : `${gateway} is not the default gateway, so its notary is not known: pass --notary <address>, or --trust-gateway-notary to accept the address that gateway reports about itself`)
+      }
       const notary = checkNotarySignature(sig, doc)
       if (notary.recovered && notary.recovered.toLowerCase() !== expected.toLowerCase()) {
         notary.signature_ok = false
@@ -87,7 +102,7 @@ export async function runManifest(target: string | undefined, args: string[], fl
   }
   const ok = v.counts.CHANGED === 0 && integrityOk
   if (shouldOutputJson(flags)) {
-    outputJson({ status: ok ? 'verified' : 'broken', source, integrity, ...v })
+    outputJson({ status: ok ? 'verified' : 'broken', source, integrity, ...v, experimental: EXPERIMENTAL_NOTE })
   } else {
     outputText(ok ? 'plur verify --manifest: OK' : 'plur verify --manifest: BROKEN')
     outputText(`  session : ${v.session_id}`)
@@ -95,7 +110,7 @@ export async function runManifest(target: string | undefined, args: string[], fl
       outputText(`  swarm   : ${source.reference}`)
       outputText(`  bytes   : ${integrity.content_hash_ok ? 'match the stored content hash' : 'DO NOT match the stored content hash'}`)
       if (integrity.notary) {
-        const who = integrity.notary_source === 'pinned' ? 'the pinned notary' : 'the notary the gateway names'
+        const who = integrity.notary_source === 'pinned' ? 'the pinned notary' : integrity.notary_source === 'default' ? 'the default gateway\'s notary' : 'the notary the gateway names (trusted with --trust-gateway-notary)'
         outputText(`  notary  : ${integrity.notary.signature_ok ? `signature valid, ${who} (${integrity.notary.recovered}) at ${integrity.notary.timestamp}` : `signature NOT valid${integrity.notary.error ? ` — ${integrity.notary.error}` : ''}`}`)
       } else {
         outputText('  notary  : no signature on the stored document')
@@ -109,6 +124,7 @@ export async function runManifest(target: string | undefined, args: string[], fl
     outputText('')
     outputText('  These engrams were in the agent\'s context when it acted. The manifest')
     outputText('  does not say they caused anything.')
+    outputText(`  ${EXPERIMENTAL_NOTE}`)
   }
   process.exitCode = ok ? 0 : 1
 }

@@ -82,11 +82,25 @@ function verify(url: string, extra: string[] = []): Promise<{ code: number | nul
 }
 
 describe('verify --manifest: the notary signature must cover the manifest and come from a known notary', () => {
-  it('a real notary signature over the data, named by the gateway, verifies (control)', async () => {
+  it('a real notary signature over the data, from the pinned notary, verifies (control)', async () => {
     const url = await gateway({ signatures: [{ signer: NOTARY, data_hash: DH, timestamp: TS, signature: sign(NOTARY_KEY, DH, TS) }], notaryInfo: { address: NOTARY } })
-    const r = await verify(url)
+    const r = await verify(url, ['--notary', NOTARY])
     expect(r.out.status, JSON.stringify(r.out)).toBe('verified')
     expect(r.code).toBe(0)
+  })
+
+  it('a non-default gateway naming its own notary is not trusted by default: cannot verify (0.23 review, finding 9)', async () => {
+    const url = await gateway({ signatures: [{ signer: NOTARY, data_hash: DH, timestamp: TS, signature: sign(NOTARY_KEY, DH, TS) }], notaryInfo: { address: NOTARY } })
+    const r = await verify(url)
+    expect(r.out.status, JSON.stringify(r.out)).toBe('cannot_verify')
+    expect(r.code).toBe(2)
+  })
+
+  it('--trust-gateway-notary takes the notary the gateway names, and says so', async () => {
+    const url = await gateway({ signatures: [{ signer: NOTARY, data_hash: DH, timestamp: TS, signature: sign(NOTARY_KEY, DH, TS) }], notaryInfo: { address: NOTARY } })
+    const r = await verify(url, ['--trust-gateway-notary'])
+    expect(r.out.status, JSON.stringify(r.out)).toBe('verified')
+    expect(r.out.integrity?.notary_source).toBe('gateway')
   })
 
   it('no signature with a pinned notary is not verified', async () => {
@@ -106,7 +120,7 @@ describe('verify --manifest: the notary signature must cover the manifest and co
   it('a self-signed document, when the gateway names no notary, cannot be verified (exit 2)', async () => {
     const k = randomBytes(32)
     const url = await gateway({ signatures: [{ signer: addr(k), data_hash: DH, timestamp: TS, signature: sign(k, DH, TS) }], notaryInfo: {} })
-    const r = await verify(url)
+    const r = await verify(url, ['--trust-gateway-notary'])
     expect(r.out.status, JSON.stringify(r.out)).toBe('cannot_verify')
     expect(r.code).toBe(2)
   })

@@ -6,6 +6,7 @@ import * as yaml from 'js-yaml'
 import { isSharedScope } from './scope-util.js'
 import { engramStoreEntries, sameEngramContent, freshDuplicateId, recordIdRenames, mergeHeldRecords, readHeldRecovery, writeHeldRecovery, readHeldMergeRenames, renameEngramIdRefs, ENGRAM_ID_TOKEN, heldRecoveryPath, SYNC_HELD_RENAME_REASON, type IdRename, type HeldFile } from './engrams.js'
 import { recordLastWritten } from './backup.js'
+import { storeRecordMap, recordStoreSync } from './history.js'
 import { _ownerOnlyHost, checkOwnerOnly, currentWindowsAccount, protectOwnerOnly, type OwnerOnlyExec } from './owner-only.js'
 import {
   DEFAULT_STALE_THRESHOLD, holderIsAlive, makeToken, startHeartbeat, heartbeatHeldLocks, GIT_COMMAND_TIMEOUT_MS,
@@ -846,6 +847,9 @@ function rewriteLocalSiblingRefs(root: string, renamed: ReadonlyMap<string, stri
 /** @returns whether the pull integrated, the sibling files rewritten after a P1b rename (to commit), and held files still waiting. */
 function pullRebase(root: string, remoteType: SyncRemoteType): { ok: boolean; rewroteSiblings: string[]; unresolved: WithheldFile[] } {
   const before = readSiblingsBeforePull(root)
+  // What the store held before the pull, so the memories it changes are named
+  // in history (recordStoreSync, code review of 0.23 finding 1).
+  const recordsBefore = storeRecordMap(join(root, 'engrams.yaml'))
   const held = holdWithheld(root, remoteType)
   let ok = false
   let restored: { renames: IdRename[]; rewrote: string[]; unresolved: WithheldFile[] } = { renames: [], rewrote: [], unresolved: [] }
@@ -866,6 +870,7 @@ function pullRebase(root: string, remoteType: SyncRemoteType): { ok: boolean; re
   }
   // LAST: only now is every held record back (or still in the file, if unresolved).
   if (held.length > 0) writeHeldRecovery(root, restored.unresolved)
+  recordStoreSync(root, recordsBefore, 'sync-pull')
   return { ok, rewroteSiblings: committed, unresolved: restored.unresolved }
 }
 
