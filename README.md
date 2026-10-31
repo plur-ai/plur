@@ -454,6 +454,21 @@ Your Memory Receipt
 
 It is local and read-only, and carries **no dollar or token figure by design**: on a subscription your marginal token cost is zero, and the value of an avoided rediscovery is not measurable from this data. The receipt reports only what it can count. Activation rate is store *coverage over the logging window*, not a quality score — it is naturally low and falls as you add engrams. `--days N` narrows the window; `--json` emits the raw shape. (The `plur_receipt` MCP tool returns the same figures plus a one-line `summary` that carries this framing to the agent.)
 
+## Proving what your agent remembered (experimental)
+
+Since 0.23, PLUR can show which memories an agent had in context in one session, and whether any of them changed afterwards. It is a test feature: the manifest format, the provenance gateway and its notary may change.
+
+All of it works offline by default:
+
+```bash
+plur verify                                       # was the history edited outside PLUR?
+plur keys init && plur verify --signatures        # checkpoints signed with your own key
+plur manifest --session <id> --out session.json   # the memories one session had in context
+plur verify --manifest session.json               # MATCH / CHANGED / NOT AVAILABLE per memory
+```
+
+Storing those session lists on Swarm is opt-in (`receipts.store: swarm` in `~/.plur/config.yaml`). The provenance gateway stores the list and its notary signs it, so anyone with the reference can check it. Nothing leaves your machine until you turn it on. The manifest carries ids and hashes, never memory text. Details: [docs/provenance.md](docs/provenance.md#proving-what-an-agent-had-in-mind-experimental).
+
 ## Syncing across devices
 
 `plur.sync(remote)` is git underneath: it commits your engram store and pushes it to the remote you give it. What gets pushed depends on the remote's declared type (`sync.remote_type` in `config.yaml`, or the `remote_type` argument):
