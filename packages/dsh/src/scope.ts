@@ -92,8 +92,8 @@ export function createScopeResolver(
  *
  * Always sets `scopes`, core's authorization allow-list. `scope` alone is a
  * visibility filter that passes the whole personal family and does not
- * isolate: with only `scope`, a `project:beta` injection surfaced
- * `project:alpha`'s engrams — verified against the real engine.
+ * isolate: with only `scope`, a `project:beta` injection would surface
+ * `project:alpha`'s engrams.
  *
  * @param scope - the session's resolved scope.
  * @param includeGlobal - whether global engrams accompany it.
@@ -120,10 +120,8 @@ export function readScope(scope: string, includeGlobal: boolean): { scope: strin
  * @returns the derived scope.
  */
 function derive(cwd: string): string {
-  // Normalise FIRST. Hashing the raw string meant `/w/proj` and `/w/proj/`
-  // were different scopes for the same directory — a host that ever reports a
-  // trailing slash, or a user on a symlinked checkout, silently got a second
-  // empty store and two entries in `plur ui`. realpath additionally collapses
+  // Normalise FIRST, or `/w/proj` and `/w/proj/` (or a symlinked checkout)
+  // become different scopes for the same directory. realpath also collapses
   // symlinks; it throws on a path that does not exist, which is ordinary for a
   // workspace the host names before creating, so fall back to resolve().
   let path = cwd

@@ -3,15 +3,14 @@ import { dirname, join } from 'path'
 import { atomicWrite, withLock } from '@plur-ai/core'
 
 /**
- * Forensic log for MCP argument-payload drops (plur-ai/plur#772).
+ * Forensic log for MCP argument-payload drops.
  *
- * The #772 failure signature — a tool call arriving with an EMPTY arguments
- * object (`received_fields: []`) — is intermittent and originates client-side,
- * before the frame reaches this server (the wire-protocol tests from #297/#301
- * prove the server handles the same payloads correctly). That makes it
- * impossible to reproduce on demand; the only way to progress the upstream
- * report is to record each occurrence as it happens in the wild, with exactly
- * the wire-level facts the report needs.
+ * The failure signature — a tool call arriving with an EMPTY arguments object
+ * (`received_fields: []`) — is intermittent and originates client-side, before
+ * the frame reaches this server (the wire-protocol tests show the server
+ * handles the same payloads correctly). It cannot be reproduced on demand, so
+ * each occurrence is recorded as it happens, with the wire-level facts an
+ * upstream client report needs.
  *
  * Contract:
  *  - NO VALUES, ever. Records carry field NAMES and frame metadata only. A
@@ -26,10 +25,10 @@ import { atomicWrite, withLock } from '@plur-ai/core'
 /**
  * Newest-N cap applied on every write.
  *
- * Raised from 100 when scalar-only partial drops started being recorded: that
- * population is dominated by ordinary caller errors and is far more frequent
- * than a genuine client drop, so the old cap would evict the rare events the
- * log exists to preserve. A record is a few hundred bytes of field names.
+ * Scalar-only partial drops are recorded too, and are dominated by ordinary
+ * caller errors far more frequent than a genuine client drop, so the cap must
+ * be large enough not to evict the rare events the log exists to preserve. A
+ * record is a few hundred bytes of field names.
  */
 export const PAYLOAD_DROP_LOG_MAX_ENTRIES = 500
 
@@ -44,7 +43,7 @@ export interface PayloadDropRecord {
    *  - 'absent'       — the `arguments` key was missing from the frame entirely
    *  - 'empty_object' — the key arrived, carrying `{}`
    *  - 'partial'      — some fields arrived, required ones (observed: trailing
-   *                     array-typed ones, #297) did not
+   *                     array-typed ones) did not
    */
   arguments_wire: 'absent' | 'empty_object' | 'partial'
   /** Top-level key NAMES of `request.params` (e.g. name, arguments, _meta). */
@@ -57,16 +56,15 @@ export interface PayloadDropRecord {
    * The subset of {@link missing_fields} that is array-typed.
    *
    * This is the discriminator that makes the log falsifiable. A partial drop
-   * missing an array is the #297 shape; one missing only scalars is usually an
-   * ordinary caller error. Both are recorded — recording only the former made
-   * "every partial drop involves an array" true by construction and so unable
-   * to test the hypothesis it appeared to confirm. Empty array = scalar-only.
+   * missing an array is the client-drop shape; one missing only scalars is
+   * usually an ordinary caller error. Both are recorded, so "every partial drop
+   * involves an array" is not true by construction. Empty array = scalar-only.
    *
-   * OPTIONAL because records predating the discriminator do not carry it, and
-   * `readPayloadDropLog` returns those too. `undefined` is not `[]`: it means
-   * "unknown, and array-shaped by construction" — the old gate could not record
-   * anything else — whereas `[]` is a measured scalar-only drop. Anything
-   * computing the ratio must exclude `undefined` rather than count it as zero.
+   * OPTIONAL because older records do not carry it, and `readPayloadDropLog`
+   * returns those too. `undefined` is not `[]`: it means "unknown, and
+   * array-shaped by construction" (older writers recorded nothing else),
+   * whereas `[]` is a measured scalar-only drop. Anything computing the ratio
+   * must exclude `undefined` rather than count it as zero.
    */
   missing_array_params?: string[]
   /** JSON-RPC request id, when the SDK exposes it. */
@@ -88,20 +86,11 @@ export function recordPayloadDrop(storageRoot: string, record: PayloadDropRecord
     const path = payloadDropLogPath(storageRoot)
     mkdirSync(dirname(path), { recursive: true })
 
-    // Append AND trim under the same lock (#805 F15; audit 2026-08-03 finding 15).
-    //
-    // The previous shape appended outside the lock, on the reasoning that a
-    // single short line through O_APPEND is atomic and therefore never lost.
-    // It is atomic, but that is not sufficient: the trim replaces the file by
-    // rename, so an append landing on the OLD inode between the trimmer's read
-    // and its rename is written to a file that is about to stop being the log.
-    // The record survives on an orphaned inode, which is the same as losing it.
-    //
-    // Serialising both is cheap here — the log is capped at
-    // PAYLOAD_DROP_LOG_MAX_ENTRIES and a drop is already an exceptional event —
-    // and this is a forensic log whose entire purpose is that an intermittent,
-    // unreproducible event leaves a trace. A logger that drops records under
-    // concurrency cannot do that job.
+    // Append AND trim under the same lock. An O_APPEND line is atomic, but the
+    // trim replaces the file by rename, so an append landing on the OLD inode
+    // between the trimmer's read and its rename would end up on an orphaned
+    // inode — lost. Serialising both is cheap: the log is capped and a drop is
+    // already an exceptional event.
     withLock(path, () => {
       appendFileSync(path, JSON.stringify(record) + '\n')
       const lines = readFileSync(path, 'utf8').split('\n').filter(l => l.length > 0)

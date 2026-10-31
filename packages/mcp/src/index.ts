@@ -31,7 +31,7 @@ Docs: https://plur.ai · https://github.com/plur-ai/plur
 
 // --- Constants (must be before any await that uses them) ---
 
-// Pinned to THIS build's version, never @latest (#1069): an @latest entry
+// Pinned to THIS build's version, never @latest: an @latest entry
 // makes npx rewrite its cached native binaries on every publish, and macOS
 // SIGKILLs (CODESIGNING Invalid Page) any process that pages one in
 // mid-rewrite. Upgrades re-run init, which re-pins.
@@ -100,7 +100,7 @@ export function extractManifestVersion(skillMdPath: string): string | null {
   }
 }
 
-// Prefer local hook shim if available (installed by `plur init`, see #178).
+// Prefer local hook shim if available (installed by `plur init`).
 // Fall back to npx for first-time users who haven't run `plur init` yet.
 const _shimName = platform() === 'win32' ? 'plur-hook.cmd' : 'plur-hook'
 const _shimCandidate = join(homedir(), '.plur', 'bin', _shimName)
@@ -232,12 +232,11 @@ export async function installClaudeMd(claudeMdPath: string = defaultClaudeMdPath
 
 
 /**
- * Read a config file this function intends to WRITE BACK. The #1059 rule,
- * ported from @plur-ai/cli's readConfigForWrite (this package cannot import
- * the CLI): a file that exists but does not parse to a JSON object is the
- * user's damaged-but-recoverable data — reading it as {} and writing the
- * merge back destroys every other entry they had. Reproduced live in the
- * 0.19.1 evaluator audit against exactly this function.
+ * Read a config file this function intends to WRITE BACK. Same rule as
+ * @plur-ai/cli's readConfigForWrite (this package cannot import the CLI): a
+ * file that exists but does not parse to a JSON object is the user's
+ * damaged-but-recoverable data — reading it as {} and writing the merge back
+ * would destroy every other entry they had.
  */
 function readJsonObjectForWrite(path: string): { data: Record<string, unknown>; ok: boolean } {
   if (!existsSync(path)) return { data: {}, ok: true }
@@ -251,8 +250,8 @@ function readJsonObjectForWrite(path: string): { data: Record<string, unknown>; 
 }
 
 /**
- * Heal the @latest entries THIS command's older releases wrote — the #1069
- * npx cache-rewrite race. Only the exact racey shape is touched; a custom or
+ * Heal @latest entries, which hit the npx cache-rewrite race described at
+ * MCP_SERVER_CONFIG. Only the exact racey shape is touched; a custom or
  * version-pinned entry is the user's decision. Returns true when it changed.
  */
 function healRaceyEntry(servers: Record<string, unknown>): boolean {
@@ -270,9 +269,8 @@ function healRaceyEntry(servers: Record<string, unknown>): boolean {
 /**
  * Register the server for Claude Code at user scope, in `~/.claude.json` — the
  * file `claude mcp add --scope user` writes and the only user-level place
- * Claude Code reads MCP servers (#1561). This used to write `<cwd>/.mcp.json`,
- * or `~/.claude/mcp.json` when that existed; Claude Code never reads the
- * latter. Same rules as `plur init`: an old `~/.claude/mcp.json` entry is
+ * Claude Code reads MCP servers (it never reads `~/.claude/mcp.json`). Same
+ * rules as `plur init`: an old `~/.claude/mcp.json` entry is
  * moved (env and extra keys kept) unless `~/.claude.json` already has one,
  * which wins; every change to an existing file is preceded by a backup
  * (writeWithBackup, which also refuses a file edited meanwhile); a run with
@@ -289,7 +287,7 @@ async function installClaudeUserMcp(): Promise<{ ok: boolean; status: string }> 
     ? (oldServers as Record<string, unknown>).plur
     : undefined
 
-  // The same implementation `plur init` uses (#1564 review).
+  // The same implementation `plur init` uses.
   const r = registerClaudeUserMcp({
     userPath: join(homedir(), '.claude.json'),
     entry: () => ({ ...MCP_SERVER_CONFIG }),
@@ -378,15 +376,15 @@ function stripPlurHooks(entries: HookEntry[]): HookEntry[] {
 }
 
 /**
- * Merge PLUR hooks into Claude Code settings (#1279). No I/O apart from
+ * Merge PLUR hooks into Claude Code settings. No I/O apart from
  * reading plur-hook.meta.json for the exec-form check.
  * A hook is PLUR's only when isPlurHookSpec says so: the whole command is
  * PLUR's launcher (the shim, with any slash direction or quoting, or the npx
  * fallback, or on Windows the exec form `plur init` writes) followed by a
- * `hook-*` subcommand and plain arguments (decisions H2, F4).
+ * `hook-*` subcommand and plain arguments.
  * - No PLUR hook present: append the full set ('installed').
  * - PLUR hooks present: remove PLUR's hooks from PostCompact, which cannot
- *   carry context (#1274), one hook at a time, dropping an entry only when
+ *   carry context, one hook at a time, dropping an entry only when
  *   it has no hooks left. If a PLUR rehydrate was among them, add the
  *   SessionStart(compact) entry unless one is there ('healed'). A file with
  *   PLUR hooks but no rehydrate (the global file `plur init --project` writes) gets
@@ -429,8 +427,8 @@ export function applyPlurHooks(
   }
   // SessionEnd deletes a session's folder-question nonces, so a file that
   // runs PLUR's SessionEnd also needs PLUR's SessionStart(resume), or a
-  // resumed session is never asked again (#1347, option C). Added to an
-  // install from before it existed; a file without SessionEnd gets none.
+  // resumed session is never asked again. Added to an install that lacks
+  // it; a file without SessionEnd gets none.
   if (hasPlurSubcommand(hooks.SessionEnd, 'hook-session-end') && !hasPlurSubcommand(hooks.SessionStart, 'hook-session-resume')) {
     const resume = (hooksMap.SessionStart ?? []).filter(isResumeEntry)
     if (resume.length > 0) {
@@ -445,11 +443,10 @@ export function applyPlurHooks(
 
 /**
  * Hooks go to user settings (~/.claude/settings.json), from any folder, as
- * `plur init` does since #1467: the folder map gates every hook, so a
- * user-level hook is safe everywhere. Writing to <cwd>/.claude/settings.json
- * whenever that folder existed put a second PLUR set back into a repo that
- * `plur init` had just migrated (#1469 review). plur-mcp init has no
- * `--project`; use `plur init --project` for a per-repo placement.
+ * `plur init` does: the folder map gates every hook, so a user-level hook is
+ * safe everywhere, and writing to <cwd>/.claude/settings.json would put a
+ * second PLUR set into a repo. plur-mcp init has no `--project`; use
+ * `plur init --project` for a per-repo placement.
  */
 function installHooks(): string {
   const settingsPath = join(homedir(), '.claude', 'settings.json')
@@ -490,7 +487,7 @@ async function runInit() {
   // Step 2: Write MCP config
   const mcp = await installClaudeUserMcp()
   const mcpStatus = mcp.status
-  // #1564 review L4: init did not do its main job; scripts must see it.
+  // Init did not do its main job; scripts must see it.
   if (!mcp.ok) process.exitCode = 1
   results.push(`MCP:      ${mcpStatus}`)
 
@@ -581,7 +578,7 @@ async function runPacks(): Promise<void> {
   const plur = new Plur({ path: plurPath })
 
   // The branch logic lives in `packs-cli.ts` so it can be tested without
-  // spawning a process (#545). This function's only job is streams and exit.
+  // spawning a process. This function's only job is streams and exit.
   const result = await packsCommand(process.argv.slice(3), plur)
   if (result.stdout) process.stdout.write(result.stdout)
   if (result.stderr) process.stderr.write(result.stderr)
@@ -604,7 +601,7 @@ if (arg === '--version' || arg === '-v') {
 
 if (arg === 'init') {
   await runInit()
-  // Non-zero when the MCP registration did not happen (#1564 review L4).
+  // Non-zero when the MCP registration did not happen.
   process.exit(process.exitCode ?? 0)
 }
 

@@ -4,7 +4,7 @@ import { findProjectConfigPath, readProjectConfigFromPath, FolderMapError } from
 import { nonceRequired, fail, nonceSession } from './folders.js'
 
 /**
- * Split `[dir] [--nonce <n>]` (#1378). Returns null on a malformed argument
+ * Split `[dir] [--nonce <n>]`. Returns null on a malformed argument
  * list so the caller can print its usage.
  */
 export function parseTrustArgs(args: string[]): { dir?: string; nonce?: string } | null {
@@ -26,10 +26,10 @@ export function parseTrustArgs(args: string[]): { dir?: string; nonce?: string }
 }
 
 /**
- * The terminal-or-nonce gate `plur folders set` has, for `plur trust`
- * (#1378). Outside an interactive terminal a grant needs a `--nonce` issued
+ * The terminal-or-nonce gate `plur folders set` has, for `plur trust`.
+ * Outside an interactive terminal a grant needs a `--nonce` issued
  * for this folder and `{ trusted: true }`; a person at a terminal needs none.
- * `plur untrust` is not gated: a revocation only removes trust (#1477 review).
+ * `plur untrust` is not gated: a revocation only removes trust.
  * See nonceRequired for what the gate does not stop.
  */
 export function refuseTrustWithoutNonce(nonce: string | undefined, json: boolean): void {
@@ -42,7 +42,7 @@ export function refuseTrustWithoutNonce(nonce: string | undefined, json: boolean
 /**
  * `plur trust [dir]` — grant a directory the same "I vouch for this" status
  * `direnv allow` / `git config safe.directory` / VS Code workspace trust
- * grant (D2, 2026-09 audit). An adapter (opencode today; see
+ * grant. An adapter (such as opencode; see
  * `packages/opencode/src/scope.ts`) checks this before adopting a
  * `.plur.yaml` scope/domain it finds in that directory — a project file
  * cannot grant itself trust, only this command, run by the human who owns
@@ -55,7 +55,7 @@ export function refuseTrustWithoutNonce(nonce: string | undefined, json: boolean
  * `--list` prints every trusted directory; bare `plur trust` (no dir) trusts
  * the current directory, matching `direnv allow`'s no-argument default.
  */
-/** What a grant covers, and what it does not (#1589 audit rounds 2 and 3). */
+/** What a grant covers, and what it does not. */
 export const TRUST_COVERS =
   'Trust covers the .plur.yaml files in every folder below it. A repository\'s own memory store (.plur/engrams.yaml) is still added only after you decide on that repository: plur folders set <repo> --on, or plur trust <repo>.'
 
@@ -80,7 +80,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const dir = parsed.dir || process.cwd()
   refuseTrustWithoutNonce(parsed.nonce, shouldOutputJson(flags))
   const plur = createPlur(flags)
-  // #1347: the grant is `trusted: true` in the folder map. A map that cannot
+  // The grant is `trusted: true` in the folder map. A map that cannot
   // be read is refused rather than overwritten.
   let trusted: string
   try {
@@ -90,14 +90,12 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     return exit(1, (err as Error).message)
   }
 
-  // E7 (2026-09 audit): this is the one moment a human is in the loop before
-  // a `.plur.yaml`'s scope/domain (and, if it declares one, a REMOTE store
-  // URL) starts being honored — `direnv allow` shows you the `.envrc` at
-  // this exact point, and this used to print only `Trusted: <path>` with no
-  // hint of what that grant actually enables. Look for a `.plur.yaml` at or
-  // above the trusted directory (the same walk `resolveTrustedScope` uses)
-  // and show what it declares — or say plainly that there is nothing to
-  // show yet.
+  // This is the one moment a human is in the loop before a `.plur.yaml`'s
+  // scope/domain (and, if it declares one, a REMOTE store URL) starts being
+  // honored, so show what the grant enables, as `direnv allow` shows the
+  // `.envrc`. Look for a `.plur.yaml` at or above the trusted directory (the
+  // same walk `resolveTrustedScope` uses) and show what it declares — or say
+  // plainly that there is nothing to show yet.
   const configPath = findProjectConfigPath(dir)
   const config = readProjectConfigFromPath(configPath)
   const declares = configPath && (config.scope || config.domain || config.remote_url)

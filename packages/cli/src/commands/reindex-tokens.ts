@@ -1,6 +1,6 @@
 /**
  * `plur reindex-tokens` — re-derive BM25 tokens on a Postgres-backed store
- * after a tokenizer change (#840).
+ * after a tokenizer change.
  *
  * The adapter kicks this in the background the first time it notices stale
  * rows, so most deployments never need to run it. It exists for the cases
@@ -32,10 +32,8 @@ function usage(): never {
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   if (args.includes('--help') || args.includes('-h')) usage()
 
-  // Resolve EXACTLY as the engine does (index.ts `_postgresUrl`): environment
-  // first, then config.yaml. Reading only the env var made this command report
-  // "no Postgres store configured" for a deployment that had one — a false
-  // negative on the very question it exists to answer.
+  // Resolve exactly as the engine does (index.ts `_postgresUrl`): environment
+  // first, then config.yaml, so a store configured only in config.yaml is found.
   const paths = detectPlurStorage(flags.path || process.env.PLUR_PATH || undefined)
   const config = loadConfig(paths.config) as { postgres?: { url?: string, schema?: string } }
   const url = process.env.PLUR_POSTGRES_URL || config.postgres?.url
@@ -52,11 +50,10 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     return
   }
 
-  // The schema MUST come from config too. Omitting it does not fail loudly —
+  // The schema must come from config too. Omitting it fails silently:
   // `initSchema` runs CREATE SCHEMA IF NOT EXISTS, so a store on a custom
-  // schema would get a spurious empty default schema created, find zero stale
-  // rows in it, and print "Tokens are already current". A false all-clear is
-  // worse than no command at all.
+  // schema would get an empty default schema, find zero stale rows, and
+  // report a false all-clear.
   const adapter = new PostgresAdapter({
     connectionString: url,
     ...(config.postgres?.schema ? { schema: config.postgres.schema } : {}),

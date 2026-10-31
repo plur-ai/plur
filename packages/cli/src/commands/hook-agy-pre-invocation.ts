@@ -36,20 +36,17 @@ import { recordInjected } from '../lib/auto-rate.js'
  *    generic session batch rather than failing.
  *
  * 2. FIRES SEVERAL TIMES PER TURN. PreInvocation runs before EVERY model
- *    invocation — planning, tool-result digestion, final answer — verified
- *    live (one probe turn injected its marker twice). And ephemeral messages
- *    are shown ONLY to the invocation they were injected into: verified live,
- *    a model that quoted the memory block on invocation 0 reported "no PLUR
- *    Memory block" after a tool call, because the ephemeral had expired with
- *    the invocation that received it. So the turn's rendered message is
- *    CACHED per conversation and re-emitted on every invocation of the SAME
- *    turn — recall runs once per user message, visibility lasts the whole
+ *    invocation — planning, tool-result digestion, final answer. And
+ *    ephemeral messages are shown ONLY to the invocation they were injected
+ *    into: after a tool call the memory block is gone. So the turn's rendered
+ *    message is CACHED per conversation and re-emitted on every invocation of
+ *    the SAME turn — recall runs once per user message, visibility lasts the whole
  *    turn, and nothing accumulates in history because ephemerals never do.
  *
  *    Turn identity is (step_index, text hash), not step_index alone: the
  *    transcript is Antigravity's internal format, and if step_index ever
  *    disappears or restarts, a step-only comparison freezes on turn one and
- *    replays it forever (data-loss audit M6/F10). The text hash breaks that
+ *    replays it forever. The text hash breaks that
  *    tie — a different user message is a new turn regardless of what the
  *    step counter says. When the transcript itself is unreadable, the cached
  *    turn is replayed (there is no way to detect a turn boundary without
@@ -61,10 +58,10 @@ import { recordInjected } from '../lib/auto-rate.js'
  * no-op when the cwd has no PLUR project config — agy runs hooks with cwd =
  * the directory containing hooks.json (~/.gemini/config), where
  * isPlurConfigured() can never be true (its walk deliberately skips
- * $HOME-level configs, #247/#521). The install itself is the opt-in here:
+ * $HOME-level configs). The install itself is the opt-in here:
  * these hooks exist only because the user ran `plur init --antigravity`,
  * and they fire only inside agy. When the payload names a workspace, the
- * folder map decides for that path (#1347): off is silent, ask puts the one
+ * folder map decides for that path: off is silent, ask puts the one
  * question into the first turn of the conversation (replayed within that
  * turn, like memory), and on works as below with the policy's scope.
  *
@@ -80,7 +77,7 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
 
     const workspaces = Array.isArray(input.workspacePaths) ? input.workspacePaths as string[] : []
     const workspace = (workspaces.length > 0 && typeof workspaces[0] === 'string') ? workspaces[0] : null
-    // No workspace: the install is the opt-in, as before (no folder to ask about).
+    // No workspace: the install is the opt-in (no folder to ask about).
     const policy: FolderPolicy | null = workspace ? hookFolderPolicy(workspace, flags) : null
     if (policy?.mode === 'off') return
 
@@ -99,21 +96,19 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
     // file comment). readAgyTurnCache validates the conversationId stored
     // INSIDE the record, so a sanitized-path collision between two
     // conversations reads as "no cache", never as another conversation's
-    // memory (F9).
-    // A message cached under another folder mode is not this turn's in a
-    // remote-only folder (gate review of #1663): it may hold personal memory.
+    // memory.
     const rawCached = readAgyTurnCache(conversationId)
-    // Replayed only under the same folder decision (Codex round 7 on #1663):
-    // never when the map cannot be read, and in a remote-only folder only a
-    // message cached there for the same team scope.
+    // Replayed only under the same folder decision: never when the map cannot
+    // be read, and in a remote-only folder only a message cached there for the
+    // same team scope (one cached under another mode may hold personal memory).
     const unresolved = policy?.reason === 'malformed-map' || policy?.reason === 'resolver-error'
     const cached = rawCached && (unresolved ||
       (policy?.mode === 'remote-only' && (rawCached.mode !== 'remote-only' || rawCached.scope !== policy.scope))) ? null : rawCached
 
     // "First" is the conversation's first turn. The absence of a cache alone
     // cannot say that: with an unusable cache dir it is absent on EVERY turn,
-    // and every turn got the session-start header, budget and refusal notice
-    // (formal r2, cli#12). When the transcript is readable it decides.
+    // and every turn would get the session-start header, budget and refusal
+    // notice. When the transcript is readable it decides.
     const isFirst = cached === null && Number(input.invocationNum ?? 0) === 0 &&
       (user === null || user.firstInTranscript)
     // `cached === null` counts as a new turn when a user message exists: it
@@ -122,7 +117,7 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
     // every invocation re-recalls — slow, but memory keeps flowing, which is
     // the right direction to degrade.
     // The line offset separates two identical messages when step_index is
-    // missing (both -1) — the replay-stale-memory case (cli#12).
+    // missing (both -1), so the stale memory is not replayed.
     const isNewTurn = user !== null &&
       (cached === null || user.stepIndex > cached.step || userHash !== cached.textHash ||
         (cached.offset !== undefined && user.offset !== cached.offset))
@@ -155,13 +150,10 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
     // hooks.json directory (~/.gemini/config), where the .plur.yaml walk can
     // never succeed — cwd here would silently strip project scoping from
     // every agy recall AND from the scope line the model is told to learn
-    // under (evaluator audit B1).
-    // #1198: pass the project's remote settings so Enterprise team memory
-    // reaches Antigravity. Same workspace root as before — cwd here is the
-    // hooks.json directory, where the `.plur.yaml` walk can never succeed.
-    // The helper carries #1196's trust gate with the capability.
+    // under. The project's remote settings are passed so team memory reaches
+    // Antigravity; the helper applies the trust gate with the capability.
     const projectRemote = resolveProjectRemote(plur, workspace ?? process.cwd())
-    // #1347: with a workspace, the session scope is the folder policy's.
+    // With a workspace, the session scope is the folder policy's.
     const projectConfig = policy ? sessionSettings(policy, projectRemote.config) : projectRemote.config
     const injectOpts = {
       budget: isFirst ? 3000 : 2000,
@@ -173,7 +165,7 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
     let message: string
     try {
       const { result, mode } = await injectWithFallback(plur, task, injectOpts)
-      recordInjected('agy', conversationId, result.injected_ids) // #1310 auto-rate
+      recordInjected('agy', conversationId, result.injected_ids)
       const body = result.count > 0
         ? [result.directives, result.constraints, result.consider].filter(Boolean).join('\n')
         : ''
@@ -193,7 +185,7 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
       // Only on the FIRST turn: the refusal persists until the user acts on it,
       // so repeating it every turn would be noise rather than information.
       message = refusal + (body ? `${header}\n\n${body}` : (isFirst ? header : ''))
-      // A store in the workspace that was found but not added (#1589): once
+      // A store in the workspace that was found but not added: once
       // per conversation and workspace folder.
       const hint = workspace ? skippedStoreNotice(plur, conversationId, workspace) : null
       if (hint) message = message ? `${hint}\n${message}` : hint
@@ -218,9 +210,8 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
 
     // Record BEFORE emitting, and record even when the message is empty:
     // an empty result is still THIS turn's result, and skipping the write
-    // made every mid-turn invocation re-run a full recall (evaluator audit
-    // M5). A failed write degrades to exactly that — re-recall next
-    // invocation — which is the acceptable direction.
+    // would make every mid-turn invocation re-run a full recall. A failed
+    // write degrades to exactly that, which is the acceptable direction.
     writeAgyTurnCache({
       conversationId,
       step: user?.stepIndex ?? 0,

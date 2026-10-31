@@ -31,15 +31,10 @@ import {
  *    cadence instead — the same fatigue-avoidance shape as
  *    `hook-learn-check`.
  *
- *    VERIFICATION STATUS (#1064): "accepts" is the verified part — Codex
- *    parses the output without complaint. Whether PostToolUse
- *    additionalContext actually REACHES the model was NOT covered by the
- *    2026-08-27 live verification, which exercised SessionStart and
- *    UserPromptSubmit delivery only. If Codex drops it, the cost is a
- *    silent no-op nudge (the sentinel job above is unaffected — it writes
- *    a file, needing no output channel). Verify with a trusted-hooks
- *    session per the probe procedure on #1064 before citing this nudge as
- *    working.
+ *    Codex parses this output without complaint, but whether PostToolUse
+ *    additionalContext actually reaches the model is not verified. If
+ *    Codex drops it, the nudge is a silent no-op (the sentinel job above is
+ *    unaffected — it writes a file, needing no output channel).
  *
  * Input:  JSON on stdin — { session_id, tool_name, tool_input, tool_response, ... }
  * Output: JSON on stdout — an additionalContext nudge, or nothing.
@@ -50,7 +45,7 @@ const TOOLS_BETWEEN_NUDGES = 12
 export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   await runCodexHook('codex post-tool', async () => {
     const input = readStdinJson()
-    // Silent unless the folder map says on (#1347).
+    // Silent unless the folder map says on.
     if (!hookFolderOn(payloadDir(input), flags)) return
     const sessionId = codexSessionId(input)
     if (!sessionId) return

@@ -1,11 +1,11 @@
 /**
- * Bounded outbox flush for editor hooks (#1269).
+ * Bounded outbox flush for editor hooks.
  *
  * Team-scoped writes that could not reach their store queue locally (the
- * outbox). Until #1269 they were retried only by MCP `plur_session_start` /
- * `plur_sync` / `plur_outbox` and `plur outbox --flush`, so a user who ended
- * sessions without any of those left engrams on the laptop indefinitely.
- * Session-end and stop hooks now retry too.
+ * outbox). Besides MCP `plur_session_start` / `plur_sync` / `plur_outbox` and
+ * `plur outbox --flush`, session-end and stop hooks retry them, so a user who
+ * ends sessions without any of those does not leave engrams on the laptop
+ * indefinitely.
  *
  * A hook runs under a harness timeout (docs/runbooks/hook-timeouts.md): the
  * Claude Code SessionEnd hook is installed with 5s, Codex clamps SessionEnd to
@@ -23,7 +23,7 @@
  *   (the store write is atomic); the cost of a kill there is that an entry the
  *   remote already accepted is pushed again next time — the same exposure a
  *   request timeout already carries, and the reason the budget is not applied
- *   to the merge-back itself (see #1248 on the lock wait it sits behind).
+ *   to the merge-back itself (it sits behind the store-lock wait).
  * - **Never throws**: every error is logged to stderr (hook output channels
  *   are advisory) and the entries stay queued.
  *
@@ -42,8 +42,9 @@ import type { GlobalFlags } from '../plur.js'
 /** Default network budget per harness, ms — leaves room for node start-up and
  *  the store load inside each harness's hook timeout. */
 export const HOOK_OUTBOX_BUDGET_MS = {
-  /** Claude Code SessionEnd, installed with a 5s timeout. 2.5s ran 4.3s end to
-   *  end on a 16k-engram store (start-up, YAML parse, grace, exit): too close. */
+  /** Claude Code SessionEnd, installed with a 5s timeout. On a 16k-engram
+   *  store a 2.5s budget ran 4.3s end to end (start-up, YAML parse, grace,
+   *  exit): too close. */
   claudeSessionEnd: 2_000,
   /** Codex SessionEnd, clamped by Codex to 3s. */
   codexSessionEnd: 1_200,
@@ -72,7 +73,7 @@ function recentlyFlushed(root: string, hook: string, minIntervalMs: number): boo
     const age = Date.now() - statSync(throttleMarker(root, hook)).mtimeMs
     // A marker dated in the future (clock skew, a restored backup) would
     // otherwise suppress the flush until the clock caught up: treat it as
-    // expired (2026-09-29 audit).
+    // expired.
     return age >= 0 && age < minIntervalMs
   } catch {
     return false
@@ -88,7 +89,7 @@ function markFlushed(root: string, hook: string): void {
 
 function storeRoot(flags: GlobalFlags): string {
   // `||`, not `??`: an empty PLUR_PATH (or --path "") means unset, as it does
-  // for createPlur and the other hook readers (#1395). With `??` it resolved
+  // for createPlur and the other hook readers; `??` would resolve
   // `./engrams.yaml` in the current directory.
   return flags.path || process.env.PLUR_PATH || join(homedir(), '.plur')
 }
@@ -121,7 +122,7 @@ export interface HookFlushOutcome {
   flushed?: number
   failed?: number
   deferred?: number
-  /** #1299: needs_action entries the flush did not dial (daily back-off). */
+  /** needs_action entries the flush did not dial (daily back-off). */
   held?: number
   timed_out?: boolean
   error?: string
@@ -141,8 +142,8 @@ export async function flushOutboxForHook(
     hook: string; budgetMs: number; plur?: Plur; minIntervalMs?: number
     /**
      * The folder the hook's payload names, and its decision: the flush runs
-     * bound to it, so in a remote-only folder only that folder's saves move
-     * (gate review of #1663). Without it, createPlur binds to the process folder.
+     * bound to it, so in a remote-only folder only that folder's saves move.
+     * Without it, createPlur binds to the process folder.
      */
     folder?: { dir: string; policy: FolderPolicy }
   },
@@ -157,8 +158,8 @@ export async function flushOutboxForHook(
     const budgetMs = budgetFromEnv(opts.budgetMs)
     // The outer deadline starts before the engine is built and the flush is
     // called: on a large store the flush parses engrams.yaml synchronously
-    // (about 3s at 29MB, 16k engrams), and a timer armed after that let the
-    // hook run budget + parse — 5.75s against a 3s budget.
+    // (about 3s at 29MB, 16k engrams), and a timer armed after that would let
+    // the hook run budget + parse.
     let timer: NodeJS.Timeout | undefined
     const outer = new Promise<'timeout'>(resolve => {
       timer = setTimeout(() => resolve('timeout'), budgetMs + LOCAL_GRACE_MS)
@@ -178,15 +179,15 @@ export async function flushOutboxForHook(
         )
         return { ran: true, timed_out: true }
       }
-      // #1299: `held` counts too — when every entry is held back, nothing else
-      // moves, and staying silent is exactly the failure being fixed.
+      // `held` counts too: when every entry is held back, nothing else moves,
+      // and staying silent would hide that.
       const held = result.held ?? 0
       if (result.flushed > 0 || result.failed > 0 || result.deferred > 0 || result.skipped > 0 || held > 0) {
         process.stderr.write(
           `[plur] ${opts.hook}: outbox — ${result.flushed} delivered, ${result.failed} failed, `
           + `${result.deferred} left for next time, ${result.skipped} skipped (host paused)`
           + (held > 0 ? `, ${held} held back (needs action — run \`plur outbox\`)` : '')
-          // #1581 audit L1: say why, instead of a bare "left for next time".
+          // Say why, instead of a bare "left for next time".
           + (result.expired_warnings?.some(w => w.includes('push claim could not be recorded'))
             ? '; a push claim could not be recorded on this machine (run `plur outbox`)'
             : '')

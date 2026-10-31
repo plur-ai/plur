@@ -5,7 +5,7 @@ import { createPlur, type GlobalFlags } from '../plur.js'
  * Hidden subcommand: spawn-target for `plur doctor`'s embedder probe.
  *
  * Why this exists: onnxruntime-node has a known SIGABRT crash on macOS during
- * thread pool cleanup on process exit (issue #197). When that happens in the
+ * thread pool cleanup on process exit. When that happens in the
  * doctor process itself, doctor exits with code 134 even though everything else
  * is healthy. Running the probe in a subprocess isolates the crash — the
  * subprocess dies, parent stays alive, doctor reports embedder status

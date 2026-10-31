@@ -19,28 +19,19 @@ import { cachedServerLines } from '../lib/server-session.js'
 import { cleanupLegacyProjectAtSessionStart } from '../lib/legacy-plur-yaml.js'
 import { hookSessionDir, readSessionTask, writeSessionTask } from '../lib/session-task.js'
 
-// Remote budget for the recall leg inside injectHybrid (#776). The hook is
-// on the hot path of every prompt; slow networks make this a perceptible
-// latency tax (Taleb #4). 1500ms is the trade-off: long enough for healthy
-// remote round trips, short enough to be invisible when the network is fine.
-// The leg runs in PARALLEL with the local pipeline, so effective added
-// latency is max(0, remote − local). PLUR_REMOTE_RECALL_TIMEOUT_MS overrides.
+// Remote budget (ms) for the recall leg inside injectHybrid. The hook runs on
+// every prompt: long enough for healthy round trips, short enough to be
+// invisible. The leg runs in parallel with local search, so the added latency
+// is max(0, remote - local). PLUR_REMOTE_RECALL_TIMEOUT_MS overrides.
 const REMOTE_TIMEOUT_MS = 1500
 
-// Failure-log dir. The remote recall leg is fail-open by design (it MUST
-// never block the user's prompt) — but silent fail-open is unfalsifiable
-// (Taleb #2): you cannot distinguish "Enterprise is working but had no
-// engrams for this query" from "Enterprise is unreachable and we
-// silently degraded to local." Each per-host recall outcome writes ONE
-// JSON LINE.
+// Remote recall log dir. The remote leg is fail-open (it must never block the
+// prompt), so each per-host outcome writes one JSON line; otherwise "remote had
+// no matches" and "remote unreachable, degraded to local" look the same.
 //
-// File-per-day rotation avoids the truncation race the earlier size-
-// based scheme had (dijkstra DEF-1): two concurrent hooks could both
-// observe "over cap" and both truncate, the second wiping the first's
-// entry. POSIX guarantees that appendFileSync (O_APPEND) writes smaller
-// than PIPE_BUF (4KB on Linux) are atomic, so concurrent appends to
-// the same day-file are safe. Cleanup of old day-files is a follow-up
-// (plur doctor can list/prune them).
+// One file per day, append-only: O_APPEND writes smaller than PIPE_BUF are
+// atomic under POSIX, so concurrent hooks never tear or truncate each other's
+// lines. Size-based truncation would race between concurrent hooks.
 const REMOTE_INJECT_LOG_DIR = join(homedir(), '.plur', 'logs')
 function remoteInjectLogPath(): string {
   return join(REMOTE_INJECT_LOG_DIR, `remote-inject-${new Date().toISOString().slice(0, 10)}.jsonl`)
@@ -49,8 +40,8 @@ function remoteInjectLogPath(): string {
 function logRemoteAttempt(entry: {
   ts:        string
   url:       string
-  // #776: the recall leg's per-host states join the legacy outcome values so
-  // old log tooling keeps parsing the same field.
+  // Recall-leg per-host states share this field with the older outcome
+  // values so log tooling parses one field.
   outcome:   'ok' | 'http_error' | 'timeout' | 'network_error' | 'bad_response' | 'oversize'
            | 'unreachable' | 'auth_expired' | 'forbidden' | 'rate_limited' | 'unsupported' | 'skipped_cooldown' | 'client_slow'
   ms:        number
@@ -60,12 +51,10 @@ function logRemoteAttempt(entry: {
 }): void {
   try {
     mkdirSync(REMOTE_INJECT_LOG_DIR, { recursive: true })
-    // O_APPEND under POSIX guarantees atomic writes < PIPE_BUF.
-    // The serialized entry is well under that, so concurrent hooks
-    // never tear each other's lines or wipe history.
+    // O_APPEND writes < PIPE_BUF are atomic; one entry is well under that.
     appendFileSync(remoteInjectLogPath(), JSON.stringify(entry) + '\n')
   } catch {
-    // Log write failed — accept silently. The hook MUST never throw.
+    // The hook must never throw.
   }
 }
 
@@ -81,8 +70,8 @@ function logRemoteAttempt(entry: {
  *
  * With --rehydrate: always injects (used by the SessionStart hook, matcher
  * "compact", after context compaction to restore engrams that were lost).
- * It was registered on PostCompact until #1274; PostCompact cannot carry
- * context in Claude Code, so a stale PostCompact registration prints nothing.
+ * PostCompact cannot carry context in Claude Code, so a PostCompact
+ * registration prints nothing.
  *
  * With --event <type>: contextual injection for specific tool events:
  *   --event plan_mode   Full engram injection when entering plan mode
@@ -96,11 +85,10 @@ function logRemoteAttempt(entry: {
  */
 
 /**
- * #1274: Claude Code only hands a hook's context to the model when it is
- * wrapped in `hookSpecificOutput` with a `hookEventName` naming the event that
- * fired. A top-level `{additionalContext}` is recorded as plain hook stdout and
- * never reaches the model — which is how every injection from this hook was
- * being dropped. Same class as the Stop nudge (#1266).
+ * Claude Code only hands a hook's context to the model when it is wrapped in
+ * `hookSpecificOutput` with a `hookEventName` naming the event that fired. A
+ * top-level `{additionalContext}` is recorded as plain hook stdout and never
+ * reaches the model.
  *
  * The event name comes from the payload's `hook_event_name` when present (it
  * is, by definition, the event that fired); otherwise from how the hook was
@@ -112,7 +100,7 @@ function claudeHookEventName(
 ): string {
   const fromPayload = input.hook_event_name
   if (typeof fromPayload === 'string' && fromPayload.length > 0) return fromPayload
-  if (opts.rehydrate) return 'SessionStart' // matcher "compact" (#1274)
+  if (opts.rehydrate) return 'SessionStart' // matcher "compact"
   if (opts.event === 'subagent') return 'SubagentStart'
   if (opts.event) return 'PreToolUse' // plan_mode | skill | agent
   return 'UserPromptSubmit'
@@ -120,9 +108,9 @@ function claudeHookEventName(
 
 /**
  * Events whose hook output cannot carry model-visible context. Claude Code
- * 2.1.284 rejects `hookEventName: "PostCompact"` ("Hook JSON output
- * validation failed", shown to the user) and ignores a top-level
- * additionalContext, so printing anything there is noise.
+ * rejects `hookEventName: "PostCompact"` ("Hook JSON output validation
+ * failed", shown to the user) and ignores a top-level additionalContext, so
+ * printing anything there is noise.
  */
 const NO_CONTEXT_EVENTS = new Set(['PostCompact'])
 
@@ -132,27 +120,23 @@ const NO_CONTEXT_EVENTS = new Set(['PostCompact'])
 // prompt, length-capped, 0600 in a verified 0700 dir, removed at SessionEnd.
 
 /**
- * #1278: the key for this session's marker, reminder clock and inject lock.
- * The payload `session_id` first, then CLAUDE_SESSION_ID, then ppid — the same
- * precedence as the Stop counter (#1266), sanitised with the shared helper.
- * Claude Code runs every hook in a fresh `/bin/sh -c` and does not export
- * CLAUDE_SESSION_ID, so a ppid key changed on every prompt: the "already
- * started" check never matched, every prompt re-ran the full injection, and
- * the 10-minute reminder never fired. ppid is kept only as the last fallback
- * for callers that send no session id at all.
+ * The key for this session's marker, reminder clock and inject lock: the
+ * payload `session_id` first, then CLAUDE_SESSION_ID, then ppid, sanitised
+ * with the shared helper. Claude Code runs every hook in a fresh `/bin/sh -c`
+ * and does not export CLAUDE_SESSION_ID, so a ppid key changes on every
+ * prompt; it is only the last fallback for callers that send no session id.
  */
 function sessionKey(input: Record<string, unknown>): string {
-  // Owner decision H1 ("payload", 2026-09-29): the one shared helper.
   return hookSessionKey(input.session_id)
 }
 
-// Set when the watchdog fires (#1343). The watchdog then waits, bounded, for
+// Set when the watchdog fires. The watchdog then waits, bounded, for
 // any store write in flight before exiting; the run it stopped must not print
 // or mark the session during that wait — a stopped run is a failed attempt.
 let stopping = false
 
 /**
- * #1312: the `hook-correction-detect` reminder for this prompt, or null.
+ * The `hook-correction-detect` reminder for this prompt, or null.
  * Folded into this hook's UserPromptSubmit output instead of registering a
  * second process per prompt; only a UserPromptSubmit payload has a prompt.
  */
@@ -170,7 +154,7 @@ function emitContext(hookEventName: string, additionalContext: string): void {
 /**
  * emitContext that resolves true once the write has been handed to stdout
  * without error (on macOS a pipe write is asynchronous), false otherwise.
- * The session marker is written only after this resolves true (#1278).
+ * The session marker is written only after this resolves true.
  */
 function emitContextConfirmed(hookEventName: string, additionalContext: string): Promise<boolean> {
   if (stopping) return Promise.resolve(false)
@@ -188,25 +172,17 @@ function emitContextConfirmed(hookEventName: string, additionalContext: string):
 
 const REMINDER_INTERVAL_MS = 10 * 60 * 1000 // 10 minutes
 
-// Project config (.plur.yaml) reading moved to @plur-ai/core/project-config
-// so both this hook AND the MCP server's session_start handler can use it
-// (the original duplication was the root cause of #177 — session_start
-// ignored .plur.yaml because the reader lived in this CLI-only file).
 import { claimHookDegradationLines, type Plur } from '@plur-ai/core'
 import { resolveProjectRemote, projectRemoteRefusalNotice, type ProjectRemote } from '../lib/project-remote.js'
-import { hookSessionKey } from '../lib/session-key.js' // decision H1
+import { hookSessionKey } from '../lib/session-key.js'
 
 /**
- * #776: the former `tryRemoteInject` remote-first POST /api/v1/inject path
- * is REPLACED by the recall leg inside `injectHybrid` — the core dials each
- * relevant host once (POST /api/v1/recall) in parallel with local search and
- * merges the rows, so a prompt costs AT MOST ONE remote call per host (a
- * degraded host must not cost two sequential remote budgets per prompt).
- * The `.plur.yaml` `remote_url`/`remote_token` is passed through as
- * `remote_project`: project config wins for the hook path — its presence IS
- * the org context for dialing. Per-host outcomes land in the JSONL log below
- * and, on state change, as ONE degradation header line via
- * `claimHookDegradationLines` (suppression persisted in remote-health.json).
+ * Logs the per-host outcomes of the recall leg inside `injectHybrid` (which
+ * dials each relevant host once, POST /api/v1/recall, in parallel with local
+ * search, so a prompt costs at most one remote call per host) and returns the
+ * degradation header lines to show. A header line appears only on a state
+ * change (`claimHookDegradationLines`, suppression persisted in
+ * remote-health.json).
  */
 function surfaceRemoteOutcomes(plur: Plur): string[] {
   try {
@@ -236,20 +212,12 @@ function sessionDir(): string | null {
 }
 
 /**
- * Which Claude Code session is this? (formal r2, cli#7)
+ * Legacy marker key: `sid-<session_id>` from the payload, else the ppid. The
+ * `sid-` prefix keeps the two key spaces disjoint.
  *
- * Every Claude Code hook payload carries `session_id`. The marker used to be
- * keyed by `process.ppid` alone, while the session guard keys by session_id:
- * `/clear` starts a new session in the SAME process, and a recycled PID is a
- * new process with an old number — both found the previous session's marker
- * and skipped injection entirely. The payload id is the identity; ppid is the
- * fallback for payloads without one (and keeps those paths byte-identical to
- * before). The `sid-` prefix keeps the two key spaces disjoint.
- *
- * LEGACY since owner decision H1 ("payload", 2026-09-29): the hook keys its
- * state with `hookSessionKey` (lib/session-key.ts). This is the key a pre-H1
- * writer used — `legacyHookSessionKeys` produces it for readers — kept for
- * its unit tests. Nothing writes under it.
+ * Nothing writes under this key; the hook keys its state with `hookSessionKey`
+ * (lib/session-key.ts). Kept so readers can find markers written by older
+ * versions (`legacyHookSessionKeys` produces the same form).
  */
 export function injectSessionKey(input: Record<string, unknown>, ppid: number | string = process.ppid || 'unknown'): string {
   const sid = typeof input.session_id === 'string' ? input.session_id : ''
@@ -266,20 +234,16 @@ function sessionMarkerPath(key: string): string | null {
 }
 
 /**
- * The keys an older hook-inject wrote this session's MARKER under — not the
- * checkpoint/counter forms, which `legacyHookSessionKeys` also returns for
- * their own readers (#1396 review).
+ * The keys an older hook-inject wrote this session's marker under (not the
+ * checkpoint/counter forms, which `legacyHookSessionKeys` also returns).
  *
- * With a payload session_id, only forms derived from that id: #1228's `sid-`
- * key and the uncapped `safeSessionKey(payload)` main wrote before the 64-char
- * cap. Never the env/ppid forms: under payload-first keying a ppid marker can
- * never belong to this session (the ppid changes on every prompt), and stale
- * `<pid>.marker` files from releases before #1278 would otherwise make a new
- * session look already started and skip its injection.
+ * With a payload session_id, only forms derived from that id: the `sid-` key
+ * and the uncapped `safeSessionKey(payload)`. Never the env/ppid forms: a ppid
+ * marker can never belong to this session (the ppid changes on every prompt),
+ * and a stale `<pid>.marker` would make a new session look already started
+ * and skip its injection.
  *
- * Without a payload session_id, main's own marker key: the uncapped
- * `safeSessionKey(env || ppid)`. Main never read the stripped checkpoint form
- * for markers, so neither does this.
+ * Without a payload session_id: the uncapped `safeSessionKey(env || ppid)`.
  */
 function legacyMarkerKeys(key: string, input: Record<string, unknown>): string[] {
   const id = input.session_id
@@ -291,12 +255,12 @@ function legacyMarkerKeys(key: string, input: Record<string, unknown>): string[]
 }
 
 /**
- * The marker to READ for this session: the current key's, or — when it does
- * not exist — one an older writer left under a legacy key (H1 upgrade path:
- * #1228's `sid-` prefix or the uncapped form; see legacyMarkerKeys), so a session that
- * started before the upgrade is not injected twice. Writers use `key` only.
+ * The marker to READ for this session: the current key's, or, when it does
+ * not exist, one an older writer left under a legacy key (see
+ * legacyMarkerKeys), so a session that started before an upgrade is not
+ * injected twice. Writers use `key` only.
  *
- * #1395: null when the state dir is refused — read nothing, persist nothing.
+ * Null when the state dir is refused: read nothing, persist nothing.
  * The dir is resolved once and every legacy candidate is joined onto that
  * same verified dir, never onto an unverified one.
  */
@@ -363,18 +327,16 @@ function touchReminder(key: string): void {
 export interface InjectLockHold { path: string; ino: number; token: string }
 
 /**
- * Take the per-session inject lock (#519) with O_EXCL (formal r2, cli#7).
- *
- * The previous stat-then-write let two hooks that fired together both see
- * "no lock" and both write one — exactly the concurrent BGE loads the lock
- * exists to prevent. `wx` makes creation the test. A lock older than
+ * Take the per-session inject lock with O_EXCL. The lock prevents concurrent
+ * hooks from loading the embedder at once; `wx` makes creation the test, so
+ * two hooks firing together cannot both see "no lock". A lock older than
  * LOCK_STALE_MS belongs to a crashed run and is taken over (one retry).
  *
  *   'acquired'    — ours; the caller MUST release it (in a finally) with
  *                   `releaseInjectLock(hold)`
  *   'busy'        — a live run holds it; bail
  *   'unavailable' — cannot lock at all (no trustworthy dir, I/O error);
- *                   proceed unlocked, the pre-#519 behaviour (fail open)
+ *                   proceed unlocked (fail open)
  */
 export function takeInjectLock(
   path: string | null,
@@ -400,12 +362,11 @@ export function takeInjectLock(
         const seen = statSync(path)
         if (now() - seen.mtimeMs < staleMs) return { status: 'busy' }
         opts._beforeTakeover?.()
-        // Stale: the holder crashed — take it over. A plain unlink here let two
-        // hooks that both saw it stale delete each other's fresh lock and both
-        // inject (formal verification, R2-CLI item 3). Move whatever is at
-        // `path` aside atomically, then check it is the stale file we judged
-        // (inode AND mtime, so a filesystem that reuses inode numbers cannot
-        // pass a fresh lock off as the stale one).
+        // Stale: the holder crashed, take it over. A plain unlink would let two
+        // hooks that both saw it stale delete each other's fresh lock. Move
+        // whatever is at `path` aside atomically, then check it is the stale
+        // file we judged (inode AND mtime, so a filesystem that reuses inode
+        // numbers cannot pass a fresh lock off as the stale one).
         const aside = `${path}.stale-${process.pid}-${randomBytes(4).toString('hex')}`
         renameSync(path, aside)
         opts._afterMoveAside?.()
@@ -417,7 +378,7 @@ export function takeInjectLock(
           // another holder already exists — either way someone holds it). If
           // the put-back fails, the moved lock's owner no longer holds `path`;
           // `releaseInjectLock` checks ownership, so it will not delete the
-          // newer holder's lock (#1238).
+          // newer holder's lock.
           try { linkSync(aside, path) } catch { /* a newer holder exists */ }
           unlinkSync(aside)
           return { status: 'busy' }
@@ -449,11 +410,10 @@ export function acquireInjectLock(
 }
 
 /**
- * Release an inject lock this hook took — only if it is still this hook's
- * lock (#1238). A takeover that raced a third hook can leave `path` holding
- * ANOTHER hook's live lock; an unconditional unlink here deleted it, and a
- * fourth hook could then inject beside the third. The file is deleted only
- * when it has the inode and the token recorded at acquire time.
+ * Release an inject lock this hook took, only if it is still this hook's
+ * lock. A takeover that raced a third hook can leave `path` holding another
+ * hook's live lock, which an unconditional unlink would delete. The file is
+ * deleted only when it has the inode and the token recorded at acquire time.
  */
 export function releaseInjectLock(hold: InjectLockHold | undefined): void {
   if (!hold) return
@@ -465,29 +425,24 @@ export function releaseInjectLock(hold: InjectLockHold | undefined): void {
 }
 
 function extractEventTask(input: Record<string, unknown>, event: string): string {
-  // Extract contextual task description based on event type
   const toolInput = input.tool_input as Record<string, unknown> | undefined
 
   switch (event) {
     case 'plan_mode':
-      // Entering plan mode — inject broadly relevant engrams
       return (input.prompt as string) || 'implementation planning and architecture'
 
     case 'skill': {
-      // Skill invocation — inject domain-specific engrams
       const skillName = String(toolInput?.skill ?? input.tool_name ?? '')
       return skillName ? `skill: ${skillName}` : 'skill invocation'
     }
 
     case 'agent': {
-      // Agent spawn — inject agent-scoped engrams
       const agentType = String(toolInput?.subagent_type ?? toolInput?.description ?? '')
       const agentPrompt = String(toolInput?.prompt ?? '').slice(0, 200)
       return agentType ? `agent: ${agentType} ${agentPrompt}` : agentPrompt || 'agent task'
     }
 
     case 'subagent': {
-      // Subagent start — similar to agent but for SubagentStart event
       // SubagentStart payloads carry `agent_type`, not tool_input.
       const desc = String(toolInput?.description ?? input.agent_type ?? input.agent_name ?? '')
       return desc ? `subagent: ${desc}` : 'subagent task'
@@ -507,26 +462,19 @@ export function pidAlive(pid: number): boolean {
 }
 
 /**
- * Deferred wrap-up (#216): recover sessions that ended without wrap-up.
+ * Deferred wrap-up: recover sessions that ended without wrap-up.
  *
  * Scans <store>/sessions/ for checkpoint files left behind (plur_session_end
- * and hook-session-end both remove theirs). Formal r2, cli#6 — the property
- * is: A CHECKPOINT IS REMOVED ONLY AFTER A DURABLE CAPTURE
- * (PlurSpec/R2CLI.lean §2, `removed_only_after_capture`). Before:
- *   - a valid orphan produced a one-off notice in THIS session's context and
- *     was unlinked — nothing durable, so the previous session's only record
- *     was gone after a transient string (hook-session-end had been fixed for
- *     exactly this in #217; this path never was);
- *   - an unparseable checkpoint was unlinked outright;
- *   - "idle > 5 min" was the only orphan test, so a session still running in
- *     another terminal, between checkpoints (one every 10 responses), was
- *     declared dead and its checkpoint destroyed;
- *   - the scan read PLUR_PATH only, while the store and hook-session-end
- *     honour --path.
- * Now: an orphan is captured as an episode FIRST and unlinked only if that
- * succeeded; a corrupt checkpoint is renamed aside (kept, never rescanned);
- * a checkpoint whose key is a pid that is still alive is left alone (the
- * writer keys by ppid when CLAUDE_SESSION_ID is unset — the common case).
+ * and hook-session-end both remove theirs). Invariant: a checkpoint is removed
+ * only after a durable capture (PlurSpec/R2CLI.lean §2,
+ * `removed_only_after_capture`).
+ *   - An orphan is captured as an episode first and unlinked only if that
+ *     succeeded.
+ *   - A corrupt checkpoint is renamed aside (kept, never rescanned).
+ *   - A checkpoint touched recently, or whose key is a pid that is still
+ *     alive, is left alone: that session may be running in another terminal
+ *     between checkpoints (the writer keys by ppid when CLAUDE_SESSION_ID is
+ *     unset, the common case).
  *
  * Conservative: only reports metadata (stop count, duration, cwd).
  */
@@ -538,8 +486,8 @@ export function processDeferredWrapups(
 ): string | null {
   const sessionsDir = join(root, 'sessions')
   if (!existsSync(sessionsDir)) return null
-  // A remote-only session captures no timeline (owner decision on #1521):
-  // other sessions' orphans wait for a session that can capture them.
+  // A remote-only session captures no timeline: other sessions' orphans wait
+  // for a session that can capture them.
   if (plur.remoteOnlyFolder?.()) return null
 
   const notices: string[] = []
@@ -574,7 +522,6 @@ export function processDeferredWrapups(
       // this skip a dead session — the safe direction; it is retried later.)
       if (/^\d+$/.test(key) && isAlive(Number(key))) continue
 
-      // Calculate session duration
       const started = new Date(checkpoint.started_at)
       const durationMin = Math.max(0, Math.round((lastCheckpoint - started.getTime()) / 60000))
       const durationStr = Number.isNaN(durationMin) ? '?m' : durationMin >= 60
@@ -585,12 +532,11 @@ export function processDeferredWrapups(
       const facts = `${durationStr}, ${checkpoint.stop_count ?? 0} responses${where}`
 
       // An orphan from a remote-only folder is dropped, not captured: its
-      // timeline must not be kept on this machine (owner decision on #1521).
+      // timeline must not be kept on this machine.
       if (typeof checkpoint.cwd === 'string' && checkpoint.cwd && plur.resolveFolderPolicy) {
         let policy: { mode: string; reason?: string } | null = null
-        // When in doubt, don't capture (re-audit of #1521, C-1): an
-        // unresolvable folder, or an unreadable map, leaves the checkpoint
-        // uncaptured for a session that can decide.
+        // When in doubt, don't capture: an unresolvable folder, or an
+        // unreadable map, leaves the checkpoint for a session that can decide.
         try { policy = plur.resolveFolderPolicy(checkpoint.cwd) } catch { continue }
         if (policy.reason === 'malformed-map' || policy.reason === 'resolver-error') continue
         if (policy.mode === 'remote-only') {
@@ -625,26 +571,23 @@ export function processDeferredWrapups(
   return `[PLUR] ${notices.join(' ')}\nConsider running plur_session_end with engram_suggestions when this session ends.`
 }
 
-// Self-watchdog ceiling for hook-inject. Hooks are fail-open — a silent
-// exit after the ceiling is always better than an immortal orphan process
-// (#504). The ceiling bounds OVERALL hook runtime: the floating background
-// RemoteStore.load() that originally motivated it is gone (#776 — the remote
-// leg is a budgeted, awaited call inside injectHybrid), but embedder loads,
-// filesystem stalls, or any future stray async work still need a hard stop.
-// #1313: the first-prompt and rehydrate injections are registered SYNC with
-// a 20s Claude Code timeout (lib/claude-inject-budget.ts), so the default is
-// 15s: it fits the 8s hybrid deadline plus a BM25 pass, and exits 0 before
-// Claude Code kills the hook and shows an error. Override via env.
+// Self-watchdog ceiling (ms) for overall hook runtime. Hooks are fail-open: a
+// silent exit after the ceiling is better than an orphan process. Embedder
+// loads, filesystem stalls or stray async work still need a hard stop.
+// The first-prompt and rehydrate injections are registered sync with a 20s
+// Claude Code timeout (lib/claude-inject-budget.ts), so the default is 15s:
+// it fits the 8s hybrid deadline plus a BM25 pass, and exits 0 before Claude
+// Code kills the hook and shows an error. PLUR_HOOK_CEILING_MS overrides.
 // The timer is unref()ed so a normal clean exit isn't delayed.
 export const HOOK_CEILING_DEFAULT_MS = 15_000
 // How long the watchdog, once fired, waits for this process's own store lock
-// before exiting (#1343). Ceiling + this must still land before Claude Code's
+// before exiting (ms). Ceiling + this must still land before Claude Code's
 // 20s kill, or the user sees a hook error instead of a quiet exit.
 export const WATCHDOG_LOCK_WAIT_MS = 3_000
 const HOOK_CEILING_MS = parseInt(process.env.PLUR_HOOK_CEILING_MS ?? '', 10) || HOOK_CEILING_DEFAULT_MS
 
 /**
- * The first-prompt / rehydrate retrieval (#1313). The hook is sync, so it
+ * The first-prompt / rehydrate retrieval. The hook is sync, so it
  * cannot wait on an embedder for as long as it takes: hybrid races a soft
  * deadline (PLUR_HOOK_HYBRID_DEADLINE_MS, default 8s) and BM25 serves the
  * turn when it is missed or hybrid throws — the same bound the Codex and
@@ -657,7 +600,7 @@ export async function injectForHook<O, R>(
   deadlineMs?: number,
 ): Promise<InjectOutcome<R> & { hybrid: Promise<unknown> | null }> {
   // Keep hold of the hybrid search: when it misses the deadline it is still
-  // running, and the exit must wait for it to finish its store write (#1313).
+  // running, and the exit must wait for it to finish its store write.
   let hybrid: Promise<unknown> | null = null
   const tracked: Injectable<O, R> = {
     inject: (t, o) => plur.inject(t, o),
@@ -674,7 +617,7 @@ export async function injectForHook<O, R>(
 
 /**
  * Before force-exiting past a missed hybrid deadline, how long to wait for
- * the abandoned search to settle (#1313). When it is near the end it records
+ * the abandoned search to settle (ms). When it is near the end it records
  * its injection under `engrams.yaml.lock`; exiting while that lock's O_EXCL
  * create is in flight leaves an empty lock core honours for 60s. When it is
  * still embedding a store with no cache it will not settle in time, and it is
@@ -693,22 +636,20 @@ export function settleWithin(p: Promise<unknown>, ms: number): Promise<boolean> 
 }
 
 /**
- * Background build of the embedding cache (#1313 audit).
+ * Background build of the embedding cache.
  *
- * Core used to save `.embeddings-cache.json` only when a hybrid search ran to
- * the end, so on a store with a cold cache every session's first prompt
- * missed the deadline again and never got faster. (Since #1586 round 6 a
- * cut-off search also keeps its vectors, appended to
- * `.embeddings-cache.delta.jsonl`; this build still finishes the job.) After such a fallback the hook starts
- * `hook-inject --warm-embeddings`: detached, lowest CPU priority, one at a
- * time per store (the `.embeddings-warming` marker), bounded by
- * PLUR_WARM_CEILING_MS. It runs core's `similaritySearch`, which embeds every
- * active engram through the cache and saves it. That path takes no store
- * write lock at all; the cache file is written atomically.
+ * On a store with a cold cache, every session's first prompt misses the
+ * hybrid deadline. A cut-off search keeps the vectors it computed (appended to
+ * `.embeddings-cache.delta.jsonl`); this build finishes the job. After a
+ * fallback the hook starts `hook-inject --warm-embeddings`: detached, lowest
+ * CPU priority, one at a time per store (the `.embeddings-warming` marker),
+ * bounded by PLUR_WARM_CEILING_MS. It runs core's `similaritySearch`, which
+ * embeds every active engram through the cache and saves it. That path takes
+ * no store write lock at all; the cache file is written atomically.
  */
 const WARM_MARKER = '.embeddings-warming'
 // 60 min: the cache is saved only once the whole store is embedded, and at the
-// lowest priority a 10,000-engram store did not finish inside 10 min on a busy
+// lowest priority a 10,000-engram store can take over 10 min on a busy
 // machine. A dead holder is detected at once, so this bounds only a stuck build.
 export const WARM_CEILING_MS = parseInt(process.env.PLUR_WARM_CEILING_MS ?? '', 10) || 60 * 60_000
 
@@ -717,7 +658,7 @@ export const WARM_CEILING_MS = parseInt(process.env.PLUR_WARM_CEILING_MS ?? '', 
  * when its holder is a dead pid on this host, or when it is at least
  * WARM_CEILING_MS old. A marker on another host cannot be probed, so only its
  * age counts. The parent's pre-spawn check and the child's claim use this one
- * test, so a marker left by a killed build never blocks warming (#1414 review).
+ * test, so a marker left by a killed build never blocks warming.
  */
 export function warmMarkerHeld(path: string, now = Date.now()): boolean {
   let raw: string
@@ -796,17 +737,17 @@ const LOCK_STALE_MS =
 
 // The inject lock this run holds, if any. The watchdog removes it before its
 // process.exit(): exit skips every `finally`, and a lock left behind would make
-// every prompt for the next LOCK_STALE_MS bail silently (#1278 review).
+// every prompt for the next LOCK_STALE_MS bail silently.
 let heldInjectLock: InjectLockHold | null = null
 
 // Full first-message injections allowed per session before the hook stops
-// trying (#1278 review). Each attempt that does not finish — it threw, the
+// trying. Each attempt that does not finish — it threw, the
 // watchdog stopped it, or the editor killed it at its hook timeout — leaves no
 // marker, so without a cap a store that always overruns the timeout would run
 // the full injection on every prompt of the session.
 const MAX_INJECT_ATTEMPTS = 2
 
-// Null when there is no usable state dir (#1395): nothing is counted, so the
+// Null when there is no usable state dir: nothing is counted, so the
 // cap cannot apply, exactly as no marker can be written there either.
 function attemptsPath(key: string): string | null {
   return sessionStatePath(key, 'attempts')
@@ -822,22 +763,21 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const isRehydrate = args.includes('--rehydrate')
   const eventIdx = args.indexOf('--event')
   const event = eventIdx >= 0 ? args[eventIdx + 1] : null
-  // Background embedding-cache build started by an earlier fallback (#1313
-  // audit). Not a hook invocation: no stdin, no output, its own ceiling. It
-  // runs before the folder gate (#1347): the warmer is a detached child with
-  // no payload, and the folder that spawned it was already on.
+  // Background embedding-cache build started by an earlier fallback. Not a
+  // hook invocation: no stdin, no output, its own ceiling. It runs before the
+  // folder gate: the warmer is a detached child with no payload, and the
+  // folder that spawned it was already on.
   if (args.includes('--warm-embeddings')) {
     await warmEmbeddingCache(flags)
     return
   }
-  // Every path needs the payload (#1278): the session key comes from its
+  // Every path needs the payload: the session key comes from its
   // `session_id`, and the folder decision from its `cwd`. Reading stdin is a
   // single synchronous read.
   const input = readStdinSync()
 
-  // The folder map (#1347) replaces the old isPlurConfigured() gate (#247):
-  // off is silent; ask is silent except for the one question on the first
-  // prompt of a session; on does the work below.
+  // Folder map: off is silent; ask is silent except for the one question on
+  // the first prompt of a session; on does the work below.
   const dir = payloadDir(input)
   const policy = hookFolderPolicy(dir, flags)
   if (policy.mode === 'off') return
@@ -853,23 +793,23 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   }
 
   // Watchdog: guarantee this process exits even if something in the hook run
-  // hangs (#504) — remote calls are individually budgeted since #776, so this
-  // is the ceiling on the WHOLE run (embedder load, fs stalls, stray async).
-  // Installed after the folder gate so it only fires for
-  // sessions that actually do work. unref() prevents it from delaying clean exit.
-  // Counted from PROCESS START, not from here: Claude Code's 20s kill counts
-  // from when it spawned the hook, and module loading on a busy machine
-  // otherwise came on top of the ceiling (HK-3 ran past 20s with a 15s ceiling).
+  // hangs. Remote calls are individually budgeted, so this is the ceiling on
+  // the whole run (embedder load, fs stalls, stray async). Installed after the
+  // folder gate so it only fires for sessions that actually do work. unref()
+  // prevents it from delaying clean exit.
+  // Counted from process start, not from here: Claude Code's 20s kill counts
+  // from when it spawned the hook, and module loading on a busy machine would
+  // otherwise come on top of the ceiling.
   runStartedAt = performance.timeOrigin
-  // #1343: the watchdog can fire mid-way through a store write, and exiting
-  // there leaves the lock behind. Wait (bounded) until the store is idle first.
+  // The watchdog can fire mid-way through a store write, and exiting there
+  // leaves the lock behind. Wait (bounded) until the store is idle first.
   const watchdog = setTimeout(() => {
     stopping = true
-    // Through the ownership check (#1238): never a lock another run has taken over since.
+    // Through the ownership check: never a lock another run has taken over since.
     if (heldInjectLock) releaseInjectLock(heldInjectLock)
     // A hybrid search still running at the ceiling is embedding a cold store:
-    // same as a missed deadline, the cache would stay cold (#1313 audit). The
-    // check runs at the exit itself, after the store-idle wait (#1343).
+    // same as a missed deadline, the cache would stay cold. The check runs at
+    // the exit itself, after the store-idle wait.
     void exitWhenStoreIdle(WATCHDOG_LOCK_WAIT_MS, () => {
       if (hybridInFlight && storeRoot) startEmbeddingWarmup(storeRoot, runFlags)
       process.exit(0)
@@ -880,34 +820,30 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const key = sessionKey(input)
   const marker = readableMarkerPath(key, input)
 
-  // Contextual injection for specific events (plan_mode, skill, agent, subagent)
   if (event) {
     const task = extractEventTask(input, event)
-    // Unknown event: nothing to inject. Print nothing — stdout is parsed as
-    // hook output, and echoing the payload back was never valid output.
+    // Unknown event: nothing to inject. Print nothing; stdout is parsed as
+    // hook output.
     if (!task) return
 
     const plur = createPlur(flags)
     bindHookFolder(plur, dir, policy)
     const label = `[PLUR Memory — ${event}]`
 
-    // BM25-only, deliberately. Event hooks are SYNC — their whole point is
-    // context arriving BEFORE the tool runs — and they're installed with a
-    // 10s timeout. Hybrid search needs the BGE embedder, which costs ~20s
-    // to load in a cold CLI process once the store is a few thousand
-    // engrams: the hook got killed at the timeout on EVERY invocation,
-    // burning CPU and injecting nothing. BM25 completes in a few seconds,
-    // and event task strings ("skill: X", "agent: Y") are short keyword-ish
-    // queries where BM25 holds its own against embeddings anyway. The main
-    // first-message injection keeps hybrid, but it is sync too since #1313:
-    // hybrid on an 8s soft deadline, then BM25, under a 20s hook timeout.
+    // BM25-only, deliberately. Event hooks are sync (context must arrive
+    // before the tool runs) with a 10s timeout. The BGE embedder can take
+    // ~20s to load in a cold CLI process on a store of a few thousand
+    // engrams, so hybrid would be killed at the timeout every time. Event
+    // task strings ("skill: X", "agent: Y") are short keyword queries where
+    // BM25 holds its own. The first-message injection uses hybrid on an 8s
+    // soft deadline, then BM25, under a 20s hook timeout.
     // Attribute the retrieval to this session when the marker is readable, so
     // the memory receipt can count (engram, session) pairs from hook traffic —
     // which is the large majority of all injections.
     let eventSessionId: string | undefined
     if (marker) try { eventSessionId = JSON.parse(readFileSync(marker, 'utf8')).sessionId } catch { /* fail-open */ }
     const result = await plur.inject(task, { budget: 3000, source: 'hook', session_id: eventSessionId })
-    recordInjected('claude', input.session_id, result.injected_ids) // #1310 auto-rate
+    recordInjected('claude', input.session_id, result.injected_ids) // auto-rate
     if (result.count > 0) {
       const parts: string[] = []
       if (result.directives) parts.push(result.directives)
@@ -921,9 +857,9 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     return
   }
 
-  // Session already started — check if periodic reminder is due
+  // Session already started: check if periodic reminder is due
   if (!isRehydrate && marker && existsSync(marker)) {
-    // Keep the latest prompt for rehydration after compaction (#1274 reads it).
+    // Keep the latest prompt for rehydration after compaction.
     const prompt = input.prompt
     if (typeof prompt === 'string') writeSessionTask(input.session_id, prompt)
     const lines: string[] = []
@@ -935,9 +871,9 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     }
     const correction = promptCorrection(input)
     if (correction) lines.push(correction)
-    // The skipped-store hint is keyed on session AND folder (#1589 audit
-    // round 4): a session that moves to another folder gets that folder's
-    // hint once. Cheap checks run first; the PLUR instance is built only when
+    // The skipped-store hint is keyed on session AND folder: a session that
+    // moves to another folder gets that folder's hint once. Cheap checks run
+    // first; the PLUR instance is built only when
     // a store file is on the walk and the hint was not given here yet.
     const hint = skippedStoreNotice(() => createAskPlur(flags), typeof input.session_id === 'string' ? input.session_id : '', dir)
     if (hint) lines.push(hint)
@@ -947,14 +883,14 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     return
   }
 
-  // Per-session concurrency guard (#519): if another hook-inject is already
-  // running the BGE-loading injection for this session, exit immediately.
-  // Multiple rapid async firings (datacore#33) otherwise pile up at ~160 MB
-  // RSS each and trigger an OOM cascade. Lock is stale after HOOK_CEILING_MS
+  // Per-session concurrency guard: if another hook-inject is already running
+  // the BGE-loading injection for this session, exit immediately. Rapid
+  // firings would otherwise pile up at ~160 MB RSS each and can exhaust
+  // memory. Lock is stale after HOOK_CEILING_MS
   // so a crashed process never permanently blocks subsequent invocations.
   const lock = takeInjectLock(sessionStatePath(key, 'injecting'))
   if (lock.status === 'busy') {
-    // HK-2 (#1385): the run holding the lock injects for ITS prompt; this
+    // The run holding the lock injects for ITS prompt; this
     // prompt's correction would be lost with it. The reminder needs no store.
     const correction = isRehydrate ? null : promptCorrection(input)
     if (correction) await emitContextConfirmed('UserPromptSubmit', correction)
@@ -964,8 +900,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
 
   // Release the lock on every exit, including a throw from the injection —
   // a lock left behind would make the retry on the next prompt bail silently
-  // until it goes stale (#1278). Only a lock this hook still owns is removed
-  // (#1238).
+  // until it goes stale. Only a lock this hook still owns is removed.
   try {
     if (!isRehydrate) {
       const attempts = readAttempts(key)
@@ -983,7 +918,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     releaseInjectLock(lock.hold)
     heldInjectLock = null
   }
-  // #1313: the output (if any) has been flushed — emitContextConfirmed waits
+  // The output (if any) has been flushed — emitContextConfirmed waits
   // for it. Exit now rather than let the abandoned hybrid search keep a
   // synchronous hook, and the user's prompt, waiting. But not while this
   // process may be inside a store write: exiting there leaves the lock file
@@ -994,12 +929,12 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   if (abandonedHybrid) {
     const left = () => Math.max(0, runStartedAt + HOOK_CEILING_MS - 1_000 - Date.now())
     const settled = await settleWithin(abandonedHybrid, Math.min(ABANDONED_HYBRID_WAIT_MS, left()))
-    // Then the general guard (#1343): no lock operation of this process in
+    // Then the general guard: no lock operation of this process in
     // flight and no lock file of ours on disk, checked in the same step as
     // the exit. A search still running at that exit is still embedding the
     // store: the cache is cold and would stay cold, since it is saved only
     // when a search finishes. Build it in the background so the next
-    // session's hybrid search meets the deadline (#1313 audit).
+    // session's hybrid search meets the deadline.
     await exitWhenStoreIdle(Math.min(EXIT_LOCK_WAIT_MS, left()), () => {
       if (!settled && hybridInFlight && storeRoot) startEmbeddingWarmup(storeRoot, flags)
       process.exit(0)
@@ -1008,7 +943,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
 }
 
 /**
- * #1347: the folder has no decision yet (or its `.plur.yaml` is untrusted).
+ * The folder has no decision yet (or its `.plur.yaml` is untrusted).
  * On the first prompt of the session, print the one question and no memories;
  * every later prompt of the session prints nothing. Keyed on the payload
  * `session_id` (then CLAUDE_SESSION_ID), never ppid: a ppid key changes on
@@ -1026,7 +961,7 @@ async function askFolder(input: Record<string, unknown>, dir: string, policy: Fo
   if (ask) await emitContextConfirmed('UserPromptSubmit', ask)
 }
 
-// The hybrid search that missed its deadline and is still running (#1313).
+// The hybrid search that missed its deadline and is still running.
 let abandonedHybrid: Promise<unknown> | null = null
 let storeRoot: string | null = null
 let runFlags: GlobalFlags = {}
@@ -1034,7 +969,7 @@ let runFlags: GlobalFlags = {}
 let hybridInFlight = false
 let runStartedAt = Date.now()
 
-// Moved to lib/store-lock-exit.ts (#1343) so every force-exiting hook shares it.
+// Lives in lib/store-lock-exit.ts so every force-exiting hook shares it.
 export { waitForOwnStoreLock }
 
 /**
@@ -1051,7 +986,7 @@ async function skipCappedSession(input: Record<string, unknown>, key: string, ma
   const notice =
     `[PLUR Memory — automatic injection skipped: the last ${MAX_INJECT_ATTEMPTS} attempts in this session did not finish] ` +
     'Call plur_session_start or plur_recall to load memory for this session.'
-  // HK-2 (#1385): a correction in this prompt still gets its save reminder.
+  // A correction in this prompt still gets its save reminder.
   const correction = promptCorrection(input)
   await emitContextConfirmed(
     claudeHookEventName(input, { rehydrate: false, event: null }),
@@ -1071,12 +1006,11 @@ async function injectSession(
   const hookEventName = claudeHookEventName(input, { rehydrate: isRehydrate, event: null })
   if (NO_CONTEXT_EVENTS.has(hookEventName)) return
   // Project remote routing is resolved with the Plur instance, below — see
-  // lib/project-remote.ts. `scope`/`domain` are gated on directory trust too
-  // (decision E3): they are not only a read filter — the header tells the
-  // model to learn under the scope — so a cloned repo must not choose it.
+  // lib/project-remote.ts. `scope`/`domain` are gated on directory trust too:
+  // they are not only a read filter — the header tells the model to learn
+  // under the scope — so a cloned repo must not choose it.
   let projectRemote: ProjectRemote | null = null
 
-  // Get task description from hook input
   let task: string
   // First message: the marker to write once the context is on stdout.
   let pendingMarker: string | null = null
@@ -1087,7 +1021,7 @@ async function injectSession(
     if (!original && marker) {
       try {
         const raw = readFileSync(marker, 'utf8')
-        // Marker is JSON since 0.8.2 (was plain text before)
+        // Marker is JSON; older markers are plain text.
         try { original = JSON.parse(raw).task || raw } catch { original = raw }
       } catch {}
     }
@@ -1099,10 +1033,10 @@ async function injectSession(
       task = 'general session'
     }
     // Auto session start: generate a session ID. The marker that records it
-    // is written only AFTER the context has reached stdout (#1278): with the
-    // marker keyed on session_id, one failed, timed-out or killed injection
-    // would otherwise leave the whole session without memory. Unmarked, the
-    // next prompt simply tries again.
+    // is written only AFTER the context has reached stdout: with the marker
+    // keyed on session_id, one failed, timed-out or killed injection would
+    // otherwise leave the whole session without memory. Unmarked, the next
+    // prompt simply tries again.
     newSessionId = randomUUID()
     pendingMarker = JSON.stringify({ task, sessionId: newSessionId })
     writeSessionTask(input.session_id, task)
@@ -1117,7 +1051,7 @@ async function injectSession(
   // now — not later where it's only used for the label — so the injection is
   // attributed to this session on the co_injection event the receipt reads.
   const plur = createPlur(flags)
-  // remote-only folders: core reads only the team scope and packs (#remote-only).
+  // remote-only folders: core reads only the team scope and packs.
   bindHookFolder(plur, dir, policy)
   const legacyLines = isRehydrate ? [] : cleanupLegacyProjectAtSessionStart(dir, plur.storageRoot)
   // Known before the search starts, so the watchdog can start a cache build too.
@@ -1125,10 +1059,10 @@ async function injectSession(
   runFlags = flags
 
   // Resolves the config path once, reads it, and gates its remote fields on
-  // directory trust (#1196). Fails closed; costs nothing when the project
+  // directory trust. Fails closed; costs nothing when the project
   // declares no remote settings.
   projectRemote = resolveProjectRemote(plur, dir)
-  // #1347: the session scope is the folder policy's (a map scope beats the
+  // The session scope is the folder policy's (a map scope beats the
   // `.plur.yaml` hint); the domain is the `.plur.yaml`'s only when the policy
   // came from it. A scope is also what makes core dial its team store.
   const projectConfig = sessionSettings(policy, projectRemote.config)
@@ -1138,7 +1072,7 @@ async function injectSession(
   if (!injectSessionId && marker) {
     try { injectSessionId = JSON.parse(readFileSync(marker, 'utf8')).sessionId } catch { /* fail-open */ }
   }
-  // #776: the remote leg rides INSIDE injectHybrid — at most one remote call
+  // The remote leg rides INSIDE injectHybrid — at most one remote call
   // per host per prompt. `.plur.yaml`'s remote_url/remote_token pass through
   // as remote_project (project config wins for the hook path; its presence
   // is the org context for dialing). Personal/non-project sessions without a
@@ -1158,11 +1092,11 @@ async function injectSession(
   let context: string | null = null
   let count = 0
 
-  // #1313: bounded, because the hook is sync. On a missed deadline or a
+  // Bounded, because the hook is sync. On a missed deadline or a
   // hybrid failure, BM25 (local-only by design — inject() never dials)
   // serves the turn.
   const { result, mode, hybrid } = await injectForHook(plur, task, injectOpts)
-  recordInjected('claude', input.session_id, result.injected_ids) // #1310 auto-rate
+  recordInjected('claude', input.session_id, result.injected_ids) // auto-rate
   // A missed deadline leaves the hybrid search running; it must not hold
   // the process (and so the prompt) open until the watchdog.
   abandonedHybrid = mode === 'bm25' && hybridEnabled() ? hybrid : null
@@ -1176,12 +1110,11 @@ async function injectSession(
     count = result.count
   }
 
-  // A4′ (#776): per-host recall outcomes → JSONL log + rate-limited
+  // Per-host recall outcomes → JSONL log + rate-limited
   // degradation header lines (printed on state change, then ≤ once per 4h
   // per (host, state); skipped_cooldown/unsupported never print).
   const degradationLines = surfaceRemoteOutcomes(plur)
 
-  // Build session header
   const parts: string[] = []
 
   // Session id for the label — already read above for injection attribution.
@@ -1195,37 +1128,36 @@ async function injectSession(
     parts.push(...legacyLines)
     if (sessionId) parts.push(`Session ID: ${sessionId}`)
     if (projectConfig.domain) parts.push(`Project domain: ${projectConfig.domain}`)
-    // remote-only: the remote-only line below names the scope, escaped (gate review of #1663).
+    // remote-only: the remote-only line below names the scope, escaped.
     if (projectConfig.scope && !plur.remoteOnlyFolder()) parts.push(`Project scope: ${projectConfig.scope} — use this scope for plur_learn calls`)
 
-    // A memory store here that was found but not added (#1589 audit round 3):
+    // A memory store here that was found but not added:
     // one line, once per session and folder, with the paste-safe command.
     const hint = skippedStoreNotice(plur, typeof input.session_id === 'string' ? input.session_id : '', dir)
     if (hint) parts.push(hint)
 
-    // Deferred wrap-up: notify about orphaned previous sessions (#216)
+    // Deferred wrap-up: notify about orphaned previous sessions.
     const deferredNotice = processDeferredWrapups(plur, checkpointRoot(flags))
     if (deferredNotice) parts.push('', deferredNotice)
   }
 
-  // A4′ (#776): degradation header — one line per (host, state) change.
+  // Degradation header — one line per (host, state) change.
   for (const line of degradationLines) parts.push(line)
   // remote-only: where memory goes, and — once, at session start — that the
   // team server did not answer, so there is no memory this session.
   for (const line of remoteOnlyLines(plur, result, !isRehydrate)) parts.push(line)
 
-  // #1196: say so. A remote leg that silently stops working is the regression
-  // this gate could otherwise introduce — the user must be able to tell
-  // "refused, here is the one command" from "quietly broken".
+  // A refused project remote is reported, so the user can tell "refused,
+  // here is the one command" from "quietly broken".
   if (remoteRefusedFrom) parts.push(projectRemoteRefusalNotice(remoteRefusedFrom, plur.storageRoot))
-  // E3: an ignored scope/domain is said too, naming the file and `plur trust`.
+  // An ignored scope/domain is reported too, naming the file and `plur trust`.
 
   if (context) {
     parts.push('')
     parts.push(context)
   }
 
-  // #1312: correction detection rides this output, after the memory.
+  // Correction detection rides this output, after the memory.
   const correction = isRehydrate ? null : promptCorrection(input)
   if (correction) parts.push('', correction)
 

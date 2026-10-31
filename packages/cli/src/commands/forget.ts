@@ -2,15 +2,9 @@ import { createPlur, type GlobalFlags } from '../plur.js'
 import { shouldOutputJson, outputJson, outputText, outputInfo, exit } from '../output.js'
 
 /**
- * Flags this command accepts (#986). `forget` RETIRES a memory, and an
- * unrecognised flag was swallowed while it went ahead — the most damaging
- * place in the tool for a silent misunderstanding.
- *
- * `--scope` is here because of the merge, not despite it: #1135 added the flag
- * and its parser while this allowlist was being written on another branch, and
- * the dispatcher `exit(1)`s on anything unlisted. Combining the two without
- * this line would have made `plur forget --scope` a hard failure — the flag
- * added to unblock 73 retirements stalled behind a week-long remote outage.
+ * Flags this command accepts. `forget` RETIRES a memory, so the dispatcher
+ * `exit(1)`s on any unlisted flag rather than going ahead with a silent
+ * misunderstanding. Every flag the parser below handles must be listed here.
  */
 export const FLAGS_WITH_VALUES = ['--reason', '--scope']
 
@@ -44,8 +38,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     }
     else if (arg === '--search') { isSearch = true; i++ }
     // `--` ends flag parsing: the next token is the target, verbatim, even when
-    // it starts with `-` (decision S4; formal r2 follow-up). Before, `--`
-    // itself became the target.
+    // it starts with `-`.
     else if (arg === '--') { if (!target && i + 1 < args.length) target = args[i + 1]; break }
     else if (!target) { target = arg; i++ }
     else { i++ }
@@ -58,14 +51,14 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   // If it looks like an ID (ENG-* or ABS-*), use direct forget
   // If --search flag or doesn't look like an ID, use search mode
   if (!isSearch && /^(ENG|ABS|META)-/.test(target)) {
-    // With an explicit scope, let forget() do the resolving (#831): getById is
+    // With an explicit scope, let forget() do the resolving: getById is
     // first-match-wins across stores, so on a colliding id it can return — and
     // this command would then echo as retired — an engram that is not the one
     // forget() acts on. Same rule as the MCP plur_forget handler.
     const engram = scope ? null : await plur.getById(target)
     if (engram) {
       if (engram.status === 'retired') exit(1, `Already retired: ${target}`)
-      // force (#766): `plur forget` is an explicit user-facing forget — same
+      // force: `plur forget` is an explicit user-facing forget — same
       // surface as MCP plur_forget. Without force, a multiply-learned engram
       // (reference_count > 1) only decrements and stays active, and a later
       // learn() at a different scope re-matches it and inherits the old scope.
@@ -82,12 +75,10 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     // Not in the local corpus, or an explicit scope was given — let
     // plur.forget() resolve. getById reads the primary store, the local
     // secondary stores and the REMOTE CACHE, and that cache is a synchronous
-    // peek nothing warms in a one-shot CLI process, so every remote engram —
-    // namespaced (ENG-GPL-…) or not — missed here and was reported "Engram
-    // not found" before forget() ever ran (#1119, #1109). forget() routes a
-    // namespaced id to the store its prefix declares (#86), walks the remotes
-    // for a bare id (#84), refuses an ambiguous id (#831) and an unreachable
-    // declared store (#1114), and throws "Engram not found" when the id is
+    // peek nothing warms in a one-shot CLI process, so remote engrams miss
+    // there. forget() routes a namespaced id to the store its prefix declares,
+    // walks the remotes for a bare id, refuses an ambiguous id and an
+    // unreachable declared store, and throws "Engram not found" when the id is
     // nowhere. Nothing is caught here: each of those reaches the entry point's
     // error handler as what it is, so a retire that DID happen is never
     // reported as a failure, and a failure is never dressed up as a retire.
@@ -104,23 +95,22 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     return
   }
 
-  // Search mode. remote:false (#776) — forget-by-search resolves LOCAL
+  // Search mode. remote:false — forget-by-search resolves LOCAL
   // retirement targets; dialing every remote host with the search phrase
   // would leak it and could surface un-forgettable remote rows as matches.
   //
   // So the only store a search hit can live in is the local one, and the only
-  // `--scope` consistent with that is `primary` (the #831 escape hatch that
-  // skips the remote collision probe). A remote scope here would route the
-  // LOCAL match's id to that server and retire whatever row shares the id
-  // there — while this command echoed the local statement as the thing
-  // retired. That is the wrong-target retire #831 exists to refuse; refuse it.
+  // `--scope` consistent with that is `primary` (which skips the remote
+  // collision probe). A remote scope here would route the LOCAL match's id to
+  // that server and retire whatever row shares the id there — while this
+  // command echoed the local statement as the thing retired. Refuse it.
   if (scope !== undefined && scope !== 'primary') {
     exit(1, `--scope "${scope}" cannot be combined with search mode: forget-by-search resolves LOCAL engrams only. `
       + 'Pass the exact id to target that store, or --scope primary.')
   }
   const matches = await plur.recall(target, { limit: 100, remote: false })
   if (matches.length === 0) {
-    // Same exit code in both modes (formal Adapters #5): nothing was retired.
+    // Same exit code in both modes: nothing was retired.
     if (shouldOutputJson(flags)) {
       outputJson({ success: false, error: `No active engrams matching "${target}"` })
       process.exitCode = 1
@@ -130,7 +120,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     return
   }
   if (matches.length === 1) {
-    // force (#766): explicit user-facing forget — full retirement, not a
+    // force: explicit user-facing forget — full retirement, not a
     // ref-count decrement (see the direct-ID branch above). `scope` here can
     // only be `primary` (guarded above) and is passed through, not dropped.
     const { warnings } = await plur.forget(matches[0].id, reason, { force: true, ...(scope ? { scope } : {}) })
@@ -156,7 +146,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       outputText(`  ${e.id}  ${e.statement}`)
     }
   }
-  // Ambiguous: nothing was retired, so the requested mutation did not happen
-  // (formal Adapters #5). The JSON already said `success: false`.
+  // Ambiguous: nothing was retired, so the requested mutation did not happen.
+  // The JSON already said `success: false`.
   process.exitCode = 1
 }

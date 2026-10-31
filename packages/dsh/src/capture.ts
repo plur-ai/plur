@@ -33,9 +33,9 @@ export interface CaptureDeps {
   config: Config
   counters: Counters
   plur?: PlurClient
-  /** Resolves the scope of the session the event came from. */
   /** The ONE shared write queue. Must not be created per-module. */
   queue: WriteQueue
+  /** Resolves the scope of the session the event came from. */
   resolveScope: (session?: { id?: string; header?: { cwd?: string } }) => Promise<string>
 }
 
@@ -53,20 +53,18 @@ export function registerCapture(ctx: Context, deps: CaptureDeps): void {
   if (!config.autoCapture) return
   const onError = () => counters.bump('errors_swallowed')
 
-  // The payload is `{ agent, turn, signal }`, NOT the agent. Reading
-  // `.session` off the payload always produced undefined, so `events` was
-  // always [] and `autoCapture: true` captured nothing, ever — on every
-  // install, silently. The unit tests emitted the shape the code expected.
+  // The payload is `{ agent, turn, signal }`, NOT the agent: the session
+  // lives on `payload.agent`.
   ctx.on('agent/turn-stopping', (payload: { agent?: AgentLike }) => {
     const events = payload?.agent?.session?.events ?? []
     const summary = lastAssistantText(events)
     if (!summary) return
     const session = payload?.agent?.session
-    // Holds the queue slot until settled or the queue's hard cap (decision S3).
+    // Holds the queue slot until settled or the queue's hard cap.
     void queue(() => contain(async () => {
       const scope = await resolveScope(session)
       // `scope` is not a CaptureContext field — core keeps one timeline per
-      // store and silently dropped it. A tag is where the scope survives, so a
+      // store and would drop it. A tag is where the scope survives, so a
       // mixed timeline can still say which project an episode came from.
       await plur?.capture?.(summary.slice(0, SUMMARY_MAX_CHARS), {
         tags: [`scope:${scope}`],
@@ -75,7 +73,7 @@ export function registerCapture(ctx: Context, deps: CaptureDeps): void {
     }, onError))
   })
 
-  // NO learn-before-compaction in 0.1.0.
+  // NO learn-before-compaction.
   //
   // The idea is right — a compaction boundary is the last moment the discarded
   // range can still be read — but the only extractor available is core's
@@ -93,8 +91,6 @@ export function registerCapture(ctx: Context, deps: CaptureDeps): void {
   //     repeated compactions of one growing session accumulate.
   //
   // Those are acceptable for `plur ingest`, where a human reads the candidates
-  // before anything is written. They are not acceptable here. This previously
-  // called a `compactLearn()` core has never implemented, so it has always
-  // been a no-op — leaving it out is not a regression, and doing it properly
-  // needs an extractor that understands negation.
+  // before anything is written. They are not acceptable here; doing it
+  // properly needs an extractor that understands negation.
 }

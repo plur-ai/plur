@@ -28,25 +28,17 @@ import { cursorReminderRulePath } from '../mcp-config.js'
  *      UserPromptSubmit reminder, since Cursor's beforeSubmitPrompt output is
  *      documented as not respected for context injection.
  *
- * Delivery mechanism (audit fix, live-evidence version — see Global
- * Constraints): the reminder was originally `additional_context`-only. Cursor's
- * own team confirmed on their forum this is dropped for `postToolUse` too
- * (same race condition as `sessionStart`), so the reminder is now written to
- * its own dynamic rules file via `writeContextRule()` as the PRIMARY channel,
- * with `additional_context` kept as a harmless secondary output. This used to
- * write to the SAME file hook-cursor-session-start.ts uses for recalled
- * engram content, which meant the first reminder silently deleted that
- * session's injected memory (audit fix — Codex adversarial review,
- * 2026-07-08) — see `cursorReminderRulePath()`'s docstring.
+ * Delivery: Cursor drops `additional_context` for `postToolUse` (the same
+ * race as `sessionStart`), so the reminder is written to its own dynamic
+ * rules file via `writeContextRule()` as the PRIMARY channel, with
+ * `additional_context` kept as a harmless secondary output. It must not share
+ * the file hook-cursor-session-start.ts uses for recalled engrams, or the
+ * first reminder would erase that session's injected memory — see
+ * `cursorReminderRulePath()`.
  *
- * Tool-name matching uses the shared isPlurSessionStartTool() (audit fix —
- * this used to be a second, slightly different local implementation here;
- * see cursor-hook-io.ts's docstring for why that was a real divergence
- * risk). It isn't confirmed whether Cursor sends MCP tool names prefixed
- * like Claude Code's mcp__plur__plur_session_start or bare
- * (plur_session_start) — Task 11 (manual verification) settles this, and
- * because the check now lives in one place, that fix only needs to happen
- * once.
+ * Tool-name matching uses the shared isPlurSessionStartTool(), so the
+ * prefixed (mcp__plur__plur_session_start) and bare (plur_session_start)
+ * forms are handled in one place for every Cursor hook.
  *
  * Input: JSON on stdin — { tool_name, tool_input, tool_output, conversation_id | session_id }
  * Output: JSON on stdout — { additional_context } or nothing (secondary channel)
@@ -72,7 +64,7 @@ function isReminderDue(conversationId: string): boolean {
 
 export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   const input = readStdinJson()
-  // Silent unless the folder map says on (#1347).
+  // Silent unless the folder map says on.
   const folder = cursorHookFolder(input, flags)
   if (folder.policy.mode !== 'on' || !folder.dir) return
   const dir = folder.dir

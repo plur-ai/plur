@@ -74,9 +74,8 @@ function statusPill(status: string | undefined, commitment: string | undefined):
   // A draft awaiting review is not live knowledge whatever its lifecycle status
   // says; rendering it green would tell the reader it is recallable.
   // Object.hasOwn, not a bare index: a status of "constructor" or "toString"
-  // reached Object.prototype and interpolated a function body raw into a style
-  // attribute. No quote is reachable so it was never XSS — safe by accident,
-  // which is not a property to leave in a security-reviewed file.
+  // would reach Object.prototype and interpolate a function body raw into a
+  // style attribute.
   const own = status !== undefined && Object.hasOwn(colours, status)
   const rgb = commitment === 'draft' || !own ? NEUTRAL : colours[status]
   const label = commitment === 'draft' ? 'draft' : (status ?? 'unknown')
@@ -114,8 +113,8 @@ function writtenChart(rows: readonly EngramRow[], now: Date, t: ReturnType<typeo
   const bars = days.map(d => {
     const height = d.count === 0 ? 2 : Math.max(5, Math.round((d.count / peak) * 100))
     // `bar-zero`, NOT `bar empty`: `.empty` belongs to the record list's
-    // "no results" message and carries 32px of padding. A zero-count day that
-    // borrowed it rendered as a grey slab six times the width of a real bar.
+    // "no results" message and carries 32px of padding, which would render a
+    // zero-count day as a grey slab six times the width of a real bar.
     return `<div class="${d.count === 0 ? 'bar bar-zero' : 'bar'}" style="height:${height}%" title="${htmlEscape(d.date)} · ${d.count}"></div>`
   }).join('')
   return `<div class="card">
@@ -255,12 +254,6 @@ function footer(links: BrowseLinks, t: ReturnType<typeof strings>): string {
 }
 
 /**
- * Render the browse view: stats, two widgets, controls, and the record list.
- *
- * @param opts - rows, filters, and presentation options.
- * @returns the page body (not a full document — see {@link renderPage}).
- */
-/**
  * The PLUR mark: four nodes wired P→L→U→R across a 3×3 grid.
  *
  * The "home" frame of the animated mark on plur.ai, at the same geometry
@@ -293,6 +286,12 @@ const MARK = `<svg class="mark" viewBox="0 0 200 200" width="32" height="32" ari
   <circle cx="160" cy="160" r="21" fill="var(--emerald)"/>
 </svg>`
 
+/**
+ * Render the browse view: stats, two widgets, controls, and the record list.
+ *
+ * @param opts - rows, filters, and presentation options.
+ * @returns the page body (not a full document — see {@link renderPage}).
+ */
 export function renderBrowse(opts: BrowseOptions): string {
   const now = opts.now ?? new Date()
   const action = opts.action ?? '/'
@@ -313,9 +312,8 @@ export function renderBrowse(opts: BrowseOptions): string {
   }
 
   // Order BEFORE paginating. Sorting a page that was already sliced by date
-  // silently turns "most recalled" into "the newest ones that happen to have
-  // been recalled" — which hid the single most-recalled engram in the store
-  // behind 50 newer rows.
+  // would silently turn "most recalled" into "the newest ones that happen to
+  // have been recalled".
   const matching = filterEngrams(opts.rows, { ...opts.query, limit: Number.MAX_SAFE_INTEGER, offset: 0 }).rows
   const ranked = mode === 'top'
     ? matching.filter(r => recallCount(r) > 0).sort((a, b) => recallCount(b) - recallCount(a))

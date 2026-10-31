@@ -28,8 +28,8 @@ export const PLUR_SETTINGS_SUBCOMMANDS = [
 
 /**
  * Is this Claude Code hook spec one PLUR wrote? A spec with `args` is the
- * exec form (decision H3): node plus the CLI js entry recorded in
- * `~/.plur/bin/plur-hook.meta.json` (decision F4) followed by a `hook-*`
+ * exec form: node plus the CLI js entry recorded in
+ * `~/.plur/bin/plur-hook.meta.json` followed by a `hook-*`
  * subcommand, or `cmd.exe /c` plus the npx fallback. A spec without
  * `args` is a shell string, matched by `isPlurHookCommand`.
  */
@@ -42,11 +42,10 @@ export function isPlurHookSpec(spec: { command?: string; args?: unknown }): bool
   if (/(^|\/)cmd(\.exe)?$/.test(cmd)) return isPlurHookCommand(args.filter((a) => a.toLowerCase() !== '/c').join(' '))
   if (!/(^|\/)node(\.exe)?$/.test(cmd)) return false
   if (!/^hook-[a-z0-9][a-z0-9-]*$/.test(args[1] ?? '')) return false
-  // Decision F4: only a js entry `plur init` itself recorded in
-  // plur-hook.meta.json — not any path that merely ends in
-  // `.../cli/dist/index.js`. Every entry PLUR has recorded counts, not only
-  // the current one, so hooks an earlier install location wrote are still
-  // PLUR's and re-init replaces them (idempotent init).
+  // Only a js entry `plur init` itself recorded in plur-hook.meta.json counts,
+  // not any path that merely ends in `.../cli/dist/index.js`. Every recorded
+  // entry counts, not only the current one, so hooks an earlier install
+  // location wrote are still PLUR's and re-init replaces them (idempotent init).
   const target = normEntry(args[0])
   return recordedCliEntries().some((e) => normEntry(e) === target)
 }
@@ -74,19 +73,19 @@ export function recordedCliEntries(): string[] {
 }
 
 /**
- * The matcher is anchored (decision F4): the WHOLE command must be PLUR's
+ * The matcher is anchored: the WHOLE command must be PLUR's
  * launcher, then a `hook-*` subcommand, then nothing but plain arguments.
  * A chained, piped, redirected or wrapped command (`&&`, `;`, `|`, `>`,
  * backticks, `$(`, a leading `echo`/`nice`/`env`) is the user's, even when
  * it mentions the shim. The one prefix allowed is PowerShell's `& `, which
- * init itself writes (decision H3's no-short-name fallback).
+ * init itself writes when no short path name is available.
  */
 
 /** A path or argument character: no whitespace, quote or shell metacharacter. */
 const PLAIN = '[^\\s"\'`$&;|<>()]'
 
 /**
- * A PLUR hook subcommand — any `hook-*` (decision H2 "prefix"), so a new hook
+ * A PLUR hook subcommand — any `hook-*` prefix, so a new hook
  * needs no list update — then only plain arguments to the end. Arguments are
  * separated by spaces or tabs only: a newline or CR ends a shell command, so
  * a hook chained on the next line is the user's.
@@ -95,7 +94,7 @@ const HOOK_TAIL = `[ \\t]+hook-[a-z0-9][a-z0-9-]*(?:[ \\t]+${PLAIN}+)*[ \\t]*$`
 
 /**
  * The shim's file name: `plur-hook` or `plur-hook.cmd`, or its Windows 8.3
- * alias. On a spaced home with short names (the default on C:), decision H3
+ * alias. On a spaced home with short names (the default on C:), init
  * writes the short path and the file name is shortened too:
  * `C:/Users/RUNNER~1/.../PLUR~1/bin/PLUR-H~1.CMD`. The alias (`plur-h~<n>.cmd`)
  * is claimed only inside PLUR's own bin directory (`.plur/bin/` or its alias
@@ -129,8 +128,8 @@ const HOME_SHIM_TAIL = new RegExp(`^${HOOK_TAIL}`)
  * This machine's own shim, `<homedir>/.plur/bin/plur-hook` (`.cmd` on
  * Windows), normalised like the command (forward slashes, lower case). Init
  * writes it unquoted whenever it holds no whitespace (hookCommandPrefix,
- * windowsHookCommand), and versions before #1267 wrote it unquoted even with
- * spaces (as does the Antigravity fallback of decision H3). Such a path can
+ * windowsHookCommand), and older installs wrote it unquoted even with
+ * spaces (as does the Antigravity fallback). Such a path can
  * hold a space (`C:\Users\John Smith`) or a character PLAIN rejects
  * (`C:\Users\O'Brien`, `a&b`, `x(1)`), so the patterns cannot recognise it.
  * A command is claimed through this path only when it STARTS with it,
@@ -162,8 +161,8 @@ export const MAX_HOOK_COMMAND_LENGTH = 8192
 /**
  * Is this hook command one PLUR wrote? The whole command must be PLUR's own
  * launcher (the plur-hook shim in any slash, quote or case form, or the
- * `npx @plur-ai/cli` fallback) followed by any `hook-*` subcommand (decision
- * H2) and plain arguments only (decision F4). A hook run by any other binary
+ * `npx @plur-ai/cli` fallback) followed by any `hook-*` subcommand and plain
+ * arguments only. A hook run by any other binary
  * is the user's, whatever its subcommand is called, and so is a look-alike
  * such as `plur-hook-backup.ps1`. A command longer than
  * MAX_HOOK_COMMAND_LENGTH is the user's.

@@ -44,7 +44,7 @@ const DEFAULT_PORT = 7777
 export function parseHostValue(raw: string | undefined, flag: string): string {
   const v = String(raw ?? '').trim()
   // A hostname cannot start with a dash, so a value that does is the next
-  // flag: `--host --port 8080` forgot the host, and used to bind `--port`.
+  // flag: `--host --port 8080` forgot the host and must not bind `--port`.
   if (v === '' || v.startsWith('-')) throw new Error(`${flag} needs a value`)
   const bracketed = v.match(/^\[([^\]]*)\](.*)$/)
   if (v.startsWith('[') && !bracketed) throw new Error(`${flag}: brackets enclose only an IPv6 literal, got "${v}"`)

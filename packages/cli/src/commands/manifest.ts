@@ -1,5 +1,5 @@
 /**
- * `plur manifest` — the session memory manifest (#1657): which engrams were in
+ * `plur manifest` — the session memory manifest: which engrams were in
  * one session's context, with hashes anyone can check later.
  *
  * Usage:
@@ -51,14 +51,14 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   try {
     const rec = await anchorManifest(plur.storageRoot, manifest, receipts)
     if (shouldOutputJson(flags)) {
-      // The same notary claim the text and session end report (third review).
+      // The same notary claim the text output and session end report.
       const claim = rec.signer ? notaryClaim(receipts.gateway_url, rec.signer) : null
       outputJson({ ...rec, ...(claim ? { notary_expected: claim.expected } : {}), manifest, experimental: EXPERIMENTAL_NOTE })
     } else {
       outputText(`Stored on Swarm: ${rec.reference}`)
       outputText(`  manifest sha256: ${rec.content_hash}`)
       if (rec.signer) {
-        // An address comparison, not a verification (code review of 0.23, R5).
+        // An address comparison, not a verification.
         const claim = notaryClaim(receipts.gateway_url, rec.signer)
         if (claim.expected === true) outputText(`  signed by the gateway notary ${rec.signer} at ${rec.timestamp}`)
         else if (claim.expected === false) outputText(`  WARNING: signed by ${rec.signer}, which is NOT the expected notary for this gateway`)

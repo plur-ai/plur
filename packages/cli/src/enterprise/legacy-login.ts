@@ -1,10 +1,7 @@
 /**
- * The one-time move of `~/.plur/config.json` into config.yaml (#1638, owner
- * decision O15: one config file for users).
- *
- * `plur login` before #1638 wrote `{ enterprise: { url, token, … } }` to
- * `~/.plur/config.json`, which nothing on the recall path ever read. Now
- * `plur login` writes the server entry to config.yaml instead. A remaining
+ * The one-time move of a legacy `~/.plur/config.json` sign-in
+ * (`{ enterprise: { url, token, … } }`) into config.yaml, so users have one
+ * config file. Nothing on the recall path reads config.json. A remaining
  * config.json is read once:
  *   - config.yaml already holds a sign-in to that server: nothing is moved —
  *     the sign-in in config.yaml is newer, and is never replaced by the old
@@ -18,7 +15,7 @@
  *     is refused because another entry holds the personal scope: nothing is
  *     moved, and the notice says why and what to run;
  * and in each of those cases the file is moved to
- * `~/.plur/backups/<stamp>/config.json` (owner-only, verified: core's
+ * `~/.plur/backups/<stamp>/config.json` (owner-only, via core's
  * `protectOwnerOnly` through sign-in-shared.ts), so it is not read again.
  * Only when the server cannot be reached, config.yaml cannot be written, or
  * the owner-only copy cannot be made, does the file stay for the next run.
@@ -87,8 +84,8 @@ async function migrate(opts: {
   }
 
   const plur = opts.plur()
-  // config.yaml already signs in to this server: it is newer than config.json
-  // (written by an older `plur login`), so it is kept as it is.
+  // config.yaml already signs in to this server: it is newer than config.json,
+  // so it is kept as it is.
   let held: { token?: string }[] = []
   try {
     const key = normalizeEndpointUrl(origin)

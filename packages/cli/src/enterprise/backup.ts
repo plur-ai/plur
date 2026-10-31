@@ -22,7 +22,7 @@ export type Backup = (source: string, data: Buffer) => string
  * An existing backup is never overwritten: a second backup of the same file
  * gets a numbered name. When protection cannot be established the writer
  * throws, and the target is refused with nothing changed. The Windows rule is
- * core's `protectOwnerOnly` (#1631) — one implementation for config.yaml,
+ * core's `protectOwnerOnly` — one implementation for config.yaml,
  * these backups and the installer's key file. `plur login` backs up
  * config.yaml and config.json through it too (sign-in-shared.ts).
  */

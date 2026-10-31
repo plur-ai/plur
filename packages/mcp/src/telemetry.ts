@@ -1,11 +1,8 @@
 // Telemetry wiring for the MCP server.
 //
-// @plur-ai/mcp is the widest install surface, but historically emitted no
-// engagement counters — only @plur-ai/claw did. This module wires the SAME
-// opt-in, content-free counters into the MCP server by reusing the
-// implementation exported from @plur-ai/core (recordEvent / flushIfNeeded /
-// registerFlushOnExit). No vendored copy lives here — one implementation,
-// imported.
+// Wires the opt-in, content-free engagement counters into the MCP server by
+// reusing the implementation exported from @plur-ai/core (recordEvent /
+// flushIfNeeded / registerFlushOnExit). No vendored copy lives here.
 //
 // Privacy guarantees are inherited unchanged from core:
 //   - Default-off. recordEvent self-gates on isTelemetryEnabled(); an opted-out

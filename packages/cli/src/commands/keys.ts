@@ -1,5 +1,5 @@
 /**
- * `plur keys` — manage per-actor Ed25519 signing keys (#1055).
+ * `plur keys` — manage per-actor Ed25519 signing keys.
  *
  * Subcommands:
  *   plur keys init                   Generate a key pair for the configured identity
@@ -12,8 +12,8 @@
  *
  * The keys directory is `PLUR_KEYS_DIR` if set, else `<store-root>/keys` —
  * the same folder `plur checkpoint` and the MCP session end sign from
- * (`keysDirFor`). There is no `--keys-dir` flag: on init alone it wrote keys
- * where signing never looked (0.23 code review, finding 8).
+ * (`keysDirFor`). There is no `--keys-dir` flag: keys written anywhere else
+ * would never be found by signing.
  *
  * Exit codes: 0 ok, 1 error.
  */
@@ -54,7 +54,6 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
 }
 
 async function runInit(args: string[], flags: GlobalFlags): Promise<void> {
-  // Parse the --identity override.
   let identityOverride: string | undefined
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--identity' && args[i + 1]) { identityOverride = args[++i]; continue }
@@ -78,7 +77,7 @@ async function runInit(args: string[], flags: GlobalFlags): Promise<void> {
   const identity = identityOverride
     ?? (configuredIdentity && configuredIdentity !== 'agent:unidentified' ? configuredIdentity : undefined)
   // A key for `agent:unidentified` is never used: checkpoints are only signed
-  // for a configured identity (0.23 audit, finding 16).
+  // for a configured identity.
   if (!identity || identity === 'agent:unidentified') {
     outputText('plur keys init: no identity to make a key for.')
     outputText('  Set `provenance.identity` in your PLUR config.yaml (e.g. `provenance:\n    identity: agent:miles`),')
@@ -101,7 +100,6 @@ async function runInit(args: string[], flags: GlobalFlags): Promise<void> {
     return
   }
 
-  // Register the public key in the store's registry.
   try {
     registerPublicKey(storeRoot, identity, publicKeyB64)
   } catch (err) {

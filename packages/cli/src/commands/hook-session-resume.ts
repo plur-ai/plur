@@ -5,11 +5,10 @@ import { clearFolderAsk, isResumeStart, parsePayload, readStdinRaw } from '../li
  * plur hook-session-resume — Claude Code SessionStart hook, matcher "resume".
  *
  * `claude --resume` keeps the session id. SessionEnd already deleted that
- * session's folder-question nonces, but the ask-once record stayed, so the
- * resumed session was never asked again and a "yes" to the question shown
- * before the resume failed with nonce-unknown. This clears that record, so
- * the resumed session's first prompt asks again with a fresh nonce (#1347,
- * option C).
+ * session's folder-question nonces but not the ask-once record, so without
+ * this the resumed session is never asked again and a "yes" to the question
+ * shown before the resume fails with nonce-unknown. This clears that record,
+ * so the resumed session's first prompt asks again with a fresh nonce.
  *
  * The payload's `source` is checked as well as the matcher: a startup, clear
  * or compact SessionStart of an ongoing session must not re-ask. Prints

@@ -6,7 +6,7 @@ import { projectRemoteRefusalNotice as coreRefusalNotice, formatServerSessionLin
  * Which path this session's memory is scoped by.
  *
  * `worktree` is the right answer inside a git repo and a trap outside one:
- * measured as "/" in a plain directory (opencode 1.18.30), which would scope
+ * opencode reports it as "/" in a plain directory, which would scope
  * every non-repo session to the filesystem root.
  */
 export function resolveScopeRoot(ctx: { directory?: string; worktree?: string }): string {
@@ -17,7 +17,7 @@ export function resolveScopeRoot(ctx: { directory?: string; worktree?: string })
 }
 
 /**
- * The folder the folder-map decision is about (#1347; audit F1 of #1517): the
+ * The folder the folder-map decision is about: the
  * folder opencode is OPEN IN — `directory` — the way the CLI hooks decide on
  * the editor's working folder. Not the git worktree root: an `off` rule for
  * `/repo/private` must hold when opencode runs there, even though `/repo` is
@@ -36,8 +36,8 @@ export interface TrustCheck {
 }
 
 /**
- * One argument of a printed command, or null when it cannot be quoted safely
- * (#1228 review; the rule of #1418's folder question): POSIX single quotes;
+ * One argument of a printed command, or null when it cannot be quoted safely:
+ * POSIX single quotes;
  * Windows double quotes, refused for $, backtick, %, ! and the curly double
  * quotes, which PowerShell and cmd expand; never a line-breaking, bidi or
  * zero-width character.
@@ -53,8 +53,7 @@ function shellWord(s: string, platform: NodeJS.Platform = process.platform): str
 }
 
 /**
- * The trust command that reaches the store this plugin checks (audit 1228-c
- * #1). The plugin opens `PLUR_PATH` when opencode's environment sets it; a bare
+ * The trust command that reaches the store this plugin checks. The plugin opens `PLUR_PATH` when opencode's environment sets it; a bare
  * `plur trust <dir>` in a shell without it writes `~/.plur/trust.yaml`, which
  * this plugin never reads — so a non-default store is named with `--path`.
  */
@@ -81,22 +80,19 @@ export interface EffectiveProjectScope {
 }
 
 /**
- * Decide whether to adopt a `.plur.yaml`'s `scope`/`domain` for this session
- * (D2, 2026-09 audit).
+ * Decide whether to adopt a `.plur.yaml`'s `scope`/`domain` for this session.
  *
  * A repo's `.plur.yaml` is exactly as authoritative as any other file the
  * repo ships — which is to say, not automatically. `scope` can redirect
  * `injectHybrid`'s recall leg and `learnRouted`'s write leg to a REMOTE store
  * the user configured for a different context (their own team/enterprise
- * store, picked by an attacker-chosen scope string) — proved end to end
- * against a stub host: the user's prompt text POSTed under their real token,
- * and an attacker-chosen statement written into a shared scope, entirely
- * off the local store.
+ * store, picked by an attacker-chosen scope string): the user's prompt text
+ * would be POSTed under their real token, and an attacker-chosen statement
+ * written into a shared scope.
  *
- * The fix is NOT "never adopt a remote-resolving scope" — a legitimate
- * enterprise user's own repo declaring `scope: group:acme/eng` so recall
- * reaches their team's store is exactly the product working as intended.
- * The fix is requiring the user to have said, once, that this DIRECTORY is
+ * Remote-resolving scopes are not refused outright — a user's own repo
+ * declaring `scope: group:acme/eng` so recall reaches their team's store is
+ * the product working as intended. Instead the user to have said, once, that this DIRECTORY is
  * theirs: `plur trust <dir>` (`Plur.isDirectoryTrusted`), the same
  * `direnv allow` / `git config safe.directory` / VS Code workspace-trust
  * shape developers already know.
@@ -111,11 +107,9 @@ export interface EffectiveProjectScope {
  * else. The same `.plur.yaml` also carries `remote_url` / `remote_token` /
  * `remote_scopes`, which are a different grant — they send prompt text
  * off-box rather than filtering what is read — and go through core's
- * `resolveProjectRemoteFromConfig`, the one gate every adapter shares
- * (#1196/#1198). `index.ts` calls both against the SAME single read, so the
- * file trust is checked against stays the file whose fields are adopted.
- * Until #1207 the plugin read no remote fields at all, and an enterprise
- * user's team memory silently never arrived here.
+ * `resolveProjectRemoteFromConfig`, the one gate every adapter shares.
+ * `index.ts` calls both against the SAME single read, so the file trust is
+ * checked against stays the file whose fields are adopted.
  */
 export function resolveTrustedScope(
   plur: TrustCheck,
@@ -152,13 +146,13 @@ export interface FolderPolicySource {
 }
 
 /**
- * What the folder map decides for `dir` (#1347): `Plur.resolveFolderPolicy`,
+ * What the folder map decides for `dir`: `Plur.resolveFolderPolicy`,
  * keyed on the store this plugin opened. A resolver failure must never break
- * the turn, and fails SAFE (audit F4 of #1517, owner decision): the folder is
+ * the turn, and fails SAFE: the folder is
  * treated like `ask` with no memory and a notice, never `on` because a project
  * marker is there. Core does the same for a folders.yaml it cannot read.
  *
- * The instance is bound to the decision it was given (#1690 review), as the
+ * The instance is bound to the decision it was given, as the
  * CLI hooks and the MCP server do. Core's repository-default boundary (an
  * unmatched or unknown Git origin keeps unscoped recall and saves local, even
  * for `dial: always` stores) and remote-only mode apply only to a bound

@@ -3,7 +3,7 @@ import { createPlur, type GlobalFlags } from '../plur.js'
 import { outputText, outputInfo, outputJson, shouldOutputJson, exit } from '../output.js'
 
 /**
- * plur rerank-eval — per-store reranker self-eval gate (#451, final task).
+ * plur rerank-eval — per-store reranker self-eval gate.
  *
  * Samples this store's own engrams, synthesizes probe queries from their
  * statements, and compares the cross-encoder's ordering against RRF-only.
@@ -59,7 +59,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     outputJson({ ...result, cached })
   } else {
     const sign = result.delta_mrr >= 0 ? '+' : ''
-    // Banner → suppressed by --quiet; the eval report below is primary (#730).
+    // Banner → suppressed by --quiet; the eval report below is primary.
     outputInfo(`plur rerank-eval — per-store reranker self-eval (#451)${cached ? ' [cached]' : ''}`, flags)
     outputInfo('', flags)
     outputText(`  Reranker:   ${result.reranker} (${result.model_id})`)

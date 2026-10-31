@@ -6,12 +6,9 @@
  *
  * The host contract is `CommandDefinition` from `@deepseek-ai/dsh-commands`:
  * the executable field is **`handler`**, and it returns a `CommandResult` — a
- * union discriminated on `kind`, not a bare string. An earlier version passed
- * `execute` returning a string. Registration threw
- * ("command 'plur' handler must be a function"), Cordis contained the throw
- * inside the injected child fiber, and BOTH commands silently failed to
- * register on every install. Nothing surfaced it, because the only tests were
- * against a `{ register: () => () => {} }` double that accepted anything.
+ * union discriminated on `kind`, not a bare string. Registration with any other
+ * shape throws, and Cordis contains the throw inside the injected child fiber,
+ * so the command silently fails to register.
  *
  * @module
  */
@@ -53,10 +50,9 @@ export function registerCommands(
         return {
           kind: 'success',
           text: [
-            // NOT config.scope alone: it is unset in the default configuration,
-            // because the scope is derived per workspace. Printing it rendered
-            // the literal "scope: undefined" on the one surface someone checks
-            // when memory looks wrong.
+            // config.scope is unset in the default configuration, because the
+            // scope is derived per workspace; describe that instead of
+            // printing "undefined".
             `scope: ${deps.config.scope ?? DERIVED_SCOPE}`,
             `injection: ${deps.config.injectionMode}`,
             `auto-learn: ${deps.config.autoLearn}`,
@@ -93,9 +89,7 @@ export function registerCommands(
 
   const disposers: Array<() => void> = []
   for (const definition of definitions) {
-    // Registered one at a time: an unwrapped throw on the first entry used to
-    // abandon the rest of the array, so one bad definition took out every
-    // command rather than only itself.
+    // Registered one at a time so one bad definition cannot take out the rest.
     try {
       disposers.push(register(definition))
     } catch {

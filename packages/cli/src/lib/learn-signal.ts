@@ -3,9 +3,9 @@ import { openSync, readSync, fstatSync, statSync, closeSync, writeSync, constant
 /**
  * Signal detection for the Stop-hook memory check (hook-learn-check).
  *
- * The memory check forces one extra model turn. Fired blindly every 3rd
- * response, that turn usually ended in a bare "ok" — noise for the user. It
- * now fires when the user's LAST typed message reads as a correction,
+ * The memory check forces one extra model turn, which is noise for the user
+ * when there is nothing to learn. So it fires when the user's LAST typed
+ * message reads as a correction,
  * preference or standing rule aimed at how the agent works, or a
  * decision-board answer, plus a fallback (every PLUR_LEARN_FALLBACK_INTERVAL-th
  * Stop) for the corrections no phrase here catches.
@@ -62,7 +62,7 @@ const PASTED_LINE = new RegExp([
 ].join('|'), 'i')
 
 // Only a closed block is an echo: a tag the user typed in prose does not
-// hide the rest of the message (re-audit H5).
+// hide the rest of the message.
 const ECHO_BLOCK = /<(system-reminder|task-notification|pasted-content|local-command-[a-z-]+|bash-[a-z-]+|command-[a-z-]+)\b[^>]*>[\s\S]*?<\/\1>/g
 
 /** The user's own words: quotes normalised, pasted code, logs and quoted text removed, then bounded to the tail. */
@@ -198,7 +198,7 @@ function imperativeRule(s: string): boolean {
   return RULE_DE_START.test(s) && RULE_DE_INFINITIVE.test(s) && !DE_PRONOUN.test(s)
 }
 
-// The task at hand: these scope only their own sentence (re-audit H2).
+// The task at hand: these scope only their own sentence.
 const TASK_SCOPED = re(String.raw`\b(this|that) (branch|pr|commit|file|time|one|run|refactor|handler|change|function|component|test)\b|\b(right now|for now|today|yet|until|here)\b|\b(when|unless|if) the\b|\b(tukaj|danes|zdaj|zdej|za zdaj|hier|heute|jetzt|vorerst|bis)\b`)
 
 // "Don't use npm, ok?" is a rule with a tag, not a question — but only a bare
@@ -255,9 +255,9 @@ const COMPACTION_PREFIX = /^\s*This session is being continued from a previous c
 type Block = { type?: unknown; text?: unknown; name?: unknown; input?: unknown; id?: unknown }
 
 // Echo spans Claude Code (or a hook) puts inside a user line: removed from
-// every text block, not only from the start of the joined text (re-audit R4).
+// every text block, not only from the start of the joined text.
 // Only a closed span is an echo; a tag the user typed in prose keeps the rest
-// of the message (re-audit H5).
+// of the message.
 const ECHO_SPAN = /<(command-name|command-message|command-args|local-command-[a-z-]+|bash-[a-z-]+|task-notification|system-reminder|user-prompt-submit-hook)\b[^>]*>[\s\S]*?<\/\1>/g
 
 /** The typed part of one text: echo spans removed. null when nothing typed is left. */
@@ -288,7 +288,7 @@ function textOf(content: unknown): string | null {
 
 // A successful plur_learn call: the exact tool (any MCP prefix), or
 // plur_admin with a learn action. A call whose result came back as an error
-// did not save anything (re-audit H4).
+// did not save anything.
 const LEARN_TOOL = /(^|__)plur_learn(_batch)?$/
 const ADMIN_TOOL = /(^|__)plur_admin$/
 const LEARN_ACTION = /^(plur_)?learn(_batch)?$/
@@ -334,7 +334,7 @@ function readTail(path: string): string | null {
  * The last message the human typed, from a Claude Code transcript (JSONL; the
  * Stop payload's `transcript_path`), and whether the agent called plur_learn
  * after it. The transcript format is internal to Claude Code; the fields used
- * here were checked against real transcripts (2026-10-02):
+ * here match real transcripts:
  *   - skipped: isMeta, isSidechain, tool results (toolUseResult,
  *     sourceToolAssistantUUID, tool_result blocks), origin.kind other than
  *     "human", promptSource "system", and echo lines (<command-name>,
@@ -411,11 +411,11 @@ export function claimNudge(markerPath: string, content = ''): boolean {
 
 /**
  * Every Nth Stop without a signal still gets a check. 0 turns the fallback off.
- * Default 10: the signal list is now deliberately narrow, so the fallback is
+ * Default 10: the signal list is deliberately narrow, so the fallback is
  * the only check for keyword-free corrections — every 10th response keeps
- * forced turns at a third of the old every-3rd cadence while still checking a
- * typical working session several times. It also lands on the same Stop as
- * the checkpoint (PLUR_CHECKPOINT_INTERVAL, default 10).
+ * forced turns rare while still checking a typical working session several
+ * times. It also lands on the same Stop as the checkpoint
+ * (PLUR_CHECKPOINT_INTERVAL, default 10).
  */
 export function learnFallbackInterval(env: NodeJS.ProcessEnv = process.env): number {
   const raw = env.PLUR_LEARN_FALLBACK_INTERVAL

@@ -59,7 +59,6 @@ export function detectCorrection(prompt: string): DetectionResult {
   const text = prompt.trim()
   if (!text) return { matched: false, patterns: [] }
 
-  // Skip false-positives
   if (FALSE_POSITIVE_PATTERNS.some(p => p.test(text))) {
     return { matched: false, patterns: [] }
   }
@@ -76,7 +75,7 @@ export function detectCorrection(prompt: string): DetectionResult {
 /**
  * The reminder text for a correction-shaped prompt, or null. Shared by this
  * standalone hook and by `hook-inject`, which appends it to its
- * UserPromptSubmit output (#1312) so no second per-prompt process is needed.
+ * UserPromptSubmit output so no second per-prompt process is needed.
  */
 export function correctionReminder(prompt: string): string | null {
   const result = detectCorrection(prompt)

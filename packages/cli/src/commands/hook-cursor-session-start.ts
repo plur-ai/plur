@@ -19,29 +19,23 @@ import { cleanupLegacyProjectAtSessionStart } from '../lib/legacy-plur-yaml.js'
  * writes the sentinel hook-cursor-guard checks and delivers an initial batch
  * of recalled engrams.
  *
- * Delivery mechanism (audit fix, live-evidence version — see Global
- * Constraints): Cursor's own team confirmed on their forum that
- * `additional_context` from `sessionStart` is dropped by a race condition
- * ("runs async before the composer handle is fully created") — filed,
- * acknowledged, no fix timeline. This hook writes recalled content into the
+ * Delivery mechanism: Cursor can drop `additional_context` from
+ * `sessionStart` through a race condition ("runs async before the composer
+ * handle is fully created"). This hook writes recalled content into the
  * DYNAMIC rules file via `writeContextRule()` as the PRIMARY channel
- * (Cursor's rules engine reliably loads `alwaysApply: true` rules AT
- * CONVERSATION CREATION — this is the community-and-team-confirmed
- * workaround), and still ALSO emits `additional_context` (harmless, and
- * picks up automatically for free if Cursor ships a fix later). Whether a
- * later REWRITE of this same file is re-read before the conversation ends
- * is not independently confirmed — see writeContextRule's docstring and
- * cursor-hook-io.ts's "Known structural limitations" item 4.
+ * (Cursor's rules engine loads `alwaysApply: true` rules AT CONVERSATION
+ * CREATION), and ALSO emits `additional_context` (harmless, and works
+ * automatically if Cursor fixes the race). Whether a later REWRITE of this
+ * same file is re-read before the conversation ends is not confirmed — see
+ * writeContextRule's docstring and cursor-hook-io.ts's "Known structural
+ * limitations" item 4.
  *
- * BM25-only, deliberately (PR #502's lesson, ported from hook-inject.ts's
- * --event branch — see Global Constraints). Cursor's hook schema has no
- * documented async/fire-and-forget option the way Claude Code's
- * UserPromptSubmit now has, so this hook has no way to dodge a slow cold
- * start — it has to just BE fast. Hybrid search loads the BGE embedder
- * (~20s cold once the store passes a few thousand engrams, which is exactly
- * the failure PR #502 fixed for Claude Code); BM25 alone measured 0.74s
- * against 4,290 engrams in the same codebase. Do not change this to try
- * hybrid first.
+ * BM25-only, deliberately (as in hook-inject.ts's --event branch). Cursor's
+ * hook schema has no documented async/fire-and-forget option, so this hook
+ * cannot dodge a slow cold start — it has to BE fast. Hybrid search loads
+ * the BGE embedder (~20s cold once the store passes a few thousand
+ * engrams); BM25 alone takes under a second on a store that size. Do not
+ * change this to try hybrid first.
  *
  * Does not fire for background/cloud agents (VM provisioned after prompt
  * submit) — hook-cursor-post-tool covers that path instead, by marking the
@@ -55,11 +49,11 @@ import { cleanupLegacyProjectAtSessionStart } from '../lib/legacy-plur-yaml.js'
 export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   const input = readStdinJson()
 
-  // #1347: the folder map decides. off is silent; ask puts the one question
-  // where Cursor reads it (the rule file, plus additional_context) instead of
+  // The folder map decides. off is silent; ask puts the one question where
+  // Cursor reads it (the rule file, plus additional_context) instead of
   // memories, and marks nothing, so the guard stays silent too.
-  // G1: the workspace (workspace_roots), not this process's folder — the
-  // same decision every Cursor hook reaches, see cursorHookFolder.
+  // The folder is the workspace (workspace_roots), not this process's folder
+  // — the same decision every Cursor hook reaches, see cursorHookFolder.
   const { dir, policy, askAbout, cleanupDirs } = cursorHookFolder(input, flags)
   if (policy.mode === 'off') {
     for (const root of cleanupDirs ?? (dir ? [dir] : [])) removeGeneratedContextRules(root)
@@ -70,8 +64,8 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   // remote-only (also an `ask` workspace with a remote-only root): another
   // root's generated rule may hold personal memory from an earlier session;
   // this session writes its own rule in `dir` only.
-  // Every root, `dir` included, before any early return (Codex round 6 on
-  // #1663): the fresh rule is written below only when the session goes on.
+  // Every root, `dir` included, before any early return: the fresh rule is
+  // written below only when the session goes on.
   if (policy.mode === 'remote-only' || (policy.mode === 'ask' && cleanupDirs)) {
     for (const root of new Set([...(cleanupDirs ?? []), ...(dir ? [dir] : [])])) removeGeneratedContextRules(root)
   }
@@ -80,8 +74,8 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   if (!conversationId) return // can't track this session — stay silent rather than guess
 
   if (policy.mode === 'ask') {
-    // The question is about `askAbout` when that root does not exist (N3 of
-    // the #1583 re-audit): shown from `dir`, the first root that does, and
+    // The question is about `askAbout` when that root does not exist: shown
+    // from `dir`, the first root that does, and
     // only in additional_context when none does — never by creating it.
     const about = askAbout ?? dir
     if (!about) return
@@ -101,13 +95,10 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   // seconds after the session just started.
   markSessionStarted(conversationId)
 
-  // Audit fix (evaluator review, 2026-07-08): this used to call inject() and
-  // writeContextRule() unguarded, AFTER markSessionStarted() above already
-  // ran. If inject() threw, the sentinel would still exist (guard stops
-  // enforcing) but the rule file would silently keep a PREVIOUS session's
-  // content, with nothing distinguishing "this session's memory, 0 engrams"
-  // from "stale leftovers from last time, injection is broken." Wrapping
-  // this so a failure writes an explicit, honest notice instead.
+  // Guarded: markSessionStarted() has already run, so if inject() threw
+  // unguarded the guard would stop enforcing while the rule file silently
+  // kept a PREVIOUS session's content. A failure writes an explicit notice
+  // instead.
   let fullContext: string
   try {
     const plur = createPlur(flags)
@@ -120,23 +111,21 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
     const injectOpts = { budget: 3000, ...(projectConfig.scope ? { scope: projectConfig.scope } : {}) }
 
     // NOT hybrid, and therefore NOT remote — see the BM25-only note in this
-    // file's header (PR #502's lesson). Cursor's hook schema has no
-    // async/fire-and-forget option, this hook is bounded at 10s, and hybrid
-    // loads the BGE embedder (~20s cold on a few thousand engrams). Trying
-    // hybrid here reintroduces exactly the failure #502 fixed.
+    // file's header. This hook is bounded at 10s, and hybrid loads the BGE
+    // embedder (~20s cold on a few thousand engrams).
     //
-    // The consequence, stated plainly (#1198): PLUR Enterprise team memory does
-    // NOT reach Cursor. The remote leg rides inside injectHybrid, so the only
-    // path to it today also loads the local embedder — which this hook cannot
-    // afford. Note the remote leg itself does not need the embedder at all: it
-    // sends query TEXT and the server embeds. A remote-with-BM25 mode in core
-    // would fix Cursor without touching the deadline. Tracked in #1200.
+    // Consequence: PLUR Enterprise team memory does NOT reach Cursor here.
+    // The remote leg rides inside injectHybrid, so the only path to it also
+    // loads the local embedder. The remote leg itself does not need the
+    // embedder (it sends query TEXT and the server embeds), so a
+    // remote-with-BM25 mode in core would lift this without touching the
+    // deadline.
     const result = await plur.inject('general session start', injectOpts)
-    recordInjected('cursor', conversationId, result.injected_ids) // #1310 auto-rate
+    recordInjected('cursor', conversationId, result.injected_ids) // for auto-rate
     const count = result.count
     const context = count > 0 ? [result.directives, result.constraints, result.consider].filter(Boolean).join('\n') : ''
 
-    // A store in the workspace that was found but not added (#1589): once per
+    // A store in the workspace that was found but not added: once per
     // conversation and workspace folder (the payload's root, not this process's).
     const hint = skippedStoreNotice(plur, conversationId, dir)
     const header = [
@@ -151,20 +140,17 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
 
     // A refused .plur.yaml is still worth saying: the user's scope routing is
     // unaffected, but they should know the remote settings were not honoured —
-    // for the trust reason here, and for #1200 regardless.
+    // for the trust reason here, and because remote memory does not reach
+    // this hook regardless.
     const refusal = [
       projectRemote.refusedFrom ? projectRemoteRefusalNotice(projectRemote.refusedFrom, plur.storageRoot) : null,
     ].filter(Boolean).map(n => `${n}\n\n`).join('')
     fullContext = refusal + (context ? `${header}\n\n${context}` : header)
   } catch (err: unknown) {
-    // Audit fix (evaluator review — user lens, iteration 4, 2026-07-09):
-    // `plur_doctor` (an MCP tool, in this session's own 11-tool surface)
-    // and `plur doctor` (the CLI command) share almost the same name but
-    // check different things — the tool only covers embedder/remote-store
-    // health, not .cursor/mcp.json or .cursor/hooks.json wiring, which is
-    // far more likely to be the actual cause of an injection failure here.
-    // Naming the wrong one first would send the agent to a tool that
-    // reports "healthy" while the real problem goes uninvestigated.
+    // Names the CLI `plur doctor`, not the `plur_doctor` MCP tool: the tool
+    // only covers embedder/remote-store health, not .cursor/mcp.json or
+    // .cursor/hooks.json wiring, which is the likelier cause of a failure
+    // here.
     fullContext = '[PLUR Memory — injection FAILED this session start] ' +
       `(${(err as Error).message ?? 'unknown error'}). Recalled memory is unavailable; run ` +
       '`plur doctor` in a TERMINAL (the CLI command — checks .cursor/ wiring; ' +

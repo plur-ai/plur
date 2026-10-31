@@ -2,7 +2,7 @@ import { createPlur, type GlobalFlags } from '../plur.js'
 import { shouldOutputJson, outputJson, outputText } from '../output.js'
 
 /**
- * Who your memories are attributed to (#961).
+ * Who your memories are attributed to.
  *
  * Three operations and no more: see it, set it, clear it. Identity is the kind
  * of setting somebody touches once, so the command exists to be discoverable
@@ -39,8 +39,8 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     lines.push(after.stated
       ? `Memories written from now on are attributed to ${after.identity}.`
       : 'Identity cleared. Memories written from now on are recorded as "unidentified".')
-    // An email address is accepted and warned about, here, where the choice
-    // is made. Learning it at the first empty export is what #999 reports.
+    // An email address is accepted and warned about here, where the choice
+    // is made, rather than discovered at the first empty pack export.
     if (after.warning) {
       lines.push('')
       lines.push(`  Note: ${after.warning}`)

@@ -20,10 +20,10 @@ import {
 } from '@plur-ai/core'
 import { createPlur, type GlobalFlags } from '../plur.js'
 
-// The question itself, its quoting rules and the session settings moved to
+// The question itself, its quoting rules and the session settings live in
 // core (packages/core/src/folder-ask.ts) so the opencode plugin, which runs
 // in-process and cannot call a hook, asks the same question. Re-exported here
-// under their old names for the hooks and their tests.
+// under these names for the hooks and their tests.
 export {
   sessionSettings,
   clearFolderAsk,
@@ -33,12 +33,10 @@ export {
 } from '@plur-ai/core'
 
 /**
- * The folder map in the editor hooks (#1347, design r2 "Resolution" and
- * "The ask"). Every hook asks one question first — what has the user decided
- * about this folder? — and this module answers it, replacing the old
- * `isPlurConfigured()` gate:
+ * The folder map in the editor hooks. Every hook asks one question first —
+ * what has the user decided about this folder? — and this module answers it:
  *
- *   - `on`  → the hook works as it always did. The policy's `scope` (a map
+ *   - `on`  → the hook does its normal work. The policy's `scope` (a map
  *             entry's scope, else a trusted `.plur.yaml`'s hint) is the
  *             session scope, which is also what makes core dial the team
  *             store that scope belongs to.
@@ -61,10 +59,9 @@ export function plurRoot(flags?: { path?: string }): string {
 }
 
 /**
- * The refusal for a CLI command that must not run in a remote-only folder
- * (Codex round 7 on #1663), or null. `what` says what the command would do
- * with memory there. A folder map that cannot be read leaves the command as
- * on development (owner decision 1 on #1663).
+ * The refusal for a CLI command that must not run in a remote-only folder,
+ * or null. `what` says what the command would do with memory there. A folder
+ * map that cannot be read does not refuse the command.
  */
 export function remoteOnlyCommandRefusal(flags: { path?: string } | undefined, what: string, cwd: string = process.cwd()): string | null {
   let policy: FolderPolicy
@@ -93,7 +90,7 @@ export function hookFolderPolicy(dir: string, flags?: { path?: string }): Folder
     const root = plurRoot(flags)
     return resolveFolderPolicy(dir, { root, gitScopes: loadGitScopeSources(root) })
   } catch (err) {
-    // Fail SAFE (audit F4 of #1517, owner decision): an unreadable decision
+    // Fail SAFE: an unreadable decision
     // could be `off`, so no project marker turns memory on here.
     process.stderr.write(`[plur] folder map: could not resolve ${dir} (${(err as Error)?.message ?? err}); memory is off here.\n`)
     return { mode: 'ask', remoteAllowed: false, source: 'default', reason: 'resolver-error' }
@@ -112,11 +109,11 @@ export function hookFolderOn(dir: string, flags?: { path?: string }): boolean {
 
 /**
  * Bind a hook's Plur instance to its folder. Only `remote-only` changes what
- * the instance does (owner decisions 2026-10-01); every hook that recalls or
+ * the instance does; every hook that recalls or
  * writes calls this right after creating the instance.
  */
 export function bindHookFolder(plur: Plur, dir: string, policy: FolderPolicy): void {
-  // No skip when the method is missing (audit of #1521, S7): an instance that
+  // No skip when the method is missing: an instance that
   // cannot be bound must not quietly behave as `on` in a remote-only folder.
   plur.bindFolderPolicy(dir, policy)
 }
@@ -138,7 +135,7 @@ export function remoteOnlyLines(plur: Plur, result: { remote_only?: RemoteOnlySt
 
 /**
  * A Cursor workspace root (or payload `cwd`) as a local folder path, or null
- * when it is not one (audit L2 of #1583). Cursor documents folder paths; a
+ * when it is not one. Cursor documents folder paths; a
  * `file://` URI is converted with fileURLToPath (Windows drive letters
  * included; a URI naming another host is not local and gives null). Anything
  * that is not an absolute path is unusable: a relative path would be read
@@ -159,7 +156,7 @@ export function cursorRootPath(raw: unknown, windows: boolean = process.platform
     return null // another scheme: not a local folder
   }
   if (!windows) return posix.isAbsolute(path) ? path : null
-  // Windows (N7 of the #1583 re-audit): the forms an editor may send for a
+  // Windows: the forms an editor may send for a
   // drive path — `c:\…`, `c:/…`, and the VS Code style `/c:/…` — all become
   // `c:\…`; a UNC path `\\server\share\…` is kept. Not verified against a
   // recorded Cursor payload on Windows.
@@ -201,8 +198,7 @@ function within(dir: string, root: string): boolean {
 }
 
 /**
- * What a Cursor hook decides for the workspace (G1 of the 0.21.1
- * Codex/Cursor pre-release check; the audit of #1583). Cursor runs a hook
+ * What a Cursor hook decides for the workspace. Cursor runs a hook
  * wherever it likes (a plugin's folder, for hooks loaded from a plugin) and
  * names the workspace in `workspace_roots`; some hooks also send the tool's
  * `cwd`. Every Cursor hook calls this, so they all reach the same decision
@@ -211,7 +207,7 @@ function within(dir: string, root: string): boolean {
  *
  *  - The inputs are the workspace roots. Only when the payload has no
  *    `workspace_roots` key: its `cwd`, else (no `cwd` either) the hook
- *    process folder, as before.
+ *    process folder.
  *  - Roots that are present but unusable — not a list, an empty list, an
  *    entry that is not an absolute path or a local `file://` URI — fail
  *    closed: off, so no scope, no question and no memory. Never the process
@@ -225,7 +221,7 @@ function within(dir: string, root: string): boolean {
  *    the home folder, a folder above it or a filesystem root (an answer there
  *    would cover every folder under it). With no such root, an undecided
  *    workspace is off (asked about nothing, nothing loaded).
- *  - A remote-only root (#1521) makes the workspace remote-only (fail
+ *  - A remote-only root makes the workspace remote-only (fail
  *    closed): memory then lives only on that root's team server.
  *  - Otherwise memory is on. The scope applies only when every root exists,
  *    is not home or above, and is on with that same scope; else no scope.
@@ -261,7 +257,7 @@ export function cursorHookFolder(
   // Off wins: every root and the cwd, each by its path as given AND as
   // resolved (core matches an off entry on either spelling, and the MCP gate
   // checks the root as given): a link inside an off folder is off, wherever
-  // it points (N1 of the #1583 re-audit). A missing root is checked as given.
+  // it points. A missing root is checked as given.
   const offChecks = [...new Set([
     ...roots.flatMap(r => r.real !== null ? [r.given, r.real] : [r.given]),
     ...(cwd ? [cwd, ...(cwdReal ? [cwdReal] : [])] : []),
@@ -273,7 +269,7 @@ export function cursorHookFolder(
 
   // The question, as over MCP: in root order, the first undecided root that
   // is not the home folder, a folder above it or a filesystem root. A root
-  // that does not exist counts too (N3): it is asked about, and memory stays
+  // that does not exist counts too: it is asked about, and memory stays
   // off until it is answered. Its question is shown from the first root that
   // exists, never by creating the missing folder.
   const askable = roots
@@ -281,8 +277,8 @@ export function cursorHookFolder(
     .filter(r => !coversHome(r.path))
     .map(r => ({ ...r, policy: hookFolderPolicy(r.path, flags) }))
   const existingAskable = askable.filter(r => r.real !== null)
-  // A map that cannot be read decides nothing for any root (Codex round 7 on
-  // #1663): off, as MCP refuses, and every root's generated rule is removed.
+  // A map that cannot be read decides nothing for any root: off, as MCP
+  // refuses, and every root's generated rule is removed.
   const allKnownRoots = [...new Set(roots.flatMap(r => r.real ? [r.real] : []))]
   if (askable.some(r => r.policy.reason === 'malformed-map' || r.policy.reason === 'resolver-error')) {
     return { dir: firstDir, policy: WORKSPACE_UNKNOWN, cleanupDirs: allKnownRoots }
@@ -290,8 +286,8 @@ export function cursorHookFolder(
   const ask = askable.find(r => r.policy.mode === 'ask')
   if (ask) {
     const dir = ask.real ?? existingAskable[0]?.real ?? null
-    // A remote-only root or cwd in the same workspace (Codex round 4 on
-    // #1663): the question is still asked, and every root is named so the
+    // A remote-only root or cwd in the same workspace: the question is still
+    // asked, and every root is named so the
     // session start removes a generated rule an earlier session left there.
     const remoteOnlyHere = offChecks.some(p => hookFolderPolicy(p, flags).mode === 'remote-only')
     const all = remoteOnlyHere ? { cleanupDirs: [...new Set(roots.flatMap(r => r.real ? [r.real] : []))] } : {}
@@ -299,7 +295,7 @@ export function cursorHookFolder(
   }
 
   // On. With no root to ask about (only the home folder or above), memory is
-  // on without a scope, as over MCP (N2): no scope means nothing leaves the
+  // on without a scope, as over MCP: no scope means nothing leaves the
   // machine, and solo use in the home folder keeps working. The scope: every
   // root, none left out — core's workspaceFolderScope, the resolver the MCP
   // server's workspaceWriteScope uses.
@@ -316,18 +312,18 @@ export function cursorHookFolder(
   const policy = dir ? hookFolderPolicy(dir, flags) : null
   // A map that cannot be read decides nothing: off, as MCP refuses (fail safe).
   if (!policy || policy.reason === 'malformed-map' || policy.reason === 'resolver-error') return { dir, policy: WORKSPACE_UNKNOWN, cleanupDirs: allKnownRoots }
-  // remote-only (#1521) is kept as it is, never turned into `on`: memory
+  // remote-only is kept as it is, never turned into `on`: memory
   // there lives only on the team server. Any root that is remote-only makes
   // the workspace remote-only (fail closed), from the output folder's own
   // entry when it has one, else the first such root's.
   // A remote-only decision also names every root, so the session start can
-  // remove the generated rule an earlier session left in another root (gate
-  // review of #1663): it may hold personal memory.
+  // remove the generated rule an earlier session left in another root: it may
+  // hold personal memory.
   const allRoots = [...new Set(roots.flatMap(r => r.real ? [r.real] : []))]
   if (policy.mode === 'remote-only') return { dir, policy, cleanupDirs: allRoots }
   const remoteOnlyRoot = askable.find(r => r.policy.mode === 'remote-only')
   if (remoteOnlyRoot) return { dir, policy: remoteOnlyRoot.policy, cleanupDirs: allRoots }
-  // Every spelling `off` is checked on, too (gate review of #1663): each root
+  // Every spelling `off` is checked on, too: each root
   // as given and as resolved — a home-or-above root included — and the
   // payload cwd. A remote-only one keeps the workspace remote-only.
   for (const p of offChecks) {
@@ -360,8 +356,7 @@ export interface FolderReadContext {
 }
 
 /**
- * The remote side of a `plur recall` / `plur inject` run in `cwd` (L10 of the
- * third 0.21.1 pre-release check; L1 and L2 of the PR #1579 audit). Local
+ * The remote side of a `plur recall` / `plur inject` run in `cwd`. Local
  * memory is always read and printed; this decides only what leaves the
  * machine, by the MCP server's rule for the same folder:
  *
@@ -374,7 +369,7 @@ export interface FolderReadContext {
  *    explicit `--scope` is the user's own choice for this one command and is
  *    honoured. The home folder, a folder above it and a filesystem root are
  *    never undecided here, as over MCP (an answer there would cover every
- *    folder under it), so a read there is unchanged;
+ *    folder under it), so a read there contacts stores as usual;
  *  - an `on` folder: an explicit `--scope` wins in core; otherwise the
  *    folder's scope (core's workspaceFolderScope, the MCP resolver) is the
  *    dialing context, registered under an internal key. It is a dialing
@@ -431,8 +426,8 @@ export function isResumeStart(input: Record<string, unknown> | null | undefined)
  * The Plur the folder question ranks scopes with, or null. Read-only, and
  * with the constructor's `<cwd>/.plur/engrams.yaml` discovery off: discovery
  * registers that store in config.yaml as a shared project store, so merely
- * asking in an undecided folder added its repository's memories to every
- * later session, in any folder, and offered its scope (#1418 review).
+ * asking in an undecided folder would add its repository's memories to every
+ * later session, in any folder, and offer its scope.
  */
 export function createAskPlur(flags: GlobalFlags): Plur | null {
   try { return createPlur(flags, { readonly: true, autoDiscover: false }) } catch { return null }

@@ -6,19 +6,15 @@ import { shortPackIntegrity, type LicenseSource } from '@plur-ai/core'
 
 /**
  * The four ways a licence can be arrived at (provenance profile §8.4), in the
- * words a preview prints. The preview used to print only `chosen`, which
- * collapsed "the author configured this once" into "somebody decided" and
- * "nobody ever chose it" into a single suffix — the very distinction the
- * four-state field exists to keep. Keyed by the closed enum, so an unknown
- * value cannot reach this table: core drops it before the view is built.
+ * words a preview prints, so "the author configured this once", "somebody
+ * decided" and "nobody ever chose it" stay distinct. Keyed by the closed
+ * enum, so an unknown value cannot reach this table: core drops it before
+ * the view is built.
  *
- * A `Map`, not an object literal, so the lookup cannot walk a prototype chain.
- * The previous form was `WORDS[src] ?? '(unrecognised)'`, and `??` does not
- * catch an inherited value: `constructor`, `toString` and `valueOf` all return
- * a truthy function, which `.join('; ')` would then render into the terminal as
- * its source text. Core does gate the value, so it was not reachable — but the
- * comment above claims a stranger's string could never reach this line, and a
- * defence in depth that depends on the layer above it is not one.
+ * A `Map`, not an object literal, so the lookup cannot walk a prototype chain:
+ * with an object, `??` does not catch an inherited value such as
+ * `constructor` or `toString`, which would render a function's source text
+ * into the terminal. This holds even if core's gate on the value slipped.
  */
 const LICENCE_SOURCE_WORDS = new Map<LicenseSource, string>([
   ['chosen', 'chosen for the engram itself'],
@@ -28,12 +24,12 @@ const LICENCE_SOURCE_WORDS = new Map<LicenseSource, string>([
 ])
 
 /**
- * Flags accepted across the packs subcommands (#986).
+ * Flags accepted across the packs subcommands.
  *
  * One list for all of them, because the dispatcher sees `packs` and not which
- * subcommand follows. That still catches the case that mattered: a tester ran
- * `packs install <dir> --dry-run`, which does not exist anywhere here, and the
- * pack was installed by somebody who believed they were previewing it.
+ * subcommand follows. It still refuses a flag that exists nowhere here, such
+ * as `packs install <dir> --dry-run`, instead of installing a pack the user
+ * believed they were previewing.
  */
 export const FLAGS_WITH_VALUES = ['--domain', '--scope', '--tags', '--type', '--output', '--description', '--creator', '--license']
 
@@ -60,10 +56,10 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
         const version = p.manifest?.version ?? 'unknown'
         const creator = p.manifest?.creator ? ` by ${p.manifest.creator}` : ''
         const hash = p.integrity ? ` [${shortPackIntegrity(p.integrity)}]` : ''
-        // 'unverified' used to print NOTHING, so a pack whose integrity baseline
-        // had been destroyed looked identical to one that verified clean (#805,
-        // F11). An unanswerable integrity question is reported as loudly as a
-        // failed one — the two usually have the same cause.
+        // 'unverified' is printed, or a pack whose integrity baseline had been
+        // destroyed would look identical to one that verified clean. An
+        // unanswerable integrity question is reported as loudly as a failed
+        // one — the two usually have the same cause.
         const integrityFlag = p.integrity_status === 'modified'
           ? ' ⚠️  MODIFIED — contents changed since install'
           : p.registry_ambiguous
@@ -79,7 +75,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
         }
         if (p.baseline === 'carried-from-v1') {
           // A carried baseline is not a verified v2 install, and must not read
-          // like one (audit of #1229, finding 1).
+          // like one.
           outputText('  Integrity: baseline carried from v1 — detects changes since the migration, '
             + 'not edits v1 could not see before it. Reinstall from a trusted source to verify.')
         }
@@ -134,9 +130,9 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       // Where the contents came from, shown BEFORE anything is installed.
       // Deliberately no tick, no badge, no "verified" anywhere: nothing in a
       // pack is signed, so all of this is what the pack says about itself.
-      // Whether the pack still matches the value its author shipped (#987).
-      // Stated with a verb, because "Integrity: sha256:…" told a tester nothing
-      // about whether anything had been checked.
+      // Whether the pack still matches the value its author shipped. Stated
+      // with a verb, because "Integrity: sha256:…" says nothing about whether
+      // anything was checked.
       outputText('')
       const integ = preview.integrity
       if (integ.status === 'ok') outputText('Integrity     matches the value the pack shipped')
@@ -267,7 +263,7 @@ Options:
     } else {
       // Export confirmation → suppressed by --quiet; the privacy findings
       // below (blocked/warned engrams) stay loud — the pack differs from
-      // what was requested (#730).
+      // what was requested.
       outputInfo(`Exported pack "${name}":`, flags)
       outputInfo(`  Engrams:    ${result.engram_count}`, flags)
       outputInfo(`  Path:       ${result.path}`, flags)
@@ -304,12 +300,11 @@ Options:
         + '           it shipped — for a pack you corrected yourself. It does NOT install\n'
         + '           secrets, declared-private engrams, or files the scan could not read.')
     }
-    // `--force` was listed in FLAGS and wired to nothing, so it parsed cleanly
-    // and did nothing at all. It now does the one thing an override may do
-    // here: accept a pack whose contents no longer match the integrity value it
-    // shipped. The standard's remedy for a false-positive secret scan (§5.6.1
-    // step 2) is "edit the pack" — and editing a pack moves its hash, so
-    // without this the remedy was unreachable through any surface we ship.
+    // `--force` does the one thing an override may do here: accept a pack
+    // whose contents no longer match the integrity value it shipped. The
+    // standard's remedy for a false-positive secret scan (§5.6.1 step 2) is
+    // "edit the pack" — and editing a pack moves its hash, so without this the
+    // remedy would be unreachable.
     //
     // It deliberately does NOT reach the three refusals §5.6.1 makes
     // non-overridable: a secret, a declared-private engram, and a file the scan
@@ -326,12 +321,11 @@ Options:
       outputJson(result)
     } else {
       // Install confirmation → suppressed by --quiet; security warnings and
-      // conflicts below stay loud (#730).
+      // conflicts below stay loud.
       outputInfo(`Installed pack "${result.name}": ${result.installed} engrams`, flags)
-      // Say what was CHECKED, with a verb. A bare "Integrity: sha256:…" was
-      // read by a tester as certification of the pack, and the caveat
-      // explaining it is nothing of the sort existed only in the piped JSON —
-      // so the people most likely to be misled were the only ones not shown it.
+      // Say what was CHECKED, with a verb. A bare "Integrity: sha256:…" reads
+      // as certification of the pack; the caveat must reach text output too,
+      // not only the piped JSON.
       const check = result.integrity_check
       if (check) {
         const verdict = check.status === 'ok'
@@ -363,11 +357,10 @@ Options:
       }
 
       // What the pack's provenance turned out to be (ENGRAM-STANDARD-v1
-      // §5.6.5). These four counts were computed by the preview this install
-      // already runs and then never printed, so an installer who did not
-      // separately run `plur packs preview` was told nothing — including about
-      // an orphan record, which means the pack was cut from a larger set than
-      // the one being handed over. Loud, not suppressed by --quiet: it is a
+      // §5.6.5), from the preview this install already runs, so an installer
+      // who did not run `plur packs preview` still sees it — including an
+      // orphan record, which means the pack was cut from a larger set than the
+      // one being handed over. Loud, not suppressed by --quiet: it is a
       // finding about what arrived, not a confirmation that it worked.
       const p = result.provenance
       if (p) {
@@ -434,7 +427,7 @@ Use 'plur packs list' to see installed packs.`)
     // Re-baseline installed packs' registry integrity from v1 to sha256:v2:
     // (ENGRAM-STANDARD-v1 §5.5). A DRY RUN unless --yes is given: the flag
     // list is shared by every packs subcommand, and a mistyped flag must never
-    // turn a report into a write (#986).
+    // turn a report into a write.
     const apply = args.includes('--yes')
     const report = plur.migratePackIntegrity({ dryRun: !apply })
     if (shouldOutputJson(flags)) {

@@ -1,10 +1,10 @@
 /**
  * Which injection path is live, tracked per session — consistent with
  * `BlockCache`/`TurnBuffer`, and for the same reason: opencode can run
- * multiple sessions in one process, and a single shared instance let one
- * session's `session.idle` consume the render flag another session's
+ * multiple sessions in one process, and a single shared instance would let
+ * one session's `session.idle` consume the render flag another session's
  * `system.transform` had just set, latching the accreting fallback for
- * every session over one unlucky interleave.
+ * every session.
  *
  * `experimental.chat.system.transform` is the preferred path because it does
  * not accrete. It is also an experimental API on a package that ships almost
@@ -21,10 +21,8 @@
  * still detected instead of being masked by a stale "it rendered once" flag.
  *
  * The latch is self-healing: `markRendered()` clears it, so a session that
- * starts rendering again (opencode ships a fix, a turn reaching `session.idle`
- * without ever building a model request stops recurring, etc.) leaves the
- * fallback on its own — recovery no longer needs an opencode restart.
- * Detection is preserved: a genuinely dead `system.transform` never calls
+ * starts rendering again leaves the fallback on its own, without an opencode
+ * restart. Detection is preserved: a genuinely dead `system.transform` never calls
  * `markRendered()`, so it stays latched.
  */
 interface SessionRenderState {

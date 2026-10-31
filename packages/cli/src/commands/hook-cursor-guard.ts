@@ -13,52 +13,27 @@ import {
 /**
  * plur hook-cursor-guard — Cursor `preToolUse` hook.
  *
- * Cursor's `preToolUse` fires for every tool call, including MCP tools
- * ("generic hook that fires for all tool types: Shell, Read, Write, MCP,
- * Task"), and its `permission: "deny"` output is DOCUMENTED to be enforced —
- * the direct analog of Claude Code's PreToolUse session guard. Unlike the
- * "fires for every tool call" fact (a direct doc quote), "deny is enforced"
- * is not independently verified against a live Cursor install — same
- * evidentiary basis (docs text, no live run) as the background/cloud-agent
- * uncertainty noted below, so it gets the same hedge (audit fix —
- * Popper-lens evaluator review, iteration 4, 2026-07-09: this used to read
- * as settled fact with no hedge, inconsistent with how this same file
- * treats an adjacent claim resting on identical evidence). This codebase's
- * test suite can only assert the HOOK PROCESS emits `{"permission":"deny"}`
- * — it cannot test that Cursor's runtime actually blocks the tool call in
- * response; Task 11 (manual verification) is what actually settles this.
- * Cursor hooks can only reliably DENY (an "allow" verdict does not override
- * Cursor's separate MCP approval/allowlist UI), so — same as the Claude
- * Code guard — this hook never emits an explicit allow, only a deny or
- * nothing.
+ * Cursor's `preToolUse` fires for every tool call, including MCP tools, and
+ * its `permission: "deny"` output is documented to be enforced — the analog
+ * of Claude Code's PreToolUse session guard. That enforcement is documented
+ * but not verified against a live Cursor install; the tests can only assert
+ * that the hook process emits `{"permission":"deny"}`. Cursor hooks can only
+ * reliably deny (an "allow" does not override Cursor's MCP approval UI), so
+ * this hook emits a deny or nothing, never an explicit allow.
  *
- * In normal interactive use this rarely fires a deny at all: sessionStart
- * already wrote the sentinel before the first tool call. Its INTENDED job is
- * the background/cloud-agent path, where sessionStart never runs — there
- * this is meant to deny until the agent calls plur_session_start itself,
- * which hook-cursor-post-tool then marks (postToolUse is confirmed to run
- * for cloud agents). Whether Cursor actually fires preToolUse on that path
- * at all is NOT independently confirmed (audit fix — evaluator review,
- * 2026-07-08: this used to be stated as settled fact) — if it doesn't, this
- * hook simply never runs there, the guard never denies anything, and
- * nothing ever prompts the agent to call plur_session_start; the
- * MAX_BLOCKS_BEFORE_FALLBACK path below never gets a chance to fire either.
- * Task 11 (manual verification) is what actually settles this.
+ * In normal interactive use this rarely denies: sessionStart already wrote
+ * the sentinel before the first tool call. Its job is the background/cloud-
+ * agent path, where sessionStart never runs — there it denies until the agent
+ * calls plur_session_start, which hook-cursor-post-tool then marks
+ * (postToolUse runs for cloud agents). Whether Cursor fires preToolUse on
+ * that path is not confirmed; if it does not, this hook never runs there.
  *
- * Deadlock prevention, same rationale as Claude Code's hook-session-guard
- * (#199): stop blocking after one nudge so a broken MCP server can't wedge
- * the agent into only ever being allowed to call plur_session_start.
- *
- * Audit fix: the original draft of this hook stopped blocking after the
- * fallback threshold WITHOUT writing the sentinel — which meant
- * hook-cursor-post-tool's reminder logic (gated on the sentinel existing)
- * stayed silent for the rest of the conversation too. That's a silent,
- * total, permanent memory-injection failure for exactly the background/
- * cloud-agent scenario this hook exists to handle — the one case where
- * nothing else marks the session started either. Once we've decided to stop
- * enforcing plur_session_start, we must also stop pretending the session
- * isn't started: markSessionStarted() below both ends the deadlock AND lets
- * degraded-mode reminders resume.
+ * Deadlock prevention, as in Claude Code's hook-session-guard: stop blocking
+ * after one nudge so a broken MCP server can't wedge the agent into only ever
+ * being allowed to call plur_session_start. On giving up, the session is
+ * marked started too: hook-cursor-post-tool's reminders are gated on the
+ * sentinel, and without it the background/cloud-agent case would get no
+ * memory reminders for the rest of the conversation.
  *
  * Input: JSON on stdin — { tool_name, tool_input, conversation_id | session_id, ... }
  * Output: JSON on stdout — { permission: "deny", user_message, agent_message } or nothing
@@ -72,7 +47,7 @@ function blockCountPath(conversationId: string): string {
 
 export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   const input = readStdinJson()
-  // Silent unless the folder map says on (#1347).
+  // Silent unless the folder map says on.
   if (cursorHookFolder(input, flags).policy.mode !== 'on') return
   const toolName = String(input.tool_name ?? '')
   if (isPlurSessionStartTool(toolName)) return
@@ -80,13 +55,12 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   const conversationId = cursorConversationId(input)
   if (!conversationId) return // can't check — allow through rather than block blind
 
-  if (isSessionStarted(conversationId)) return // session already started (vetted dir — cli#8)
+  if (isSessionStarted(conversationId)) return // session already started
 
   const blockCount = incrementCounter(blockCountPath(conversationId))
   if (blockCount > MAX_BLOCKS_BEFORE_FALLBACK) {
-    // Audit fix: mark the session started here too (not just log and return),
-    // so hook-cursor-post-tool's reminder path isn't permanently starved —
-    // see the file-level comment above.
+    // Mark the session started too, so hook-cursor-post-tool's reminder path
+    // is not starved — see the file-level comment above.
     markSessionStarted(conversationId)
     process.stderr.write(
       `[plur] guard: allowing tools after ${MAX_BLOCKS_BEFORE_FALLBACK} nudge(s) without an ` +

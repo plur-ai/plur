@@ -14,10 +14,10 @@ import { flushOutboxForHook, HOOK_OUTBOX_BUDGET_MS, CURSOR_STOP_MIN_INTERVAL_MS 
  * every single response.
  *
  * Cursor has no session-end hook, so this is also where queued team writes
- * (the outbox, #1269) are retried — whatever the stop's status, at most once
- * every five minutes. With nothing queued that costs one file read; otherwise
- * it is bounded to fit the hook's 3s timeout. The flush writes only to stderr, so stdout stays the
- * hook's JSON.
+ * (the outbox) are retried — whatever the stop's status, at most once every
+ * five minutes. With nothing queued that costs one file read; otherwise it is
+ * bounded to fit the hook's 3s timeout. The flush writes only to stderr, so
+ * stdout stays the hook's JSON.
  *
  * Input: JSON on stdin — { status, conversation_id | session_id }
  * Output: JSON on stdout — { followup_message } or nothing
@@ -27,7 +27,7 @@ const NUDGE_EVERY_N_STOPS = 3
 
 export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   const input = readStdinJson()
-  // Silent unless the folder map says on (#1347): no nudge and no outbox flush.
+  // Silent unless the folder map says on: no nudge and no outbox flush.
   if (cursorHookFolder(input, flags).policy.mode !== 'on') return
 
   nudge(input)

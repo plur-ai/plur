@@ -15,10 +15,10 @@ import {
  * plur hook-agy-guard — Antigravity `PreToolUse` hook.
  *
  * Session guard: deny tool calls until `plur_session_start` has run, with
- * the same one-nudge-then-give-up deadlock protection as the Claude Code
- * (#199), Cursor and Codex guards. Verified live on agy 1.1.21: a
- * `{"decision":"deny","reason":...}` output blocks the tool and the reason
- * reaches the model ("tool call denied by pre-tool hook: ...").
+ * the same one-nudge-then-give-up deadlock protection as the Claude Code,
+ * Cursor and Codex guards. A `{"decision":"deny","reason":...}` output blocks
+ * the tool and the reason reaches the model ("tool call denied by pre-tool
+ * hook: ...").
  *
  * Differences from the Codex guard worth knowing:
  *
@@ -57,7 +57,7 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
     const input = readStdinJson()
 
     const workspaces = Array.isArray(input.workspacePaths) ? input.workspacePaths as string[] : []
-    // With a workspace, silent unless the folder map says on (#1347).
+    // With a workspace, silent unless the folder map says on.
     if (workspaces.length > 0 && typeof workspaces[0] === 'string' && !hookFolderOn(workspaces[0], flags)) return
 
     const toolCall = (input.toolCall && typeof input.toolCall === 'object')

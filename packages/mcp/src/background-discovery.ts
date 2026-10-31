@@ -1,5 +1,5 @@
 /**
- * Scope discovery for company servers, in the background (#1631).
+ * Scope discovery for company servers, in the background.
  *
  * A server entry (a store entry with a `scopes` list and an `enterprise`
  * block) learns its scopes from `GET /api/v1/me` through
@@ -208,8 +208,8 @@ export function discoverySummary(plur: Plur): DiscoveryRow[] {
 }
 
 /**
- * Guide warnings for server endpoints whose last known check failed (#295:
- * a refused key or an unreachable server is said out loud). Nothing for `ok`,
+ * Guide warnings for server endpoints whose last known check failed, so a
+ * refused key or an unreachable server is said out loud. Nothing for `ok`,
  * `not_synced` or `degraded`, nor before any check has finished.
  */
 export function discoveryWarnings(rows: DiscoveryRow[]): string[] {

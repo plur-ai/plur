@@ -31,8 +31,8 @@ import { folderOnCommand } from './tools.js'
  *
  * A folder map that exists but cannot be read or parsed fails SAFE: the gated
  * tools do nothing and name the file and the problem. An undecided (`ask`)
- * folder gets the folder question instead of memory (createFolderGate, #1525);
- * `on` folders are unchanged. The gate never writes folders.yaml itself
+ * folder gets the folder question instead of memory (createFolderGate);
+ * `on` folders run normally. The gate never writes folders.yaml itself
  * (core's one-time trust.yaml import can create it on the first read).
  */
 export const FOLDER_GATED_TOOLS: ReadonlySet<string> = new Set([
@@ -98,7 +98,7 @@ export interface FolderOffAnswer {
   folder?: string
   reason?: 'folder-map-unreadable' | 'workspace-unknown' | 'not-now' | 'folder-cannot-be-asked' | 'folder-ask-failed'
   file?: string
-  /** For a broken map (#1526): where the problem is (1-based). */
+  /** For a broken map: where the problem is (1-based). */
   line?: number
   column?: number
   /** Whether `plur folders repair` can fix it. */
@@ -134,8 +134,8 @@ function unreadable(problem: FolderMapProblem, root: string): FolderOffAnswer {
 }
 
 /**
- * The `off` answer when PLUR must do nothing here, else null (the tool runs as
- * before):
+ * The `off` answer when PLUR must do nothing here, else null (the tool runs
+ * normally):
  *  - the folder map exists but cannot be read or parsed → fail safe, naming
  *    the file and the problem;
  *  - any of `dirs` resolves to `off` → off, naming every map entry that turns
@@ -202,9 +202,10 @@ export interface RootsServer {
  * readTrustedProjectConfig looks for `.plur.yaml`.
  *
  * `dirs()` resolves to null when the roots could not be fetched (an error or
- * the 2 s timeout) or a declared root does not resolve to a local folder. The caller then FAILS CLOSED for that call
- * ({@link workspaceUnknownAnswer}) — it never falls back to cwd alone, which
- * would run memory in a workspace the user may have turned off.
+ * the 2 s timeout) or a declared root does not resolve to a local folder. The
+ * caller then FAILS CLOSED for that call ({@link workspaceUnknownAnswer}) — it
+ * never falls back to cwd alone, which would run memory in a workspace the
+ * user may have turned off.
  *
  * The roots answer is cached, with three rules:
  *  - with a client that declares `roots.listChanged`, every caller awaits the
@@ -316,7 +317,7 @@ export function workspaceUnknownAnswer(): FolderOffAnswer {
   }
 }
 
-/** The non-error answer a gated tool gives in an undecided folder: the folder question (#1525). */
+/** The non-error answer a gated tool gives in an undecided folder: the folder question. */
 export interface FolderAskPayload {
   success: true
   plur: 'ask'
@@ -338,12 +339,12 @@ export function parseEtime(etime: string): number | null {
 }
 
 /**
- * This process's ancestors, nearest first, each with its start time (#1562,
- * #1563 review L3): the processes that may have asked the folder question
+ * This process's ancestors, nearest first, each with its start time: the
+ * processes that may have asked the folder question
  * already, as the opencode plugin does in the opencode process that started
  * this server (directly, or through npx). One `ps` call, at most eight
  * levels. [] when it cannot be told (Windows, no `ps`, unreadable output):
- * then the server asks its own question, as before. Without a start time a
+ * then the server asks its own question. Without a start time a
  * process is never matched, so a reused process id cannot pass for the host.
  */
 export function ancestorHosts(now: number = Date.now()): FolderAskHost[] {
@@ -374,8 +375,8 @@ export function ancestorHosts(now: number = Date.now()): FolderAskHost[] {
 }
 
 /**
- * THE default write scope for an unscoped write in this workspace (#1562,
- * #1563 review round 2) — the one resolver every path that picks a default
+ * THE default write scope for an unscoped write in this workspace — the one
+ * resolver every path that picks a default
  * uses: plur_learn, plur_learn_batch, plur_session_end's learns,
  * plur_session_start and plur_session_scope clear.
  *
@@ -393,11 +394,11 @@ export function ancestorHosts(now: number = Date.now()): FolderAskHost[] {
  */
 export function workspaceWriteScope(plur: Plur, ws: Workspace): WorkspaceScopeDecision {
   // The rule lives in core (workspaceFolderScope) so the CLI, whose one input
-  // is the folder it runs in, resolves exactly as this server does (L10).
+  // is the folder it runs in, resolves exactly as this server does.
   return workspaceScopeDecision(ws.roots.length > 0 ? ws.roots : [ws.cwd], dir => plur.resolveFolderPolicy(dir))
 }
 
-/** The workspace's identity for a session default (#1563 review round 2): its roots, or its start folder. */
+/** The workspace's identity for a session default: its roots, or its start folder. */
 export function workspaceKey(ws: Workspace): string {
   const inputs = ws.roots.length > 0 ? ws.roots : [ws.cwd]
   const real = inputs.map(i => { try { return realpathSync.native(i) } catch { return resolve(i) } })
@@ -417,7 +418,7 @@ function isFilesystemRoot(dir: string): boolean {
 
 /**
  * The folder map in the MCP server, per MCP session (one per createServer):
- * `off` (folderOffAnswer) and, since #1525, `ask`.
+ * `off` (folderOffAnswer) and `ask`.
  *
  * In a workspace whose folder resolves to `ask` (undecided, or a `.plur.yaml`
  * asking for settings not yet trusted), a gated tool touches no memory and
@@ -443,18 +444,17 @@ function isFilesystemRoot(dir: string): boolean {
  * about folders that are not the home folder, a filesystem root or above
  * home (an answer there would cover every folder under it): the client's
  * roots that are not such, when there are any (the cwd is wherever the client
- * started the process); otherwise the cwd, unless it is such
- * (audit F2, N6, N7 of #1529). A filesystem root is
- * never asked about. `end()` deletes the session's unanswered nonces; the
+ * started the process); otherwise the cwd, unless it is such. A filesystem
+ * root is never asked about. `end()` deletes the session's unanswered nonces; the
  * stdio server calls it on stdin end and on SIGTERM / SIGINT, and nonce files
- * of sessions killed outright are swept once expired (audit F1 of #1529).
+ * of sessions killed outright are swept once expired.
  */
 export function createFolderGate(plur: Plur, opts: { sessionId?: string; hosts?: () => FolderAskHost[] } = {}): {
   sessionId: string
   /**
    * The off answer, the folder question, or — every folder decided `on` — the
    * folder map's write scope for the workspace, only when every folder has
-   * the same one (#1563 review, H1), for plur_session_start's default and
+   * the same one, for plur_session_start's default and
    * the unscoped writes.
    */
   check(workspace: Workspace): FolderOffAnswer | FolderAskPayload | FolderOn
@@ -462,7 +462,7 @@ export function createFolderGate(plur: Plur, opts: { sessionId?: string; hosts?:
 } {
   const sessionId = opts.sessionId ?? `mcp-${randomBytes(8).toString('hex')}`
   // Nonce files left by sessions that never closed (a server killed
-  // outright) are removed once their nonces have expired (audit F1 of #1529).
+  // outright) are removed once their nonces have expired.
   try { sweepFolderNonces(plur.storageRoot) } catch { /* best-effort */ }
   /** The question built for a workspace folder, by that folder, while it is undecided. */
   const asked = new Map<string, { ask: FolderAsk; issuedAt: number; reason?: string }>()
@@ -471,7 +471,7 @@ export function createFolderGate(plur: Plur, opts: { sessionId?: string; hosts?:
   let ended = false
   // Re-issue a minute before core would call the nonces expired.
   const reissueAfter = Math.max(0, FOLDER_NONCE_TTL_MS - 60_000)
-  // The processes that may have asked already (#1562), looked up once, when
+  // The processes that may have asked already, looked up once, when
   // first needed.
   let hosts: FolderAskHost[] | null = null
   const hostList = (): FolderAskHost[] => {
@@ -480,7 +480,7 @@ export function createFolderGate(plur: Plur, opts: { sessionId?: string; hosts?:
     }
     return hosts
   }
-  /** The host's question this session is showing, by folder, with this session's "not now" nonce (#1563 review, L2). */
+  /** The host's question this session is showing, by folder, with this session's "not now" nonce. */
   const hosted = new Map<string, FolderAsk>()
 
   const notNowAnswer = (folder: string): FolderOffAnswer => ({
@@ -499,11 +499,11 @@ export function createFolderGate(plur: Plur, opts: { sessionId?: string; hosts?:
       try { return folderNonceOutstanding(plur.storageRoot, sessionId, nonce) } catch { return false }
     }
     let entry = asked.get(dir)
-    // "Not now" first (audit N5 of #1529): it holds for the rest of the
+    // "Not now" first: it holds for the rest of the
     // session, whatever happens to the question afterwards.
     if (entry?.ask.notNowNonce !== undefined) {
-      // Consumed, not just gone (audit R2 of #1529): "not now" leaves the
-      // question's other nonces in place (N1), while a session file that
+      // Consumed, not just gone: "not now" leaves the
+      // question's other nonces in place, while a session file that
       // was swept or ended loses them all. Only the first is an answer; the
       // second falls through and the question is asked afresh.
       const notNowNonce = entry.ask.notNowNonce
@@ -529,12 +529,12 @@ export function createFolderGate(plur: Plur, opts: { sessionId?: string; hosts?:
       asked.delete(dir)
       entry = undefined
     }
-    // One set of nonces per folder (#1562): when the process that started
+    // One set of nonces per folder: when the process that started
     // this server (the opencode plugin, in opencode) already asked about this
     // folder, show that question, with its nonces, instead of a second one.
     // It also offers "not now", with a nonce of THIS session, issued once and
     // shown on every call; once it is used, memory is off here for the rest
-    // of the session, as for the server's own question (#1563 review, L2).
+    // of the session, as for the server's own question.
     if (!entry && !ended) {
       const shown = hosted.get(dir)
       if (shown) {
@@ -617,18 +617,18 @@ export function createFolderGate(plur: Plur, opts: { sessionId?: string; hosts?:
   return {
     sessionId,
     check(workspace) {
-      // `off` is checked on every folder, the server's cwd included (#1519):
+      // `off` is checked on every folder, the server's cwd included:
       // there, checking more folders only ever turns memory off.
       const off = folderOffAnswer(plur, [...new Set([...workspace.roots, workspace.cwd])])
       if (off) return off
-      // The question is asked only about the folders the user works in
-      // (audit F2 of #1529): the client's roots when it gives any — the
+      // The question is asked only about the folders the user works in:
+      // the client's roots when it gives any — the
       // server's cwd is wherever the client happened to start the process —
       // else the cwd, unless that is the home folder, a filesystem root or a
       // folder above home: an answer there would cover every folder under it.
       // A root that is the home folder, a filesystem root or above home is
-      // not asked about either (audit N7), and roots that are all such count
-      // as no roots (N6).
+      // not asked about either, and roots that are all such count
+      // as no roots.
       const usableRoots = workspace.roots.filter(r => !isHomeOrAbove(r))
       const askable = usableRoots.length > 0
         ? usableRoots
@@ -651,14 +651,13 @@ export function createFolderGate(plur: Plur, opts: { sessionId?: string; hosts?:
         on.push({ dir, ...(policy.scope ? { scope: policy.scope } : {}) })
       }
       // The workspace's scope: workspaceWriteScope, the one resolver every
-      // default uses (#1563 review round 2). Only when every input — every
+      // default uses. Only when every input — every
       // root, none left out — agrees on one scope; otherwise none.
       const scopeDecision = workspaceWriteScope(plur, workspace)
       const scope = scopeDecision.kind === 'agreed' ? scopeDecision.scope : undefined
       // Every folder is decided: a question this session asked about one of
       // them is answered. Its scope reaches writes through the workspace
-      // resolver (FOLDER_SCOPE); the process-wide slot is never set (#1563
-      // review round 3, N1).
+      // resolver (FOLDER_SCOPE); the process-wide slot is never set.
       for (const { dir } of on) {
         hosted.delete(dir)
         if (!asked.has(dir)) continue

@@ -13,7 +13,7 @@ import { hookFolderOn, payloadDir, parsePayload, readStdinRaw } from '../lib/fol
  */
 
 export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
-  // Silent unless the folder map says on (#1347; was #95's project gate).
+  // Silent unless the folder map says on.
   // An `ask` folder is asked by hook-inject on the first prompt instead.
   if (!hookFolderOn(payloadDir(parsePayload(readStdinRaw())), flags)) return
 

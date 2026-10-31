@@ -7,7 +7,7 @@ import { cmdExeSpawn } from './command-spawn.js'
  * given the shim path `plur init` installed. Quoted only when the path
  * contains whitespace, so a path without one stays byte-identical to what
  * earlier versions wrote. Windows never uses this: see `windowsHookCommand`
- * and `claudeHookSpec` (decision H3).
+ * and `claudeHookSpec`.
  */
 export function hookCommandPrefix(binPath: string): string {
   if (/\s/.test(binPath)) return `"${binPath}"`
@@ -18,7 +18,7 @@ export function hookCommandPrefix(binPath: string): string {
 export type StringHookHost = 'codex' | 'cursor' | 'agy'
 
 /**
- * Decision H3: Windows hook commands never rely on shell quoting, because
+ * Windows hook commands never rely on shell quoting, because
  * the editors run them through different shells — Codex through
  * `pwsh -Command`, Cursor reportedly through PowerShell, Antigravity through
  * `cmd /C` with its quotes backslash-escaped — and a quoted path breaks in
@@ -128,9 +128,9 @@ export interface ClaudeHookContext {
 }
 
 /**
- * The launch part of one Claude Code hook (decision H3).
+ * The launch part of one Claude Code hook.
  *
- * darwin/linux: the unchanged shell string, `<shim> <subcommand> [args]`.
+ * darwin/linux: the shell string, `<shim> <subcommand> [args]`.
  *
  * Windows: the documented exec form — `command` plus `args`, spawned with
  * no shell, so nothing is tokenised or quoted

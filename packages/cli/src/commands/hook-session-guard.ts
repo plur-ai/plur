@@ -14,7 +14,7 @@ import { ensureSessionDir, ownFileExists } from '../lib/codex-hook-io.js'
  * the session has been started. The sentinel is created by hook-session-mark
  * (PostToolUse on mcp__plur__plur_session_start).
  *
- * Deadlock prevention (#199): if the guard has blocked more than
+ * Deadlock prevention: if the guard has blocked more than
  * MAX_BLOCKS_BEFORE_FALLBACK tool calls without a session starting (e.g.
  * because the MCP server failed to start), it stops blocking and warns
  * via stderr instead. This prevents permanent deadlock while still
@@ -32,12 +32,11 @@ const EXEMPT_TOOLS = new Set([
 ])
 
 /**
- * Exempt by suffix as well as by exact name (formal r2, cli#8). Claude Code
- * names MCP tools `mcp__<server>__<tool>`; a plur server registered under
- * another name (a plugin install, `plur-local`, …) produced
- * `mcp__<other>__plur_session_start`, and the guard DENIED the one call it
- * exists to ask for. The Codex, Cursor and Antigravity guards already match by
- * suffix; this brings the Claude guard in line.
+ * Exempt by suffix as well as by exact name. Claude Code names MCP tools
+ * `mcp__<server>__<tool>`; a plur server registered under another name (a
+ * plugin install, `plur-local`, …) yields `mcp__<other>__plur_session_start`,
+ * which must not be denied. The Codex, Cursor and Antigravity guards match by
+ * suffix too.
  */
 function isExempt(toolName: string): boolean {
   return EXEMPT_TOOLS.has(toolName) || toolName.endsWith('__plur_session_start')
@@ -82,9 +81,8 @@ function sentinelPath(sessionId: string): string {
 
 function blockCountPath(sessionId: string): string {
   const dir = join(tmpdir(), 'plur-sessions')
-  // Vetted like every other hook family's state dir (#1060, extended to the
-  // Claude family by formal r2 cli#8): a symlinked or foreign dir is refused,
-  // and the caller's existing fail-open branch allows the tool through.
+  // Vetted like every other hook family's state dir: a symlinked or foreign
+  // dir is refused, and the caller's fail-open branch allows the tool through.
   if (!ensureSessionDir(dir)) throw new Error('session state dir refused')
   return join(dir, `${safeSessionKey(sessionId)}.guard-count`)
 }
@@ -108,25 +106,23 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   } catch {
     return // Can't parse — allow through
   }
-  // Silent unless the folder map says on (#1347; was #95's project gate):
+  // Silent unless the folder map says on:
   // an off or ask folder never has its tools blocked.
   if (!hookFolderOn(payloadDir(data as Record<string, unknown>), flags)) return
 
   const toolName = data.tool_name ?? ''
   const sessionId = data.session_id ?? ''
 
-  // Always allow exempt tools
   if (isExempt(toolName)) return
 
   // No session ID — can't check, allow through
   if (!sessionId) return
 
-  // Check sentinel
   // The sentinel lives directly in the shared tmpdir, where anyone can create
-  // a file of that name: only this user's own regular file counts (cli#8).
+  // a file of that name: only this user's own regular file counts.
   if (ownFileExists(sentinelPath(sessionId))) return
 
-  // Deadlock prevention (#199): if we've blocked too many times without a
+  // Deadlock prevention: if we've blocked too many times without a
   // session starting, the MCP server likely failed to load. Stop blocking
   // to prevent permanent deadlock.
   //
@@ -138,11 +134,9 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   try {
     blockCount = incrementBlockCount(sessionId)
   } catch {
-    // Fail open on an unwritable state dir — but leave an audit trail. A silent
-    // return here is a bypass of the session guard with no signal; write the
-    // same advisory the deadlock fallback below does, for parity with the other
-    // fail-open hooks (hook-inject, hook-learn-check) so the bypass is
-    // observable rather than invisible.
+    // Fail open on an unwritable state dir — but leave a trail on stderr, like
+    // the deadlock fallback below and the other fail-open hooks, so the bypass
+    // is observable rather than invisible.
     process.stderr.write(
       '[plur] session guard: state dir not writable — allowing tools through ' +
       '(fail-open). Memory injection is best-effort; run `plur doctor` to diagnose.\n',

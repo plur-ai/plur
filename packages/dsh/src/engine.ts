@@ -1,17 +1,11 @@
 /**
  * Constructing the real PLUR engine.
  *
- * `@plur-ai/core` is an ES module (`"type": "module"`, and its `exports` map
- * declares only an `import` condition). `createRequire(...)('@plur-ai/core')`
- * therefore throws `ERR_PACKAGE_PATH_NOT_EXPORTED` — which an earlier version
- * of this file swallowed, so the plugin registered every tool, skill and prompt
- * section and then recalled nothing, on every install. Unit tests never saw it
- * because they inject a client through `apply`'s third parameter.
- *
- * So: `import()`, not `require()`. Cordis calls `apply` synchronously and
+ * `@plur-ai/core` is an ES module whose `exports` map declares only an
+ * `import` condition, so it must be loaded with `import()`: `require()` throws
+ * `ERR_PACKAGE_PATH_NOT_EXPORTED`. Cordis calls `apply` synchronously and
  * cannot await, so this returns a facade immediately and resolves the real
- * engine behind it on first use. Every call site already awaits, so nothing
- * downstream has to know.
+ * engine behind it on first use. Every call site already awaits.
  *
  * @module
  */
@@ -27,10 +21,10 @@ export interface Engine extends PlurClient {
   ready(): Promise<boolean>
   /**
    * Is `dir` trusted (`plur trust`)? False when the engine is unavailable or
-   * the check throws — the workspace-scope gate fails closed (decision E3).
+   * the check throws — the workspace-scope gate fails closed.
    */
   trusts(dir: string): Promise<boolean>
-  /** Can the engine answer `trusts` at all? Picks an honest remedy (audit 1228-c). */
+  /** Can the engine answer `trusts` at all? Lets callers suggest the right remedy. */
   trustSupport(): Promise<'ok' | 'no-engine' | 'no-trust'>
 }
 

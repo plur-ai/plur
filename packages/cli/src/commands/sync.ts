@@ -13,9 +13,9 @@ import { shouldOutputJson, outputJson, outputText, outputInfo } from '../output.
  * after upgrading the embedder, after a schema migration, or whenever the
  * index looks out of sync with what `list()` and `recall()` report.
  *
- * Then retries queued team writes (the outbox), as MCP `plur_sync` does
- * (#1269). A failed flush does not fail the sync — the repository and index
- * work already happened — but it is reported, never swallowed: entries stay
+ * Then retries queued team writes (the outbox), as MCP `plur_sync` does.
+ * A failed flush does not fail the sync — the repository and index work
+ * already happened — but it is reported, never swallowed: entries stay
  * queued.
  */
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
@@ -37,7 +37,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   if (typeof (plur as { waitForIndex?: () => Promise<void> }).waitForIndex === 'function') {
     await (plur as { waitForIndex: () => Promise<void> }).waitForIndex()
   }
-  // #272: the background index/reembed chain swallows its own rejection
+  // The background index/reembed chain swallows its own rejection
   // (waitForIndex resolves either way) — read the recorded failure so a
   // broken index doesn't report "Sync: ok".
   const indexError =
@@ -45,15 +45,15 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       ? (plur as { lastIndexError: () => IndexSyncError | null }).lastIndexError()
       : null
 
-  // #1269: flush after the repository sync, same order as MCP plur_sync.
+  // Flush after the repository sync, same order as MCP plur_sync.
   let outbox: { flushed: number; skipped: number; held: number; pending: number; warnings: string[] } | undefined
   let outboxError: string | undefined
   try {
     const flushed = await plur.flushOutbox()
     // `skipped` is an open circuit breaker: nothing was attempted, the writes
-    // are still queued, and the reason is in the warnings (review of #1277).
-    // #1299: `held` — needs_action entries backed off — must be reported too:
-    // a flush that held every entry back did nothing else.
+    // are still queued, and the reason is in the warnings. `held` (needs_action
+    // entries backed off) must be reported too: a flush that held every entry
+    // back did nothing else.
     const held = flushed.held ?? 0
     if (flushed.flushed > 0 || flushed.failed > 0 || flushed.deferred > 0 || flushed.skipped > 0 || held > 0) {
       outbox = {
@@ -77,7 +77,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       ...(outboxError ? { outbox_error: outboxError } : {}),
     })
   } else {
-    // Status/confirmation lines → suppressed by --quiet (#730)…
+    // Status/confirmation lines are suppressed by --quiet…
     outputInfo(`Sync: ${result.action}${full ? ' (full reindex)' : ''}`, flags)
     if (result.message) outputInfo(`  ${result.message}`, flags)
     if (result.files_changed > 0) outputInfo(`  Files changed: ${result.files_changed}`, flags)

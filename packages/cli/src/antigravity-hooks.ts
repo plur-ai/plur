@@ -11,7 +11,7 @@ import { dirname } from 'path'
  * `{matcher, hooks: []}` group; lifecycle events (`PreInvocation`,
  * `PostInvocation`, `Stop`) take a flat handler array. Source:
  * `~/.gemini/antigravity-cli/builtin/skills/agy-customizations/docs/hooks.md`
- * (the CLI's own bundled reference), confirmed live against agy 1.1.21.
+ * (the CLI's own bundled reference).
  *
  * The named-set structure makes ownership trivial compared to the other
  * harnesses: PLUR owns exactly one top-level key (`plur-memory`) and never
@@ -19,9 +19,9 @@ import { dirname } from 'path'
  *
  * Install location is the GLOBAL config dir, deliberately. Workspace
  * discovery (`.agents/hooks.json`, walked up to the repo root) exists but
- * did not load in `--print` mode during live probing — `loaded 0 named
- * hooks` with `workspacePaths: []` — while `~/.gemini/config/hooks.json`
- * loaded immediately. Global also matches how PLUR is installed everywhere
+ * does not load in `--print` mode (`loaded 0 named hooks` with
+ * `workspacePaths: []`), while `~/.gemini/config/hooks.json` does. Global
+ * also matches how PLUR is installed everywhere
  * else: one store, one memory, every project.
  */
 
@@ -68,7 +68,7 @@ export type AgyHooksConfig = Record<string, AgyHookSet>
  * Deliberately absent: `PostToolUse` (can only output `{}` — nothing to do).
  * `Stop` carries no nudge (its only power is `decision: "continue"`, which
  * BLOCKS termination and forces another loop); it is used only for the
- * silent auto-rate hook (#1310), which never prints a decision.
+ * silent auto-rate hook, which never prints a decision.
  *
  * Timeouts are SECONDS (agy default 30). PreInvocation gets 20 to cover
  * injectWithFallback's bounded worst case (8s hybrid deadline, then a BM25
@@ -89,7 +89,7 @@ export function buildAgyHookSet(cmd: string): AgyHookSet {
         hooks: [{ type: 'command', command: `${cmd} hook-agy-guard`, timeout: 5 }],
       },
     ],
-    // Auto-rate injected engrams (#1310). Prints nothing — never
+    // Auto-rate injected engrams. Prints nothing — never
     // `decision: "continue"` — so it cannot block the stop; the reply is read
     // from the transcript because the Stop payload carries none.
     Stop: [

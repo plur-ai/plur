@@ -39,12 +39,11 @@ export interface CodexHooksConfig {
 /**
  * Build PLUR's Codex hook contribution, given the resolved shim/CLI command.
  *
- * NOTHING HERE MAY SET `async: true`. Codex does support async hooks as of
- * 0.149.1 (they were silently skipped in 0.146.0), but an async hook's
- * `additionalContext` is delivered at the "next safe point" — i.e. NOT to
- * the turn that triggered it. For a `codex exec` one-shot that means never.
- * Claude Code's `hook-inject` made the same move to sync for the same reason
- * (#1313; it was async with a 90s timeout). These hooks are synchronous —
+ * NOTHING HERE MAY SET `async: true`. Codex supports async hooks, but an
+ * async hook's `additionalContext` is delivered at the "next safe point" —
+ * i.e. NOT to the turn that triggered it. For a `codex exec` one-shot that
+ * means never. Claude Code's `hook-inject` is synchronous for the same
+ * reason. These hooks are synchronous —
  * hybrid-first with a BM25 fallback on a soft deadline (`injectWithFallback`)
  * — and `codex-hooks.test.ts` asserts the no-async invariant.
  *
@@ -66,8 +65,7 @@ export function buildCodexHooks(cmd: string): Record<string, CodexHookEntry[]> {
       },
     ],
 
-    // Per-prompt injection — the load-bearing hook. Verified reaching the
-    // model on codex-cli 0.149.1.
+    // Per-prompt injection — the load-bearing hook.
     UserPromptSubmit: [
       {
         hooks: [{
@@ -98,7 +96,7 @@ export function buildCodexHooks(cmd: string): Record<string, CodexHookEntry[]> {
       },
     ],
 
-    // Auto-rate injected engrams from the reply (#1310). Stop carries
+    // Auto-rate injected engrams from the reply. Stop carries
     // `last_assistant_message`; the hook prints nothing, which is Codex's
     // valid "no opinion" Stop result.
     Stop: [
@@ -123,7 +121,7 @@ export function buildCodexHooks(cmd: string): Record<string, CodexHookEntry[]> {
 
 /**
  * A hook is PLUR's when PLUR's own launcher runs a `hook-*` subcommand —
- * the shared matcher (decision H2 "prefix"), so a new Codex hook needs no
+ * the shared prefix matcher, so a new Codex hook needs no
  * list update. A user's own `./scripts/hook-codex-lint.sh`, or any hook-*
  * run by another binary, is not PLUR's and is never deleted by
  * `plur init --codex`.

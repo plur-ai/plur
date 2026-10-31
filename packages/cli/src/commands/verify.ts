@@ -1,6 +1,6 @@
 /**
- * `plur verify` — verify the history chain (#1053) and optionally checkpoint
- * signatures (#1056).
+ * `plur verify` — verify the history chain and optionally checkpoint
+ * signatures.
  *
  * Exit codes are the contract, and all three are distinct:
  *
@@ -10,16 +10,14 @@
  *
  * The third code is the point. A verifier that answered 0 when it could not
  * read the log would report "healthy" for a chain nobody checked, which is the
- * failure this whole surface exists to refuse
- * (docs/design/failure-must-be-distinguishable.md in the enterprise repo
- * states the same rule for the audit chain).
+ * failure this whole surface exists to refuse.
  *
  * Usage:
  *   plur verify                Human-readable report
- *   plur verify --signatures   Also verify Ed25519 signatures on checkpoints (#1056)
+ *   plur verify --signatures   Also verify Ed25519 signatures on checkpoints
  *   plur verify --json         Full structured result
  *   plur verify --manifest <file|swarm reference> [--notary <0x address>] [--gateway <url>] [--trust-gateway-notary]
- *                              Re-hash every engram a session manifest lists (#1657):
+ *                              Re-hash every engram a session manifest lists:
  *                              MATCH / CHANGED / NOT AVAILABLE per engram. A Swarm
  *                              reference is downloaded through the provenance gateway;
  *                              its content hash and notary signature are checked locally.

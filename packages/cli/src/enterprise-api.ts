@@ -1,8 +1,8 @@
 /**
  * What `@plur-ai/plur-enterprise` builds on: the sign-in, upload count, tool
  * config and version helpers the plur CLI already has. Imported as
- * `@plur-ai/cli/enterprise-api`. Each export is a contract with that package —
- * test/enterprise-api.test.ts pins the list, so a change here is deliberate.
+ * `@plur-ai/cli/enterprise-api`. Each export is a contract with that package;
+ * test/enterprise-api.test.ts pins the list.
  */
 export { deviceSignIn, DEVICE_KEY_RE } from './commands/login.js'
 export { countUploadCandidates } from './commands/upload.js'

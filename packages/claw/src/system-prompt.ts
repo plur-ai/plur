@@ -135,7 +135,7 @@ export interface EnsureSystemPromptResult {
  * - appends if no PLUR section is present
  * - replaces an older section only when it is, whitespace aside, a text PLUR
  *   shipped; a section the user wrote or edited is kept as it is and the new
- *   one is added beside it (#1520 audit B2, N5)
+ *   one is added beside it
  * - leaves a file with a current section unchanged
  * The heading is matched as a whole line outside code fences, so a user's
  * `## PLUR Memory System Guardrails` or `### PLUR Memory System` is not it.

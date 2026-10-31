@@ -75,10 +75,10 @@ export function findWorkspaceScope(cwd: string): WorkspaceScopeDecl | undefined 
 }
 
 /**
- * The workspace reader the plugin wires (decision E3, 2026-09-26): a declared
+ * The workspace reader the plugin wires: a declared
  * scope is adopted only when the directory holding the `.plur.yaml` is trusted
- * (`plur trust <dir>` — core's `Plur.isDirectoryTrusted`, the check
- * @plur-ai/opencode already made). A cloned repository must not choose which
+ * (`plur trust <dir>` — core's `Plur.isDirectoryTrusted`, the same check
+ * @plur-ai/opencode makes). A cloned repository must not choose which
  * scope — possibly a remote team store — this harness reads and writes.
  *
  * `scope: global` is never adopted, trusted or not: the ambient global store is
@@ -131,8 +131,8 @@ export function trustedWorkspaceScope(
 }
 
 /**
- * One argument of a printed command, or null when it cannot be quoted safely
- * (#1228 review; the rule of #1418's folder question): POSIX single quotes;
+ * One argument of a printed command, or null when it cannot be quoted safely:
+ * POSIX single quotes;
  * Windows double quotes, refused for $, backtick, %, ! and the curly double
  * quotes, which PowerShell and cmd expand; never a line-breaking, bidi or
  * zero-width character.
@@ -148,7 +148,7 @@ function shellWord(s: string, platform: NodeJS.Platform = process.platform): str
 }
 
 /**
- * The trust command that reaches the store this plugin checks (audit 1228-c #1):
+ * The trust command that reaches the store this plugin checks:
  * a store configured with `path` (or the plugin's `PLUR_PATH`) is not the one a
  * bare `plur trust <dir>` in the user's shell writes, so it is named.
  */
@@ -164,10 +164,9 @@ export function trustCommand(dir: string, storageRoot?: string, platform: NodeJS
 export type TrustSupport = 'ok' | 'no-engine' | 'no-trust'
 
 /**
- * The sentence after "is not a trusted directory" (audit 1228-c, dsh with an
- * older core). The gate fails closed when the engine cannot answer, which is
- * right — but telling the user to run `plur trust` then promised a fix that
- * could not work: an engine without `isDirectoryTrusted` never reads the
+ * The sentence after "is not a trusted directory". The gate fails closed when
+ * the engine cannot answer, but `plur trust` is suggested only when it can
+ * help: an engine without `isDirectoryTrusted` (an older core) never reads the
  * grant, and one that did not load answers nothing.
  */
 export function trustRemedy(dir: string, support: TrustSupport, storageRoot?: string): string {

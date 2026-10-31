@@ -64,11 +64,9 @@ export function estimateTokens(text: string): number {
  * engram is worse than an absent one, because the model reads it as a complete
  * statement.
  *
- * The order they go in is `consider`, then `directives`, and `constraints`
- * never. This docstring used to say "least important first (`consider`, then
- * `constraints`)", which described the behaviour BEFORE the inversion and
- * contradicted the safety-critical claim of the change that inverted it —
- * prohibitions are the last thing standing, not the first thing shed.
+ * Under budget pressure `consider` goes first, then `directives`, and
+ * `constraints` never: prohibitions are the last thing standing, not the
+ * first thing shed.
  *
  * @param injection - the result of a PLUR injection call.
  * @param budgetTokens - approximate token ceiling for the whole block.
@@ -83,12 +81,9 @@ export function renderBlock(injection: InjectionLike | undefined, budgetTokens: 
   //
   // CONSTRAINTS FIRST, and CONSTRAINTS LAST TO GO. Both are deliberate.
   // Prohibitions — what the agent may never say or do — outrank process
-  // hygiene at every budget. The previous ladder dropped CONSTRAINTS while
-  // keeping DIRECTIVES, treating directives as the irreducible core; that is
-  // backwards. On 2026-09-07 a session_start payload put CONSTRAINTS at char
-  // 35,260 behind 35KB of DIRECTIVES, the agent read the first 3,000 chars,
-  // and disclosed a customer name on a live demo. Every rule it broke was in
-  // the section it never reached.
+  // hygiene at every budget. Consumers often read only the head of a long
+  // block, so a CONSTRAINTS section placed after large DIRECTIVES may never be
+  // read at all.
   const assemble = (withDirectives: boolean, withConsider: boolean): string => {
     const lines: string[] = []
     if (injection.constraints) lines.push('## CONSTRAINTS\n', flatten(injection.constraints))
@@ -102,20 +97,18 @@ export function renderBlock(injection: InjectionLike | undefined, budgetTokens: 
     if (estimateTokens(block) <= budget) return block
   }
 
-  // Constraints alone overflow the budget. Two bad options, and a third that
-  // is not bad.
+  // Constraints alone overflow the budget.
   //
-  // Emitting DIRECTIVES here would hand back process hygiene while silently
-  // withholding prohibitions — the failure this whole ladder was inverted to
-  // prevent, because an agent cannot tell "no rules apply" from "your rules did
-  // not fit". Emitting NOTHING avoids that lie but loses the directives too, so
-  // a store whose constraints are merely large gets no memory at all, which is
-  // a capability regression against the pre-inversion behaviour.
+  // Emitting DIRECTIVES alone would hand back process hygiene while silently
+  // withholding prohibitions, and an agent cannot tell "no rules apply" from
+  // "your rules did not fit". Emitting NOTHING avoids that but loses the
+  // directives too, so a store whose constraints are merely large would get no
+  // memory at all.
   //
-  // So: say so. A notice costs a couple of dozen tokens, keeps the honest
-  // guarantee — prohibitions are never dropped in silence — and lets the
-  // directives through. Reached only after every rung that KEEPS constraints
-  // has failed, never as a way of shedding them under pressure.
+  // So: say so. A notice costs a couple of dozen tokens, keeps the guarantee
+  // that prohibitions are never dropped in silence, and lets the directives
+  // through. Reached only after every rung that KEEPS constraints has failed,
+  // never as a way of shedding them under pressure.
   if (injection.constraints) {
     const notice = '## CONSTRAINTS\nWITHHELD — the prohibitions for this session did not fit the '
       + 'memory budget. Treat them as UNREAD, not as absent: do not assume an action is permitted '
@@ -160,15 +153,13 @@ function flatten(text: string): string {
     .split(/\n(?=\[)/)
     .map(entry => entry
       // Invisibles first: JS `\s` covers \t, NBSP and BOM but NOT U+200B,
-      // U+200C, U+200F, U+2060 or the soft hyphen, so `\u200b# FORGED` slipped
-      // straight past the heading strip and rendered as a heading.
+      // U+200C, U+200F, U+2060 or the soft hyphen, so `\u200b# FORGED` would
+      // slip past the heading strip and render as a heading.
       .replace(INVISIBLE, '')
       // Every line terminator, not just \r?\n. A lone \r is a line break to
-      // every renderer, and U+2028/U+2029/U+0085 are too — the previous
-      // `split(/\r?\n/).join('\n')` was an identity transform that collapsed
-      // nothing at all, so a `\r## DIRECTIVES` forged a heading intact.
-      // Collapsing to a space also kills setext underlining, because `======`
-      // can no longer reach a line of its own.
+      // every renderer, and U+2028/U+2029/U+0085 are too, so `\r## DIRECTIVES`
+      // would otherwise forge a heading. Collapsing to a space also kills setext
+      // underlining, because `======` can no longer reach a line of its own.
       .replace(LINE_BREAKS, ' ')
       .replace(/^\s*#+\s*/, '')
       .replace(/\s{2,}/g, ' ')

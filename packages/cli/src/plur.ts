@@ -10,16 +10,11 @@ export interface GlobalFlags extends OutputOptions {
 
 /** Parse global flags from argv, return remaining positional args + flags. */
 /**
- * Split `--flag=value` into `--flag` and `value` (#986).
+ * Split `--flag=value` into `--flag` and `value`.
  *
- * Every command parses flags as `--name` followed by a separate value, and an
- * argument written as `--name=value` matched nothing and was silently dropped.
- * A tester wrote `learn "..." --license=cc-by-4.0 --domain=ops.test` and got a
- * successful exit with no licence and no domain. The `=` form is what most
- * command-line tools accept, so people reach for it.
- *
- * Splitting here fixes it for every command at once, rather than in each of the
- * forty-odd parsers.
+ * Every command parses flags as `--name` followed by a separate value, so an
+ * unsplit `--name=value` would match nothing and be silently dropped. Splitting
+ * here covers every command at once, rather than each of the parsers.
  *
  * Only the first `=` splits, so a value may contain one. Only tokens that look
  * like a long flag are touched, so a positional argument containing `=` and the
@@ -63,7 +58,7 @@ export function parseGlobalFlags(rawArgv: string[]): {
   let i = 0
   while (i < argv.length) {
     const arg = argv[i]
-    // `--` ends option parsing (decision S4, 2026-09-26). Everything after it
+    // `--` ends option parsing. Everything after it
     // is passed to the command verbatim, `--` included so the command can see
     // where values start: a statement such as "--path=/elsewhere …" must never
     // select — or create — a store, and "--json" after `--` is a value.
@@ -72,10 +67,8 @@ export function parseGlobalFlags(rawArgv: string[]): {
     else if (arg === '--quiet') { flags.quiet = true; i++ }
     else if (arg === '--fast') { flags.fast = true; i++ }
     else if (arg === '--path') {
-      // A missing value used to leave --path unset, so the command silently ran
-      // against the DEFAULT store instead of the one the operator named. That
-      // is the only defect here that writes outside the directory they asked
-      // for, and it happens on a typo.
+      // A missing value must not leave --path unset, or the command would
+      // silently run against the DEFAULT store instead of the one named.
       const value = argv[i + 1]
       if (value === undefined || /^--[A-Za-z]/.test(value)) {
         error = error ?? `--path needs a directory, but the next argument was ${value ?? '(nothing)'}.`
@@ -83,24 +76,17 @@ export function parseGlobalFlags(rawArgv: string[]): {
       } else { flags.path = value; i += 2 }
     }
     else {
-      // A near miss on a global flag is caught for EVERY command, whether or
-      // not that command declares its own flags. `--pathh` was passed through
-      // as a positional argument and the command then ran against the user's
-      // real store — silently, with a success exit.
-      // ONLY `--path`, and only a single typo. A wider net produces false
-      // positives on legitimate command flags — `--session` is two edits from
-      // `--version` and was rejected outright — and this check exists for one
-      // specific harm: a mistyped `--path` is passed through as a positional
-      // argument, `--path` is never set, and the command runs against the
-      // user's real store. Every other global flag mistyped is merely ignored.
+      // A near miss on `--path` is caught for EVERY command, whether or not it
+      // declares its own flags: a mistyped `--path` would pass through as a
+      // positional argument and the command would run against the user's real
+      // store. Every other global flag mistyped is merely ignored.
       //
-      // "A single typo" means ONE edit. At two, `--batch` (feedback) and
-      // `--date` (restore) were both rejected as misspellings of `--path`, so a
-      // real flag on a real command could not be used at all. This runs before
-      // the command is loaded and cannot consult what it declares, so the
-      // distance has to be tight enough that no declared flag falls inside it;
-      // test/known-flags.test.ts sweeps every flag literal in this package
-      // against this check.
+      // ONLY `--path`, and only ONE edit. A wider net rejects legitimate
+      // command flags (`--batch` and `--date` are two edits from `--path`).
+      // This runs before the command is loaded and cannot consult what it
+      // declares, so the distance must be tight enough that no declared flag
+      // falls inside it; test/known-flags.test.ts sweeps every flag literal in
+      // this package against this check.
       if (/^--[A-Za-z]/.test(arg) && !GLOBAL_NAMES.includes(arg) && editDistance(arg, '--path') <= 1) {
         error = error ?? `Unrecognised flag ${arg} — did you mean --path? `
           + 'Left as it is, this command would run against your default store rather than the one you named.'
@@ -112,7 +98,7 @@ export function parseGlobalFlags(rawArgv: string[]): {
 }
 
 /**
- * The most recent Plur built in this process (#1046).
+ * The most recent Plur built in this process.
  *
  * The CLI entrypoint needs a handle on it to drain background index work
  * before exiting, and commands construct their own instance rather than
@@ -131,14 +117,14 @@ export function getLastPlurInstance(): Plur | null {
 /**
  * Create Plur instance from flags.
  *
- * `readonly: true` opens a write-guarded engine (#731): reads work, every
+ * `readonly: true` opens a write-guarded engine: reads work, every
  * mutation throws `ReadonlyStoreError`, and recall skips its activation
  * refresh. Read-only commands (`list`, `status`, `tensions` list mode) pass it
  * so lazy engine side-effects cannot mutate the store from a pure query.
  *
  * `autoDiscover: false` skips the constructor's walk for a `<cwd>/.plur`
  * store, which otherwise registers that store in config.yaml. The folder
- * question passes it: asking about a folder must change nothing (#1418 review).
+ * question passes it: asking about a folder must change nothing.
  */
 export function createPlur(flags: GlobalFlags, options?: { readonly?: boolean; autoDiscover?: boolean }): Plur {
   const path = flags.path || process.env.PLUR_PATH || undefined
@@ -147,15 +133,15 @@ export function createPlur(flags: GlobalFlags, options?: { readonly?: boolean; a
     readonly: options?.readonly,
     ...(options?.autoDiscover !== undefined ? { autoDiscover: options.autoDiscover } : {}),
   })
-  // Every command is bound to the folder it runs in (audit of #1521, S1), so
+  // Every command is bound to the folder it runs in, so
   // `plur learn`, `recall`, `inject`, `capture`, `import` … obey a remote-only
   // folder exactly as the hooks and the MCP server do. Hooks re-bind to the
   // folder their payload names, failing closed (bindHookFolder).
   //
   // A folder map that cannot be read, or a folder that cannot be resolved,
-  // leaves a CLI command unbound, as on development (#1579 L10): local memory
-  // still prints and folderReadContext contacts no store. Binding only looks:
-  // it never imports a legacy trust.yaml (#1589 audit round 2).
+  // leaves a CLI command unbound: local memory still prints and
+  // folderReadContext contacts no store. Binding only looks: it never imports
+  // a legacy trust.yaml.
   const cwd = process.cwd()
   try {
     // Checked first, silently: the CLI's own notice about a broken map is
@@ -180,8 +166,7 @@ export interface ScopeTrustCheck {
 
 /**
  * One argument of a command printed for the user or the agent to run, or null
- * when it cannot be quoted safely (#1228 review, the same rule as #1418's
- * folder question). POSIX: single quotes. Windows: double quotes, which
+ * when it cannot be quoted safely. POSIX: single quotes. Windows: double quotes, which
  * PowerShell and cmd still expand for $, backtick, %, ! and the curly double
  * quotes, so a path holding one gets no command. A line break, bidi or
  * zero-width character never gets one.
@@ -197,14 +182,14 @@ function shellWord(s: string, platform: NodeJS.Platform = process.platform): str
 }
 
 /**
- * The trust command a notice tells the user to run (audit 1228-c #1).
+ * The trust command a notice tells the user to run.
  *
  * `plur trust <dir>` writes `trust.yaml` in the store the CLI resolves —
  * `--path`, else `PLUR_PATH`, else `~/.plur`. A hook or server running on a
  * different store (its own `PLUR_PATH`, `--path`, an MCP config's env) checks
- * THAT store's file, and the user's shell usually has none of those set: the
- * bare command wrote a grant the adapter never read, and the notice repeated.
- * So when the store is not the default one, the command names it.
+ * THAT store's file, and the user's shell usually has none of those set, so
+ * the bare command would write a grant the adapter never reads. So when the
+ * store is not the default one, the command names it.
  */
 export function trustCommand(dir: string | null, storageRoot?: string, platform: NodeJS.Platform = process.platform): string | null {
   const target = dir === null ? '<dir>' : shellWord(dir, platform)

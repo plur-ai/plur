@@ -56,15 +56,13 @@ export interface UiServerOptions {
    * not loopback: revealing a folder is a desktop action, and a server that
    * answers to a network name is reachable from the network.
    *
-   * The earlier shape of this option was a `widened` boolean that skipped the
-   * host check entirely, on the reasoning that once the bind is open "any host
-   * on the network can connect regardless". That conflates two different
-   * threats. Network reachability is about who can open a socket; DNS
-   * rebinding is about an OFF-network attacker using a victim's browser as a
-   * proxy, and the bind address does not affect it at all. With the check
-   * skipped, any site the operator visits could rebind its own domain to this
-   * machine and read the whole store cross-origin — the frame-blocking headers
-   * do not help, because a rebound fetch is same-origin and needs no frame.
+   * The host check is never skipped, even on a widened bind. Network
+   * reachability is about who can open a socket; DNS rebinding is about an
+   * OFF-network attacker using a victim's browser as a proxy, and the bind
+   * address does not affect it at all. Without the check, any site the
+   * operator visits could rebind its own domain to this machine and read the
+   * whole store — the frame-blocking headers do not help, because a rebound
+   * fetch is same-origin and needs no frame.
    *
    * Accepting the server's OWN addresses instead keeps both properties: a
    * legitimate client on the local network sends the server's address in
@@ -90,14 +88,12 @@ function revealFolder(path: string): void {
 /**
  * Is this request from the viewer's own page, rather than another site?
  *
- * Two attacks made this necessary, both demonstrated against the running
- * server:
+ * Two attacks this guards against:
  *
  *   - CSRF on `POST /open-store`. A cross-origin FORM post is a simple
- *     request with no preflight, so "it is a POST, not an img tag" was not the
- *     protection the code claimed. 25 cross-origin posts produced 25 real
- *     file-manager spawns; a loop is a desktop denial of service. `plur ui`
- *     uses a fixed port, so nothing even has to be guessed.
+ *     request with no preflight, so being a POST is no protection: each post
+ *     spawns a real file manager, and a loop is a desktop denial of service.
+ *     `plur ui` uses a fixed port, so nothing even has to be guessed.
  *   - DNS rebinding on `GET /`. Binding 127.0.0.1 keeps the network out but
  *     not a browser the attacker already controls: a page on their domain with
  *     a short-TTL record pointing at 127.0.0.1 becomes same-origin and can
@@ -112,9 +108,8 @@ function revealFolder(path: string): void {
 function isSameOrigin(req: { headers: Record<string, string | string[] | undefined> }): boolean {
   const site = String(req.headers['sec-fetch-site'] ?? '').toLowerCase().trim()
   if (site !== '') return site === 'same-origin' || site === 'none'
-  // No Sec-Fetch-Site. Allowing everything here left the hole open for any
-  // browser that does not send it — pre-16.4 WebKit, embedded webviews — and
-  // 15 cross-origin POSTs still produced 15 file-manager spawns. `Origin`
+  // No Sec-Fetch-Site: some browsers do not send it (older WebKit, embedded
+  // webviews), so allowing everything here would leave the hole open. `Origin`
   // predates Sec-Fetch-Site by years and IS sent on every cross-origin POST,
   // so an Origin that is present and not ours is a cross-site request whatever
   // the browser's vintage. curl sends neither and is still allowed through.
@@ -150,8 +145,8 @@ function isSameOrigin(req: { headers: Record<string, string | string[] | undefin
  */
 export function normaliseHostName(value: string): string {
   let v = String(value ?? '').trim().toLowerCase()
-  // The inner value holds no bracket (formal R2, mcp#12): `[[::1]]` used to
-  // unwrap to `[::1]` and then, on a second pass, to `::1` — not idempotent.
+  // The inner value holds no bracket: otherwise `[[::1]]` would unwrap to
+  // `[::1]` and then, on a second pass, to `::1` — not idempotent.
   const bracketed = v.match(/^\[([^[\]]+)\](?::\d+)?$/)
   if (bracketed) return bracketed[1]!.includes(':') ? bracketed[1]! : v
   if ((v.match(/:/g) ?? []).length === 1) v = v.replace(/:\d+$/, '')
@@ -252,7 +247,7 @@ export function isUnspecifiedName(value: string): boolean {
 /**
  * Is the Host header one of ours? Rebinding arrives with the attacker's.
  *
- * The built-in set stays exactly as strict as it was — `localhost.`,
+ * The built-in set is strict — `localhost.`,
  * `sub.localhost` and `127.0.0.1.nip.io` remain spoof shapes and are refused.
  * `allowed` adds the names this server was started under, matched exactly.
  * An absent Host (HTTP/1.0, a hand-written request) is allowed: no browser
@@ -264,8 +259,7 @@ function hostIsAllowed(
 ): boolean {
   const rawHost = String(req.headers.host ?? '')
   // Only an ABSENT (or empty) Host is the no-browser case. A present value
-  // that normalises to '' — `:80` — used to be allowed on that exemption
-  // (formal R2, mcp#12); it is not a name, so it matches nothing.
+  // that normalises to '' — `:80` — is not a name, so it matches nothing.
   if (rawHost.trim() === '') return true
   const name = normaliseHostName(rawHost)
   if (name === '127.0.0.1' || name === 'localhost' || name === '::1') return true
@@ -330,8 +324,7 @@ export function createUiServer(opts: UiServerOptions): Server {
       // what the socket is bound to.
       if (!hostIsAllowed(req, opts.allowedHosts)) {
         // Say which name was refused: the operator who typed it is the one
-        // reading this, and "only answers to localhost" was wrong the moment
-        // the bind could be widened. The allowed names are NOT listed — a
+        // reading this. The allowed names are NOT listed — a
         // rebound page can read this body, and this machine's addresses are
         // not the attacker's to learn.
         const refused = normaliseHostName(String(req.headers.host ?? '')).slice(0, 128)

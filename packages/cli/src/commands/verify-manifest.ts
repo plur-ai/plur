@@ -1,5 +1,5 @@
 /**
- * `plur verify --manifest <file|reference>` (#1657).
+ * `plur verify --manifest <file|reference>`.
  *
  * Exit codes, as for `plur verify`:
  *   0  every engram this store holds matches, and a downloaded manifest's
@@ -15,7 +15,7 @@
  * gateway, none — unless `--trust-gateway-notary` accepts the address that
  * gateway reports about itself. Trusting the gateway that served the document
  * to name its own signer would let a compromised gateway vouch for its own
- * forgeries (0.23 code review, finding 9).
+ * forgeries.
  *
  * NOT AVAILABLE (an engram this store does not hold) is counted and shown,
  * never turned into a pass or a failure: it is an unknown.
@@ -95,7 +95,7 @@ export async function runManifest(target: string | undefined, args: string[], fl
 
   const integrityOk = integrity === null || (integrity.content_hash_ok && integrity.notary !== null && integrity.notary.signature_ok)
   // Listed engrams of which none matched and none changed: nothing was checked,
-  // which is not a pass (0.23 audit, finding 12).
+  // which is not a pass.
   const nothingChecked = v.results.length > 0 && v.counts.MATCH === 0 && v.counts.CHANGED === 0
   if (integrityOk && nothingChecked) {
     return cannot(flags, `none of the ${v.results.length} listed engram(s) is in this store, so nothing could be checked; run this where those memories are held`)

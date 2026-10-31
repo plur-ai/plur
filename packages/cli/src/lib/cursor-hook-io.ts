@@ -10,42 +10,27 @@ import { ensureSessionDir, sessionDirSafeToSweep, sessionDirTrusted, ticketCount
  * commands. Split out from any single hook file because all four need the
  * exact same conversation-id resolution and directory layout.
  *
- * Known structural limitations (evaluator review, 2026-07-08 — tracked as
- * follow-ups, not fixed here; see .superpowers/sdd/progress.md):
+ * Known structural limitations:
  *
  * 1. NO PER-CONVERSATION SCOPING of delivered content. Sentinel/reminder
- *    state IS scoped per `conversation_id` (this file), but the actual
- *    payload lands in `.cursor/rules/plur-context.mdc` /
- *    `plur-reminder.mdc` — one file per WORKSPACE, loaded into every open
- *    composer. Two simultaneous conversations in the same workspace will
- *    each overwrite what the other sees. There is no clean fix within
- *    Cursor's current rules-file mechanism (it has no per-conversation
- *    context channel) — this is the same underlying gap that forced this
- *    workaround in the first place (see writeContextRule's docstring).
+ *    state IS scoped per `conversation_id`, but the payload lands in
+ *    `.cursor/rules/plur-context.mdc` / `plur-reminder.mdc` — one file per
+ *    WORKSPACE, loaded into every open composer. Two simultaneous
+ *    conversations in the same workspace overwrite what the other sees.
+ *    Cursor's rules-file mechanism has no per-conversation channel.
  * 2. conversation_id REUSE is not detected. A sentinel/reminder/stop-count
- *    file is trusted purely by existence, with no age or identity check —
- *    if Cursor ever reissues an id (a fork sharing its parent's id, or
- *    recycling after a restart), the new conversation silently inherits
- *    the old one's guard/reminder/stop-count state. Not fixed speculatively
- *    because Cursor's actual fork/reuse behavior isn't confirmed (Task 11).
- * 3. NO COORDINATION with the pre-existing Claude Code hook family if both
- *    ever act on the same editor session (Cursor is reported to be able to
- *    load Claude Code config too) — two independent sentinel schemes, two
- *    independent plur.inject() calls, no shared "already handled this turn"
- *    signal.
- * 4. MID-CONVERSATION RULE-FILE REWRITES are not independently confirmed to
- *    be re-read before a conversation ends (evaluator review — Popper
- *    lens, iteration 4, 2026-07-09). The forum-confirmed fact is narrower
- *    than the workaround's own docstring implies: `additional_context` is
- *    dropped by a race at CONVERSATION-CREATION time. Cursor's rules
- *    engine reliably loading `alwaysApply: true` rules AT THAT SAME MOMENT
- *    is the actual confirmed fact; whether a REWRITE of that file later —
- *    e.g. hook-cursor-post-tool.ts's reminder, or a second
- *    hook-cursor-session-start.ts run — is picked up live rather than the
- *    rules being snapshotted once, is not established anywhere in this
- *    codebase or its cited evidence. If rules are snapshotted, this
- *    workaround has the identical "loaded once, then frozen" failure shape
- *    one layer down. Task 11 (manual verification) settles this.
+ *    file is trusted by existence alone; if Cursor reissues an id (a fork
+ *    sharing its parent's id, or recycling after a restart), the new
+ *    conversation inherits the old one's state.
+ * 3. NO COORDINATION with the Claude Code hook family if both act on the
+ *    same editor session (Cursor can load Claude Code config too) — two
+ *    independent sentinel schemes, two plur.inject() calls, no shared
+ *    "already handled this turn" signal.
+ * 4. MID-CONVERSATION RULE-FILE REWRITES are not confirmed to be re-read.
+ *    Cursor loads `alwaysApply: true` rules at conversation creation; whether
+ *    a later rewrite (hook-cursor-post-tool.ts's reminder, a second
+ *    hook-cursor-session-start.ts run) is picked up live, or the rules are
+ *    snapshotted once, is not established.
  */
 
 export function readStdinJson(): Record<string, unknown> {
@@ -71,22 +56,15 @@ export function readStdinJson(): Record<string, unknown> {
 }
 
 /**
- * Cursor's hook payload envelope is not fully pinned down across doc sources
- * as of 2026-07 (the hooks API is explicitly beta): some examples show
- * `conversation_id` as the per-chat identifier, a structured summary of the
- * same docs page showed `session_id`. Accept either so these hooks work
- * regardless of which one Cursor actually sends — Task 11 (manual
- * verification against real Cursor) confirms which is real; narrow this
- * fallback then if only one shows up in practice.
+ * Cursor's hook payload envelope is not fully pinned down (the hooks API is
+ * beta): some docs show `conversation_id` as the per-chat identifier, others
+ * `session_id`. Accept either so these hooks work whichever Cursor sends.
  */
 export function cursorConversationId(input: Record<string, unknown>): string {
   const id = String(input.conversation_id ?? input.session_id ?? '')
   if (!id) {
-    // Audit fix (evaluator review, 2026-07-08): with neither guessed field
-    // name present, every hook silently no-ops for the rest of its run —
-    // previously with zero signal anywhere that this happened. This is the
-    // one place all four hooks funnel through to resolve the id, so one
-    // stderr line here covers all of them without duplicating it 4x.
+    // With neither field present, every hook no-ops for the rest of its run.
+    // All four hooks resolve the id here, so one stderr line covers them all.
     process.stderr.write(
       '[plur] cursor hook: no conversation_id or session_id in hook payload — ' +
       'skipping (memory injection/enforcement inactive for this event). If this ' +
@@ -97,14 +75,9 @@ export function cursorConversationId(input: Record<string, unknown>): string {
 }
 
 /**
- * Is this tool call `plur_session_start`? Hoisted here (audit fix) because
- * the original draft of this plan implemented this check twice, differently,
- * in hook-cursor-guard.ts (an exact-match Set) and hook-cursor-post-tool.ts
- * (an endsWith check) — a real divergence risk if Task 11's manual
- * verification finds the real tool-name format needs adjusting: fixing one
- * copy and missing the other would leave the guard and the post-tool
- * sentinel-writer permanently disagreeing about whether a session started.
- * One implementation, used by both.
+ * Is this tool call `plur_session_start`? Shared by hook-cursor-guard.ts and
+ * hook-cursor-post-tool.ts: two copies could drift and leave the guard and
+ * the sentinel-writer disagreeing about whether a session started.
  */
 export function isPlurSessionStartTool(toolName: string): boolean {
   return toolName === 'plur_session_start' || toolName.endsWith('__plur_session_start')
@@ -114,18 +87,15 @@ const STALE_SESSION_FILE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000 // 7 days
 
 /**
  * Delete session marker files older than STALE_SESSION_FILE_MAX_AGE_MS.
- * Mirrors the equivalent cleanup already done for Claude Code's checkpoint
- * files (hook-inject.ts unlinkSync's stale ~/.plur/sessions/*.checkpoint.json)
- * — audit fix (evaluator review, iteration 3, 2026-07-09): this Cursor port
- * never had an equivalent, so every unique conversation_id left orphaned
- * .marker/.reminded/.stopcount/.guard-count files in this directory
- * forever, unbounded — worst on exactly the long-lived background-agent
- * VMs this hook family targets. Best-effort: a stat/unlink failure on one
- * file (permissions, a race with another process) must not stop the rest
- * or throw out of a hook that's expected to run in milliseconds.
+ * Mirrors the cleanup of Claude Code's checkpoint files in hook-inject.ts.
+ * Without it every conversation_id leaves .marker/.reminded/.stopcount/
+ * .guard-count files behind forever — worst on long-lived background-agent
+ * VMs. Best-effort: a stat/unlink failure on one file (permissions, a race
+ * with another process) must not stop the rest or throw out of a hook that
+ * is expected to run in milliseconds.
  */
 function pruneStaleSessions(dir: string): void {
-  if (!sessionDirSafeToSweep(dir)) return // never delete through a symlink or someone else's dir (#1060)
+  if (!sessionDirSafeToSweep(dir)) return // never delete through a symlink or someone else's dir
   let entries: string[]
   try {
     entries = readdirSync(dir)
@@ -147,9 +117,9 @@ function cursorDir(): string {
 
 /**
  * Is a sentinel for this conversation present in a directory we can trust?
- * Readers used `existsSync(sentinelPath(id))` directly, so a sentinel planted
- * behind a symlinked or foreign `plur-cursor-sessions` switched the guard
- * off and armed the reminder writer (formal r2, cli#8).
+ * A plain `existsSync(sentinelPath(id))` would let a sentinel planted behind
+ * a symlinked or foreign `plur-cursor-sessions` switch the guard off and arm
+ * the reminder writer.
  */
 export function isSessionStarted(conversationId: string): boolean {
   const dir = sessionsDir()
@@ -164,7 +134,7 @@ export function touchReminder(conversationId: string): void {
 
 export function sessionsDir(): string {
   const dir = cursorDir()
-  // ensureSessionDir (shared with the Codex/agy families, #1060) creates
+  // ensureSessionDir (shared with the Codex/agy families) creates
   // 0700 and vets symlink/ownership/mode; on refusal we still return the
   // path — writers fail open individually — but never prune, because
   // sweeping an untrusted directory is the deletion primitive the vetting
@@ -187,34 +157,24 @@ export function stopCountPath(conversationId: string): string {
 
 /**
  * Shared counter for hook-cursor-guard.ts (block count) and
- * hook-cursor-stop.ts (stop count) — hoisted (audit fix, evaluator review,
- * 2026-07-08) because both used to independently implement
- * "read-int-default-0, increment, write", a read-then-write that isn't
- * atomic across the fresh, independent process each hook invocation is: two
- * events for the same conversation close enough together can both read the
- * same stale count and one increment is lost. Appending one byte is atomic
- * on POSIX filesystems even under concurrent writers — counting file size
- * instead of parsing decimal content can't lose an increment the way
- * read-then-write can.
+ * hook-cursor-stop.ts (stop count). A read-increment-write is not atomic
+ * across the independent process each hook invocation is, so two close events
+ * could both read the same count and lose an increment.
  */
 export function incrementCounter(path: string): number {
   // The counter's directory must pass the same vetting as every other
-  // writer (cli#8): the previous code computed the verdict in sessionsDir()
-  // and then appended through the refused symlink anyway. Check, never
-  // create: every caller's path builder already ran ensureSessionDir.
+  // writer. Check, never create: every caller's path builder already ran
+  // ensureSessionDir.
   if (!sessionDirTrusted(dirname(path))) return Number.MAX_SAFE_INTEGER
   try {
-    // A distinct value per caller (cli#11): append-then-stat let two racing
+    // A distinct value per caller: append-then-stat would let two racing
     // hooks both read the same size. See ticketCounter.
     return ticketCounter(path)
   } catch {
-    // Same fail-open contract as the Codex/agy counters (#1060, and the
-    // 2026-08-27 adversarial-audit finding this family never received): a
-    // counter that cannot be persisted or read cannot bound anything, so
-    // report it as already exceeded. Guards fall back to allowing tools;
-    // nudge cadences go quiet (no small modulus divides 2^53-1) instead of
-    // firing every turn. The previous code let the append throw out of the
-    // hook and returned 1 on a stat failure — fail-closed both ways.
+    // Same fail-open contract as the Codex/agy counters: a counter that
+    // cannot be persisted or read cannot bound anything, so report it as
+    // already exceeded. Guards fall back to allowing tools; nudge cadences go
+    // quiet (no small modulus divides 2^53-1) instead of firing every turn.
     return Number.MAX_SAFE_INTEGER
   }
 }
@@ -223,18 +183,17 @@ export function incrementCounter(path: string): number {
  * Mark a conversation as started: write both the guard's sentinel and reset
  * the reminder timer in one call. Three call sites need this (session-start
  * hook on the normal interactive path; post-tool hook on the explicit
- * plur_session_start path; and the guard's own deadlock-prevention fallback,
- * audit fix — see hook-cursor-guard.ts) and all three must do exactly the
- * same two writes, so it's one function instead of copy-pasted pairs.
+ * plur_session_start path; and the guard's own deadlock-prevention fallback
+ * in hook-cursor-guard.ts) and all three must do exactly the same two writes.
  */
 export function markSessionStarted(conversationId: string): void {
-  // Never write into a refused directory (cli#8) — fail open instead.
+  // Never write into a refused directory — fail open instead.
   if (!ensureSessionDir(cursorDir())) return
   const now = String(Date.now())
   try {
     writeFileSync(sentinelPath(conversationId), now, { mode: 0o600 })
     writeFileSync(lastReminderPath(conversationId), now, { mode: 0o600 })
-  } catch { /* fail open — an unmarkable session costs one extra nudge (#1060) */ }
+  } catch { /* fail open — an unmarkable session costs one extra nudge */ }
 }
 
 const CONTEXT_RULE_HEADER = '---\n' +
@@ -258,38 +217,21 @@ export function removeGeneratedContextRules(dir: string): void {
 }
 
 /**
- * Write recalled engram content to the dynamic context rule file (audit fix,
- * live-evidence version — see Global Constraints). Cursor's own team
- * confirmed on their forum that `additional_context` from BOTH `sessionStart`
- * and `postToolUse` is dropped by a race condition ("runs async before the
- * composer handle is fully created") — a filed, acknowledged bug with no fix
- * timeline as of this plan's writing. The community-and-team-confirmed
- * workaround is to write the same content into a `.cursor/rules/*.mdc` file
- * instead: Cursor's rules engine reliably loads `alwaysApply: true` rules AT
- * CONVERSATION CREATION, unlike the broken hook-output channel. This is now
- * the PRIMARY delivery mechanism for hook-cursor-session-start.ts and
- * hook-cursor-post-tool.ts — not a fallback — both also still emit
- * `additional_context` too (harmless, and picks up automatically if/when
- * Cursor fixes the underlying bug).
+ * Write recalled engram content to the dynamic context rule file. Cursor
+ * drops `additional_context` from both `sessionStart` and `postToolUse` (it
+ * "runs async before the composer handle is fully created"), but its rules
+ * engine reliably loads `alwaysApply: true` rules AT CONVERSATION CREATION.
+ * So this is the PRIMARY delivery mechanism for hook-cursor-session-start.ts
+ * and hook-cursor-post-tool.ts; both still emit `additional_context` too,
+ * which is harmless and takes effect if Cursor delivers it.
  *
- * Narrower than it may read (audit fix — Popper-lens evaluator review,
- * iteration 4, 2026-07-09): the confirmed fact is specifically about the
- * file being loaded once at conversation start. Whether a REWRITE of this
- * file mid-conversation — which is exactly what every call after the first
- * one is — gets re-read before the conversation ends, or whether rules are
- * snapshotted once like the hook-output channel this replaces, is NOT
- * independently confirmed. See this file's "Known structural limitations"
- * item 4 above.
+ * Whether a REWRITE of this file mid-conversation is re-read is not
+ * confirmed; see limitation 4 in this file's header.
  *
  * Takes an explicit `path` (default `cursorContextRulePath()`) so callers can
- * target a DIFFERENT rule file instead — see `cursorReminderRulePath()`.
- * Originally this always wrote to the same session-context file regardless
- * of caller, which meant hook-cursor-post-tool.ts's periodic reminder
- * clobbered hook-cursor-session-start.ts's recalled-engram content the
- * moment the first reminder fired (audit fix — Codex adversarial review,
- * 2026-07-08). Each rule file Cursor loads is independent and additive, so
- * giving reminders their own file fixes this without needing to merge or
- * section-split file content.
+ * target a DIFFERENT rule file — see `cursorReminderRulePath()`. Reminders
+ * have their own file so they never overwrite the session's recalled
+ * engrams; Cursor loads each rule file independently and additively.
  */
 export function writeContextRule(content: string, path: string = cursorContextRulePath()): void {
   mkdirSync(dirname(path), { recursive: true })

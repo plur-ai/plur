@@ -64,18 +64,17 @@ type MergeResult = {
   enableAlready: boolean
   slotChanged: boolean
   slotAlready: boolean
-  /** Another plugin holds plugins.slots.memory — left as is (formal R2). */
+  /** Another plugin holds plugins.slots.memory — left as is. */
   slotForeign?: string
 }
 
 const isPlainObject = (v: unknown): boolean => !!v && typeof v === 'object' && !Array.isArray(v)
 
 /**
- * A config shape setup/repair would have to DISCARD to proceed (formal R2,
- * mcp#11): a present `plugins`, `plugins.entries`, `plugins.slots`, `mcp` or
- * `mcp.servers` that is not a plain object used to be replaced by `{}` and the
- * user's value was lost on the next write. Both paths now refuse to write and
- * say which key to fix. Absent keys are fine — they are created.
+ * A config shape setup/repair would have to DISCARD to proceed: a present
+ * `plugins`, `plugins.entries`, `plugins.slots`, `mcp` or `mcp.servers` that is
+ * not a plain object. Both paths refuse to write rather than replace it with
+ * `{}`, and say which key to fix. Absent keys are fine — they are created.
  */
 export function configShapeProblem(cfg: OpenclawConfig): string | null {
   const c = cfg as any
@@ -99,17 +98,15 @@ function mergeEnable(cfg: OpenclawConfig, openclawHome?: string): MergeResult {
       ? { ...plugins.entries }
       : {}
 
-  // Item 1 (#51 / D-2): We intentionally do NOT prune foreign plugin entries.
-  // A previous version deleted any entry whose extensions/<id> directory was
-  // absent — but that directory is transiently absent during any install or
-  // upgrade, so pruning silently destroyed third-party plugins' config INCLUDING
-  // their API keys. The config is the user's source of truth, not a mirror of the
-  // extensions dir. setup only ever adds/updates its own (plur-claw) entry; it
-  // never removes anyone else's.
+  // Foreign plugin entries are deliberately NOT pruned, even when their
+  // extensions/<id> directory is absent: that directory is transiently absent
+  // during any install or upgrade, and the entry may hold the plugin's API keys.
+  // The config is the user's source of truth, not a mirror of the extensions dir.
+  // setup only ever adds/updates its own (plur-claw) entry.
 
   const existing = entries[PLUGIN_ID]
   const enableAlready = !!(existing && existing.enabled === true)
-  // Item 4 (#51 / D-4): allowConversationAccess is required for the agent_end
+  // allowConversationAccess is required for the agent_end
   // hook — without it OpenClaw silently blocks the learning hook and PLUR can
   // inject but never learn. But only SEED it when the user hasn't expressed a
   // value. Spreading `allowConversationAccess: true` after the user's hooks would
@@ -130,10 +127,9 @@ function mergeEnable(cfg: OpenclawConfig, openclawHome?: string): MergeResult {
   entries[PLUGIN_ID] = nextEntry
   plugins.entries = entries
 
-  // Set memory slot — only when NOBODY holds it (formal R2, mcp#11). This ran
-  // unattended from postinstall and took a slot another plugin held, while
-  // repair (and doctor) treat that as a human's call. Same rule here: a
-  // foreign holder is left in place and reported.
+  // Set memory slot — only when NOBODY holds it. This runs unattended from
+  // postinstall, and repair (and doctor) treat a foreign holder as a human's
+  // call: it is left in place and reported.
   const slots = (plugins as any).slots && typeof (plugins as any).slots === 'object'
     ? (plugins as any).slots : {}
   const slotAlready = slots.memory === PLUGIN_ID
@@ -144,7 +140,7 @@ function mergeEnable(cfg: OpenclawConfig, openclawHome?: string): MergeResult {
   }
   ;(plugins as any).slots = slots
 
-  // Item 2 (#51 / D-3): In OpenClaw an ABSENT plugins.allow means "allow ALL
+  // In OpenClaw an ABSENT plugins.allow means "allow ALL
   // plugins". Seeding it with a one-element ['plur-claw'] list would silently
   // GATE OFF every other plugin the user has installed. So when allow is absent
   // (or null), leave it absent — do not create it.
@@ -253,27 +249,21 @@ function runtimeRegistrationStep(openclawHome?: string): { step: SetupStep; stat
   }
 }
 
-// Non-destructive replacement for the removed #51 / D-2 prune. That prune
-// DELETED any plugins.entries[<id>] whose extensions/<id> directory was absent —
-// destroying third-party config INCLUDING embedded API keys. Its fatal flaw was
-// the false positive: extensions/<id> is transiently absent during any
-// install/upgrade, and the prune ran unattended from postinstall (via
-// mergeEnable), i.e. exactly in that window. #566 removed it entirely, leaving no
-// detection at all — genuinely-orphaned entries (and their credentials) now
-// linger forever (#583).
-//
-// This restores DETECTION without the danger, by inverting all three risk axes:
+// Detects plugins.entries[<id>] whose extensions/<id> directory is absent —
+// orphaned entries that may still hold credentials. Deleting them automatically
+// is unsafe: extensions/<id> is transiently absent during any install/upgrade,
+// and the third-party config may embed API keys. So this check is:
 //   1. NON-DESTRUCTIVE: it only warns. It never deletes or mutates config.
 //   2. USER-INVOKED, NOT AUTOMATIC: it runs only inside runDoctor (the `doctor`
 //      command a user runs deliberately), never from the postinstall setup path
-//      that fires mid-install. This structurally avoids the prune's timing bug.
-//   3. CONSERVATIVE GATE + HONEST MESSAGE: if the extensions/ dir itself is
-//      absent we cannot distinguish "no plugins installed" from "tree not yet
-//      populated mid-install", so we stay silent (skip). When we do warn, the
-//      message states plainly that it is advisory, may be a false positive during
-//      an in-progress upgrade, and that the user — not claw — must remove anything.
-// It intentionally includes plur-claw's OWN entry (unlike the old prune, which
-// skipped it): a lingering plur-claw entry with no extension is equally orphaned.
+//      that fires mid-install.
+//   3. CONSERVATIVE: if the extensions/ dir itself is absent we cannot
+//      distinguish "no plugins installed" from "tree not yet populated
+//      mid-install", so we stay silent. When we do warn, the message says it is
+//      advisory, may be a false positive during an in-progress upgrade, and that
+//      the user — not claw — must remove anything.
+// It includes plur-claw's OWN entry: a lingering plur-claw entry with no
+// extension is equally orphaned.
 function orphanedEntriesStep(
   cfg: OpenclawConfig,
   configPath: string,
@@ -504,9 +494,9 @@ export function runDoctor(
     })
   }
 
-  // Item 2 (Option B) + Item 4: Check plugins.allow.
+  // Check plugins.allow.
   // An empty allow array means OpenClaw gates ALL plugins — including plur-claw —
-  // which causes the "no active memory plugin" false negative (#51 item 4).
+  // which causes a "no active memory plugin" false negative.
   // Surface this as a warning so users know to re-run setup or add plur-claw.
   const allowList = (plugins as any).allow
   if (Array.isArray(allowList) && allowList.length === 0) {
@@ -526,7 +516,7 @@ export function runDoctor(
     report.steps.push({ step: 'allow_gated', status: 'ok' })
   }
 
-  // #583: non-destructively flag config entries with no backing extension.
+  // Non-destructively flag config entries with no backing extension.
   report.steps.push(orphanedEntriesStep(cfg, path, opts.openclawHome))
 
   tailPending()
@@ -561,9 +551,9 @@ export function runRepair(opts: { configPath?: string; openclawHome?: string } =
   const slotFailed = pre.steps.find((s) => s.step === 'slot_selected')!.status === 'fail'
 
   // Also check if hooks.allowConversationAccess is missing — without it the
-  // learning hook is silently blocked by OpenClaw (issue #51). Only "missing"
-  // means undefined: an explicit `false` is the user's choice and repair must
-  // preserve it (#51 / D-4), never re-grant it.
+  // learning hook is silently blocked by OpenClaw. Only "missing" means
+  // undefined: an explicit `false` is the user's choice and repair must
+  // preserve it, never re-grant it.
   let hooksMissing = false
   if (existsSync(path)) {
     const peek = readConfig(path)
@@ -583,7 +573,7 @@ export function runRepair(opts: { configPath?: string; openclawHome?: string } =
     if (!readRes.ok) return pre
     cfg = readRes.data
   }
-  // Never discard a value it cannot read as an object (formal R2, mcp#11).
+  // Never discard a value it cannot read as an object.
   if (configShapeProblem(cfg)) return pre
 
   const plugins = (cfg.plugins && typeof cfg.plugins === 'object' && !Array.isArray(cfg.plugins)
@@ -617,8 +607,8 @@ export function runRepair(opts: { configPath?: string; openclawHome?: string } =
   }
 
   // Ensure hooks.allowConversationAccess is set even if plugin was already
-  // enabled — but only when it is ABSENT. An explicit `false` is preserved
-  // (#51 / D-4); repair must never re-grant a permission the user revoked.
+  // enabled — but only when it is ABSENT. An explicit `false` is preserved;
+  // repair must never re-grant a permission the user revoked.
   const currentEntry = entries[PLUGIN_ID]
   if (currentEntry && (currentEntry as any)?.hooks?.allowConversationAccess === undefined) {
     ;(currentEntry as any).hooks = { ...((currentEntry as any)?.hooks ?? {}), allowConversationAccess: true }

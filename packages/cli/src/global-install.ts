@@ -11,7 +11,7 @@ const GLOBAL_PATH_PATTERNS = [
   '/usr/local/',
   '/usr/bin/',
   '/usr/share/',
-  // Node version managers (issue #190) — `npm install -g` inside a managed
+  // Node version managers — `npm install -g` inside a managed
   // node lands under these prefixes, not the system paths above.
   '/.nvm/', // nvm: ~/.nvm/versions/node/vX.Y.Z/bin/plur
   '/.volta/', // volta: ~/.volta/bin/plur
@@ -31,8 +31,8 @@ function run(command: string, timeoutMs: number): Promise<string> {
 
 /**
  * Detect globally installed plur packages that shadow `npx @latest` resolution.
- * Safe to call at startup — subprocesses run concurrently (issue #191: worst
- * case is one timeout, ~5s, not their 12s sum), all time out, no event-loop
+ * Safe to call at startup — subprocesses run concurrently (worst case is one
+ * timeout, ~5s, not their 12s sum), all time out, no event-loop
  * blocking, and failures are swallowed.
  */
 export async function checkGlobalInstall(): Promise<GlobalInstallResult> {

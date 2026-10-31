@@ -6,15 +6,15 @@ import { getLastPlurInstance } from '../plur.js'
 
 /**
  * Bounded waits a hook does before it force-exits, so `process.exit()` never
- * lands inside one of this process's own store writes (#1313, #1343).
+ * lands inside one of this process's own store writes.
  *
  * `process.exit()` does not wait for in-flight async work. A hook that exits
  * past a missed hybrid deadline (the abandoned search still records its
  * injection) or on its watchdog timer can be mid-way through taking
- * `engrams.yaml.lock`. Measured on a 10,000-engram store: the exit left an
- * EMPTY lock file in 10 of 12 runs — the O_EXCL open had happened, the token
- * write had not — and core cannot tell who owns an empty lock, so every later
- * writer (the next hook, the MCP server) waits out its 60s stale threshold.
+ * `engrams.yaml.lock`. Exiting between the O_EXCL open and the token write
+ * leaves an EMPTY lock file, and core cannot tell who owns an empty lock, so
+ * every later writer (the next hook, the MCP server) waits out its 60s stale
+ * threshold.
  *
  * A disk check is not enough on its own: see {@link storeIdle}.
  *
@@ -23,7 +23,7 @@ import { getLastPlurInstance } from '../plur.js'
  * of every Codex and Antigravity hook.
  */
 
-/** The Claude Code hook's bound after an abandoned hybrid (#1313), and the Codex/Antigravity exit's. */
+/** The Claude Code hook's bound after an abandoned hybrid, and the Codex/Antigravity exit's (ms). */
 export const EXIT_LOCK_WAIT_MS = 5_000
 
 /**
@@ -51,7 +51,7 @@ function ownLockOnDisk(lockPath: string): boolean {
  * create is already issued, and one that lands after `process.exit()` is an
  * empty lock nobody will release. Core's count of lock operations in progress
  * covers that gap; the file check covers a lock file this process owns
- * regardless (review of #1349).
+ * regardless.
  */
 function storeIdle(lockPath: string | null): boolean {
   if (pendingStoreLockOps() > 0) return false

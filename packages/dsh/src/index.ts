@@ -103,18 +103,16 @@ interface AgentLike {
  */
 export function apply(ctx: Context, config: Config, injected?: PlurClient): void {
   // Cordis calls apply(ctx, config) with two arguments, so the third parameter
-  // is a TEST seam only. In production the engine is constructed here — an
-  // earlier build left it undefined in production, which registered every
-  // surface and then silently recalled nothing.
+  // is a TEST seam only. In production the engine must be constructed here, or
+  // every surface would register and then silently recall nothing.
   const plur = injected ?? createEngine(config)
   const counters = createCounters()
   const cache = createMemoryCache()
   const refresh = createRefreshPolicy({ refreshIntervalMs: config.refreshIntervalMs })
   // The REAL workspace reader, not a stub: without it every session on a
   // multi-session host collapses onto the configured default scope, ignoring
-  // each workspace's own .plur.yaml.
-  // Decision E3: a workspace scope is adopted only from a `plur trust`ed
-  // directory, and `scope: global` never (see workspace-scope.ts).
+  // each workspace's own .plur.yaml. A workspace scope is adopted only from a
+  // `plur trust`ed directory, and `scope: global` never (see workspace-scope.ts).
   const trusts = async (dir: string): Promise<boolean> => {
     const p = plur as PlurClient & { trusts?: (d: string) => Promise<boolean> }
     if (typeof p.trusts === 'function') return p.trusts(dir)
@@ -129,8 +127,7 @@ export function apply(ctx: Context, config: Config, injected?: PlurClient): void
   }))
   const live = new Map<string, AgentState>()
   // ONE queue for the whole plugin's ENGRAM WRITES — learn, capture, and the
-  // tools. Previously learn.ts and capture.ts each made their own and the
-  // tools bypassed queueing entirely.
+  // tools.
   //
   // It is not, and does not claim to be, a serialization guarantee over every
   // store touch. `refreshBlock` calls `injectHybrid` outside it once per turn,
@@ -143,8 +140,7 @@ export function apply(ctx: Context, config: Config, injected?: PlurClient): void
   //
   // A write keeps its slot past the soft `timeoutMs` (a tool answers
   // UNAVAILABLE then, the write goes on) until it settles or the hard cap
-  // elapses; then the queue moves on and says so (decision S3, guard.ts
-  // WRITE_HARD_CAP_MS).
+  // elapses; then the queue moves on and says so (guard.ts WRITE_HARD_CAP_MS).
   const queue = createWriteQueue({
     hardCapMs: Math.max(WRITE_HARD_CAP_MS, config.timeoutMs),
     onRelease: (ms) => {
@@ -180,14 +176,11 @@ export function apply(ctx: Context, config: Config, injected?: PlurClient): void
   registerCapture(ctx, { config, counters, plur, resolveScope, queue })
   // Skills and commands are OPTIONAL surfaces, so they mount in their own
   // scoped fibers via ctx.inject() rather than joining this plugin's `inject`
-  // list. Two reasons, and the first one is a crash we shipped past every unit
-  // test: Cordis throws on merely READING `ctx.skills` when `skills` is not
-  // declared — a `typeof ctx.skills?.register` guard never runs, because the
-  // property ACCESS throws first, which took the whole dsh boot down. Second,
-  // making them hard requirements would stop memory working at all on a minimal
-  // profile that composes no skill or command registry.
-  // Started lazily by /plur-memory and stopped with the plugin, so a host that
-  // never opens the viewer never binds a port.
+  // list. Two reasons. Cordis throws on merely READING `ctx.skills` when
+  // `skills` is not declared — a `typeof ctx.skills?.register` guard never
+  // runs, because the property ACCESS throws first, which would take the whole
+  // dsh boot down. And making them hard requirements would stop memory working
+  // at all on a minimal profile that composes no skill or command registry.
   const viewer = createViewer(plur)
   // ctx.effect() is Cordis's disposal seam — there is no 'dispose' event. The
   // returned teardown runs when this plugin's fiber goes away, so unloading
@@ -199,12 +192,10 @@ export function apply(ctx: Context, config: Config, injected?: PlurClient): void
   // @deepseek-ai/dsh-plan-mode uses (`text: (context) => context.agent ...`),
   // including its explicit no-agent guard.
   //
-  // The alternative — one section PER AGENT under the same name — throws by
-  // contract on the duplicate, and the catch that hid it meant agents 2..N got
-  // nothing while the surviving section served agent 1's memory to all of
-  // them. `agent.ctx` is not the answer either: reading `agent.ctx.systemPrompt`
-  // throws "cannot get property without inject" on a scope that did not
-  // declare it.
+  // One section PER AGENT under the same name does not work: registering the
+  // duplicate throws by contract. `agent.ctx` is not the answer either: reading
+  // `agent.ctx.systemPrompt` throws "cannot get property without inject" on a
+  // scope that did not declare it.
   if (config.injectionMode !== 'off') {
     // Contained: this runs at mount, so a host whose section API has moved
     // would otherwise take the whole plugin — and the boot — down with it.
@@ -261,9 +252,7 @@ export function apply(ctx: Context, config: Config, injected?: PlurClient): void
     }, { prepend: true })
   }
 
-  // The payload is `{ agent }`, NOT the agent. Reading `.id` off the payload
-  // always produced undefined, so nothing was ever reclaimed and eviction was
-  // the only path that ran.
+  // The payload is `{ agent }`, NOT the agent.
   ctx.on('agent/disposed', (payload: { agent?: { id?: string } }) => {
     const agentId = payload?.agent?.id
     if (agentId === undefined) return
@@ -304,9 +293,8 @@ export function apply(ctx: Context, config: Config, injected?: PlurClient): void
    * invoked with `void` from the pre-step listener, so anything that escapes it
    * becomes an unhandled promise rejection — which modern Node treats as fatal
    * and would take the user's whole agent down. Query construction reads
-   * host-supplied data that can be malformed, so it must be inside the guard
-   * too; an earlier version had it outside and a junk event array produced
-   * exactly that unhandled rejection.
+   * host-supplied data that can be malformed (a junk event array), so it must
+   * be inside the guard too.
    */
   async function refreshBlock(
     agentId: string,
@@ -327,9 +315,8 @@ export function apply(ctx: Context, config: Config, injected?: PlurClient): void
         ? await plur.injectHybrid(query, where)
         : await plur?.inject?.(query, where)
       // By the COUNT, not by one per attempt. `/plur` exists to answer "why
-      // didn't it remember that?", and during the inert-engine bug — when the
-      // plugin recalled nothing at all, on every install — this counter still
-      // incremented once per turn and read perfectly healthy.
+      // didn't it remember that?", and a per-attempt counter would read healthy
+      // even when every recall returned nothing.
       const rendered = injection?.count ?? 0
       for (let i = 0; i < rendered; i++) counters.bump('engrams_rendered')
       // Rendering is INSIDE the guard: a malformed engram must not escape either.

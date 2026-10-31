@@ -16,8 +16,7 @@ export interface Config {
    * What this DOES guarantee: everything this plugin writes goes to the
    * workspace's own scope, never to `global`.
    *
-   * What it does NOT guarantee, and an earlier version of this comment wrongly
-   * claimed: that reads are confined to that scope. `global` is a personal
+   * What it does NOT guarantee: that reads are confined to that scope. `global` is a personal
    * scope in core's model (`isPersonalScope`), and personal scopes pass every
    * project-scoped read filter by design — a scoped `recall()` deliberately
    * includes global engrams. So whatever is already in the user's global store
@@ -31,11 +30,10 @@ export interface Config {
    * Core separates two filters. `scope` is VISIBILITY, and it deliberately
    * passes the whole personal family (`local`, `global`, `user:*`, `agent:*`)
    * — it is not isolation. `scopes` is AUTHORIZATION: exact membership, no
-   * hierarchy expansion. Passing only `scope`, as this plugin did, let one
-   * project's engrams into another project's prompt; verified against the real
-   * engine, `project:alpha` surfaced in a `project:beta` injection.
+   * hierarchy expansion. Passing only `scope` would let one project's engrams
+   * into another project's prompt.
    *
-   * This plugin now always passes `scopes`, so other projects are excluded
+   * This plugin always passes `scopes`, so other projects are excluded
    * unconditionally. This flag controls only whether `global` joins the list.
    * Default true, because most stores keep the majority of their engrams there
    * and excluding it would leave the plugin recalling almost nothing. Set false
@@ -55,7 +53,7 @@ export interface Config {
   /**
    * How long a PLUR call is waited for. A write outlives it: it holds the
    * write queue until it settles or the hard cap (`WRITE_HARD_CAP_MS`, or this
-   * if larger) elapses — decision S3. The 60 s cap itself is a constant, not a
+   * if larger) elapses. The 60 s cap itself is a constant, not a
    * config key: only a larger `timeoutMs` raises it.
    */
   timeoutMs: number

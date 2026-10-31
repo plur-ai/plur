@@ -1,11 +1,10 @@
 /**
- * `plur outbox` — see what the remote-write queue is holding (#667).
+ * `plur outbox` — see what the remote-write queue is holding.
  *
  * The outbox is not a file or a queue directory. It is
  * `structured_data._outbox` nested inside ordinary engrams in `engrams.yaml`,
- * which is why it worked and was invisible: a user whose team store was
- * unreachable had queued writes with no supported way to see them, and the
- * only prose describing the mechanism lived inside an engram.
+ * so without this command queued writes for an unreachable team store are
+ * invisible.
  *
  * Read-only by default. `--flush` is the explicit action, mirroring the
  * `plur_outbox` MCP tool so the two surfaces cannot drift.
@@ -68,7 +67,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   }
 
   // Explicit: retries needs_action entries too — the user may just have
-  // fixed the cause, and should not wait out the daily back-off (#1299).
+  // fixed the cause, and should not wait out the daily back-off.
   const result = await plur.flushOutbox({ force: true })
   const stillPending = await plur.outboxCount()
 

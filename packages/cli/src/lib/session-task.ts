@@ -16,13 +16,12 @@ import { safeSessionKey } from './session-key.js'
  * user created — is refused, and state goes to a private directory under the
  * PLUR root instead, but only if THAT passes the same check. When both are
  * refused this returns null and callers persist nothing: a refused directory
- * is never written to (formal conflict H, spec/formal R2CLI §FR5
- * `Dir.conflict_H_unique` — the only policy that is both safe and persistent).
+ * is never written to.
  */
 export function hookSessionDir(): string | null {
   const shared = join(tmpdir(), 'plur-sessions')
   if (ensureSessionDir(shared)) return shared
-  // `||`, not `??`: an empty PLUR_PATH means unset, never "the cwd" (H3).
+  // `||`, not `??`: an empty PLUR_PATH means unset, never "the cwd".
   const fallback = join(process.env.PLUR_PATH || join(homedir(), '.plur'), 'hook-sessions')
   return ensureSessionDir(fallback) ? fallback : null
 }

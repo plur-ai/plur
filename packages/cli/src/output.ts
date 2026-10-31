@@ -42,20 +42,24 @@ function maskStringSecrets(s: string): string {
   return s.replace(URL_USERINFO, '$1***$2').replace(URL_SECRET_PARAM, '$1***')
 }
 
+function definesOwnJson(v: object): boolean {
+  return typeof (v as { toJSON?: unknown }).toJSON === 'function'
+}
+
 /**
  * Strip credential-bearing fields from anything printed as JSON.
  *
  * `StatusResult` embeds the whole `PlurConfig`, including `stores[].token` —
- * live enterprise bearer tokens. Without this, `plur status --json` pipes them
- * into CI logs, pasted issues and agent transcripts. Redaction lives at the
- * output boundary so every present and future JSON command inherits it.
+ * live bearer tokens that would otherwise end up in CI logs, pasted issues and
+ * agent transcripts. Redaction lives at the output boundary so every present
+ * and future JSON command inherits it.
  *
  * Two layers: secret-named keys (SECRET_KEYS) are replaced wholesale, and every
- * string value is scanned for credentials embedded in it (URL userinfo), since
- * a key-based denylist can't reach a password sitting inside a `stores[].url`
- * or interpolated into an error message. Value scanning is deliberately narrow
- * (URL userinfo only) to avoid corrupting legitimate output; it is not a
- * general secret scrubber.
+ * string value is scanned for credentials embedded in it (URL userinfo and
+ * known secret query parameters), since a key-based denylist can't reach a
+ * password sitting inside a `stores[].url` or interpolated into an error
+ * message. Value scanning is deliberately narrow to avoid corrupting
+ * legitimate output; it is not a general secret scrubber.
  *
  * `path` tracks the current ancestor chain, not every object ever visited: a
  * DAG is not a cycle, and PlurConfig legitimately shares sub-objects between
@@ -66,13 +70,8 @@ function maskStringSecrets(s: string): string {
  * serializes itself; rebuilding it via Object.entries would corrupt that form
  * (a Date would become `{}` instead of its ISO string), so it passes through.
  * Everything else is walked — plain objects AND class instances alike — so a
- * token sitting on a store driver or other non-plain object is redacted rather
- * than silently emitted, not merely assumed absent.
+ * token sitting on a store driver or other non-plain object is redacted.
  */
-function definesOwnJson(v: object): boolean {
-  return typeof (v as { toJSON?: unknown }).toJSON === 'function'
-}
-
 export function redactSecrets(value: unknown, path = new Set<object>()): unknown {
   if (typeof value === 'string') return maskStringSecrets(value)
   if (value === null || typeof value !== 'object') return value
@@ -99,7 +98,7 @@ export function outputJson(data: unknown): void {
   process.stdout.write(JSON.stringify(redactSecrets(data)) + '\n')
 }
 
-// ── --quiet policy (#730) ───────────────────────────────────────────────────
+// ── --quiet policy ─────────────────────────────────────────────────────────
 //
 // `--quiet` means "suppress non-essential output". "Non-essential" is defined
 // here, once, not per command:
@@ -116,9 +115,7 @@ export function outputJson(data: unknown): void {
 //
 // Mechanics: the entry point calls {@link setQuiet} once from the parsed
 // global flags, so quiet cannot be forgotten by a command that never threads
-// options (the failure mode of the pre-#730 design, where only init-remote
-// passed flags and the other ~350 call sites silently ignored the flag).
-// Call sites still pass `flags` explicitly where available — that keeps
+// options. Call sites still pass `flags` explicitly where available — that keeps
 // commands testable in-process without touching module state, and the
 // per-call value overrides the global one.
 //

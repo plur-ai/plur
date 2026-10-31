@@ -36,12 +36,10 @@ export async function guard<T>(
   opts: GuardOptions,
 ): Promise<T | undefined> {
   let timer: ReturnType<typeof setTimeout> | undefined
-  // A distinct sentinel, not `undefined`: a timeout used to resolve through the
-  // SUCCESS path, so it bumped no counter and called no observer. Timeout is
-  // the dominant failure mode on a large store — a slow injection on a
-  // multi-thousand-engram corpus reaches 5s under ordinary contention — and it
-  // was the one failure nothing anywhere recorded. "It forgot and I cannot
-  // find out why" is the report that follows.
+  // A distinct sentinel, not `undefined`, so a timeout goes through the
+  // failure path (counter and observer) instead of the success path. Timeout
+  // is the dominant failure mode on a large store: a slow injection on a
+  // multi-thousand-engram corpus reaches 5s under ordinary contention.
   const TIMED_OUT = Symbol('timeout')
   try {
     // Promise.resolve().then(fn) also captures a synchronous throw from fn().
@@ -92,18 +90,18 @@ export type WriteQueue = <T>(fn: () => Promise<T>) => Promise<T | undefined>
  *
  * The soft bound (`timeoutMs`, default 5 s) is how long a CALLER waits — a tool
  * answers UNAVAILABLE then. It is not how long the write runs: the write keeps
- * going, and releasing the slot at the soft bound let the next write overlap it
- * (formal Adapters #6b). Holding the slot until settlement instead lets one hung
+ * going, and releasing the slot at the soft bound would let the next write
+ * overlap it. Holding the slot until settlement instead would let one hung
  * write wedge every later write forever. The hard cap is the bound between the
- * two (decision S3, 2026-09-26). 60 s matches core's store-lock stale threshold
+ * two. 60 s matches core's store-lock stale threshold
  * (`DEFAULT_STALE_THRESHOLD`): a write still running past it has lost the
  * lock's guarantee anyway, so waiting longer protects nothing. The plugin uses
  * `max(WRITE_HARD_CAP_MS, timeoutMs)`, so the hard cap is never below the soft.
  *
- * A CONSTANT on purpose, not a config key (formal R2 follow-up): it is tied to
- * core's lock threshold, not to the host's patience, and a smaller value would
- * reintroduce overlapping writes. The only way to raise it is a larger
- * `timeoutMs`; there is no way to lower it.
+ * A CONSTANT on purpose, not a config key: it is tied to core's lock
+ * threshold, not to the host's patience, and a smaller value would allow
+ * overlapping writes. The only way to raise it is a larger `timeoutMs`; there
+ * is no way to lower it.
  */
 export const WRITE_HARD_CAP_MS = 60_000
 
@@ -165,10 +163,10 @@ export function createWriteQueue(opts: WriteQueueOptions = {}): WriteQueue {
  * The engine facade (engine.ts) deliberately resolves a write to a no-op when
  * core cannot load — pinned by engine.test.ts, so a missing engine never
  * rejects into the host. That makes "the call resolved" useless as "the write
- * happened": every write tool reported "Stored." / "Retired." / "Recorded."
- * and auto-learn counted a capture with no engine at all (formal Adapters #6).
- * Ask instead: the method exists AND, when the client can say so (`ready()`),
- * the engine is loaded. An injected client without `ready()` is trusted.
+ * happened": a write tool would report "Stored." and auto-learn would count a
+ * capture with no engine at all. Ask instead: the method exists AND, when the
+ * client can say so (`ready()`), the engine is loaded. An injected client
+ * without `ready()` is trusted.
  */
 export async function writable(plur: unknown, method: string): Promise<boolean> {
   const p = plur as Record<string, unknown> | null | undefined

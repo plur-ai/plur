@@ -1,9 +1,9 @@
 /**
  * Shared helpers for walking a dsh session log.
  *
- * Four call sites need to read `agent.session.events`, and log-walking is
- * exactly where the design review found bugs. Centralised here so the rules live
- * in one place and are unit-tested once, without needing a Cordis context.
+ * Several call sites need to read `agent.session.events`, and log-walking is
+ * easy to get wrong. Centralised here so the rules live in one place and are
+ * unit-tested once, without needing a Cordis context.
  *
  * @module
  */

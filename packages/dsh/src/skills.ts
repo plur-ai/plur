@@ -10,11 +10,9 @@
  * has not declared the dependency — the property access throws first.
  *
  * The host contract is `SkillRegistration`: the body field is **`content`**,
- * and `source` is required. An earlier version passed `body`. Register-time
- * validation only checks name and description, so registration SUCCEEDED and
- * the skill appeared in the catalog — then `ctx.skills.get('plur-memory')`
- * threw "loaded skill 'plur-memory' source must be a string" for anyone who
- * opened it. Advertised and broken is worse than absent.
+ * and `source` is required. Register-time validation only checks name and
+ * description, so a wrong shape still registers and appears in the catalog,
+ * then throws when `ctx.skills.get('plur-memory')` loads it.
  *
  * @module
  */

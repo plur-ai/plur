@@ -8,27 +8,25 @@ import type { FolderPolicy } from '@plur-ai/core'
 import { endFolderNonceSession } from '@plur-ai/core'
 import { safeSessionKey } from '../lib/session-key.js'
 import { flushOutboxForHook, HOOK_OUTBOX_BUDGET_MS } from '../lib/hook-outbox-flush.js'
-import { hookSessionKey, legacyHookSessionKeys } from '../lib/session-key.js' // decision H1
+import { hookSessionKey, legacyHookSessionKeys } from '../lib/session-key.js'
 import { removeSessionTask } from '../lib/session-task.js'
 
 /**
- * plur hook-session-end — Claude Code SessionEnd hook (shipped v1.0.85).
+ * plur hook-session-end — Claude Code SessionEnd hook.
  *
  * Auto-closes the PLUR memory lifecycle when a session ends, instead of
- * relying on the agent remembering to call plur_session_end (#217).
+ * relying on the agent remembering to call plur_session_end.
  *
  * How it relates to the rest of the lifecycle:
- * - hook-learn-check writes periodic session checkpoints (#215).
+ * - hook-learn-check writes periodic session checkpoints.
  * - plur_session_end (agent-called) is the primary close: it creates engrams
  *   from LLM-reviewed suggestions, captures an episode, AND unlinks the
  *   checkpoint.
  * - If the agent never calls plur_session_end, the checkpoint is left behind.
- *   Previously the ONLY recovery was hook-inject's deferred wrap-up (#216) on
- *   the NEXT session_start, which emits a transient notice but captures no
- *   durable episode.
+ *   hook-inject's deferred wrap-up on the NEXT session_start emits a
+ *   transient notice for it but captures no durable episode.
  *
- * This hook closes that gap: fired by Claude Code at the moment the session
- * ends, it captures a durable closing episode from the checkpoint metadata and
+ * This hook is fired by Claude Code at the moment the session ends: it captures a durable closing episode from the checkpoint metadata and
  * cleans up the checkpoint — at the right time, with the right cwd. It cannot
  * produce LLM-quality engram suggestions (no model runs in a shell hook), so it
  * is a conservative safety net, not a replacement for plur_session_end.
@@ -36,7 +34,7 @@ import { removeSessionTask } from '../lib/session-task.js'
  * If the checkpoint is absent, plur_session_end already ran (clean close) or
  * the session was too short to checkpoint — either way there is nothing to do.
  *
- * It also retries queued team writes (the outbox, #1269), within a bounded
+ * It also retries queued team writes (the outbox), within a bounded
  * budget, on every exit path — including the clean-close one, where there is
  * no checkpoint to act on.
  *
@@ -48,14 +46,12 @@ function sessionKeys(payloadSessionId?: string): string[] {
   // Mirror plur_session_end's key resolution (tools.ts): payload session_id
   // first, then CLAUDE_SESSION_ID, then ppid. hook-learn-check writes the
   // checkpoint under safeSessionKey(id), which REPLACES unsafe characters with
-  // '_' — try that form first, then the stripped form older writers used
-  // (#1278 follow-up; #1301 fixed the same mismatch in plur_session_end).
+  // '_' — try that form first, then the stripped form older writers used.
   //
-  // Owner decision H1 ("payload"): the writer's key is hookSessionKey; the
-  // shared legacyHookSessionKeys adds the forms older writers used (main's and
-  // #1228's env-first stripped key, including its 'default'). The
-  // per-candidate forms below stay as a superset so no key this reader
-  // accepted before is dropped.
+  // The writer's key is hookSessionKey (payload first); legacyHookSessionKeys
+  // adds the forms older writers used (including the env-first stripped key
+  // and its 'default'). The per-candidate forms below are a superset so
+  // checkpoints written under any of those keys are still found.
   const perCandidate = [payloadSessionId, process.env.CLAUDE_SESSION_ID, String(process.ppid)]
     .filter(Boolean)
     .flatMap(k => [
@@ -67,7 +63,7 @@ function sessionKeys(payloadSessionId?: string): string[] {
 }
 
 function plurPath(flags: GlobalFlags): string {
-  // `||`, as createPlur and the checkpoint writer resolve it (cli#6, H3): an
+  // `||`, as createPlur and the checkpoint writer resolve it: an
   // empty PLUR_PATH means "unset" everywhere, not "the current directory".
   return flags.path || process.env.PLUR_PATH || join(homedir(), '.plur')
 }
@@ -92,13 +88,13 @@ function readStdinRaw(): string {
 }
 
 export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
-  // #1347: the folder gate replaces #247's project gate. An off folder gets
-  // nothing, the outbox flush included.
+  // The folder gate decides. An off folder gets nothing, the outbox flush
+  // included.
   const folder = await closeSession(flags)
   if (!folder) return
-  // #1269: after the close, never instead of it — the checkpoint work is the
+  // After the close, never instead of it — the checkpoint work is the
   // cheaper, more important half, and the flush has the rest of the budget.
-  // Bound to the payload's folder, not this process's (gate review of #1663).
+  // Bound to the payload's folder, not this process's.
   await flushOutboxForHook(flags, { hook: 'hook-session-end', budgetMs: HOOK_OUTBOX_BUDGET_MS.claudeSessionEnd, folder })
 }
 
@@ -117,17 +113,16 @@ async function closeSession(flags: GlobalFlags): Promise<{ dir: string; policy: 
   // it has no use once the session is over.
   removeSessionTask(payload.session_id)
 
-  // #1347: the ask flow's nonces for this session expire with it, whatever
+  // The ask flow's nonces for this session expire with it, whatever
   // the folder's mode. Only removes this session's own nonce file.
   if (payload.session_id) try { endFolderNonceSession(plurPath(flags), payload.session_id) } catch { /* best-effort */ }
 
-  // Nothing is captured unless the folder map says on (#1347; was #247's
-  // project gate).
+  // Nothing is captured unless the folder map says on.
   const dir = payloadDir(payload as Record<string, unknown>)
   const policy = hookFolderPolicy(dir, flags)
   if (!isWorkingMode(policy)) return false
   const folder = { dir, policy }
-  // remote-only (owner decision on #1521): no timeline capture. The session's
+  // remote-only: no timeline capture. The session's
   // checkpoint (its metadata) is dropped too, so no later session captures it.
   const remoteOnly = policy.mode === 'remote-only'
 
@@ -146,15 +141,12 @@ async function closeSession(flags: GlobalFlags): Promise<{ dir: string; policy: 
         checkpointPath = cp
         break
       } catch {
-        // Unparseable checkpoint — RETAIN it, never destroy it (#217). With
-        // hook-learn-check's writeCheckpoint now atomic (temp-file + rename),
-        // a concurrent reader can no longer catch a mid-write PARTIAL read, so
-        // this branch is reached only on genuine on-disk corruption. Even then,
-        // a checkpoint is a session's only durable record: unlinking it (the
-        // old behaviour) was silent data loss, and a partial read of a LIVE
-        // session's checkpoint was indistinguishable from corruption. Leave it
-        // in place and stop — the next session_start's deferred wrap-up (#216)
-        // can still find it, and nothing is captured from unparseable content.
+        // Unparseable checkpoint — RETAIN it, never destroy it. writeCheckpoint
+        // is atomic (temp-file + rename), so this is genuine on-disk
+        // corruption, but a checkpoint is a session's only durable record and
+        // unlinking it would be silent data loss. Leave it in place and stop —
+        // the next session_start's deferred wrap-up can still find it, and
+        // nothing is captured from unparseable content.
         return folder
       }
     }
@@ -163,7 +155,7 @@ async function closeSession(flags: GlobalFlags): Promise<{ dir: string; policy: 
   // No checkpoint → clean close already happened, or session too short. Nothing
   // to close.
   if (!checkpointPath || !checkpoint) return folder
-  // The checkpoint's OWN folder decides too (re-audit of #1521, C-1): a
+  // The checkpoint's OWN folder decides too: a
   // payload without a usable cwd falls back to this process's folder, which
   // may not be the session's. When in doubt, nothing is captured.
   let checkpointPolicy: { mode: string; reason?: string } | null = null
@@ -179,7 +171,7 @@ async function closeSession(flags: GlobalFlags): Promise<{ dir: string; policy: 
   if (checkpointPolicy?.reason === 'malformed-map' || checkpointPolicy?.reason === 'resolver-error') return folder
 
   // Build a conservative, metadata-only summary — the same information the
-  // deferred wrap-up (#216) reports, but captured as a durable episode.
+  // deferred wrap-up reports, but captured as a durable episode.
   const started = checkpoint.started_at ? new Date(checkpoint.started_at) : null
   const ended = checkpoint.last_checkpoint ? new Date(checkpoint.last_checkpoint) : null
   let durationStr = ''
@@ -213,9 +205,8 @@ async function closeSession(flags: GlobalFlags): Promise<{ dir: string; policy: 
     // Capture is best-effort — never let a SessionEnd hook fail the session.
     // But do NOT delete the checkpoint below when it fails: the checkpoint is
     // the session's only durable record, and on a full disk (or any capture
-    // failure) unlinking it unconditionally was silent data loss (#217).
-    // Retaining it lets the next session_start's deferred wrap-up (#216)
-    // recover the session. Advisory stderr only — SessionEnd output is not
+    // failure) unlinking it would be silent data loss. Retaining it lets the
+    // next session_start's deferred wrap-up recover the session. Advisory stderr only — SessionEnd output is not
     // surfaced to the user.
     process.stderr.write(
       `[plur] hook-session-end: capture failed, retaining checkpoint for recovery: ` +
@@ -224,9 +215,9 @@ async function closeSession(flags: GlobalFlags): Promise<{ dir: string; policy: 
   }
 
   // Clean up the checkpoint ONLY after a successful capture, so the session's
-  // durable record survives a failed capture (#217). On success this also
-  // prevents the next session_start's deferred wrap-up from double-reporting
-  // this session (#216).
+  // durable record survives a failed capture. On success this also prevents
+  // the next session_start's deferred wrap-up from double-reporting this
+  // session.
   if (captured) {
     try { unlinkSync(checkpointPath) } catch {}
   }

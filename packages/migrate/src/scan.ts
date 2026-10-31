@@ -3,18 +3,16 @@
  *
  * ## Why this reports rather than rewrites, by default
  *
- * The 0.16 migration inside this repo was done with codemods over ~1,100 call
- * sites, and they were wrong in instructive ways before they were right. Every
- * class of mistake they made is guarded for here, because a tool that silently
- * corrupts a user's source is worse than no tool:
+ * A naive codemod gets several classes of site wrong while still producing
+ * valid code. Each is guarded for here, because a tool that silently corrupts
+ * a user's source is worse than no tool:
  *
- *   - **String literals.** An early pass rewrote text inside quotes, turning a
- *     CLI's help output into `hook-await inject` and a user-facing message into
- *     "Add a remote with await plur.sync(...)". Both were valid TypeScript and
- *     both shipped through a green test suite.
+ *   - **String literals.** Rewriting text inside quotes turns help output
+ *     into `hook-await inject` and a message into "Add a remote with await
+ *     plur.sync(...)". Valid TypeScript, green tests.
  *   - **`Promise.race` / `Promise.all` arrays.** Inserting `await` into an
  *     element resolves that call BEFORE the array is constructed, which
- *     silently disabled a 5s timeout guard — the racing promise was already
+ *     silently disables a timeout guard — the racing promise is already
  *     settled. Still valid, still green.
  *   - **ASI hazards.** A line beginning `(await ...)` after a line with no
  *     semicolon parses as a call on the previous expression.
@@ -39,9 +37,7 @@
 export const NEWLY_ASYNC = [
   // Derived from git, not from memory: these are the methods whose signature
   // went sync -> async in 0.16. `packages/migrate/test/method-list.test.ts`
-  // re-derives the same set from `Plur` and fails if this drifts — the list was
-  // hand-written once and was wrong in both directions (it advised `await` on a
-  // synchronous `addStore`, and missed eight methods entirely).
+  // re-derives the same set from `Plur` and fails if this drifts.
   'compact',
   'episodeToEngram',
   'getById',
@@ -66,10 +62,9 @@ export const NEWLY_ASYNC = [
   'sync',
   'updateEngram',
   // Already async before 0.16, so an un-awaited call was always a bug rather
-  // than migration fallout — but reporting it costs nothing and helps, and
-  // these were in the original list. `addStore` was too and is REMOVED: it is
-  // synchronous, so the tool was telling users to add an `await` that does not
-  // belong.
+  // than migration fallout — but reporting it costs nothing and helps.
+  // `addStore` is NOT listed: it is synchronous, and an `await` does not
+  // belong there.
   'feedback',
   'flushOutbox',
   'forget',
@@ -185,8 +180,8 @@ function inSpans(spans: Array<[number, number]>, idx: number): boolean {
  * index, which is the ASI splice. See the guard in `scanSource`.
  *
  * Two characters that LOOK like dangling operators are deliberately absent,
- * because both far more often END a complete expression (iteration 2 of the
- * #752 audit reproduced runtime splices for each):
+ * because both far more often END a complete expression (refusing them
+ * would splice at runtime for each):
  *
  *   - `/` — the tail of a regex literal. `literalSpans` does not lex regexes,
  *     so `const re = /foo/` reaches this check as a bare `/`, and a regex
@@ -291,10 +286,8 @@ const CONTROL_KEYWORDS = new Set(['if', 'for', 'while', 'switch', 'catch', 'with
  * unacceptable outcome.
  *
  * Detected by scanning outwards for an unmatched `[` rather than by looking
- * back a fixed number of characters. The window version passed the obvious
- * cases and missed anything with a long enough preceding element: verified
- * against a three-element `Promise.all` where the combinator sat beyond the
- * 80-character lookback, and the tool rewrote it.
+ * back a fixed number of characters: a fixed window misses any combinator
+ * whose preceding elements are long enough to push it out of range.
  */
 function insideCombinatorArray(src: string, idx: number, spans: Array<[number, number]>): boolean {
   let square = 0, round = 0, curly = 0
@@ -311,10 +304,10 @@ function insideCombinatorArray(src: string, idx: number, spans: Array<[number, n
       //
       // The lookback is built from SIGNIFICANT characters only — comment and
       // string spans are skipped, exactly as the bracket walk above skips
-      // them. A raw `src.slice` here matched the literal text `Promise.all(`
+      // them. A raw `src.slice` would match the literal text `Promise.all(`
       // inside an adjacent COMMENT (`process(\n  // Promise.all(\n  [...]`)
-      // and refused two perfectly ordinary calls; the false positive fails
-      // safe but sends a human to investigate nothing.
+      // and refuse ordinary calls; that fails safe but sends a human to
+      // investigate nothing.
       let before = ''
       for (let j = i - 1; j >= 0 && before.length < 60; j--) {
         if (inSpans(spans, j)) continue
@@ -371,9 +364,8 @@ function enclosingFunctionKind(src: string, idx: number, spans: Array<[number, n
     //
     // The keyword guard is load-bearing: `if (...) {`, `for (...) {`,
     // `while (...) {` and `catch (...) {` all match this shape, and treating
-    // one as a non-async function made every call inside a conditional or loop
-    // unfixable — even inside an async function. Caught by a test that put the
-    // call inside `if { for { ... } }`.
+    // one as a non-async function would make every call inside a conditional
+    // or loop unfixable — even inside an async function.
     const method = /(?:^|[^\w$])(async\s+)?([\w$]+)\s*\([^()]*\)\s*$/.exec(header)
     if (method && !CONTROL_KEYWORDS.has(method[2])) return method[1] ? 'async' : 'sync'
     // Some other block (if/for/try/class body) — keep walking outwards.
@@ -443,23 +435,20 @@ function matchBackwardBracket(src: string, close: number, spans: Array<[number, 
  *
  * Walks BACKWARD from the dot through the chain — identifier segments, `?.`
  * links, bracket indexes (nested ones too — the walk matches brackets with
- * spans skipped, so `m[a[0]]` and `m["a]b"]` both resolve, two shapes the old
- * character-class regex documented as misses), call arguments, and
+ * spans skipped, so `m[a[0]]` and `m["a]b"]` both resolve), call arguments, and
  * parenthesised heads — skipping whitespace and comments between tokens.
  *
- * Two failure classes of the receiver-anchored regex this replaces, both from
- * the 0.16.0 audit trail (#752 item 6, #758):
+ * Why a walk and not a receiver-anchored regex:
  *
- *   - It could not span a newline, so `plur\n  .recall(q)` — an ordinary
- *     fluent chain — scanned CLEAN, and a clean exit is read as "this file is
- *     done".
- *   - Worse, it re-anchored MID-chain: `getStore().plur.recall(q)` matched
- *     with receiver `plur`, and --write emitted
+ *   - A regex cannot span a newline, so `plur\n  .recall(q)` — an ordinary
+ *     fluent chain — would scan CLEAN, and a clean exit is read as "this file
+ *     is done".
+ *   - A regex re-anchors MID-chain: `getStore().plur.recall(q)` would match
+ *     with receiver `plur`, and --write would emit
  *     `getStore().await plur.recall(q)`, which does not parse. The walk
  *     starts the finding at the true head of the chain, so the insertion
  *     point is always a position `await` may legally occupy — and an
- *     `await`/`return`/`void` already in front of the CHAIN is seen, where
- *     the mid-chain anchor looked past it.
+ *     `await`/`return`/`void` already in front of the CHAIN is seen.
  *
  * The walk stops (returns null) at anything it cannot classify — a string or
  * template receiver, a control-structure header, an unmatched bracket. A miss
@@ -636,7 +625,7 @@ export function scanSource(file: string, src: string, methods: readonly string[]
     let wrapTo: number | undefined
     if (callEnd < 0) {
       // Could not find the closing paren, so whether the result is consumed is
-      // unknown. Guessing here is what produced the `.length`-of-a-promise bug.
+      // unknown. Guessing here risks awaiting `.length` of the promise.
       fixable = false
       reason = 'could not determine where the call ends — add `await` by hand'
     } else if (nsi >= 0 && (src[nsi] === '.' || src[nsi] === '[' || (src[nsi] === '?' && src[nsi + 1] === '.'))) {
@@ -645,15 +634,14 @@ export function scanSource(file: string, src: string, methods: readonly string[]
       // Only when the whole expression — chain head through closing paren —
       // sits on one line. A consumed call that spans lines (a multi-line
       // argument list, or a receiver chain split across lines: `plur\n
-      // .recall(q)\n  .length`, audit #752 item 6) is reported for a human
+      // .recall(q)\n  .length`) is reported for a human
       // rather than rewritten blind.
       if (endPos.line === pos.line) wrapTo = endPos.column
       else { fixable = false; reason = 'result is consumed by a multi-line expression — needs `(await ...)` by hand' }
     }
 
-    // ASI hazard — the third failure class in the header comment, and the one
-    // that shipped without its guard until the 0.16.0 pre-release audit
-    // reproduced it (#752). A `wrapTo` rewrite starts the line with `(`. If
+    // ASI hazard — the third failure class in the header comment. A `wrapTo`
+    // rewrite starts the line with `(`. If
     // the PREVIOUS statement never terminated, that `(` splices both lines
     // into one expression:
     //
@@ -714,11 +702,11 @@ export function scanSource(file: string, src: string, methods: readonly string[]
  *
  * `s` is a suffix of the whole source starting at absolute offset `base`, so
  * span membership is tested against `base + i`. Skipping string and comment
- * spans is not cosmetic: a stray paren in a query string used to shift the
- * match, `matchParen` returned -1, and `callEnd > 0` then read as "nothing
- * consumes the result" — so `plur.recall('has a ( paren').length` was rewritten
- * to `await plur.recall(...).length`, which awaits `.length` OF THE PROMISE and
- * evaluates to undefined. It parses and it is silently wrong.
+ * spans is not cosmetic: a stray paren in a query string would shift the
+ * match, `matchParen` would return -1, and `callEnd > 0` would then read as
+ * "nothing consumes the result" — so `plur.recall('has a ( paren').length`
+ * would become `await plur.recall(...).length`, which awaits `.length` OF THE
+ * PROMISE and evaluates to undefined. It parses and it is silently wrong.
  */
 function matchParen(s: string, open: number, spans: Array<[number, number]>, base: number): number {
   if (open < 0) return -1
@@ -739,8 +727,8 @@ function matchParen(s: string, open: number, spans: Array<[number, number]>, bas
  * Its END can be: when one fixable call sits inside another's argument list on
  * the same line (`plur.list(plur.getById(id)).length`), the inner `await ` is
  * inserted first, inside the outer wrap's span, and an unadjusted `wrapTo`
- * then closed the outer `(await …)` six characters early — corrupting the
- * line (formal R2, mcp-integrations#8). So every position is mapped through
+ * would close the outer `(await …)` six characters early, corrupting the
+ * line. So every position is mapped through
  * the insertions already made on that line (original offset → current offset).
  */
 export function applyFixes(src: string, findings: Finding[]): { src: string; applied: number; skipped: Finding[] } {

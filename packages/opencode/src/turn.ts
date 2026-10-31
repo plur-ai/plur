@@ -1,9 +1,8 @@
 /**
  * Assistant text accumulated for the current turn, per session.
  *
- * Two properties of `message.part.updated`, confirmed against the real
- * opencode 1.18.30 binary (repo probe, `scripts/probes/opencode-plugin-probe.mjs`,
- * logging part id + head/tail per update):
+ * Two properties of `message.part.updated` (see
+ * `scripts/probes/opencode-plugin-probe.mjs`):
  *
  * 1. **Updates are cumulative snapshots of one part, not deltas.** The same
  *    part id arrives repeatedly with growing text (`""` -> `"1"` ->
@@ -17,21 +16,21 @@
  *    exclude its parts — otherwise the user's prompt text would be captured
  *    as "assistant text" and fed to the self-report parser every turn.
  *
- * `session.idle` fires more than once per turn (measured: twice), so the take
- * is one-shot — the buffer goes stale after a take and only becomes fresh
- * again when the next turn appends text. Without this the learner runs twice
- * over one transcript and writes the same engram twice.
+ * `session.idle` fires more than once per turn, so the take is one-shot — the
+ * buffer goes stale after a take and only becomes fresh again when the next
+ * turn appends text. Otherwise the learner would run twice over one
+ * transcript and write the same engram twice.
  */
 export class TurnBuffer {
   private parts = new Map<string, Map<string, string>>() // sessionID -> partID -> latest text
   private fresh = new Map<string, boolean>()
   private userMessage = new Map<string, string>() // sessionID -> that session's current user messageID
   /**
-   * Part ids already handed out by `takeIfFresh` this turn (formal R2, mcp#10).
-   * Updates are cumulative snapshots, and one can arrive AFTER the take (the
-   * second `session.idle`, a late stream flush). It used to re-arm `fresh`
-   * with the same full text, so the transcript was learned twice. A taken
-   * part is closed; the set resets when the next turn's user message arrives.
+   * Part ids already handed out by `takeIfFresh` this turn. Updates are
+   * cumulative snapshots, and one can arrive after the take (the second
+   * `session.idle`, a late stream flush); re-arming `fresh` with it would learn
+   * the transcript twice. A taken part is closed; the set resets when the next
+   * turn's user message arrives.
    */
   private taken = new Map<string, Set<string>>()
 
