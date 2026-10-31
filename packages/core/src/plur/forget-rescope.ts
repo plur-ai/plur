@@ -14,7 +14,7 @@ import { REMOTE_PROBE_TIMEOUT_MS } from './helpers.js'
 import { MutationOutcome, RescopeOptions, RescopeResult } from './types.js'
 
 export interface ForgetRescopeMethods {
-/** Set engram status to 'retired'. Supports primary and store engrams.
+  /** Set engram status to 'retired'. Supports primary and store engrams.
    *
    * options.force=true bypasses write_count and retires immediately,
    * regardless of how many sources reference the engram. Use for explicit
@@ -22,15 +22,15 @@ export interface ForgetRescopeMethods {
    * The default decrement-until-zero behavior is for internal dedup tracking
    * (two agents learned the same fact; one forgets, the other's reference
    * should remain). */
-forget(id: string, reason?: string, options?: { force?: boolean; scope?: string }): Promise<MutationOutcome>
+  forget(id: string, reason?: string, options?: { force?: boolean; scope?: string }): Promise<MutationOutcome>
 
-/** Active primary-store rows eligible for an explicit upload proposal. */
-listUploadCandidates(authorizedScopes: string[]): Promise<Array<{ id: string; scope: string; statement: string; proposed: string | null }>>
+  /** Active primary-store rows eligible for an explicit upload proposal. */
+  listUploadCandidates(authorizedScopes: string[]): Promise<Array<{ id: string; scope: string; statement: string; proposed: string | null }>>
 
-/** Queue selected primary rows through the existing guarded outbox path. */
-uploadLocal(ids: string[], opts?: { dryRun?: boolean }): Promise<{ results: UploadLocalResult[] }>
+  /** Queue selected primary rows through the existing guarded outbox path. */
+  uploadLocal(ids: string[], opts?: { dryRun?: boolean }): Promise<{ results: UploadLocalResult[] }>
 
-/**
+  /**
    * Move existing engram(s) to `targetScope`. Fills the gap between `learn()`
    * (whose content-hash dedup silently no-ops a re-emit under a new scope) and
    * candidate promotion (`plur_promote` ACTIVATES a candidate; it never changes
@@ -71,13 +71,13 @@ uploadLocal(ids: string[], opts?: { dryRun?: boolean }): Promise<{ results: Uplo
    * outcomes are per-id and one failure never blocks the rest. `dry_run`
    * reports every decision without mutating anything, local or remote.
    */
-rescope(idOrIds: string | string[], targetScope: string, options?: RescopeOptions): Promise<{ results: RescopeResult[]; success: boolean }>
+  rescope(idOrIds: string | string[], targetScope: string, options?: RescopeOptions): Promise<{ results: RescopeResult[]; success: boolean }>
 
-/** One engram's rescope; see {@link rescope} for the contract. */
-/** @internal */
-_rescopeOne(id: string, target: string, route: 'remote' | 'local', remoteDriver: RemoteStore | null, opts: { dryRun: boolean; keepLocal: boolean }): Promise<RescopeResult>
+  /** One engram's rescope; see {@link rescope} for the contract. */
+  /** @internal */
+  _rescopeOne(id: string, target: string, route: 'remote' | 'local', remoteDriver: RemoteStore | null, opts: { dryRun: boolean; keepLocal: boolean }): Promise<RescopeResult>
 
-/**
+  /**
    * Soft-retire the local source of a successful rescope, with a
    * supersedes-style link to the copy now living at the target.
    * UNCONDITIONAL retirement, deliberately NOT the reference-counted
@@ -86,12 +86,12 @@ _rescopeOne(id: string, target: string, route: 'remote' | 'local', remoteDriver:
    * `_hashDedup` (the hash cannot resurrect the source) and from every
    * injection/list surface (status filters).
    */
-/** @internal */
-_retireRescopedSource(id: string, toScope: string, newId: string): Promise<boolean>
+  /** @internal */
+  _retireRescopedSource(id: string, toScope: string, newId: string): Promise<boolean>
 }
 
 export const forgetRescopeMethods: ForgetRescopeMethods & ThisType<Plur> = {
-async forget(id: string, reason?: string, options?: { force?: boolean; scope?: string }): Promise<MutationOutcome> {
+  async forget(id: string, reason?: string, options?: { force?: boolean; scope?: string }): Promise<MutationOutcome> {
     this._assertWritable()
     // Remote-only mode: a save queued from a remote-only folder is DELETED,
     // not retired, since a retired row would keep its content on this
@@ -480,7 +480,7 @@ async forget(id: string, reason?: string, options?: { force?: boolean; scope?: s
     )
   },
 
-async listUploadCandidates(authorizedScopes: string[]): Promise<Array<{ id: string; scope: string; statement: string; proposed: string | null }>> {
+  async listUploadCandidates(authorizedScopes: string[]): Promise<Array<{ id: string; scope: string; statement: string; proposed: string | null }>> {
     this._remoteOnlyRefuseLocalStore('Listing local upload candidates')
     const authorized = new Set(authorizedScopes)
     return (await this._loadCached(this.paths.engrams))
@@ -488,7 +488,7 @@ async listUploadCandidates(authorizedScopes: string[]): Promise<Array<{ id: stri
       .map(row => ({ id: row.id, scope: row.scope, statement: row.statement, proposed: authorized.has(row.scope) ? row.scope : null }))
   },
 
-async uploadLocal(ids: string[], opts?: { dryRun?: boolean }): Promise<{ results: UploadLocalResult[] }> {
+  async uploadLocal(ids: string[], opts?: { dryRun?: boolean }): Promise<{ results: UploadLocalResult[] }> {
     this._assertWritable()
     this._remoteOnlyRefuseLocalStore('Uploading local memories')
     const results = new Map<string, UploadLocalResult>(), selected = new Set<string>()
@@ -556,7 +556,7 @@ async uploadLocal(ids: string[], opts?: { dryRun?: boolean }): Promise<{ results
     return { results: [...new Set(ids)].map(id => results.get(id)!) }
   },
 
-async rescope(idOrIds: string | string[], targetScope: string, options?: RescopeOptions): Promise<{ results: RescopeResult[]; success: boolean }> {
+  async rescope(idOrIds: string | string[], targetScope: string, options?: RescopeOptions): Promise<{ results: RescopeResult[]; success: boolean }> {
     // Public mutator: both routes mutate (the remote push retires the local
     // source, the local route rewrites scope in place), so gate before any
     // routing, like every other mutator.
@@ -630,7 +630,7 @@ async rescope(idOrIds: string | string[], targetScope: string, options?: Rescope
     return { results, success: results.every(r => r.status !== 'error') }
   },
 
-async _rescopeOne(id: string, target: string, route: 'remote' | 'local', remoteDriver: RemoteStore | null, opts: { dryRun: boolean; keepLocal: boolean }): Promise<RescopeResult> {
+  async _rescopeOne(id: string, target: string, route: 'remote' | 'local', remoteDriver: RemoteStore | null, opts: { dryRun: boolean; keepLocal: boolean }): Promise<RescopeResult> {
     const action = route === 'remote' ? ('remote_push' as const) : ('local_rewrite' as const)
     // The source must live in the local primary store: that is where stranded
     // The source must live in the local primary store: that is where stranded
@@ -855,7 +855,7 @@ async _rescopeOne(id: string, target: string, route: 'remote' | 'local', remoteD
     }
   },
 
-async _retireRescopedSource(id: string, toScope: string, newId: string): Promise<boolean> {
+  async _retireRescopedSource(id: string, toScope: string, newId: string): Promise<boolean> {
     const now = new Date().toISOString()
     const retired = await this._withStoreLock(this.paths.engrams, async () => {
       // Targeted read: resolving one engram by id.

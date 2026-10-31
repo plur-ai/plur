@@ -26,35 +26,35 @@ import { REMOTE_GUARD_BUDGET_MS, REMOTE_PROBE_TIMEOUT_MS } from './helpers.js'
 import { CollisionProbe } from './types.js'
 
 export interface StoreIoMethods {
-/**
+  /**
    * Root directory of this instance's store (`~/.plur`, `PLUR_PATH`, or the
    * explicit constructor `path`). Synchronous mirror of `status().storage_root`
    * for callers that need the location without an async round-trip — e.g. the
    * MCP server's payload-drop forensic log, which must write
    * next to the store the dropped call was aimed at.
    */
-/**
+  /**
    * Record what a recall returned to a session, so the session's
    * manifest can list it. Called by the surfaces that answer an agent's recall
    * (MCP, CLI) — not by `recall()` itself, which inject and dedup also call.
    * Ids and a query hash only; never the query text. Best-effort: returns
    * whether the event was written.
    */
-recordRecall(input: { session_id?: string; ids: readonly string[]; query: string; source?: 'recall' | 'recall_hybrid' }): boolean
+  recordRecall(input: { session_id?: string; ids: readonly string[]; query: string; source?: 'recall' | 'recall_hybrid' }): boolean
 
-/**
+  /**
    * The session memory manifest: which engrams were in this session's
    * context, with hashes that can be checked later. Local and offline.
    */
-sessionManifest(sessionId: string, opts?: { checkpoint?: SessionManifest['checkpoint'] }): Promise<SessionManifest>
+  sessionManifest(sessionId: string, opts?: { checkpoint?: SessionManifest['checkpoint'] }): Promise<SessionManifest>
 
-/** Where session manifests are anchored. `off` unless the user turned it on. */
-receiptsConfig(): { store: 'off' | 'swarm'; gateway_url?: string; stamp_id?: string }
+  /** Where session manifests are anchored. `off` unless the user turned it on. */
+  receiptsConfig(): { store: 'off' | 'swarm'; gateway_url?: string; stamp_id?: string }
 
-/** Re-hash every engram a manifest lists against this store. */
-verifyManifest(manifest: SessionManifest): Promise<ManifestVerification>
+  /** Re-hash every engram a manifest lists against this store. */
+  verifyManifest(manifest: SessionManifest): Promise<ManifestVerification>
 
-/**
+  /**
    * Resolve the active storage tier. Order:
    *   1. `PLUR_BACKEND` env var (yaml|sqlite|pglite|postgres)
    *   2. config.yaml `backend` field
@@ -64,51 +64,51 @@ verifyManifest(manifest: SessionManifest): Promise<ManifestVerification>
    * parse. Deciding which backend to build must not cost what the wrong backend
    * would have cost.
    */
-/** @internal */
-_resolveBackend(): BackendSelection
+  /** @internal */
+  _resolveBackend(): BackendSelection
 
-/** Configured Postgres DSN, env first. Never logged unredacted. */
-/** @internal */
-_postgresUrl(): string | undefined
+  /** Configured Postgres DSN, env first. Never logged unredacted. */
+  /** @internal */
+  _postgresUrl(): string | undefined
 
-/**
+  /**
    * How this instance's storage tier was chosen — tier, reason, the estimate it
    * was made from, and (when the size estimate wanted a tier it could not have)
    * `wanted`. Diagnostics: a deployment should never have to guess which
    * backend it is on or why.
    */
-backendSelection(): BackendSelection
+  backendSelection(): BackendSelection
 
-/** @internal */
-_autoPurgeLegacyTensions(startDir: string): Promise<void>
+  /** @internal */
+  _autoPurgeLegacyTensions(startDir: string): Promise<void>
 
-/**
+  /**
    * Load engrams from primary store + all configured stores, with mtime-based caching.
    * Store engram IDs get namespaced: ENG-2026-0401-001 → ENG-DF-2026-0401-001.
    * Primary engrams are returned unchanged.
    */
-/** @internal */
-_loadAllEngrams(): Promise<Engram[]>
+  /** @internal */
+  _loadAllEngrams(): Promise<Engram[]>
 
-/**
+  /**
    * The corpus a WRITE dedups against. Everything, except in a remote-only
    * folder: there the folder's read corpus plus this scope's own queued rows,
    * so a team save is never matched to (or credited on) a personal engram.
    */
-/** @internal */
-_writeDedupCorpus(scope: string): Promise<Engram[]>
+  /** @internal */
+  _writeDedupCorpus(scope: string): Promise<Engram[]>
 
-/**
+  /**
    * The corpus the READ paths (recall, inject) rank. Everything, except in a
    * remote-only folder: there it is the cached
    * rows of the folder's team store plus installed packs, never the personal
    * primary store or a local secondary store. Write paths keep
    * `_loadAllEngrams` — they need the primary corpus for ids and dedup.
    */
-/** @internal */
-_readCorpus(): Promise<Engram[]>
+  /** @internal */
+  _readCorpus(): Promise<Engram[]>
 
-/**
+  /**
    * Everything that is NOT the primary store: configured secondary stores
    * (file-path AND remote) plus installed packs, with the id namespacing, scope
    * narrowing and containment guard applied.
@@ -123,7 +123,7 @@ _readCorpus(): Promise<Engram[]>
    * against the primary store first — an un-namespaced id would mutate an
    * unrelated engram.
    */
-/**
+  /**
    * Installed packs as every read path hands them out: each row under its
    * pack id ({@link packEngramId}), never under the id its author's store
    * minted. That id can be one of MY memory ids (same day, same sequence, or
@@ -131,23 +131,23 @@ _readCorpus(): Promise<Engram[]>
    * own memory. Injection, search/list and the receipt all load packs
    * through here, so the id a pack row carries is the same on every path.
    */
-/** @internal */
-_loadInstalledPacks(): LoadedPack[]
+  /** @internal */
+  _loadInstalledPacks(): LoadedPack[]
 
-/** @internal */
-_loadSecondaryAndPacks(opts?: { remoteOnlyScope?: string | null }): Promise<Engram[]>
+  /** @internal */
+  _loadSecondaryAndPacks(opts?: { remoteOnlyScope?: string | null }): Promise<Engram[]>
 
-/**
+  /**
    * Cached read from the store that owns `path`.
    *
    * Caching is the store's job (`YamlPrimaryStore` tracks mtime) — a cache is
    * a property of the backing medium, not of the caller, and a store whose
    * medium has no mtime (memory, Postgres) answers `loadCached()` its own way.
    */
-/** @internal */
-_loadCached(path: string): Promise<Engram[]>
+  /** @internal */
+  _loadCached(path: string): Promise<Engram[]>
 
-/**
+  /**
    * What the ambiguity guards (forget, feedback) may conclude from a
    * store's cache WITHOUT a network call.
    *
@@ -160,10 +160,10 @@ _loadCached(path: string): Promise<Engram[]>
    *
    * Model: spec/formal/PlurSpec/R2CoreA.lean §2 (`peek_absent_sound`).
    */
-/** @internal */
-_remoteCacheAnswer(store: StoreEntry, serverId: string): 'present' | 'absent' | 'unknown'
+  /** @internal */
+  _remoteCacheAnswer(store: StoreEntry, serverId: string): 'present' | 'absent' | 'unknown'
 
-/**
+  /**
    * Does a bare id ALSO name an engram in a configured url store?
    *
    * One answer per url store, for the operations that act on a local row by
@@ -182,13 +182,13 @@ _remoteCacheAnswer(store: StoreEntry, serverId: string): 'present' | 'absent' | 
    *   - `unreachable`: cannot tell. forget refuses (irreversible); feedback
    *     and pin go ahead with a warning (recoverable).
    */
-/** @internal */
-_hasUrlStore(): boolean
+  /** @internal */
+  _hasUrlStore(): boolean
 
-/** @internal */
-_probeIdCollisions(id: string, opts?: { skipLive?: boolean }): Promise<CollisionProbe[]>
+  /** @internal */
+  _probeIdCollisions(id: string, opts?: { skipLive?: boolean }): Promise<CollisionProbe[]>
 
-/**
+  /**
    * Local evidence that a bare id has ALSO named an engram on a server
    * A 401/403 probe only says this caller cannot SEE the
    * remote row — not that there is none — so before acting on the local row,
@@ -200,58 +200,58 @@ _probeIdCollisions(id: string, opts?: { skipLive?: boolean }): Promise<Collision
    *   - any url store's cached rows, fresh or stale.
    * Returns a plain description of the first piece found, or null. No network.
    */
-/** @internal */
-_idSeenRemotely(id: string): string | null
+  /** @internal */
+  _idSeenRemotely(id: string): string | null
 
-/**
+  /**
    * The refusal when a store rejected the token AND this machine has met the
    * id remotely: the bare id may name that store's engram.
    */
-/** @internal */
-_rejectedTokenRefusal(p: CollisionProbe, id: string, evidence: string, verb: string, localHint: string): Error
+  /** @internal */
+  _rejectedTokenRefusal(p: CollisionProbe, id: string, evidence: string, verb: string, localHint: string): Error
 
-/** Remember server ids (best effort, never throws). */
-/** @internal */
-_noteSeenOnServer(entries: Array<{ id: string; scope: string }>): void
+  /** Remember server ids (best effort, never throws). */
+  /** @internal */
+  _noteSeenOnServer(entries: Array<{ id: string; scope: string }>): void
 
-/** Remember the server ids of team rows among recall/inject results. */
-/** @internal */
-_noteSeenRows(rows: readonly Engram[], allRemote?: boolean): void
+  /** Remember the server ids of team rows among recall/inject results. */
+  /** @internal */
+  _noteSeenRows(rows: readonly Engram[], allRemote?: boolean): void
 
-/** A local row being rewritten into a url-backed scope it was not in. */
-/** @internal */
-_isScopeMoveIntoRemote(localScope: string, targetScope: string): boolean
+  /** A local row being rewritten into a url-backed scope it was not in. */
+  /** @internal */
+  _isScopeMoveIntoRemote(localScope: string, targetScope: string): boolean
 
-/** {@link _idSeenRemotely} plus a fresh cache hit — the no-network twin check. */
-/** @internal */
-_cachedTwinEvidence(id: string): string | null
+  /** {@link _idSeenRemotely} plus a fresh cache hit — the no-network twin check. */
+  /** @internal */
+  _cachedTwinEvidence(id: string): string | null
 
-/** @internal */
-_scopeMoveRefusal(updated: Engram, localScope: string, twin: string): Error
+  /** @internal */
+  _scopeMoveRefusal(updated: Engram, localScope: string, twin: string): Error
 
-/** The warning for a store whose token was rejected during a collision probe. */
-/** @internal */
-_rejectedTokenWarning(p: CollisionProbe, id: string, acted: string): string
+  /** The warning for a store whose token was rejected during a collision probe. */
+  /** @internal */
+  _rejectedTokenWarning(p: CollisionProbe, id: string, acted: string): string
 
-/**
+  /**
    * forget()'s reading of the collision probe. Retiring is
    * irreversible, so "cannot tell" refuses; a rejected token does not, since
    * this caller cannot retire anything in that store either.
    */
-/** @internal */
-_decideForgetProbes(id: string, probes: CollisionProbe[], warnings: string[]): void
+  /** @internal */
+  _decideForgetProbes(id: string, probes: CollisionProbe[], warnings: string[]): void
 
-/**
+  /**
    * feedback()'s reading of the collision probe. Same as
    * forget() except that "cannot tell" rates the local engram with a warning.
    */
-/** @internal */
-_decideFeedbackProbes(id: string, probes: CollisionProbe[], warnings: string[]): void
+  /** @internal */
+  _decideFeedbackProbes(id: string, probes: CollisionProbe[], warnings: string[]): void
 
-/** @internal */
-_loadRemoteCached(store: StoreEntry): Engram[]
+  /** @internal */
+  _loadRemoteCached(store: StoreEntry): Engram[]
 
-/**
+  /**
    * Persist engrams to the store that owns `path`.
    *
    * The store invalidates its own cache on write (`PrimaryStore.save()`).
@@ -261,10 +261,10 @@ _loadRemoteCached(store: StoreEntry): Engram[]
    * a pre-write snapshot. Invalidating on write removes the filesystem as a
    * source of cache freshness.
    */
-/** @internal */
-_writeEngrams(path: string, engrams: Engram[], opts?: { allowShrink?: boolean }): Promise<void>
+  /** @internal */
+  _writeEngrams(path: string, engrams: Engram[], opts?: { allowShrink?: boolean }): Promise<void>
 
-/**
+  /**
    * Persist one brand-NEW engram to the primary store.
    *
    * `corpus` is the caller's already-loaded primary corpus, held under
@@ -275,10 +275,10 @@ _writeEngrams(path: string, engrams: Engram[], opts?: { allowShrink?: boolean })
    * re-parsing a file the caller just parsed (under the same lock) is wasted
    * work on the hottest write path.
    */
-/** @internal */
-_appendEngram(corpus: Engram[], engram: Engram): Promise<void>
+  /** @internal */
+  _appendEngram(corpus: Engram[], engram: Engram): Promise<void>
 
-/**
+  /**
    * Persist mutations to EXISTING primary-store engrams.
    *
    * `changed` are rows from `corpus` (the caller's already-loaded primary
@@ -297,7 +297,7 @@ _appendEngram(corpus: Engram[], engram: Engram): Promise<void>
    * call site would have to remember to check is worse than semantics that
    * cannot lose the write.
    */
-/**
+  /**
    * Read the primary-store rows for `ids` — targeted when the store can, a
    * whole-corpus load when it cannot.
    *
@@ -319,23 +319,23 @@ _appendEngram(corpus: Engram[], engram: Engram): Promise<void>
    * `find(...)` miss keeps its existing meaning and its existing fall-through
    * to the secondary stores.
    */
-/** @internal */
-_loadTargeted(ids: string[]): Promise<Engram[]>
+  /** @internal */
+  _loadTargeted(ids: string[]): Promise<Engram[]>
 
-/** @internal */
-_updateEngrams(corpus: Engram[], changed: Engram[]): Promise<void>
+  /** @internal */
+  _updateEngrams(corpus: Engram[], changed: Engram[]): Promise<void>
 
-/**
+  /**
    * Throw {@link ReadonlyStoreError} when this instance was opened with
    * `readonly: true`. Called at the top of every public mutator, BEFORE any
    * routing: remote-routed writes (learnRouted's server POST, outbox flush,
    * remote feedback/forget) never touch the guarded PrimaryStore, so the
    * store guard alone cannot stop them — this gate is what does.
    */
-/** @internal */
-_assertWritable(): void
+  /** @internal */
+  _assertWritable(): void
 
-/**
+  /**
    * Snapshot the primary store once per process per day.
    *
    * Called from INSIDE the lock and BEFORE `fn` runs, which is the whole point:
@@ -351,37 +351,37 @@ _assertWritable(): void
    * Never throws: the backup is a safety net for the write, not a precondition
    * of it. A failed snapshot warns and lets the write proceed.
    */
-/** @internal */
-_maybeDailyBackup(path: string): void
+  /** @internal */
+  _maybeDailyBackup(path: string): void
 
-/**
+  /**
    * Ids this store has minted today that are no longer in the corpus.
    *
    * Read from the append-only history log, which — unlike the corpus — never
    * forgets. See `mintedIdsWithPrefix` for why an incomplete answer is safe.
    */
-/** @internal */
-_mintedTodayIds(): string[]
+  /** @internal */
+  _mintedTodayIds(): string[]
 
-/** Record an id this process just minted, so the next allocation sees it
+  /** Record an id this process just minted, so the next allocation sees it
    *  without re-reading history. */
-/** @internal */
-_rememberMintedId(id: string): void
+  /** @internal */
+  _rememberMintedId(id: string): void
 
-/** @internal */
-_storeAt(path: string): AsyncPrimaryStore
+  /** @internal */
+  _storeAt(path: string): AsyncPrimaryStore
 
-/**
+  /**
    * Ids a new local row must not take: those minted this process, plus — while
    * bound, when the store shows only queued saves — every id the primary store
    * holds (ids only, never content).
    */
-/** @internal */
-_idsInUse(): Promise<string[]>
+  /** @internal */
+  _idsInUse(): Promise<string[]>
 }
 
 export const storeIoMethods: StoreIoMethods & ThisType<Plur> = {
-recordRecall(input: { session_id?: string; ids: readonly string[]; query: string; source?: 'recall' | 'recall_hybrid' }): boolean {
+  recordRecall(input: { session_id?: string; ids: readonly string[]; query: string; source?: 'recall' | 'recall_hybrid' }): boolean {
     if (!input.session_id || input.ids.length === 0) return false
     return this._appendHistory({
       event: 'recall_returned',
@@ -396,7 +396,7 @@ recordRecall(input: { session_id?: string; ids: readonly string[]; query: string
     })
   },
 
-async sessionManifest(sessionId: string, opts?: { checkpoint?: SessionManifest['checkpoint'] }): Promise<SessionManifest> {
+  async sessionManifest(sessionId: string, opts?: { checkpoint?: SessionManifest['checkpoint'] }): Promise<SessionManifest> {
     return buildSessionManifest({
       root: this.paths.root,
       sessionId,
@@ -406,7 +406,7 @@ async sessionManifest(sessionId: string, opts?: { checkpoint?: SessionManifest['
     })
   },
 
-receiptsConfig(): { store: 'off' | 'swarm'; gateway_url?: string; stamp_id?: string } {
+  receiptsConfig(): { store: 'off' | 'swarm'; gateway_url?: string; stamp_id?: string } {
     const r = (this.config as { receipts?: { store?: 'off' | 'swarm'; gateway_url?: string; stamp_id?: string } }).receipts
     return {
       store: r?.store === 'swarm' ? 'swarm' : 'off',
@@ -415,11 +415,11 @@ receiptsConfig(): { store: 'off' | 'swarm'; gateway_url?: string; stamp_id?: str
     }
   },
 
-async verifyManifest(manifest: SessionManifest): Promise<ManifestVerification> {
+  async verifyManifest(manifest: SessionManifest): Promise<ManifestVerification> {
     return verifySessionManifest(manifest, await this._loadAllEngrams())
   },
 
-_resolveBackend(): BackendSelection {
+  _resolveBackend(): BackendSelection {
     return resolveBackendTier({
       env: process.env.PLUR_BACKEND,
       config: (this.config as { backend?: string }).backend,
@@ -428,17 +428,17 @@ _resolveBackend(): BackendSelection {
     })
   },
 
-_postgresUrl(): string | undefined {
+  _postgresUrl(): string | undefined {
     const env = process.env.PLUR_POSTGRES_URL
     if (env) return env
     return (this.config as { postgres?: { url?: string } }).postgres?.url
   },
 
-backendSelection(): BackendSelection {
+  backendSelection(): BackendSelection {
     return this._backendSelection
   },
 
-async _autoPurgeLegacyTensions(startDir: string): Promise<void> {
+  async _autoPurgeLegacyTensions(startDir: string): Promise<void> {
     // A read-only instance must not run a write migration — and must not stamp
     // the sentinel either, or the purge would be recorded as done without ever
     // having happened. Left for the next writable instance to perform.
@@ -465,7 +465,7 @@ async _autoPurgeLegacyTensions(startDir: string): Promise<void> {
     }
   },
 
-async _loadAllEngrams(): Promise<Engram[]> {
+  async _loadAllEngrams(): Promise<Engram[]> {
     // remote-only: the folder's queued saves (the guarded primary store shows
     // only those) plus its read corpus — never a personal url store's cache.
     if (this._remoteOnly) return [...(await this._loadCached(this.paths.engrams)), ...(await this._readCorpus())]
@@ -476,7 +476,7 @@ async _loadAllEngrams(): Promise<Engram[]> {
     return withoutRemoteOnlyQueued([...primary, ...(await this._loadSecondaryAndPacks())])
   },
 
-async _writeDedupCorpus(scope: string): Promise<Engram[]> {
+  async _writeDedupCorpus(scope: string): Promise<Engram[]> {
     if (!this._remoteOnly) return await this._loadAllEngrams()
     // Only rows QUEUED for delivery to this scope: a
     // primary row that merely carries the team scope may be private, written
@@ -489,7 +489,7 @@ async _writeDedupCorpus(scope: string): Promise<Engram[]> {
     return [...queued, ...(await this._readCorpus())]
   },
 
-async _readCorpus(): Promise<Engram[]> {
+  async _readCorpus(): Promise<Engram[]> {
     if (!this._remoteOnly) return await this._loadAllEngrams()
     if (this._remoteOnly.blocked) return []
     // A scope that is not a deliverable team scope (a hand-written `user:`
@@ -498,14 +498,14 @@ async _readCorpus(): Promise<Engram[]> {
     return await this._loadSecondaryAndPacks({ remoteOnlyScope: ro && this._isDeliverableTeamScope(ro) ? ro : null })
   },
 
-_loadInstalledPacks(): LoadedPack[] {
+  _loadInstalledPacks(): LoadedPack[] {
     return loadAllPacks(this.paths.packs).map(pack => ({
       ...pack,
       engrams: namespacePackEngrams(pack.engrams, pack.manifest.name),
     }))
   },
 
-async _loadSecondaryAndPacks(opts?: { remoteOnlyScope?: string | null }): Promise<Engram[]> {
+  async _loadSecondaryAndPacks(opts?: { remoteOnlyScope?: string | null }): Promise<Engram[]> {
     // remote-only: only the url store(s) serving the folder's team scope — no
     // secondary file store, which is this machine's disk like the primary.
     const remoteOnly = opts !== undefined && 'remoteOnlyScope' in opts
@@ -579,11 +579,11 @@ async _loadSecondaryAndPacks(opts?: { remoteOnlyScope?: string | null }): Promis
     return withoutRemoteOnlyQueued(all)
   },
 
-async _loadCached(path: string): Promise<Engram[]> {
+  async _loadCached(path: string): Promise<Engram[]> {
     return await this._storeAt(path).loadCached()
   },
 
-_remoteCacheAnswer(store: StoreEntry, serverId: string): 'present' | 'absent' | 'unknown' {
+  _remoteCacheAnswer(store: StoreEntry, serverId: string): 'present' | 'absent' | 'unknown' {
     const driver = this._getRemoteDriver({ url: store.url!, token: store.token, scope: store.scope })
     const view = driver as unknown as { cache: { ts: number; engrams: Engram[] } | null; ttlMs?: number }
     const cache = view.cache
@@ -594,11 +594,11 @@ _remoteCacheAnswer(store: StoreEntry, serverId: string): 'present' | 'absent' | 
     return cache.ts > 0 && age >= 0 && age < ttl ? 'absent' : 'unknown'
   },
 
-_hasUrlStore(): boolean {
+  _hasUrlStore(): boolean {
     return (this.config.stores ?? []).some(s => !!s.url)
   },
 
-async _probeIdCollisions(id: string, opts?: { skipLive?: boolean }): Promise<CollisionProbe[]> {
+  async _probeIdCollisions(id: string, opts?: { skipLive?: boolean }): Promise<CollisionProbe[]> {
     const out: CollisionProbe[] = []
     const deadline = Date.now() + REMOTE_GUARD_BUDGET_MS
     for (const entry of (this.config.stores ?? [])) {
@@ -636,7 +636,7 @@ async _probeIdCollisions(id: string, opts?: { skipLive?: boolean }): Promise<Col
     return out
   },
 
-_idSeenRemotely(id: string): string | null {
+  _idSeenRemotely(id: string): string | null {
     const seen = seenOnServer(this.paths.root, id)
     if (seen) return `this machine has seen ${id} on the server for "${seen.scope}" (${new Date(seen.at).toISOString().slice(0, 10)})`
     try {
@@ -666,7 +666,7 @@ _idSeenRemotely(id: string): string | null {
     return null
   },
 
-_rejectedTokenRefusal(p: CollisionProbe, id: string, evidence: string, verb: string, localHint: string): Error {
+  _rejectedTokenRefusal(p: CollisionProbe, id: string, evidence: string, verb: string, localHint: string): Error {
     return new Error(
       `Cannot safely ${verb} "${id}": remote scope "${p.scope}" rejected this machine's token (${p.detail ?? 'HTTP 401/403'}), `
       + `so it could not be checked, and ${evidence} — this id may name that store's engram, not the local one. `
@@ -675,11 +675,11 @@ _rejectedTokenRefusal(p: CollisionProbe, id: string, evidence: string, verb: str
     )
   },
 
-_noteSeenOnServer(entries: Array<{ id: string; scope: string }>): void {
+  _noteSeenOnServer(entries: Array<{ id: string; scope: string }>): void {
     recordSeenOnServer(this.paths.root, entries)
   },
 
-_noteSeenRows(rows: readonly Engram[], allRemote = false): void {
+  _noteSeenRows(rows: readonly Engram[], allRemote = false): void {
     const out: Array<{ id: string; scope: string }> = []
     for (const r of rows) {
       const x = r as { _originalId?: unknown; _storeScope?: unknown; _fromRemoteStore?: unknown; scope: string }
@@ -693,11 +693,11 @@ _noteSeenRows(rows: readonly Engram[], allRemote = false): void {
     if (out.length > 0) this._noteSeenOnServer(out)
   },
 
-_isScopeMoveIntoRemote(localScope: string, targetScope: string): boolean {
+  _isScopeMoveIntoRemote(localScope: string, targetScope: string): boolean {
     return targetScope !== localScope && this._isRemoteBackedScope(targetScope) && !this._isRemoteBackedScope(localScope)
   },
 
-_cachedTwinEvidence(id: string): string | null {
+  _cachedTwinEvidence(id: string): string | null {
     for (const entry of (this.config.stores ?? [])) {
       if (!entry.url) continue
       if (this._remoteCacheAnswer(entry, this._stripRemotePrefix(id, entry.scope)) === 'present') {
@@ -707,7 +707,7 @@ _cachedTwinEvidence(id: string): string | null {
     return this._idSeenRemotely(id)
   },
 
-_scopeMoveRefusal(updated: Engram, localScope: string, twin: string): Error {
+  _scopeMoveRefusal(updated: Engram, localScope: string, twin: string): Error {
     return new Error(
       `Ambiguous engram ID "${updated.id}": the local engram with this id is in "${localScope}", the row passed is in `
       + `"${updated.scope}", and ${twin}. Nothing was written. To update the remote engram, pass its namespaced id `
@@ -715,13 +715,13 @@ _scopeMoveRefusal(updated: Engram, localScope: string, twin: string): Error {
     )
   },
 
-_rejectedTokenWarning(p: CollisionProbe, id: string, acted: string): string {
+  _rejectedTokenWarning(p: CollisionProbe, id: string, acted: string): string {
     return `Remote scope "${p.scope}" rejected this machine's token (${p.detail ?? 'HTTP 401/403'}), so it could not ` +
       `be checked for another engram with id ${id}; ${acted} the LOCAL engram. The token for ${p.scope} is expired, ` +
       `revoked or lacks access — check it with \`plur login --status\` and refresh it in config.yaml.`
   },
 
-_decideForgetProbes(id: string, probes: CollisionProbe[], warnings: string[]): void {
+  _decideForgetProbes(id: string, probes: CollisionProbe[], warnings: string[]): void {
     for (const p of probes) {
       if (p.outcome === 'present') {
         throw new Error(
@@ -747,7 +747,7 @@ _decideForgetProbes(id: string, probes: CollisionProbe[], warnings: string[]): v
     }
   },
 
-_decideFeedbackProbes(id: string, probes: CollisionProbe[], warnings: string[]): void {
+  _decideFeedbackProbes(id: string, probes: CollisionProbe[], warnings: string[]): void {
     for (const p of probes) {
       if (p.outcome === 'present') {
         throw new Error(
@@ -773,7 +773,7 @@ _decideFeedbackProbes(id: string, probes: CollisionProbe[], warnings: string[]):
     }
   },
 
-_loadRemoteCached(store: StoreEntry): Engram[] {
+  _loadRemoteCached(store: StoreEntry): Engram[] {
     const driver = this._getRemoteDriver({ url: store.url!, token: store.token, scope: store.scope })
     // Synchronously read whatever the driver currently has cached — no
     // background refresh.
@@ -781,7 +781,7 @@ _loadRemoteCached(store: StoreEntry): Engram[] {
     return cached?.engrams ?? []
   },
 
-async _writeEngrams(path: string, engrams: Engram[], opts?: { allowShrink?: boolean }): Promise<void> {
+  async _writeEngrams(path: string, engrams: Engram[], opts?: { allowShrink?: boolean }): Promise<void> {
     const store = this._storeAt(path)
     // Backend-independent floor. The YAML writer has
     // its own shrink guard, but that guard lives in `saveEngrams` and so only
@@ -808,7 +808,7 @@ async _writeEngrams(path: string, engrams: Engram[], opts?: { allowShrink?: bool
     await store.save(engrams, opts)
   },
 
-async _appendEngram(corpus: Engram[], engram: Engram): Promise<void> {
+  async _appendEngram(corpus: Engram[], engram: Engram): Promise<void> {
     corpus.push(engram)
     if (this._primaryStore.append) {
       await this._primaryStore.append(engram)
@@ -817,14 +817,14 @@ async _appendEngram(corpus: Engram[], engram: Engram): Promise<void> {
     }
   },
 
-async _loadTargeted(ids: string[]): Promise<Engram[]> {
+  async _loadTargeted(ids: string[]): Promise<Engram[]> {
     const store = this._primaryStore
     return store.loadByIds && store.updateMany
       ? await store.loadByIds(ids)
       : await store.load()
   },
 
-async _updateEngrams(corpus: Engram[], changed: Engram[]): Promise<void> {
+  async _updateEngrams(corpus: Engram[], changed: Engram[]): Promise<void> {
     if (changed.length === 0) return
     if (this._primaryStore.updateMany) {
       await this._primaryStore.updateMany(changed)
@@ -833,11 +833,11 @@ async _updateEngrams(corpus: Engram[], changed: Engram[]): Promise<void> {
     }
   },
 
-_assertWritable(): void {
+  _assertWritable(): void {
     if (this._readonly) throw new ReadonlyStoreError()
   },
 
-_maybeDailyBackup(path: string): void {
+  _maybeDailyBackup(path: string): void {
     if (this._readonly) return
     if (path !== this.paths.engrams) return
     if (this._primaryStore.kind !== 'yaml') return
@@ -851,7 +851,7 @@ _maybeDailyBackup(path: string): void {
     }
   },
 
-_mintedTodayIds(): string[] {
+  _mintedTodayIds(): string[] {
     const day = new Date().toISOString().slice(0, 10)
     // Cached per process, per day.
     //
@@ -879,12 +879,12 @@ _mintedTodayIds(): string[] {
     return [...this._mintedCache.ids]
   },
 
-_rememberMintedId(id: string): void {
+  _rememberMintedId(id: string): void {
     const day = new Date().toISOString().slice(0, 10)
     if (this._mintedCache?.day === day) this._mintedCache.ids.add(id)
   },
 
-_storeAt(path: string): AsyncPrimaryStore {
+  _storeAt(path: string): AsyncPrimaryStore {
     if (path === this.paths.engrams) return this._primaryStore
     let store = this._secondaryStores.get(path)
     if (!store) {
@@ -901,7 +901,7 @@ _storeAt(path: string): AsyncPrimaryStore {
     return ro ? new RemoteOnlyStoreGuard(store, ro, false) : store
   },
 
-async _idsInUse(): Promise<string[]> {
+  async _idsInUse(): Promise<string[]> {
     const minted = this._mintedTodayIds()
     if (!this._remoteOnly) return minted
     return [...minted, ...(await this._basePrimaryStore.loadCached()).map(e => e.id)]

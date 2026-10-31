@@ -22,27 +22,27 @@ import { withLock } from '../sync.js'
 import type { DegradedReason, InjectionResult, InjectOptions } from '../types.js'
 
 export interface InjectionMethods {
-/** Scored injection within token budget (BM25 only). Returns formatted strings. */
-inject(task: string, options?: InjectOptions): Promise<InjectionResult>
+  /** Scored injection within token budget (BM25 only). Returns formatted strings. */
+  inject(task: string, options?: InjectOptions): Promise<InjectionResult>
 
-/**
+  /**
    * Whether the remote-only folder's team server served this read
    * (`InjectionResult.remote_only`). Adapters say so, once per session, when
    * it did not: the session then has no memory, by design — never a silent
    * fallback to the personal store.
    */
-/** @internal */
-_remoteOnlyStatus(remote: RemoteRecallResult | null | undefined): RemoteOnlyStatus
+  /** @internal */
+  _remoteOnlyStatus(remote: RemoteRecallResult | null | undefined): RemoteOnlyStatus
 
-/** Scored injection with embedding boost when available. Falls back to BM25 if embeddings not installed. */
-injectHybrid(task: string, options?: InjectOptions): Promise<InjectionResult>
+  /** Scored injection with embedding boost when available. Falls back to BM25 if embeddings not installed. */
+  injectHybrid(task: string, options?: InjectOptions): Promise<InjectionResult>
 
-/** @internal */
-_formatInjection(task: string, options?: InjectOptions, embeddingBoosts?: Map<string, number>, remote?: { engrams: Engram[]; boosts: Map<string, number> }, deadlineAt?: number): Promise<InjectionResult>
+  /** @internal */
+  _formatInjection(task: string, options?: InjectOptions, embeddingBoosts?: Map<string, number>, remote?: { engrams: Engram[]; boosts: Map<string, number> }, deadlineAt?: number): Promise<InjectionResult>
 }
 
 export const injectionMethods: InjectionMethods & ThisType<Plur> = {
-async inject(task: string, options?: InjectOptions): Promise<InjectionResult> {
+  async inject(task: string, options?: InjectOptions): Promise<InjectionResult> {
     if (this._remoteOnly) {
       // remote-only: there is no local store to inject from, so even the
       // keyword path dials the folder's team server (one call, bounded by
@@ -66,7 +66,7 @@ async inject(task: string, options?: InjectOptions): Promise<InjectionResult> {
     return await this._formatInjection(task, options)
   },
 
-_remoteOnlyStatus(remote: RemoteRecallResult | null | undefined): RemoteOnlyStatus {
+  _remoteOnlyStatus(remote: RemoteRecallResult | null | undefined): RemoteOnlyStatus {
     const ro = this._remoteOnly!
     const base = { folder: ro.folder, scope: ro.scope }
     if (!ro.scope) return { ...base, served: false, reason: 'no-scope' }
@@ -83,7 +83,7 @@ _remoteOnlyStatus(remote: RemoteRecallResult | null | undefined): RemoteOnlyStat
     return outcome.state === 'ok' ? { ...base, host, served: true } : { ...base, host, served: false, reason: outcome.state }
   },
 
-async injectHybrid(task: string, options?: InjectOptions): Promise<InjectionResult> {
+  async injectHybrid(task: string, options?: InjectOptions): Promise<InjectionResult> {
     // The remote leg starts FIRST and runs in parallel with the local
     // embedding work below, so a prompt costs at most ONE remote call per
     // host. Bounded by the same end-to-end deadline as recall.
@@ -270,7 +270,7 @@ async injectHybrid(task: string, options?: InjectOptions): Promise<InjectionResu
     return result
   },
 
-async _formatInjection(task: string, options?: InjectOptions, embeddingBoosts?: Map<string, number>, remote?: { engrams: Engram[]; boosts: Map<string, number> }, deadlineAt?: number): Promise<InjectionResult> {
+  async _formatInjection(task: string, options?: InjectOptions, embeddingBoosts?: Map<string, number>, remote?: { engrams: Engram[]; boosts: Map<string, number> }, deadlineAt?: number): Promise<InjectionResult> {
     // remote-only: team store rows + packs, never the personal store.
     let allEngrams = await this._readCorpus()
     const allPacks = this._remoteOnly?.blocked ? [] : this._loadInstalledPacks()

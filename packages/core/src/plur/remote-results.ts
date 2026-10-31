@@ -28,7 +28,7 @@ import type {
 } from '../types.js'
 
 export interface RemoteResultsMethods {
-/**
+  /**
    * Strict scope-relevance dialing.
    *
    * For each configured (url, token) endpoint group, the dialed scope set is
@@ -64,10 +64,10 @@ export interface RemoteResultsMethods {
    * tokens per host mean one POST per token. `remoteEndpointTokenConflicts`
    * feeds the doctor warning for that misconfiguration.
    */
-/** @internal */
-_remoteRecallHosts(options?: { scope?: string; scopes?: string[]; context_scopes?: string[]; session?: string; remote_project?: RemoteProjectConfig }): RemoteRecallHost[]
+  /** @internal */
+  _remoteRecallHosts(options?: { scope?: string; scopes?: string[]; context_scopes?: string[]; session?: string; remote_project?: RemoteProjectConfig }): RemoteRecallHost[]
 
-/**
+  /**
    * Start the remote recall leg — called BEFORE the local pipeline so the
    * effective added latency is max(0, remote − local). Returns null (zero
    * fetches, zero new latency) when: the caller opted out (`remote: false` —
@@ -75,55 +75,55 @@ _remoteRecallHosts(options?: { scope?: string; scopes?: string[]; context_scopes
    * kill-switch is set, the query is empty, or no host is implicated by the
    * current project/work. The returned promise NEVER rejects.
    */
-/** @internal */
-_startRemoteRecall(query: string, options?: { scope?: string; scopes?: string[]; context_scopes?: string[]; session?: string; remote?: boolean; remote_timeout_ms?: number; remote_project?: RemoteProjectConfig; limit?: number }, deadlineAt?: number): (Promise<RemoteRecallResult> & { hostUrls: string[] }) | null
+  /** @internal */
+  _startRemoteRecall(query: string, options?: { scope?: string; scopes?: string[]; context_scopes?: string[]; session?: string; remote?: boolean; remote_timeout_ms?: number; remote_project?: RemoteProjectConfig; limit?: number }, deadlineAt?: number): (Promise<RemoteRecallResult> & { hostUrls: string[] }) | null
 
-/**
+  /**
    * Apply the SAME read-side filters to server rows that every local read
    * path applies: `options.scopes` authorization (exact membership),
    * `options.scope` visibility (with grants — server rows sit in granted
    * scopes by construction after the scope guard's global admission +
    * narrowing), domain, and the residual temporal/strength filters.
    */
-/** @internal */
-_filterRemoteRows(rows: Engram[], options?: RecallOptions & { include_expired?: boolean }): Engram[]
+  /** @internal */
+  _filterRemoteRows(rows: Engram[], options?: RecallOptions & { include_expired?: boolean }): Engram[]
 
-/**
+  /**
    * Merge the remote leg into a local result set via RRF. Server rows go
    * FIRST so the server copy wins object identity for ids present in both
    * sets (the local set can hold a stale peek-cache copy of the same remote
    * row); RRF scoring itself is order-independent, so this affects identity
    * only, not ranking.
    */
-/**
+  /**
    * Wait for the remote leg until the recall's deadline. The leg
    * itself stops at the deadline — it aborts what is still in flight and
    * keeps what answered — so this normally gets its per-host
    * outcomes. The fallback, for a leg that still has not settled a moment
    * after the deadline, reports every dialed host as cut by the deadline.
    */
-/** @internal */
-_awaitRemote(remotePromise: (Promise<RemoteRecallResult> & { hostUrls?: string[] }) | null, deadlineAt: number): Promise<{ result?: RemoteRecallResult; report: RecallRemoteReport }>
+  /** @internal */
+  _awaitRemote(remotePromise: (Promise<RemoteRecallResult> & { hostUrls?: string[] }) | null, deadlineAt: number): Promise<{ result?: RemoteRecallResult; report: RecallRemoteReport }>
 
-/**
+  /**
    * In a long-lived process that opted in ({@link allowBackgroundModelLoad}),
    * fill the store's embedding cache in the background — once per instance,
    * never awaited by a recall, never retried. Each
    * cut-off recall also keeps its own progress; this finishes the job without
    * waiting for more recalls.
    */
-/** @internal */
-_maybeFillEmbeddingCache(): void
+  /** @internal */
+  _maybeFillEmbeddingCache(): void
 
-/** The recall's absolute deadline: `deadline_at` when the caller took it,
+  /** The recall's absolute deadline: `deadline_at` when the caller took it,
    *  else now + `deadline_ms` (env and default as {@link resolveRecallDeadlineMs}). */
-/** @internal */
-_recallDeadlineAt(options?: { deadline_ms?: number; deadline_at?: number }): number
+  /** @internal */
+  _recallDeadlineAt(options?: { deadline_ms?: number; deadline_at?: number }): number
 
-/** @internal */
-_mergeRemoteRecall(local: Engram[], remotePromise: (Promise<RemoteRecallResult> & { hostUrls?: string[] }) | null, options: (RecallOptions & { include_expired?: boolean }) | undefined, limit: number, deadlineAt?: number): Promise<{ engrams: Engram[]; remote: RecallRemoteReport }>
+  /** @internal */
+  _mergeRemoteRecall(local: Engram[], remotePromise: (Promise<RemoteRecallResult> & { hostUrls?: string[] }) | null, options: (RecallOptions & { include_expired?: boolean }) | undefined, limit: number, deadlineAt?: number): Promise<{ engrams: Engram[]; remote: RecallRemoteReport }>
 
-/**
+  /**
    * Server rows for the injection path: filtered for authorization +
    * visibility BEFORE boosts are assigned — the boost channel resurrects
    * scope-zeroed rows otherwise (`scoreEngram` returns 0 for both
@@ -131,10 +131,10 @@ _mergeRemoteRecall(local: Engram[], remotePromise: (Promise<RemoteRecallResult> 
    * anything > 0.5). Boost = 0.55 + 0.45·score, so every server-ranked row
    * clears the 0.5 semantic threshold and the server's top row maps to 1.0.
    */
-/** @internal */
-_remoteInjectCandidates(remote: RemoteRecallResult | undefined, options?: InjectOptions): { engrams: Engram[]; boosts: Map<string, number> } | undefined
+  /** @internal */
+  _remoteInjectCandidates(remote: RemoteRecallResult | undefined, options?: InjectOptions): { engrams: Engram[]; boosts: Map<string, number> } | undefined
 
-/**
+  /**
    * Per-host remote recall degradation status, fed by the last
    * outcomes this process observed — NOT by driver caches or fresh probes.
    * MCP surfaces attach a `remote_stores` block from this when any host is
@@ -148,18 +148,18 @@ _remoteInjectCandidates(remote: RemoteRecallResult | undefined, options?: Inject
    * being reported as the live state; callers that are explicitly historical
    * (doctor's "last live recall") should read everything and render the age.
    */
-remoteStoreStatus(opts?: { freshOnly?: boolean; now?: number }): RemoteStoreStatusEntry[]
+  remoteStoreStatus(opts?: { freshOnly?: boolean; now?: number }): RemoteStoreStatusEntry[]
 
-/**
+  /**
    * A direct write to `url` just succeeded: the host is reachable, so the
    * read leg's breaker cooldown ends, as an outbox flush success does.
    * Otherwise saves reach the server while reads stay paused for the full
    * cooldown. Best-effort: health bookkeeping never fails a write.
    */
-/** @internal */
-_noteRemoteWriteSucceeded(url: string): void
+  /** @internal */
+  _noteRemoteWriteSucceeded(url: string): void
 
-/**
+  /**
    * Record that a non-recall interaction with `url` just SUCCEEDED, clearing a
    * cached network-class failure for that host.
    *
@@ -171,16 +171,16 @@ _noteRemoteWriteSucceeded(url: string): void
    * Only {@link PROBE_CLEARABLE_STATES} are cleared — see that constant for
    * why an authorization or endpoint-support failure must survive a probe.
    */
-noteRemoteHostReachable(url: string): void
+  noteRemoteHostReachable(url: string): void
 
-/**
+  /**
    * Endpoints configured with more than one distinct token. The
    * (url, token) fan-out dials once per token, so this is a misconfiguration
    * worth a doctor warning — same user, same instance should mean one token.
    */
-remoteEndpointTokenConflicts(): Array<{ url: string; tokens: number }>
+  remoteEndpointTokenConflicts(): Array<{ url: string; tokens: number }>
 
-/**
+  /**
    * Engrams a primary-store pushdown cannot see: secondary (team/project)
    * stores from `config.stores`, and installed packs.
    *
@@ -192,12 +192,12 @@ remoteEndpointTokenConflicts(): Array<{ url: string; tokens: number }>
    * Scope and domain are applied here to mirror what the SQL side does to the
    * primary rows; the residual filters are applied by the caller.
    */
-/** @internal */
-_engramsOutsidePrimaryStore(options?: RecallOptions): Promise<Engram[]>
+  /** @internal */
+  _engramsOutsidePrimaryStore(options?: RecallOptions): Promise<Engram[]>
 }
 
 export const remoteResultsMethods: RemoteResultsMethods & ThisType<Plur> = {
-_remoteRecallHosts(options?: { scope?: string; scopes?: string[]; context_scopes?: string[]; session?: string; remote_project?: RemoteProjectConfig }): RemoteRecallHost[] {
+  _remoteRecallHosts(options?: { scope?: string; scopes?: string[]; context_scopes?: string[]; session?: string; remote_project?: RemoteProjectConfig }): RemoteRecallHost[] {
     // Pick up out-of-process config edits before reading tokens: a rotated
     // credential must reach the very next dial, not the next restart, even
     // when the store count is unchanged.
@@ -317,7 +317,7 @@ _remoteRecallHosts(options?: { scope?: string; scopes?: string[]; context_scopes
     return hosts
   },
 
-_startRemoteRecall(query: string, options?: { scope?: string; scopes?: string[]; context_scopes?: string[]; session?: string; remote?: boolean; remote_timeout_ms?: number; remote_project?: RemoteProjectConfig; limit?: number }, deadlineAt?: number): (Promise<RemoteRecallResult> & { hostUrls: string[] }) | null {
+  _startRemoteRecall(query: string, options?: { scope?: string; scopes?: string[]; context_scopes?: string[]; session?: string; remote?: boolean; remote_timeout_ms?: number; remote_project?: RemoteProjectConfig; limit?: number }, deadlineAt?: number): (Promise<RemoteRecallResult> & { hostUrls: string[] }) | null {
     if (options?.remote === false) return null
     // An origin-derived local/unknown default is a privacy boundary even for
     // always-dial stores. Explicit call/session scopes remain deliberate choices.
@@ -346,7 +346,7 @@ _startRemoteRecall(query: string, options?: { scope?: string; scopes?: string[];
     }).catch((): RemoteRecallResult => ({ engrams: [], scores: new Map(), outcomes: [] })), { hostUrls: hosts.map(h => h.url) })
   },
 
-_filterRemoteRows(rows: Engram[], options?: RecallOptions & { include_expired?: boolean }): Engram[] {
+  _filterRemoteRows(rows: Engram[], options?: RecallOptions & { include_expired?: boolean }): Engram[] {
     let filtered = rows.filter(e => e.status === 'active')
     if (options?.scopes !== undefined) {
       const allowed = scopeAllowFilter(options.scopes)
@@ -360,7 +360,7 @@ _filterRemoteRows(rows: Engram[], options?: RecallOptions & { include_expired?: 
     return this._applyResidualFilters(filtered, options)
   },
 
-async _awaitRemote(remotePromise: (Promise<RemoteRecallResult> & { hostUrls?: string[] }) | null, deadlineAt: number): Promise<{ result?: RemoteRecallResult; report: RecallRemoteReport }> {
+  async _awaitRemote(remotePromise: (Promise<RemoteRecallResult> & { hostUrls?: string[] }) | null, deadlineAt: number): Promise<{ result?: RemoteRecallResult; report: RecallRemoteReport }> {
     if (!remotePromise) return { report: { state: 'not_dialed', hosts: [] } }
     const waited = Number.isFinite(deadlineAt)
       ? await settleBy(remotePromise, deadlineAt + Plur.REMOTE_SETTLE_GRACE_MS)
@@ -374,7 +374,7 @@ async _awaitRemote(remotePromise: (Promise<RemoteRecallResult> & { hostUrls?: st
     return { result: waited.value, report: buildRecallRemoteReport(waited.value.outcomes) }
   },
 
-_maybeFillEmbeddingCache(): void {
+  _maybeFillEmbeddingCache(): void {
     if (!backgroundModelLoadAllowed() || this._embeddingFillStarts > 0 || this._embeddingFillChecking) return
     this._embeddingFillChecking = true
     void (async () => {
@@ -391,13 +391,13 @@ _maybeFillEmbeddingCache(): void {
       .finally(() => { this._embeddingFillChecking = false })
   },
 
-_recallDeadlineAt(options?: { deadline_ms?: number; deadline_at?: number }): number {
+  _recallDeadlineAt(options?: { deadline_ms?: number; deadline_at?: number }): number {
     const at = options?.deadline_at
     if (typeof at === 'number' && Number.isFinite(at)) return at
     return Date.now() + resolveRecallDeadlineMs(options?.deadline_ms)
   },
 
-async _mergeRemoteRecall(local: Engram[], remotePromise: (Promise<RemoteRecallResult> & { hostUrls?: string[] }) | null, options: (RecallOptions & { include_expired?: boolean }) | undefined, limit: number, deadlineAt: number = Infinity): Promise<{ engrams: Engram[]; remote: RecallRemoteReport }> {
+  async _mergeRemoteRecall(local: Engram[], remotePromise: (Promise<RemoteRecallResult> & { hostUrls?: string[] }) | null, options: (RecallOptions & { include_expired?: boolean }) | undefined, limit: number, deadlineAt: number = Infinity): Promise<{ engrams: Engram[]; remote: RecallRemoteReport }> {
     // Team rows from a warm cache sit among the local results.
     this._noteSeenRows(local)
     const { result: remote, report } = await this._awaitRemote(remotePromise, deadlineAt)
@@ -410,7 +410,7 @@ async _mergeRemoteRecall(local: Engram[], remotePromise: (Promise<RemoteRecallRe
     return { engrams: merged, remote: report }
   },
 
-_remoteInjectCandidates(remote: RemoteRecallResult | undefined, options?: InjectOptions): { engrams: Engram[]; boosts: Map<string, number> } | undefined {
+  _remoteInjectCandidates(remote: RemoteRecallResult | undefined, options?: InjectOptions): { engrams: Engram[]; boosts: Map<string, number> } | undefined {
     if (!remote) return undefined
     if (remote.engrams.length === 0) return undefined
     const permitted = options?.scopes
@@ -438,7 +438,7 @@ _remoteInjectCandidates(remote: RemoteRecallResult | undefined, options?: Inject
     return { engrams: rows, boosts }
   },
 
-remoteStoreStatus(opts?: { freshOnly?: boolean; now?: number }): RemoteStoreStatusEntry[] {
+  remoteStoreStatus(opts?: { freshOnly?: boolean; now?: number }): RemoteStoreStatusEntry[] {
     const now = opts?.now ?? Date.now()
     const out: RemoteStoreStatusEntry[] = []
     for (const { outcome: o, observed_at } of this._lastRemoteOutcomes.values()) {
@@ -458,14 +458,14 @@ remoteStoreStatus(opts?: { freshOnly?: boolean; now?: number }): RemoteStoreStat
     return out
   },
 
-_noteRemoteWriteSucceeded(url: string): void {
+  _noteRemoteWriteSucceeded(url: string): void {
     try {
       recordWriteOutcome(url, true, Date.now(), this.remoteHealthStatePath())
       this.noteRemoteHostReachable(url)
     } catch { /* advisory state only */ }
   },
 
-noteRemoteHostReachable(url: string): void {
+  noteRemoteHostReachable(url: string): void {
     const key = normalizeEndpointUrl(url)
     const entry = this._lastRemoteOutcomes.get(key)
     if (entry && PROBE_CLEARABLE_STATES.has(entry.outcome.state)) {
@@ -473,7 +473,7 @@ noteRemoteHostReachable(url: string): void {
     }
   },
 
-remoteEndpointTokenConflicts(): Array<{ url: string; tokens: number }> {
+  remoteEndpointTokenConflicts(): Array<{ url: string; tokens: number }> {
     const byUrl = new Map<string, { url: string; tokens: Set<string> }>()
     for (const s of this.config.stores ?? []) {
       if (!s.url) continue
@@ -487,7 +487,7 @@ remoteEndpointTokenConflicts(): Array<{ url: string; tokens: number }> {
       .map(r => ({ url: r.url, tokens: r.tokens.size }))
   },
 
-async _engramsOutsidePrimaryStore(options?: RecallOptions): Promise<Engram[]> {
+  async _engramsOutsidePrimaryStore(options?: RecallOptions): Promise<Engram[]> {
     // Delegates to the SAME loader `_loadAllEngrams` uses, so remote stores,
     // id namespacing, scope narrowing and the containment guard cannot drift
     // between the pushdown path and every other read path.

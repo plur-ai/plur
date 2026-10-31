@@ -18,7 +18,7 @@ import type {
 import { VALID_ENGRAM_TYPES } from './helpers.js'
 
 export interface ScopeGuardsMethods {
-/**
+  /**
    * Resolve self-describing metadata for a scope from the loaded config.
    * Metadata is carried on a `stores` entry: the first entry whose `scope`
    * matches and that declares any metadata field (`description`/`covers`/
@@ -26,35 +26,35 @@ export interface ScopeGuardsMethods {
    * `undefined` when the scope is unknown or declares no metadata — callers
    * (notably the leak guard) treat that as "fall back to default behavior".
    */
-getScopeMetadata(scope: string): ScopeMetadata | undefined
+  getScopeMetadata(scope: string): ScopeMetadata | undefined
 
-/**
+  /**
    * All registered scopes that declare self-describing metadata, materialized
    * via {@link getScopeMetadata}. Deduplicated on scope (first declaration
    * wins, matching getScopeMetadata's find-first semantics). Drives discovery
    * surfacing and the {@link suggestScope} ranker. Additive — does not touch
    * routing.
    */
-listScopeMetadata(): ScopeMetadata[]
+  listScopeMetadata(): ScopeMetadata[]
 
-/**
+  /**
    * Registered scopes eligible as an AUTO-ROUTE target: those declaring
    * metadata, minus readonly stores. Shared by the write path and
    * {@link previewAutoRoute} so the two cannot rank different candidate sets.
    */
-/** @internal */
-_writableScopeMetadata(): ScopeMetadata[]
+  /** @internal */
+  _writableScopeMetadata(): ScopeMetadata[]
 
-/**
+  /**
    * What a genuinely-unscoped write of these signals WOULD do.
    *
    * `suggestScope` ranks; this decides. Both the write path and this preview
    * go through `decideAutoRoute`, so a suggestion surface reports the real
    * outcome instead of an approximation of it.
    */
-previewAutoRoute(input: ScopeSignals): AutoRouteDecision
+  previewAutoRoute(input: ScopeSignals): AutoRouteDecision
 
-/**
+  /**
    * Suggest which registered scope(s) an engram belongs in, ranked by fit.
    * Deterministic — NO LLM, NO network. Scores the engram's signals (statement
    * keywords, `domain` namespace, `tags`) against the `covers[]` each scope
@@ -72,18 +72,18 @@ previewAutoRoute(input: ScopeSignals): AutoRouteDecision
    * candidates sorted by confidence descending — an empty array means nothing
    * matched OR every match fell below the floor.
    */
-suggestScope(input: ScopeSignals, options?: { minConfidence?: number }): ScopeCandidate[]
+  suggestScope(input: ScopeSignals, options?: { minConfidence?: number }): ScopeCandidate[]
 
-/**
+  /**
    * Read-only view of the `scope_routing` config block. Lets display
    * surfaces (the MCP `plur_suggest_scope` handler) resolve the configured
    * suggestion floor without reaching into the private config — precedence at
    * that surface is: explicit tool arg > this config value >
    * SUGGEST_DISPLAY_MIN_CONFIDENCE.
    */
-getScopeRoutingConfig(): Readonly<ScopeRoutingConfig>
+  getScopeRoutingConfig(): Readonly<ScopeRoutingConfig>
 
-/**
+  /**
    * Single source of truth for "does this content carry sensitivity that scope
    * `scope` forbids?". Returns the offending {@link SecretMatch} hits, or `[]`
    * when there are none.
@@ -107,10 +107,10 @@ getScopeRoutingConfig(): Readonly<ScopeRoutingConfig>
    * mutation-path guards (learnAsync UPDATE/MERGE, reportFailure, updateEngram)
    * so there is exactly one definition of "offending".
    */
-/** @internal */
-_offendingHitsForScope(statement: string, scope: string): SecretMatch[]
+  /** @internal */
+  _offendingHitsForScope(statement: string, scope: string): SecretMatch[]
 
-/**
+  /**
    * Everything on an engram, apart from its statement, for the explicit-update /
    * meta / outbox-reguard / rescope leak scan.
    *
@@ -118,10 +118,10 @@ _offendingHitsForScope(statement: string, scope: string): SecretMatch[]
    * deliberate exclusion) rather than a hand-kept field list, so a field that
    * reaches the engram by any route is scanned by construction.
    */
-/** @internal */
-_engramContextFields(engram: Engram): Record<string, unknown> | undefined
+  /** @internal */
+  _engramContextFields(engram: Engram): Record<string, unknown> | undefined
 
-/**
+  /**
    * Leak guard for the EXPLICIT-update mutation path (`updateEngram` /
    * `updateEngramAsync`). Unlike learn/learnAsync, the caller hands us a fully
    * formed engram and chose its scope deliberately, so the response differs by
@@ -142,10 +142,10 @@ _engramContextFields(engram: Engram): Record<string, unknown> | undefined
    * byte-aware truncation is applied inside `detectSensitive` (reached via
    * `_offendingHitsForScope`), so the scan is bounded here too.
    */
-/** @internal */
-_guardExplicitUpdate(statement: string, scope: string, isRemote: boolean, contextFields?: Record<string, unknown>): { scope: string; visibility: 'private' } | null
+  /** @internal */
+  _guardExplicitUpdate(statement: string, scope: string, isRemote: boolean, contextFields?: Record<string, unknown>): { scope: string; visibility: 'private' } | null
 
-/**
+  /**
    * Resolve the scope for a write whose caller supplied NO explicit scope and
    * for which no session/`.plur.yaml` default is in effect — the genuinely
    * UNSCOPED case. Two non-explicit signals decide it:
@@ -174,19 +174,19 @@ _guardExplicitUpdate(statement: string, scope: string, isRemote: boolean, contex
    * `{ scope, confidence, reason }`; `routed` is null on the `unscoped_default`
    * fall-through (so an explicit/default `global` is never mislabeled as routed).
    */
-/** @internal */
-_resolveUnscopedScope(statement: string, context?: LearnContext): Promise<{ scope: string; routed: { scope: string; confidence: number; reason: string } | null; refusedShared: { scope: string; confidence: number; reason: string } | null }>
+  /** @internal */
+  _resolveUnscopedScope(statement: string, context?: LearnContext): Promise<{ scope: string; routed: { scope: string; confidence: number; reason: string } | null; refusedShared: { scope: string; confidence: number; reason: string } | null }>
 
-/**
+  /**
    * The text the write-time HARD secret scan reads: the statement plus every
    * caller-supplied content field, as listed by `LEARN_CONTEXT_FIELD_ROLES`.
    * Statement-only when the context carries no content field, so a plain
    * write scans exactly what it always did.
    */
-/** @internal */
-_hardScanText(statement: string, context: LearnContext | undefined): string
+  /** @internal */
+  _hardScanText(statement: string, context: LearnContext | undefined): string
 
-/**
+  /**
    * Write-time leak guard. If the target scope can let data leave the machine —
    * either SHARED (`isSharedScope`: group:/project:/space:/team:/org:/public, so
    * others can read it) OR REMOTE-backed (`_hasUrlStoreForScope`: routes to a
@@ -205,10 +205,10 @@ _hardScanText(statement: string, context: LearnContext | undefined): string
    * default policy (`forbid: ['secrets','infra']`, `allow: []`) reproduces
    * that, so adding metadata is non-breaking.
    */
-/** @internal */
-_guardSensitiveScope(statement: string, context?: LearnContext): Promise<{ scope: string; context: LearnContext | undefined; demotion: { from: string; to: string; patterns: string } | null; routed: { scope: string; confidence: number; reason: string } | null; refusedShared: { scope: string; confidence: number; reason: string } | null; scopeSource: ScopeSource }>
+  /** @internal */
+  _guardSensitiveScope(statement: string, context?: LearnContext): Promise<{ scope: string; context: LearnContext | undefined; demotion: { from: string; to: string; patterns: string } | null; routed: { scope: string; confidence: number; reason: string } | null; refusedShared: { scope: string; confidence: number; reason: string } | null; scopeSource: ScopeSource }>
 
-/**
+  /**
    * `measured_under` as it may be persisted: validated against
    * MeasuredUnderSchema, or absent. The MCP tool passes the LLM's object
    * through as a bare cast, and a non-string dimension written to disk makes
@@ -217,10 +217,10 @@ _guardSensitiveScope(statement: string, context?: LearnContext): Promise<{ scope
    * write time keeps the store loadable; the caller gets a TypeError naming
    * the field instead of a warning in a log they may never see.
    */
-/** @internal */
-_validatedMeasuredUnder(context: LearnContext | undefined): MeasuredUnder | undefined
+  /** @internal */
+  _validatedMeasuredUnder(context: LearnContext | undefined): MeasuredUnder | undefined
 
-/**
+  /**
    * The input gate every learn path runs before touching a store.
    *
    * The statement must be a non-empty string; line terminators are collapsed
@@ -242,14 +242,14 @@ _validatedMeasuredUnder(context: LearnContext | undefined): MeasuredUnder | unde
    * harmless. Returns the sanitised statement, which every downstream gate
    * and the content hash must see.
    */
-/** @internal */
-_validateLearnInput(fn: 'learn' | 'learnRouted', statement: string, context?: LearnContext): string
+  /** @internal */
+  _validateLearnInput(fn: 'learn' | 'learnRouted', statement: string, context?: LearnContext): string
 
-/** learn()'s delegation test — the capability SET, see learn(). */
-/** @internal */
-_learnCanDelegate(): boolean
+  /** learn()'s delegation test — the capability SET, see learn(). */
+  /** @internal */
+  _learnCanDelegate(): boolean
 
-/** learn()'s same-scope content-hash dedup: the store seam first (a primary
+  /** learn()'s same-scope content-hash dedup: the store seam first (a primary
    *  match wins), then the in-memory scan. One implementation for learn(),
    *  learnRouted(), learnAsync's hash step and {@link wouldDeduplicate}.
    *
@@ -258,18 +258,18 @@ _learnCanDelegate(): boolean
    *  it — a pack, a readonly store, another scope's remote cache — comes back
    *  as `foreign`: the caller stores a new row and records the recurrence
    *  against it in history only. */
-/** @internal */
-_learnHashMatch(statement: string, scope: string, canDelegate: boolean, allEngrams: Engram[]): Promise<{ primaryHashMatch: Engram | null; hashMatch: Engram | null; foreign: Engram | null }>
+  /** @internal */
+  _learnHashMatch(statement: string, scope: string, canDelegate: boolean, allEngrams: Engram[]): Promise<{ primaryHashMatch: Engram | null; hashMatch: Engram | null; foreign: Engram | null }>
 
-/** `_hashDedup`'s match rule as a predicate (null: nothing can match). */
-/** @internal */
-_hashDedupPredicate(statement: string, scope?: string): ((e: Engram) => boolean) | null
+  /** `_hashDedup`'s match rule as a predicate (null: nothing can match). */
+  /** @internal */
+  _hashDedupPredicate(statement: string, scope?: string): ((e: Engram) => boolean) | null
 
-/** `_crossScopeRecurrenceDetect`'s match rule as a predicate. */
-/** @internal */
-_crossScopePredicate(statement: string, scope: string): ((e: Engram) => boolean) | null
+  /** `_crossScopeRecurrenceDetect`'s match rule as a predicate. */
+  /** @internal */
+  _crossScopePredicate(statement: string, scope: string): ((e: Engram) => boolean) | null
 
-/**
+  /**
    * Where a dedup hit lives, as far as a writer to `scope` is concerned.
    * `primary`, a writable `secondary` path store, and
    * `own-remote` (the cache of a writable URL store for exactly `scope`) are
@@ -277,35 +277,35 @@ _crossScopePredicate(statement: string, scope: string): ((e: Engram) => boolean)
    * are not. Every non-primary row carries the loader's `_storeScope` or
    * `_pack` stamp (`_loadSecondaryAndPacks`), so an unstamped row is primary.
    */
-/** @internal */
-_hitHolder(hit: Engram, scope: string): Promise<'primary' | 'secondary' | 'own-remote' | 'pack' | 'readonly' | 'remote-cache'>
+  /** @internal */
+  _hitHolder(hit: Engram, scope: string): Promise<'primary' | 'secondary' | 'own-remote' | 'pack' | 'readonly' | 'remote-cache'>
 
-/** The first candidate matching `pred` that the writer can persist (`hit`),
+  /** The first candidate matching `pred` that the writer can persist (`hit`),
    *  and the first one it cannot (`foreign`), in corpus order. */
-/** @internal */
-_firstPersistableHit(candidates: Engram[], pred: ((e: Engram) => boolean) | null, scope: string | undefined): Promise<{ hit: Engram | null; foreign: Engram | null }>
+  /** @internal */
+  _firstPersistableHit(candidates: Engram[], pred: ((e: Engram) => boolean) | null, scope: string | undefined): Promise<{ hit: Engram | null; foreign: Engram | null }>
 
-/** learnAsync's dedup candidates: keep only rows the writer
+  /** learnAsync's dedup candidates: keep only rows the writer
    *  can persist (`_hitHolder` of the row in its own scope). */
-/** @internal */
-_persistableCandidates(rows: Engram[]): Promise<Engram[]>
+  /** @internal */
+  _persistableCandidates(rows: Engram[]): Promise<Engram[]>
 
-/** Cross-scope match over `allEngrams`, split into persistable and foreign like
+  /** Cross-scope match over `allEngrams`, split into persistable and foreign like
    *  {@link _learnHashMatch}. Nothing when `_crossScopeRecurrenceApplies`
    *  says a cross-scope hit may not absorb a write into `scope`. */
-/** @internal */
-_crossScopeMatch(statement: string, allEngrams: Engram[], scope: string, opts?: { creditOnly?: boolean }): Promise<{ hit: Engram | null; foreign: Engram | null }>
+  /** @internal */
+  _crossScopeMatch(statement: string, allEngrams: Engram[], scope: string, opts?: { creditOnly?: boolean }): Promise<{ hit: Engram | null; foreign: Engram | null }>
 
-/**
+  /**
    * The write was stored as `storedAs` although its statement was
    * already held by `hit`, which the writer cannot persist (pack, readonly
    * store, another scope's remote cache). The hit is NOT mutated — not on disk
    * and not in memory; the recurrence is recorded in history only.
    */
-/** @internal */
-_noteUnpersistableRecurrence(hit: Engram, scope: string, storedAs: string): Promise<void>
+  /** @internal */
+  _noteUnpersistableRecurrence(hit: Engram, scope: string, storedAs: string): Promise<void>
 
-/**
+  /**
    * Would `learn(statement, context)` resolve to an EXISTING engram instead of
    * writing a new one? Returns that engram's id, or null. Writes nothing.
    *
@@ -322,9 +322,9 @@ _noteUnpersistableRecurrence(hit: Engram, scope: string, storedAs: string): Prom
    * null. The importer asks this BEFORE learn() and skips without writing when
    * it answers an id.
    */
-wouldDeduplicate(statement: string, context?: LearnContext): Promise<string | null>
+  wouldDeduplicate(statement: string, context?: LearnContext): Promise<string | null>
 
-/**
+  /**
    * The scope learn() would write `statement` into (after the sensitive-scope
    * guard and routing), and whether learn()'s dedup there also matches a row
    * of ANOTHER scope in the primary store. False on a
@@ -334,11 +334,11 @@ wouldDeduplicate(statement: string, context?: LearnContext): Promise<string | nu
    * it, so two records of one file in different scopes are predicted as the
    * real run treats them.
    */
-dedupScopeFor(statement: string, context?: LearnContext): Promise<{ scope: string; acrossScopes: boolean }>
+  dedupScopeFor(statement: string, context?: LearnContext): Promise<{ scope: string; acrossScopes: boolean }>
 }
 
 export const scopeGuardsMethods: ScopeGuardsMethods & ThisType<Plur> = {
-getScopeMetadata(scope: string): ScopeMetadata | undefined {
+  getScopeMetadata(scope: string): ScopeMetadata | undefined {
     const entry = (this.config.stores ?? []).find(
       s => s.scope === scope &&
         (s.description !== undefined || s.covers !== undefined || s.sensitivity !== undefined),
@@ -352,7 +352,7 @@ getScopeMetadata(scope: string): ScopeMetadata | undefined {
     }
   },
 
-listScopeMetadata(): ScopeMetadata[] {
+  listScopeMetadata(): ScopeMetadata[] {
     const seen = new Set<string>()
     const out: ScopeMetadata[] = []
     for (const s of this.config.stores ?? []) {
@@ -363,15 +363,15 @@ listScopeMetadata(): ScopeMetadata[] {
     return out
   },
 
-// Synchronous: it does no async work.
-_writableScopeMetadata(): ScopeMetadata[] {
+  // Synchronous: it does no async work.
+  _writableScopeMetadata(): ScopeMetadata[] {
     return this.listScopeMetadata().filter(md => {
       const entry = (this.config.stores ?? []).find(s => s.scope === md.scope)
       return entry?.readonly !== true
     })
   },
 
-previewAutoRoute(input: ScopeSignals): AutoRouteDecision {
+  previewAutoRoute(input: ScopeSignals): AutoRouteDecision {
     this.reloadConfigIfChanged()
     if (this.config.auto_route_scope === false) {
       return { action: 'no-match', scope: null, candidate: null, refusedShared: null }
@@ -389,19 +389,19 @@ previewAutoRoute(input: ScopeSignals): AutoRouteDecision {
     })
   },
 
-suggestScope(input: ScopeSignals, options?: { minConfidence?: number }): ScopeCandidate[] {
+  suggestScope(input: ScopeSignals, options?: { minConfidence?: number }): ScopeCandidate[] {
     this.reloadConfigIfChanged()  // pick up out-of-process config edits
     const minConfidence =
       options?.minConfidence ?? this.config.scope_routing?.min_confidence ?? 0
     return rankScopes(input, this.listScopeMetadata(), { minConfidence })
   },
 
-getScopeRoutingConfig(): Readonly<ScopeRoutingConfig> {
+  getScopeRoutingConfig(): Readonly<ScopeRoutingConfig> {
     this.reloadConfigIfChanged()
     return { ...(this.config.scope_routing ?? {}) }
   },
 
-_offendingHitsForScope(statement: string, scope: string): SecretMatch[] {
+  _offendingHitsForScope(statement: string, scope: string): SecretMatch[] {
     // Guard runs when data can leave the machine: a SHARED scope (others read it)
     // OR a REMOTE-backed scope (routes to a remote store). A scope that is neither
     // — `global`/`local`/a local-file store — stays on this machine, so there is
@@ -433,11 +433,11 @@ _offendingHitsForScope(statement: string, scope: string): SecretMatch[] {
     })
   },
 
-_engramContextFields(engram: Engram): Record<string, unknown> | undefined {
+  _engramContextFields(engram: Engram): Record<string, unknown> | undefined {
     return engramContentFields(engram)
   },
 
-_guardExplicitUpdate(statement: string, scope: string, isRemote: boolean, contextFields?: Record<string, unknown>): { scope: string; visibility: 'private' } | null {
+  _guardExplicitUpdate(statement: string, scope: string, isRemote: boolean, contextFields?: Record<string, unknown>): { scope: string; visibility: 'private' } | null {
     // Scan statement + context fields (mirrors _guardSensitiveScope). Omit the
     // context join entirely when there are no fields so a clean-statement scan
     // reads exactly the statement.
@@ -461,7 +461,7 @@ _guardExplicitUpdate(statement: string, scope: string, isRemote: boolean, contex
     return { scope: 'local', visibility: 'private' }
   },
 
-async _resolveUnscopedScope(statement: string, context?: LearnContext): Promise<{ scope: string; routed: { scope: string; confidence: number; reason: string } | null; refusedShared: { scope: string; confidence: number; reason: string } | null }> {
+  async _resolveUnscopedScope(statement: string, context?: LearnContext): Promise<{ scope: string; routed: { scope: string; confidence: number; reason: string } | null; refusedShared: { scope: string; confidence: number; reason: string } | null }> {
     // Pick up out-of-process config edits, so a scope registered (or covers
     // synced) by another process after startup is visible to auto-routing.
     // Cheap: one statSync, reload only on an actual mtime change.
@@ -521,12 +521,12 @@ async _resolveUnscopedScope(statement: string, context?: LearnContext): Promise<
     return { scope: fallback, routed: null, refusedShared }
   },
 
-_hardScanText(statement: string, context: LearnContext | undefined): string {
+  _hardScanText(statement: string, context: LearnContext | undefined): string {
     const content = learnContextContent(context)
     return content ? `${statement}\n${JSON.stringify(content)}` : statement
   },
 
-async _guardSensitiveScope(statement: string, context?: LearnContext): Promise<{ scope: string; context: LearnContext | undefined; demotion: { from: string; to: string; patterns: string } | null; routed: { scope: string; confidence: number; reason: string } | null; refusedShared: { scope: string; confidence: number; reason: string } | null; scopeSource: ScopeSource }> {
+  async _guardSensitiveScope(statement: string, context?: LearnContext): Promise<{ scope: string; context: LearnContext | undefined; demotion: { from: string; to: string; patterns: string } | null; routed: { scope: string; confidence: number; reason: string } | null; refusedShared: { scope: string; confidence: number; reason: string } | null; scopeSource: ScopeSource }> {
     // Every egress decision below reads the CURRENT config, so an
     // explicit-scope write in a long-running process is not guarded against a
     // `sensitivity` policy another process has since tightened. One statSync;
@@ -636,7 +636,7 @@ async _guardSensitiveScope(statement: string, context?: LearnContext): Promise<{
     }
   },
 
-_validatedMeasuredUnder(context: LearnContext | undefined): MeasuredUnder | undefined {
+  _validatedMeasuredUnder(context: LearnContext | undefined): MeasuredUnder | undefined {
     const raw = context?.measured_under
     if (raw === undefined || raw === null) return undefined
     const parsed = MeasuredUnderSchema.safeParse(raw)
@@ -647,7 +647,7 @@ _validatedMeasuredUnder(context: LearnContext | undefined): MeasuredUnder | unde
     return parsed.data
   },
 
-_validateLearnInput(fn: 'learn' | 'learnRouted', statement: string, context?: LearnContext): string {
+  _validateLearnInput(fn: 'learn' | 'learnRouted', statement: string, context?: LearnContext): string {
     if (typeof statement !== 'string' || statement.length === 0) {
       throw new TypeError(`plur.${fn}: statement must be a non-empty string, got ${typeof statement}`)
     }
@@ -706,7 +706,7 @@ _validateLearnInput(fn: 'learn' | 'learnRouted', statement: string, context?: Le
     return statement
   },
 
-_learnCanDelegate(): boolean {
+  _learnCanDelegate(): boolean {
     const ps = this._primaryStore
     return Boolean(
       ps.findActiveByContentHash && ps.nextEngramId
@@ -714,7 +714,7 @@ _learnCanDelegate(): boolean {
     )
   },
 
-async _learnHashMatch(statement: string, scope: string, canDelegate: boolean, allEngrams: Engram[]): Promise<{ primaryHashMatch: Engram | null; hashMatch: Engram | null; foreign: Engram | null }> {
+  async _learnHashMatch(statement: string, scope: string, canDelegate: boolean, allEngrams: Engram[]): Promise<{ primaryHashMatch: Engram | null; hashMatch: Engram | null; foreign: Engram | null }> {
     const primaryHashMatch = canDelegate && isHashable(statement)
       ? await this._primaryStore.findActiveByContentHash!(computeContentHash(statement), scope)
       : null
@@ -726,20 +726,20 @@ async _learnHashMatch(statement: string, scope: string, canDelegate: boolean, al
     return { primaryHashMatch: null, hashMatch: hit, foreign }
   },
 
-_hashDedupPredicate(statement: string, scope?: string): ((e: Engram) => boolean) | null {
+  _hashDedupPredicate(statement: string, scope?: string): ((e: Engram) => boolean) | null {
     if (!isHashable(statement)) return null
     const hash = computeContentHash(statement)
     return e => e.status === 'active' && (e as any).content_hash === hash
       && (scope === undefined || e.scope === scope)
   },
 
-_crossScopePredicate(statement: string, scope: string): ((e: Engram) => boolean) | null {
+  _crossScopePredicate(statement: string, scope: string): ((e: Engram) => boolean) | null {
     if (!isHashable(statement)) return null
     const hash = computeContentHash(statement)
     return e => e.status === 'active' && (e as any).content_hash === hash && e.scope !== scope
   },
 
-async _hitHolder(hit: Engram, scope: string): Promise<'primary' | 'secondary' | 'own-remote' | 'pack' | 'readonly' | 'remote-cache'> {
+  async _hitHolder(hit: Engram, scope: string): Promise<'primary' | 'secondary' | 'own-remote' | 'pack' | 'readonly' | 'remote-cache'> {
     if ((hit as any)._pack) return 'pack'
     const storeScope = (hit as any)._storeScope as string | undefined
     if (storeScope === undefined) return 'primary'
@@ -758,7 +758,7 @@ async _hitHolder(hit: Engram, scope: string): Promise<'primary' | 'secondary' | 
     return storeScope === scope && this._isRemoteWriteScope(scope) ? 'own-remote' : 'remote-cache'
   },
 
-async _firstPersistableHit(candidates: Engram[], pred: ((e: Engram) => boolean) | null, scope: string | undefined): Promise<{ hit: Engram | null; foreign: Engram | null }> {
+  async _firstPersistableHit(candidates: Engram[], pred: ((e: Engram) => boolean) | null, scope: string | undefined): Promise<{ hit: Engram | null; foreign: Engram | null }> {
     let foreign: Engram | null = null
     if (!pred) return { hit: null, foreign }
     for (const e of candidates) {
@@ -770,7 +770,7 @@ async _firstPersistableHit(candidates: Engram[], pred: ((e: Engram) => boolean) 
     return { hit: null, foreign }
   },
 
-async _persistableCandidates(rows: Engram[]): Promise<Engram[]> {
+  async _persistableCandidates(rows: Engram[]): Promise<Engram[]> {
     const out: Engram[] = []
     for (const e of rows) {
       const holder = await this._hitHolder(e, e.scope)
@@ -779,7 +779,7 @@ async _persistableCandidates(rows: Engram[]): Promise<Engram[]> {
     return out
   },
 
-async _crossScopeMatch(statement: string, allEngrams: Engram[], scope: string, opts?: { creditOnly?: boolean }): Promise<{ hit: Engram | null; foreign: Engram | null }> {
+  async _crossScopeMatch(statement: string, allEngrams: Engram[], scope: string, opts?: { creditOnly?: boolean }): Promise<{ hit: Engram | null; foreign: Engram | null }> {
     // `creditOnly`: the caller only CREDITS the hit and writes anyway (the
     // remote route), so the absorb rule below does not apply.
     if (!opts?.creditOnly && !this._crossScopeRecurrenceApplies(scope)) return { hit: null, foreign: null }
@@ -796,7 +796,7 @@ async _crossScopeMatch(statement: string, allEngrams: Engram[], scope: string, o
     return this._firstPersistableHit(allEngrams, pred, scope)
   },
 
-async _noteUnpersistableRecurrence(hit: Engram, scope: string, storedAs: string): Promise<void> {
+  async _noteUnpersistableRecurrence(hit: Engram, scope: string, storedAs: string): Promise<void> {
     try {
       const heldIn = await this._hitHolder(hit, scope)
       this._appendHistory({
@@ -820,7 +820,7 @@ async _noteUnpersistableRecurrence(hit: Engram, scope: string, storedAs: string)
     } catch { /* history is an audit trail, never a gate on the write */ }
   },
 
-async wouldDeduplicate(statement: string, context?: LearnContext): Promise<string | null> {
+  async wouldDeduplicate(statement: string, context?: LearnContext): Promise<string | null> {
     const guarded = await this._guardSensitiveScope(statement, context)
     const scope = guarded.scope
     const canDelegate = this._learnCanDelegate() && !this._remoteOnly
@@ -835,7 +835,7 @@ async wouldDeduplicate(statement: string, context?: LearnContext): Promise<strin
     return hit && !this._isTeamValidation(scope, hit) ? hit.id : null
   },
 
-async dedupScopeFor(statement: string, context?: LearnContext): Promise<{ scope: string; acrossScopes: boolean }> {
+  async dedupScopeFor(statement: string, context?: LearnContext): Promise<{ scope: string; acrossScopes: boolean }> {
     const { scope } = await this._guardSensitiveScope(statement, context)
     // A shared save is never absorbed by another scope's row, so its in-file
     // duplicates are keyed by (hash, scope) as well.

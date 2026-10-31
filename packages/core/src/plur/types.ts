@@ -320,7 +320,7 @@ export interface MutationOutcome {
 
 
 /** A dedup supersede target held in a writable secondary store. */
-export interface SecondarySupersede { id: string; path: string; originalId: string }
+  export interface SecondarySupersede { id: string; path: string; originalId: string }
 
 
 /** Per-store answer of the id-collision probe run by forget, feedback and setPinned. */

@@ -21,11 +21,11 @@ import type { UploadLocalResult } from '../types.js'
 import { OUTBOX_CLAIM_LEASE_MS, OUTBOX_CLAIM_MAX_AGE_MS, OUTBOX_ID_MAP_MAX, OUTBOX_TAKEOVER_MAX_DEPTH, outboxClaimTag, pidAlive, queuedOutboxKeys } from './helpers.js'
 
 export interface OutboxMethods {
-/** Where breaker/cooldown/unsupported state persists across processes.
+  /** Where breaker/cooldown/unsupported state persists across processes.
    *  Inside the store root so tests and PLUR_PATH overrides isolate it. */
-remoteHealthStatePath(): string
+  remoteHealthStatePath(): string
 
-/**
+  /**
    * Where local→server id mappings survive between outbox flushes.
    *
    * `flushOutbox` builds a `localToServer` map so a correction queued
@@ -37,9 +37,9 @@ remoteHealthStatePath(): string
    * pathological ordering, never an engram. Every read and write is
    * best-effort for that reason.
    */
-outboxIdMapPath(): string
+  outboxIdMapPath(): string
 
-/**
+  /**
    * Per-entry push claims: the one duplicate-push guard. A
    * claim is a small file created with O_EXCL, so two writers — two flushes,
    * or a flush and learn()'s background push, in one process or several —
@@ -49,12 +49,12 @@ outboxIdMapPath(): string
    * the key already on its outbox row. A claim guards the row,
    * not a snapshot: whoever takes it re-reads the row before pushing.
    */
-outboxClaimsDir(): string
+  outboxClaimsDir(): string
 
-/** @internal */
-_outboxClaimPath(id: string): string
+  /** @internal */
+  _outboxClaimPath(id: string): string
 
-/**
+  /**
    * Take the claim on an outbox entry. `busy` when another live writer holds
    * it. A lapsed claim (its process is gone, or its lease expired) is taken
    * over. `keyFor` supplies the key recorded in the claim.
@@ -89,10 +89,10 @@ _outboxClaimPath(id: string): string
    * processes push the same engram. Cleanup after the claim is decided (temp files,
    * takeover markers) is best effort and never changes the answer.
    */
-/** @internal */
-_claimOutboxEntry(id: string, keyFor: () => string): { status: 'busy'; error?: string } | { status: 'claimed'; key: string }
+  /** @internal */
+  _claimOutboxEntry(id: string, keyFor: () => string): { status: 'busy'; error?: string } | { status: 'claimed'; key: string }
 
-/**
+  /**
    * Is this claim still held by a live writer?
    *
    * - **Owner on this host:** held while its process is alive, however long
@@ -106,18 +106,18 @@ _claimOutboxEntry(id: string, keyFor: () => string): { status: 'busy'; error?: s
    *
    * A timestamp dated implausibly far ahead is clock skew, not a live writer.
    */
-/** @internal */
-_outboxClaimHeld(held: { pid?: number; host?: string; until?: number; at?: number }, now: number): boolean
+  /** @internal */
+  _outboxClaimHeld(held: { pid?: number; host?: string; until?: number; at?: number }, now: number): boolean
 
-/**
+  /**
    * When the live claim on `id` lapses, as an ISO time; undefined when there is
    * no live claim. Read from the claim file alone and judged by
    * the same rule as `_claimOutboxEntry`. Advisory: nothing is held back by it.
    */
-/** @internal */
-_outboxClaimUntil(id: string, now: number): string | undefined
+  /** @internal */
+  _outboxClaimUntil(id: string, now: number): string | undefined
 
-/**
+  /**
    * Release a claim this process holds. Never throws.
    *
    * Also clears takeover markers left by a racer that died after its rename
@@ -126,14 +126,14 @@ _outboxClaimUntil(id: string, now: number): string | undefined
    * that re-creates one then fails its re-read, so this cannot make a second
    * winner.
    */
-/** @internal */
-_releaseOutboxClaim(id: string): void
+  /** @internal */
+  _releaseOutboxClaim(id: string): void
 
-/** Read the persisted local→server map. Never throws; `{}` on any problem. */
-/** @internal */
-_readOutboxIdMap(): Record<string, { server_id: string; url: string; at: number }>
+  /** Read the persisted local→server map. Never throws; `{}` on any problem. */
+  /** @internal */
+  _readOutboxIdMap(): Record<string, { server_id: string; url: string; at: number }>
 
-/**
+  /**
    * Persist local→server mappings recorded during a flush. Never throws.
    *
    * Bounded at {@link OUTBOX_ID_MAP_MAX} entries, oldest dropped first: this
@@ -142,10 +142,10 @@ _readOutboxIdMap(): Record<string, { server_id: string; url: string; at: number 
    * safe because the edges that need it are queued corrections, which are
    * resolved within a flush or two of the target.
    */
-/** @internal */
-_writeOutboxIdMap(entries: Record<string, { server_id: string; url: string; at: number }>): void
+  /** @internal */
+  _writeOutboxIdMap(entries: Record<string, { server_id: string; url: string; at: number }>): void
 
-/**
+  /**
    * Sync engrams to git AND refresh the derived index from YAML.
    *
    * Behavior:
@@ -156,18 +156,18 @@ _writeOutboxIdMap(entries: Record<string, { server_id: string; url: string; at: 
    * deletes every row in the derived index and replays YAML. YAML is never
    * touched in either mode.
    */
-sync(remote?: string, options?: { full?: boolean; remoteType?: SyncRemoteType }): Promise<SyncResult>
+  sync(remote?: string, options?: { full?: boolean; remoteType?: SyncRemoteType }): Promise<SyncResult>
 
-/** Get git sync status without making changes. */
-syncStatus(): SyncStatus
+  /** Get git sync status without making changes. */
+  syncStatus(): SyncStatus
 
-/** Count engrams pending remote sync (outbox entries). Must mirror
+  /** Count engrams pending remote sync (outbox entries). Must mirror
    *  flushOutbox()'s filter exactly: a retired engram still carrying `_outbox`
    *  (direct YAML edit, older client) is skipped by the flush forever, so
    *  counting it would report a permanent phantom "pending". */
-outboxCount(): Promise<number>
+  outboxCount(): Promise<number>
 
-/**
+  /**
    * The outbox, as inspectable entries.
    *
    * The outbox is not a file or a queue directory: it is
@@ -180,7 +180,7 @@ outboxCount(): Promise<number>
    * human is asking ("which store is behind?"). Omitting it at the source
    * beats redacting it at each of the several call sites that print it.
    */
-listOutbox(): Promise<Array<{
+  listOutbox(): Promise<Array<{
     id: string
     /** `push`: a write waiting to reach its store (`_outbox`). `retire`: a
      *  queued DELETE of a copy the remote accepted after a forget/rescope
@@ -213,30 +213,30 @@ listOutbox(): Promise<Array<{
     leased_until?: string
   }>>
 
-/**
+  /**
    * Why the push-claims folder cannot be written, or undefined when it can.
    * A claim that cannot be recorded holds every queued
    * write on this machine, so doctor reports it. Creates the folder when
    * missing (it is PLUR's own cache), and writes nothing else.
    */
-outboxClaimsProblem(): string | undefined
+  outboxClaimsProblem(): string | undefined
 
-/** Counts by state plus one line per needs_action scope . */
-outboxSummary(): Promise<OutboxSummary>
+  /** Counts by state plus one line per needs_action scope . */
+  outboxSummary(): Promise<OutboxSummary>
 
-/** A url store accepting writes for exactly this scope — the flush's own lookup. */
-/** @internal */
-_hasWritableStoreFor(scope: string): boolean
+  /** A url store accepting writes for exactly this scope — the flush's own lookup. */
+  /** @internal */
+  _hasWritableStoreFor(scope: string): boolean
 
-/**
+  /**
    * When an automatic flush may next dial a `needs_action` entry:
    * one attempt per NEEDS_ACTION_RETRY_MS, counted from the last attempt.
    * An entry with no readable last attempt is due now.
    */
-/** @internal */
-_needsActionRetryAt(ob: { last_attempt?: string }): number | undefined
+  /** @internal */
+  _needsActionRetryAt(ob: { last_attempt?: string }): number | undefined
 
-/**
+  /**
    * Flush the outbox — retry pushing pending engrams to their target remote
    * stores. Called automatically on session_start and plur_sync.
    *
@@ -278,23 +278,23 @@ _needsActionRetryAt(ob: { last_attempt?: string }): number | undefined
    * anyway, for the user who has just fixed the cause. Nothing is ever
    * dropped or rescoped for being `needs_action`.
    */
-flushOutbox(options?: { timeoutMs?: number; force?: boolean }): Promise<{ flushed: number; failed: number; deferred: number; held: number; skipped: number; expired_warnings: string[] }>
+  flushOutbox(options?: { timeoutMs?: number; force?: boolean }): Promise<{ flushed: number; failed: number; deferred: number; held: number; skipped: number; expired_warnings: string[] }>
 
-/** @internal */
-_runOutboxFlush(options: { timeoutMs?: number; force?: boolean }, upload?: { ids: Set<string>; results: Map<string, UploadLocalResult> }): Promise<{ flushed: number; failed: number; deferred: number; held: number; skipped: number; expired_warnings: string[] }>
+  /** @internal */
+  _runOutboxFlush(options: { timeoutMs?: number; force?: boolean }, upload?: { ids: Set<string>; results: Map<string, UploadLocalResult> }): Promise<{ flushed: number; failed: number; deferred: number; held: number; skipped: number; expired_warnings: string[] }>
 
-/** @internal */
-_flushOutboxClaimed(claimed: Set<string>, budget: AbortSignal, force: boolean, startBudget: () => void, entryClaims: Set<string>, upload?: { ids: Set<string>; results: Map<string, UploadLocalResult> }): Promise<{ flushed: number; failed: number; deferred: number; held: number; skipped: number; expired_warnings: string[] }>
+  /** @internal */
+  _flushOutboxClaimed(claimed: Set<string>, budget: AbortSignal, force: boolean, startBudget: () => void, entryClaims: Set<string>, upload?: { ids: Set<string>; results: Map<string, UploadLocalResult> }): Promise<{ flushed: number; failed: number; deferred: number; held: number; skipped: number; expired_warnings: string[] }>
 
-/**
+  /**
    * Identity of the YAML store file's current contents (inode, size, mtime in
    * ns): any write changes it. `undefined` when the primary store is not the
    * default YAML file, or it cannot be stat'ed — the caller then reads.
    */
-/** @internal */
-_engramsFileStamp(): string | undefined
+  /** @internal */
+  _engramsFileStamp(): string | undefined
 
-/**
+  /**
    * Is this outbox row still queued, under this key, in the store as it is
    * NOW? False when the row is gone (delivered and removed by another
    * writer), retired, no longer queued, or queued under a different key (a
@@ -308,38 +308,38 @@ _engramsFileStamp(): string | undefined
    * A store supplied by the embedder has no file to stamp and is
    * read every time.
    */
-/** @internal */
-_outboxRowStillQueued(id: string, key: string, seen: { stamp: string | undefined; keys: Map<string, string | undefined> }): Promise<boolean>
+  /** @internal */
+  _outboxRowStillQueued(id: string, key: string, seen: { stamp: string | undefined; keys: Map<string, string | undefined> }): Promise<boolean>
 
-/**
+  /**
    * Mint and persist an idempotency key for every pending outbox row that has
    * none (rows queued by clients that predate keys), BEFORE any is posted
    * Under the store lock; a row another writer keyed in the
    * meantime keeps that key. Updates `pending` in place. Never throws: a row
    * whose key could not be saved stays keyless and is not posted this flush.
    */
-/** @internal */
-_persistMissingOutboxKeys(pending: Engram[]): Promise<void>
+  /** @internal */
+  _persistMissingOutboxKeys(pending: Engram[]): Promise<void>
 }
 
 export const outboxMethods: OutboxMethods & ThisType<Plur> = {
-remoteHealthStatePath(): string {
+  remoteHealthStatePath(): string {
     return join(this.paths.root, 'cache', 'remote-health.json')
   },
 
-outboxIdMapPath(): string {
+  outboxIdMapPath(): string {
     return join(this.paths.root, 'cache', 'outbox-id-map.json')
   },
 
-outboxClaimsDir(): string {
+  outboxClaimsDir(): string {
     return join(this.paths.root, 'cache', 'outbox-claims')
   },
 
-_outboxClaimPath(id: string): string {
+  _outboxClaimPath(id: string): string {
     return join(this.outboxClaimsDir(), `${id.replace(/[^\w.-]/g, '_')}.json`)
   },
 
-_claimOutboxEntry(id: string, keyFor: () => string): { status: 'busy'; error?: string } | { status: 'claimed'; key: string } {
+  _claimOutboxEntry(id: string, keyFor: () => string): { status: 'busy'; error?: string } | { status: 'claimed'; key: string } {
     const path = this._outboxClaimPath(id)
     const readRaw = (at: string): string | undefined => {
       try { return fs.readFileSync(at, 'utf8') } catch (err) {
@@ -449,7 +449,7 @@ _claimOutboxEntry(id: string, keyFor: () => string): { status: 'busy'; error?: s
     }
   },
 
-_outboxClaimHeld(held: { pid?: number; host?: string; until?: number; at?: number }, now: number): boolean {
+  _outboxClaimHeld(held: { pid?: number; host?: string; until?: number; at?: number }, now: number): boolean {
     if (held.host === hostname()) {
       if (typeof held.pid !== 'number' || !pidAlive(held.pid)) return false
       const at = typeof held.at === 'number'
@@ -463,7 +463,7 @@ _outboxClaimHeld(held: { pid?: number; host?: string; until?: number; at?: numbe
       && held.until - now <= 2 * OUTBOX_CLAIM_LEASE_MS
   },
 
-_outboxClaimUntil(id: string, now: number): string | undefined {
+  _outboxClaimUntil(id: string, now: number): string | undefined {
     try {
       const held = JSON.parse(fs.readFileSync(this._outboxClaimPath(id), 'utf8')) as { pid?: number; host?: string; until?: number; at?: number }
       if (!this._outboxClaimHeld(held, now) || typeof held.until !== 'number') return undefined
@@ -471,7 +471,7 @@ _outboxClaimUntil(id: string, now: number): string | undefined {
     } catch { return undefined }
   },
 
-_releaseOutboxClaim(id: string): void {
+  _releaseOutboxClaim(id: string): void {
     const path = this._outboxClaimPath(id)
     const token = this._outboxClaimTokens.get(id)
     this._outboxClaimTokens.delete(id)
@@ -495,7 +495,7 @@ _releaseOutboxClaim(id: string): void {
     } catch { /* best effort */ }
   },
 
-_readOutboxIdMap(): Record<string, { server_id: string; url: string; at: number }> {
+  _readOutboxIdMap(): Record<string, { server_id: string; url: string; at: number }> {
     try {
       const raw = JSON.parse(fs.readFileSync(this.outboxIdMapPath(), 'utf8')) as unknown
       if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
@@ -505,7 +505,7 @@ _readOutboxIdMap(): Record<string, { server_id: string; url: string; at: number 
     return {}
   },
 
-_writeOutboxIdMap(entries: Record<string, { server_id: string; url: string; at: number }>): void {
+  _writeOutboxIdMap(entries: Record<string, { server_id: string; url: string; at: number }>): void {
     try {
       const ids = Object.keys(entries)
       if (ids.length > OUTBOX_ID_MAP_MAX) {
@@ -521,7 +521,7 @@ _writeOutboxIdMap(entries: Record<string, { server_id: string; url: string; at: 
     } catch { /* derived state — a failed write must never fail a flush */ }
   },
 
-async sync(remote?: string, options?: { full?: boolean; remoteType?: SyncRemoteType }): Promise<SyncResult> {
+  async sync(remote?: string, options?: { full?: boolean; remoteType?: SyncRemoteType }): Promise<SyncResult> {
     this._remoteOnlyRefuseLocalStore('Syncing the store (run it outside the remote-only folder)')
     // Explicit option > config.sync.remote_type > 'personal' (mirror
     // everything; `shared` is an explicit opt-in that filters the push set to
@@ -572,17 +572,17 @@ async sync(remote?: string, options?: { full?: boolean; remoteType?: SyncRemoteT
     return result
   },
 
-syncStatus(): SyncStatus {
+  syncStatus(): SyncStatus {
     return getSyncStatus(this.paths.root)
   },
 
-async outboxCount(): Promise<number> {
+  async outboxCount(): Promise<number> {
     // Same entries as `listOutbox()` (pushes AND queued remote retirements),
     // so the count and the list cannot disagree.
     return (await this.listOutbox()).length
   },
 
-async listOutbox(): Promise<Array<{
+  async listOutbox(): Promise<Array<{
     id: string
     /** `push`: a write waiting to reach its store (`_outbox`). `retire`: a
      *  queued DELETE of a copy the remote accepted after a forget/rescope
@@ -665,7 +665,7 @@ async listOutbox(): Promise<Array<{
     return out
   },
 
-outboxClaimsProblem(): string | undefined {
+  outboxClaimsProblem(): string | undefined {
     try {
       fs.mkdirSync(this.outboxClaimsDir(), { recursive: true })
       fs.accessSync(this.outboxClaimsDir(), fs.constants.W_OK)
@@ -675,24 +675,24 @@ outboxClaimsProblem(): string | undefined {
     }
   },
 
-async outboxSummary(): Promise<OutboxSummary> {
+  async outboxSummary(): Promise<OutboxSummary> {
     return summarizeOutbox(await this.listOutbox())
   },
 
-_hasWritableStoreFor(scope: string): boolean {
+  _hasWritableStoreFor(scope: string): boolean {
     return urlGroupsForScope(scope, this.config.stores ?? []).some(g => g.some(s => !s.readonly))
   },
 
-_needsActionRetryAt(ob: { last_attempt?: string }): number | undefined {
+  _needsActionRetryAt(ob: { last_attempt?: string }): number | undefined {
     const last = typeof ob.last_attempt === 'string' ? Date.parse(ob.last_attempt) : NaN
     return Number.isFinite(last) ? last + NEEDS_ACTION_RETRY_MS : undefined
   },
 
-async flushOutbox(options: { timeoutMs?: number; force?: boolean } = {}): Promise<{ flushed: number; failed: number; deferred: number; held: number; skipped: number; expired_warnings: string[] }> {
+  async flushOutbox(options: { timeoutMs?: number; force?: boolean } = {}): Promise<{ flushed: number; failed: number; deferred: number; held: number; skipped: number; expired_warnings: string[] }> {
     return this._runOutboxFlush(options)
   },
 
-async _runOutboxFlush(options: { timeoutMs?: number; force?: boolean }, upload?: { ids: Set<string>; results: Map<string, UploadLocalResult> }): Promise<{ flushed: number; failed: number; deferred: number; held: number; skipped: number; expired_warnings: string[] }> {
+  async _runOutboxFlush(options: { timeoutMs?: number; force?: boolean }, upload?: { ids: Set<string>; results: Map<string, UploadLocalResult> }): Promise<{ flushed: number; failed: number; deferred: number; held: number; skipped: number; expired_warnings: string[] }> {
     this._assertWritable()
     // The network budget. Started by the flush itself once the local load is
     // done, so a large store does not spend it on disk.
@@ -719,7 +719,7 @@ async _runOutboxFlush(options: { timeoutMs?: number; force?: boolean }, upload?:
     }
   },
 
-async _flushOutboxClaimed(claimed: Set<string>, budget: AbortSignal, force: boolean, startBudget: () => void, entryClaims: Set<string>, upload?: { ids: Set<string>; results: Map<string, UploadLocalResult> }): Promise<{ flushed: number; failed: number; deferred: number; held: number; skipped: number; expired_warnings: string[] }> {
+  async _flushOutboxClaimed(claimed: Set<string>, budget: AbortSignal, force: boolean, startBudget: () => void, entryClaims: Set<string>, upload?: { ids: Set<string>; results: Map<string, UploadLocalResult> }): Promise<{ flushed: number; failed: number; deferred: number; held: number; skipped: number; expired_warnings: string[] }> {
     // The re-guard below promises the target scope's CURRENT policy; without
     // this a long-running process would flush against the config it started
     // with.
@@ -1394,7 +1394,7 @@ async _flushOutboxClaimed(claimed: Set<string>, budget: AbortSignal, force: bool
     return { flushed, failed, deferred, held, skipped, expired_warnings }
   },
 
-_engramsFileStamp(): string | undefined {
+  _engramsFileStamp(): string | undefined {
     if (!(this._basePrimaryStore instanceof YamlPrimaryStore)) return undefined
     try {
       const st = fs.statSync(this._basePrimaryStore.location!, { bigint: true })
@@ -1404,7 +1404,7 @@ _engramsFileStamp(): string | undefined {
     }
   },
 
-async _outboxRowStillQueued(id: string, key: string, seen: { stamp: string | undefined; keys: Map<string, string | undefined> }): Promise<boolean> {
+  async _outboxRowStillQueued(id: string, key: string, seen: { stamp: string | undefined; keys: Map<string, string | undefined> }): Promise<boolean> {
     try {
       const stamp = this._engramsFileStamp()
       if (stamp === undefined) {
@@ -1422,7 +1422,7 @@ async _outboxRowStillQueued(id: string, key: string, seen: { stamp: string | und
     }
   },
 
-async _persistMissingOutboxKeys(pending: Engram[]): Promise<void> {
+  async _persistMissingOutboxKeys(pending: Engram[]): Promise<void> {
     const keyless = pending.filter(e => !(e as any).structured_data?._outbox?.idempotency_key)
     if (keyless.length === 0) return
     try {

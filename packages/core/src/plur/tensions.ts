@@ -11,42 +11,42 @@ import type { TensionPair } from '../tensions.js'
 import { SecondarySupersede } from './types.js'
 
 export interface TensionsMethods {
-/** List persisted tension records, optionally filtered by status. */
-listTensions(filter?: { status?: TensionStatus[] }): TensionRecord[]
+  /** List persisted tension records, optionally filtered by status. */
+  listTensions(filter?: { status?: TensionStatus[] }): TensionRecord[]
 
-/**
+  /**
    * Canonical pair keys of every recorded tension — the scan exclusion set.
    * Any recorded pair is excluded from future scans regardless of
    * status: dismissed/resolved pairs are suppressed, detected/confirmed
    * pairs are already adjudicated and must not re-pay the LLM judge.
    */
-suppressedTensionPairKeys(): string[]
+  suppressedTensionPairKeys(): string[]
 
-/**
+  /**
    * Persist fresh scan detections as tension records. Pairs already
    * recorded (any status) are returned as-is and counted in existing_count —
    * a scan can never duplicate or resurrect a record. New records get a
    * T-YYYY-MMDD-NNN id, a v1 category (categorizeTension), status
    * 'detected', and emit the `contradiction_detected` history event.
    */
-recordTensions(pairs: TensionPair[]): Promise<{ records: TensionRecord[]; new_count: number; existing_count: number }>
+  recordTensions(pairs: TensionPair[]): Promise<{ records: TensionRecord[]; new_count: number; existing_count: number }>
 
-/** Locked mutation of a single tension record by id. */
-/** @internal */
-_mutateTension(id: string, mutate: (r: TensionRecord) => void): TensionRecord
+  /** Locked mutation of a single tension record by id. */
+  /** @internal */
+  _mutateTension(id: string, mutate: (r: TensionRecord) => void): TensionRecord
 
-/** Mark a detected tension as a real conflict (detected → confirmed). */
-confirmTension(id: string): TensionRecord
+  /** Mark a detected tension as a real conflict (detected → confirmed). */
+  confirmTension(id: string): TensionRecord
 
-/**
+  /**
    * Dismiss a tension as a false positive (detected|confirmed → dismissed).
    * The pair stays in the scan exclusion set, so it is never re-flagged.
    * Neither memory changes: a draft in the pair (a held-back proposal)
    * stays a draft — stored and searchable, never injected.
    */
-dismissTension(id: string): TensionRecord
+  dismissTension(id: string): TensionRecord
 
-/**
+  /**
    * Resolve a tension by picking the winning engram: the loser is retired
    * outright (decisive — NOT reference-count-decremented like forget()), the
    * record becomes status 'resolved' with resolved_by / resolved_at set. A
@@ -54,40 +54,40 @@ dismissTension(id: string): TensionRecord
    * as a draft) becomes a normal memory with
    * commitment 'decided', so it is given to the agent from then on.
    */
-resolveTension(id: string, winnerId: string): Promise<{ record: TensionRecord; retired_id: string }>
+  resolveTension(id: string, winnerId: string): Promise<{ record: TensionRecord; retired_id: string }>
 
-/**
+  /**
    * Unconditional retirement for tension resolution. Unlike forget(), does
    * NOT decrement write_count — the user explicitly adjudicated this
    * engram as the losing side, so a multiply-learned loser must still be
    * retired.
    */
-/** @internal */
-_retireEngramForResolution(id: string, reason: string): Promise<boolean>
+  /** @internal */
+  _retireEngramForResolution(id: string, reason: string): Promise<boolean>
 
-/**
+  /**
    * True when the engram participates in an unresolved (detected|confirmed)
    * persisted tension. Gates commitment escalation into 'locked':
    * contradicted knowledge must not lock.
    */
-hasUnresolvedTension(engramId: string): boolean
+  hasUnresolvedTension(engramId: string): boolean
 
-/**
+  /**
    * Injection warnings for persisted tensions (surface, don't adjudicate):
    * - confirmed tension: warn when EITHER side injects (the user vouched
    *   for the conflict being real; relying on one side blind is a hazard);
    * - detected tension: warn only when BOTH sides inject together.
    */
-/** @internal */
-_tensionWarningsFor(injectedIds: string[]): string[]
+  /** @internal */
+  _tensionWarningsFor(injectedIds: string[]): string[]
 
-/**
+  /**
    * Resolved tension-scan defaults from config. Consumers (MCP
    * plur_tensions, CLI) merge explicit args over these.
    */
-getTensionsConfig(): { temporal_domains: string[]; snapshot_pairs: 'skip' | 'floor'; measured_under_pairs: 'skip' | 'floor'; temporal_discount: boolean }
+  getTensionsConfig(): { temporal_domains: string[]; snapshot_pairs: 'skip' | 'floor'; measured_under_pairs: 'skip' | 'floor'; temporal_discount: boolean }
 
-/**
+  /**
    * Write the reverse `relations.superseded_by` edge on each supersede
    * target present in the (already-loaded, lock-held) local engram list
    * Unknown targets are skipped silently — the forward edge on the new
@@ -97,7 +97,7 @@ getTensionsConfig(): { temporal_domains: string[]; snapshot_pairs: 'skip' | 'flo
    * mutated rows explicitly via `_updateEngrams` — a whole-corpus fallback
    * save carries them implicitly, a targeted `append` does not.
    */
-/**
+  /**
    * Write the reverse `superseded_by` edge on supersede targets that live in
    * a writable SECONDARY store, in that store, under its own lock (the
    * primary-only `_writeSupersededByEdges` does not reach them). Without it
@@ -111,36 +111,36 @@ getTensionsConfig(): { temporal_domains: string[]; snapshot_pairs: 'skip' | 'flo
    * Returns an undo that removes the edges it wrote, for when the new row then
    * fails to write (a dangling edge would down-rank the target).
    */
-/** @internal */
-_landSecondarySupersedes(engram: Engram, targets: SecondarySupersede[]): Promise<() => Promise<void>>
+  /** @internal */
+  _landSecondarySupersedes(engram: Engram, targets: SecondarySupersede[]): Promise<() => Promise<void>>
 
-/**
+  /**
    * How a row of THIS primary store is named from inside another store: its id namespaced under a scope derived from this primary's
    * location. Another store reads it as foreign (no row of its own, and no
    * configured store, answers to that prefix), so it can never name an
    * unrelated row there; this install resolves it back in `getById`.
    */
-/** @internal */
-_primaryQualifiedId(id: string): string
+  /** @internal */
+  _primaryQualifiedId(id: string): string
 
-/** @internal */
-_primaryRefScope(): string
+  /** @internal */
+  _primaryRefScope(): string
 
-/** @internal */
-_writeSupersededByEdges(engrams: Engram[], targetIds: string[], newId: string): Engram[]
+  /** @internal */
+  _writeSupersededByEdges(engrams: Engram[], targetIds: string[], newId: string): Engram[]
 
-/**
+  /**
    * Remove all conflict relations from every local engram.
    * Clears accumulated false positives from older conflict detection.
    */
-purgeTensions(): Promise<{ purged_count: number; engrams_modified: number; stores_cleaned: number }>
+  purgeTensions(): Promise<{ purged_count: number; engrams_modified: number; stores_cleaned: number }>
 }
 
 export const tensionsMethods: TensionsMethods & ThisType<Plur> = {
-// ------------------------------------------------------------------
-// Tension lifecycle — persistence, confirm/dismiss/resolve.
-// ------------------------------------------------------------------
-listTensions(filter?: { status?: TensionStatus[] }): TensionRecord[] {
+  // ------------------------------------------------------------------
+  // Tension lifecycle — persistence, confirm/dismiss/resolve.
+  // ------------------------------------------------------------------
+  listTensions(filter?: { status?: TensionStatus[] }): TensionRecord[] {
     // remote-only: tension records carry personal statements.
     if (this._remoteOnly) return []
     const records = loadTensions(this.paths.tensions)
@@ -149,11 +149,11 @@ listTensions(filter?: { status?: TensionStatus[] }): TensionRecord[] {
     return records.filter(r => wanted.has(r.status))
   },
 
-suppressedTensionPairKeys(): string[] {
+  suppressedTensionPairKeys(): string[] {
     return loadTensions(this.paths.tensions).map(r => tensionPairKey(r.engram_a, r.engram_b))
   },
 
-async recordTensions(pairs: TensionPair[]): Promise<{ records: TensionRecord[]; new_count: number; existing_count: number }> {
+  async recordTensions(pairs: TensionPair[]): Promise<{ records: TensionRecord[]; new_count: number; existing_count: number }> {
     this._assertWritable()
     this._remoteOnlyRefuseLocalStore('Recording tensions')
     if (pairs.length === 0) return { records: [], new_count: 0, existing_count: 0 }
@@ -224,7 +224,7 @@ async recordTensions(pairs: TensionPair[]): Promise<{ records: TensionRecord[]; 
     })
   },
 
-_mutateTension(id: string, mutate: (r: TensionRecord) => void): TensionRecord {
+  _mutateTension(id: string, mutate: (r: TensionRecord) => void): TensionRecord {
     return withLock(this.paths.tensions, () => {
       // Quarantined records ride along — loadTensions withholds schema-invalid
       // entries, so saving without them would delete them on an unrelated
@@ -238,7 +238,7 @@ _mutateTension(id: string, mutate: (r: TensionRecord) => void): TensionRecord {
     })
   },
 
-confirmTension(id: string): TensionRecord {
+  confirmTension(id: string): TensionRecord {
     this._assertWritable()
     this._remoteOnlyRefuseLocalStore('Changing a tension')
     return this._mutateTension(id, r => {
@@ -248,7 +248,7 @@ confirmTension(id: string): TensionRecord {
     })
   },
 
-dismissTension(id: string): TensionRecord {
+  dismissTension(id: string): TensionRecord {
     this._assertWritable()
     this._remoteOnlyRefuseLocalStore('Changing a tension')
     return this._mutateTension(id, r => {
@@ -257,7 +257,7 @@ dismissTension(id: string): TensionRecord {
     })
   },
 
-async resolveTension(id: string, winnerId: string): Promise<{ record: TensionRecord; retired_id: string }> {
+  async resolveTension(id: string, winnerId: string): Promise<{ record: TensionRecord; retired_id: string }> {
     // Readonly: refuse BEFORE the claim below writes tensions.yaml.
     this._assertWritable()
     this._remoteOnlyRefuseLocalStore('Resolving a tension')
@@ -336,7 +336,7 @@ async resolveTension(id: string, winnerId: string): Promise<{ record: TensionRec
     return { record, retired_id: loserId }
   },
 
-async _retireEngramForResolution(id: string, reason: string): Promise<boolean> {
+  async _retireEngramForResolution(id: string, reason: string): Promise<boolean> {
     id = await this._resolveNamespacedId(id, 'retire')
     const stamp = (engram: Engram): void => {
       engram.status = 'retired'
@@ -392,7 +392,7 @@ async _retireEngramForResolution(id: string, reason: string): Promise<boolean> {
     return false
   },
 
-hasUnresolvedTension(engramId: string): boolean {
+  hasUnresolvedTension(engramId: string): boolean {
     try {
       // A tension recorded under the engram's older-form id still counts.
       const ids = this._idWithOldForms(engramId)
@@ -414,7 +414,7 @@ hasUnresolvedTension(engramId: string): boolean {
     }
   },
 
-_tensionWarningsFor(injectedIds: string[]): string[] {
+  _tensionWarningsFor(injectedIds: string[]): string[] {
     if (injectedIds.length === 0) return []
     try {
       const unresolved = loadTensions(this.paths.tensions)
@@ -443,7 +443,7 @@ _tensionWarningsFor(injectedIds: string[]): string[] {
     }
   },
 
-getTensionsConfig(): { temporal_domains: string[]; snapshot_pairs: 'skip' | 'floor'; measured_under_pairs: 'skip' | 'floor'; temporal_discount: boolean } {
+  getTensionsConfig(): { temporal_domains: string[]; snapshot_pairs: 'skip' | 'floor'; measured_under_pairs: 'skip' | 'floor'; temporal_discount: boolean } {
     const t = this.config.tensions ?? {}
     return {
       temporal_domains: t.temporal_domains ?? [],
@@ -453,7 +453,7 @@ getTensionsConfig(): { temporal_domains: string[]; snapshot_pairs: 'skip' | 'flo
     }
   },
 
-async _landSecondarySupersedes(engram: Engram, targets: SecondarySupersede[]): Promise<() => Promise<void>> {
+  async _landSecondarySupersedes(engram: Engram, targets: SecondarySupersede[]): Promise<() => Promise<void>> {
     const written: SecondarySupersede[] = []
     // The edge names the replacement by a primary-qualified id,
     // never by its bare id — that one is only unique in THIS primary, and the
@@ -496,15 +496,15 @@ async _landSecondarySupersedes(engram: Engram, targets: SecondarySupersede[]): P
     }
   },
 
-_primaryQualifiedId(id: string): string {
+  _primaryQualifiedId(id: string): string {
     return namespaceEngramId(id, this._primaryRefScope())
   },
 
-_primaryRefScope(): string {
+  _primaryRefScope(): string {
     return `primary:${resolve(this.paths.engrams)}`
   },
 
-_writeSupersededByEdges(engrams: Engram[], targetIds: string[], newId: string): Engram[] {
+  _writeSupersededByEdges(engrams: Engram[], targetIds: string[], newId: string): Engram[] {
     const mutated: Engram[] = []
     for (const targetId of targetIds) {
       const target = engrams.find(e => e.id === targetId)
@@ -521,7 +521,7 @@ _writeSupersededByEdges(engrams: Engram[], targetIds: string[], newId: string): 
     return mutated
   },
 
-async purgeTensions(): Promise<{ purged_count: number; engrams_modified: number; stores_cleaned: number }> {
+  async purgeTensions(): Promise<{ purged_count: number; engrams_modified: number; stores_cleaned: number }> {
     this._assertWritable()
     this._remoteOnlyRefuseLocalStore('Purging legacy tensions (it rewrites personal memories)')
     // Collect all filesystem store paths (primary + project-scoped + pack stores)

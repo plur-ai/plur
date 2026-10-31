@@ -45,10 +45,10 @@ import {
 import { isEnterpriseServerEntry, isPlainObject, isUnder, REMOTE_PROBE_TIMEOUT_MS } from './helpers.js'
 
 export interface FoldersPolicyMethods {
-/** Whether this instance ran (and would re-run) cwd store discovery. */
-autoDiscoveryEnabled(): boolean
+  /** Whether this instance ran (and would re-run) cwd store discovery. */
+  autoDiscoveryEnabled(): boolean
 
-/**
+  /**
    * True when `dir` (or an ancestor of it) has been explicitly trusted via
    * `trustDirectory` / `plur trust`.
    *
@@ -62,118 +62,118 @@ autoDiscoveryEnabled(): boolean
    * / VS Code workspace trust gate on the directory rather than on what the
    * config inside it says.
    */
-isDirectoryTrusted(dir: string): boolean
+  isDirectoryTrusted(dir: string): boolean
 
-/**
+  /**
    * Grant trust to `dir` (`plur trust`). Returns the canonicalized path
    * recorded. A `nonce` must be one issued for `dir` and `{ trusted: true }`.
    */
-trustDirectory(dir: string, options?: { nonce?: string; session?: string }): string
+  trustDirectory(dir: string, options?: { nonce?: string; session?: string }): string
 
-/**
+  /**
    * Revoke trust from `dir` (`plur untrust`). Returns whether an entry was
    * removed. Needs no nonce: a revocation only removes trust.
    */
-untrustDirectory(dir: string): boolean
+  untrustDirectory(dir: string): boolean
 
-/** List every directory this user has explicitly trusted. */
-listTrustedDirectories(): string[]
+  /** List every directory this user has explicitly trusted. */
+  listTrustedDirectories(): string[]
 
-/**
+  /**
    * Find the trusted entry — `dir` itself or a covering ancestor — that
    * makes `isDirectoryTrusted(dir)` true. `null` when nothing covers it.
    * See trust.ts's `coveringTrustedAncestor`: this is
    * what `plur untrust` uses to avoid claiming a directory is untrusted
    * when an ancestor's grant still covers it.
    */
-coveringTrustedAncestor(dir: string): string | null
+  coveringTrustedAncestor(dir: string): string | null
 
-/**
+  /**
    * What PLUR does in `dir` according to the folder map, `.plur.yaml` and
    * project MCP configs. Keyed on this instance's root.
    */
-resolveFolderPolicy(dir: string, options?: { home?: string; readOnly?: boolean }): FolderPolicy
+  resolveFolderPolicy(dir: string, options?: { home?: string; readOnly?: boolean }): FolderPolicy
 
-gitScopeSources(): GitScopeSource[]
+  gitScopeSources(): GitScopeSource[]
 
-folderDefaultScope(dir: string): { mode: FolderPolicy['mode']; scope: string | null; git: GitScopeOutcome | null }
+  folderDefaultScope(dir: string): { mode: FolderPolicy['mode']; scope: string | null; git: GitScopeOutcome | null }
 
-/** Cached server status; async only because primary outbox storage is async. */
-serverSessionLines(dir: string, admittedPolicy?: FolderPolicy): Promise<string[]>
+  /** Cached server status; async only because primary outbox storage is async. */
+  serverSessionLines(dir: string, admittedPolicy?: FolderPolicy): Promise<string[]>
 
-/**
+  /**
    * Resolve the folder policy for `dir` and bind this instance to it
    * (`bindFolderPolicy`). Adapters call this with the folder the session runs
    * in; only `remote-only` changes what the instance does.
    */
-bindFolder(dir: string, options?: { home?: string }): FolderPolicy
+  bindFolder(dir: string, options?: { home?: string }): FolderPolicy
 
-/**
+  /**
    * Bind this instance to an already-resolved folder policy. A `remote-only`
    * policy puts the instance in remote-only mode; any other mode clears it, so a long-lived process (the MCP
    * server) follows the map as it changes.
    */
-bindFolderPolicy(dir: string, policy: FolderPolicy): void
+  bindFolderPolicy(dir: string, policy: FolderPolicy): void
 
-/**
+  /**
    * Bind to a folder whose decision could not be resolved at all: fail CLOSED
    * — nothing is read or written until a later bind
    * succeeds.
    */
-bindFolderUnresolved(dir: string, why: string): void
+  bindFolderUnresolved(dir: string, why: string): void
 
-/** @internal */
-_remoteOnlyError(refusal: RemoteOnlyRefusal, requested?: string, detail?: string): RemoteOnlyWriteError
+  /** @internal */
+  _remoteOnlyError(refusal: RemoteOnlyRefusal, requested?: string, detail?: string): RemoteOnlyWriteError
 
-/** remote-only: refuse `op` on a row this machine's primary store holds. */
-/** @internal */
-_remoteOnlyRefuseLocalRow(id: string, op: string, scope?: string): Promise<void>
+  /** remote-only: refuse `op` on a row this machine's primary store holds. */
+  /** @internal */
+  _remoteOnlyRefuseLocalRow(id: string, op: string, scope?: string): Promise<void>
 
-/** remote-only: refuse an operation on the personal store as a whole. */
-/** @internal */
-_remoteOnlyRefuseLocalStore(op: string): void
+  /** remote-only: refuse an operation on the personal store as a whole. */
+  /** @internal */
+  _remoteOnlyRefuseLocalStore(op: string): void
 
-/** remote-only: the rows an id lookup may answer from — team rows, packs and queued saves; never personal rows. */
-/** @internal */
-_remoteOnlyVisible(): Promise<Engram[]>
+  /** remote-only: the rows an id lookup may answer from — team rows, packs and queued saves; never personal rows. */
+  /** @internal */
+  _remoteOnlyVisible(): Promise<Engram[]>
 
-/** @internal */
-_queuedStaysRemote(e: Engram): RemoteOnlyWriteError
+  /** @internal */
+  _queuedStaysRemote(e: Engram): RemoteOnlyWriteError
 
-/** The remote-only folder this instance is bound to, or null. */
-remoteOnlyFolder(): RemoteOnlyBinding | null
+  /** The remote-only folder this instance is bound to, or null. */
+  remoteOnlyFolder(): RemoteOnlyBinding | null
 
-/** The folder map entries, in file order. */
-listFolders(): FolderEntry[]
+  /** The folder map entries, in file order. */
+  listFolders(): FolderEntry[]
 
-/**
+  /**
    * Record a decision for `folder` (`plur folders set`). A shared scope must
    * name a store configured in config.yaml; a `nonce` (from the ask flow)
    * must be the one issued for this folder. Throws FolderMapError on refusal.
    */
-setFolder(folder: string, change: FolderChange, options?: { nonce?: string; session?: string; home?: string; literal?: boolean; refuseCoveringHome?: boolean }): FolderEntry
+  setFolder(folder: string, change: FolderChange, options?: { nonce?: string; session?: string; home?: string; literal?: boolean; refuseCoveringHome?: boolean }): FolderEntry
 
-/** Remove the exact entry for `folder` (`plur folders rm`); `nonce` as for setFolder. */
-removeFolder(folder: string, options?: { nonce?: string; session?: string }): boolean
+  /** Remove the exact entry for `folder` (`plur folders rm`); `nonce` as for setFolder. */
+  removeFolder(folder: string, options?: { nonce?: string; session?: string }): boolean
 
-/**
+  /**
    * Issue a single-use nonce for the ask flow of `sessionId` that authorises
    * exactly `answer` on exactly `folder`. The ask flow issues one per
    * answer it offers; see folders.ts issueFolderNonce.
    */
-issueFolderNonce(sessionId: string, folder: string, answer: FolderAnswer, options?: { home?: string; literal?: boolean; bindSession?: boolean }): string
+  issueFolderNonce(sessionId: string, folder: string, answer: FolderAnswer, options?: { home?: string; literal?: boolean; bindSession?: boolean }): string
 
-/** Expire every folder nonce of `sessionId` (call at session end). */
-endFolderNonceSession(sessionId: string): void
+  /** Expire every folder nonce of `sessionId` (call at session end). */
+  endFolderNonceSession(sessionId: string): void
 
-/**
+  /**
    * The MCP folder question's "not now" (`plur folders set --not-now`):
    * consume the nonce issued for that answer on `folder`; nothing is written
    * to the folder map. See folders.ts answerFolderNotNow.
    */
-notNowFolder(folder: string, options: { nonce: string; session?: string }): void
+  notNowFolder(folder: string, options: { nonce: string; session?: string }): void
 
-/**
+  /**
    * Whether discovery is skipped because the PLUR root is a temp folder (a
    * test-safety guard): the root as given
    * (not resolved, so a user's symlink is not followed) starts with the OS
@@ -181,67 +181,67 @@ notNowFolder(folder: string, options: { nonce: string; session?: string }): void
    * switch that turns the skip off, so tests that build their tree under the
    * system temp folder can exercise real discovery; nothing sets it for users.
    */
-/** @internal */
-_discoverySkippedForTempRoot(): boolean
+  /** @internal */
+  _discoverySkippedForTempRoot(): boolean
 
-/**
+  /**
    * The `.plur/engrams.yaml` stores discovery looks at from `startDir`
    * upward, with the same bounds as {@link autoDiscoverStores}: never the
    * home folder or above it, stopping at the repository root (`.git`)
    * or the filesystem root; never the active store or `~/.plur`; never a
    * store config.yaml already lists. Read-only.
    */
-/** @internal */
-_discoveryCandidates(startDir: string): Array<{ dir: string; typed: string | null; candidate: string; key: string }>
+  /** @internal */
+  _discoveryCandidates(startDir: string): Array<{ dir: string; typed: string | null; candidate: string; key: string }>
 
-/**
+  /**
    * True when the start folder is off by either its path as typed or its real
    * path: then discovery adopts nothing and lists
    * nothing, whatever the folders above it say. Through a link into a
    * repository's sub-folder, the per-candidate spellings cannot see the
    * alias that the user turned off.
    */
-/** @internal */
-_startFolderOff(startDir: string): boolean
+  /** @internal */
+  _startFolderOff(startDir: string): boolean
 
-autoDiscoverStores(cwd?: string): Array<{ path: string; scope: string }>
+  autoDiscoverStores(cwd?: string): Array<{ path: string; scope: string }>
 
-/**
+  /**
    * Project stores discovery found from `cwd` but did not add because their
    * folder has no decision of its own: the folder is on
    * only through a parent, or not decided yet. A folder turned off is not
    * listed. Read-only; `plur doctor` and `plur stores list` show these with
    * the command that adds them (`plur folders set <folder> --on`).
    */
-skippedProjectStores(cwd?: string): Array<{ path: string; folder: string }>
+  skippedProjectStores(cwd?: string): Array<{ path: string; folder: string }>
 }
 
 export const foldersPolicyMethods: FoldersPolicyMethods & ThisType<Plur> = {
-autoDiscoveryEnabled(): boolean {
+  autoDiscoveryEnabled(): boolean {
     return this._autoDiscover
   },
 
-isDirectoryTrusted(dir: string): boolean {
+  isDirectoryTrusted(dir: string): boolean {
     return _isDirectoryTrusted(dir, this.paths.root)
   },
 
-trustDirectory(dir: string, options?: { nonce?: string; session?: string }): string {
+  trustDirectory(dir: string, options?: { nonce?: string; session?: string }): string {
     return _trustDirectory(dir, this.paths.root, options)
   },
 
-untrustDirectory(dir: string): boolean {
+  untrustDirectory(dir: string): boolean {
     return _untrustDirectory(dir, this.paths.root)
   },
 
-listTrustedDirectories(): string[] {
+  listTrustedDirectories(): string[] {
     return _listTrustedDirectories(this.paths.root)
   },
 
-coveringTrustedAncestor(dir: string): string | null {
+  coveringTrustedAncestor(dir: string): string | null {
     return _coveringTrustedAncestor(dir, this.paths.root)
   },
 
-resolveFolderPolicy(dir: string, options?: { home?: string; readOnly?: boolean }): FolderPolicy {
+  resolveFolderPolicy(dir: string, options?: { home?: string; readOnly?: boolean }): FolderPolicy {
     return _resolveFolderPolicy(dir, {
       root: this.paths.root,
       gitScopes: loadGitScopeSources(this.paths.root),
@@ -261,16 +261,16 @@ resolveFolderPolicy(dir: string, options?: { home?: string; readOnly?: boolean }
     })
   },
 
-gitScopeSources(): GitScopeSource[] {
+  gitScopeSources(): GitScopeSource[] {
     return loadGitScopeSources(this.paths.root)
   },
 
-folderDefaultScope(dir: string): { mode: FolderPolicy['mode']; scope: string | null; git: GitScopeOutcome | null } {
+  folderDefaultScope(dir: string): { mode: FolderPolicy['mode']; scope: string | null; git: GitScopeOutcome | null } {
     const policy = this.resolveFolderPolicy(dir, { readOnly: true })
     return { mode: policy.mode, scope: policy.scope ?? null, git: policy.git ?? null }
   },
 
-async serverSessionLines(dir: string, admittedPolicy?: FolderPolicy): Promise<string[]> {
+  async serverSessionLines(dir: string, admittedPolicy?: FolderPolicy): Promise<string[]> {
     this.reloadConfigIfChanged()
     const entries = this._readRawStores().filter(isEnterpriseServerEntry)
     if (!entries.length) return []
@@ -319,14 +319,14 @@ async serverSessionLines(dir: string, admittedPolicy?: FolderPolicy): Promise<st
     })
   },
 
-bindFolder(dir: string, options?: { home?: string }): FolderPolicy {
+  bindFolder(dir: string, options?: { home?: string }): FolderPolicy {
     // Binding only looks: it never imports a legacy trust.yaml.
     const policy = this.resolveFolderPolicy(dir, { ...options, readOnly: true })
     this.bindFolderPolicy(dir, policy)
     return policy
   },
 
-bindFolderPolicy(dir: string, policy: FolderPolicy): void {
+  bindFolderPolicy(dir: string, policy: FolderPolicy): void {
     this._boundGit = policy.mode === 'on' ? policy.git : undefined
     if (policy.reason === 'malformed-map' || policy.reason === 'resolver-error') {
       // Fail safe: the map may hold an
@@ -343,18 +343,18 @@ bindFolderPolicy(dir: string, policy: FolderPolicy): void {
     this._boundFolder = policy.mode === 'remote-only' ? { folder: dir, scope: policy.scope ?? null } : null
   },
 
-bindFolderUnresolved(dir: string, why: string): void {
+  bindFolderUnresolved(dir: string, why: string): void {
     this._boundGit = undefined
     this._boundFolder = { folder: dir, scope: null, blocked: `the folder decision for ${folderEscaped(dir)} could not be resolved (${folderEscaped(why)})` }
   },
 
-_remoteOnlyError(refusal: RemoteOnlyRefusal, requested?: string, detail?: string): RemoteOnlyWriteError {
+  _remoteOnlyError(refusal: RemoteOnlyRefusal, requested?: string, detail?: string): RemoteOnlyWriteError {
     const ro = this._remoteOnly!
     if (ro.blocked) return new RemoteOnlyWriteError(ro.folder, ro.scope, requested, 'blocked', ro.blocked)
     return new RemoteOnlyWriteError(ro.folder, ro.scope, requested, refusal, detail)
   },
 
-async _remoteOnlyRefuseLocalRow(id: string, op: string, scope?: string): Promise<void> {
+  async _remoteOnlyRefuseLocalRow(id: string, op: string, scope?: string): Promise<void> {
     if (!this._remoteOnly) return
     if (this._remoteOnly.blocked) throw this._remoteOnlyError('local-row')
     // An explicit url-store scope routes to that store, not to a local row
@@ -410,31 +410,31 @@ async _remoteOnlyRefuseLocalRow(id: string, op: string, scope?: string): Promise
     }
   },
 
-_remoteOnlyRefuseLocalStore(op: string): void {
+  _remoteOnlyRefuseLocalStore(op: string): void {
     if (this._remoteOnly) throw this._remoteOnlyError('local-store', undefined, op)
   },
 
-async _remoteOnlyVisible(): Promise<Engram[]> {
+  async _remoteOnlyVisible(): Promise<Engram[]> {
     if (this._remoteOnly?.blocked) return []
     // The guarded primary store shows only THIS folder's queued saves.
     const queued = await this._loadCached(this.paths.engrams)
     return [...queued, ...(await this._readCorpus())]
   },
 
-_queuedStaysRemote(e: Engram): RemoteOnlyWriteError {
+  _queuedStaysRemote(e: Engram): RemoteOnlyWriteError {
     const ob = (e as any).structured_data?._outbox ?? {}
     return new RemoteOnlyWriteError(ob.remote_only_folder ?? 'unknown', ob.target_scope ?? e.scope, undefined, 'queued-stays-remote', e.id)
   },
 
-remoteOnlyFolder(): RemoteOnlyBinding | null {
+  remoteOnlyFolder(): RemoteOnlyBinding | null {
     return this._remoteOnly ? { ...this._remoteOnly } : null
   },
 
-listFolders(): FolderEntry[] {
+  listFolders(): FolderEntry[] {
     return _loadFolderMap(this.paths.root).folders
   },
 
-setFolder(folder: string, change: FolderChange, options?: { nonce?: string; session?: string; home?: string; literal?: boolean; refuseCoveringHome?: boolean }): FolderEntry {
+  setFolder(folder: string, change: FolderChange, options?: { nonce?: string; session?: string; home?: string; literal?: boolean; refuseCoveringHome?: boolean }): FolderEntry {
     this.reloadConfigIfChanged()
     const stores = this.config.stores ?? []
     const configuredScopes = stores.map(s => s.scope)
@@ -447,28 +447,28 @@ setFolder(folder: string, change: FolderChange, options?: { nonce?: string; sess
     return _setFolderEntry(this.paths.root, folder, change, { configuredScopes, remoteScopes, stores, ...options })
   },
 
-removeFolder(folder: string, options?: { nonce?: string; session?: string }): boolean {
+  removeFolder(folder: string, options?: { nonce?: string; session?: string }): boolean {
     return _removeFolderEntry(this.paths.root, folder, undefined, options)
   },
 
-issueFolderNonce(sessionId: string, folder: string, answer: FolderAnswer, options?: { home?: string; literal?: boolean; bindSession?: boolean }): string {
+  issueFolderNonce(sessionId: string, folder: string, answer: FolderAnswer, options?: { home?: string; literal?: boolean; bindSession?: boolean }): string {
     return _issueFolderNonce(this.paths.root, sessionId, folder, answer, undefined, options)
   },
 
-endFolderNonceSession(sessionId: string): void {
+  endFolderNonceSession(sessionId: string): void {
     _endFolderNonceSession(this.paths.root, sessionId)
   },
 
-notNowFolder(folder: string, options: { nonce: string; session?: string }): void {
+  notNowFolder(folder: string, options: { nonce: string; session?: string }): void {
     _answerFolderNotNow(this.paths.root, folder, options.nonce, { ...(options.session !== undefined ? { session: options.session } : {}) })
   },
 
-_discoverySkippedForTempRoot(): boolean {
+  _discoverySkippedForTempRoot(): boolean {
     if (process.env.PLUR_TEST_DISCOVER_IN_TMP === '1') return false
     return this.paths.root.startsWith(tmpdir()) || this.paths.root.startsWith('/tmp/')
   },
 
-_discoveryCandidates(startDir: string): Array<{ dir: string; typed: string | null; candidate: string; key: string }> {
+  _discoveryCandidates(startDir: string): Array<{ dir: string; typed: string | null; candidate: string; key: string }> {
     const out: Array<{ dir: string; typed: string | null; candidate: string; key: string }> = []
     if (this._discoverySkippedForTempRoot()) return out
     // Canonical paths: the walk sees kernel-canonical cwd spellings while
@@ -520,13 +520,13 @@ _discoveryCandidates(startDir: string): Array<{ dir: string; typed: string | nul
     return out
   },
 
-_startFolderOff(startDir: string): boolean {
+  _startFolderOff(startDir: string): boolean {
     const opts = { root: this.paths.root, readOnly: true }
     return _resolveFolderPolicy(resolve(startDir), opts).mode === 'off' ||
       _resolveFolderPolicy(canonicalize(startDir), opts).mode === 'off'
   },
 
-autoDiscoverStores(cwd?: string): Array<{ path: string; scope: string }> {
+  autoDiscoverStores(cwd?: string): Array<{ path: string; scope: string }> {
     const discovered: Array<{ path: string; scope: string }> = []
     const seen = new Set<string>()
     const startDir = cwd || process.cwd()
@@ -570,7 +570,7 @@ autoDiscoverStores(cwd?: string): Array<{ path: string; scope: string }> {
     return discovered
   },
 
-skippedProjectStores(cwd?: string): Array<{ path: string; folder: string }> {
+  skippedProjectStores(cwd?: string): Array<{ path: string; folder: string }> {
     const out: Array<{ path: string; folder: string }> = []
     // Looking writes nothing: readOnly keeps a legacy
     // trust.yaml in memory instead of importing it into folders.yaml.

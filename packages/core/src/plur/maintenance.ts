@@ -23,25 +23,25 @@ import { INGEST_PATTERNS, isStoreTeardownError, PRIMARY_AUTO_EMBED_BATCH } from 
 import { IndexSyncError, IngestCandidate, IngestOptions } from './types.js'
 
 export interface MaintenanceMethods {
-/** Remove retired engrams from storage. Returns count of removed and remaining. */
-compact(): Promise<{ removed: number; remaining: number }>
+  /** Remove retired engrams from storage. Returns count of removed and remaining. */
+  compact(): Promise<{ removed: number; remaining: number }>
 
-/**
+  /**
    * Rebuild the derived index from YAML source of truth.
    * Works for both backends: SQLite (legacy) and PGLite (ADR-0001).
    * Sync-shaped to preserve the existing public API; PGLite work is fired off
    * and the promise tracked on the instance so `await plur.reindexAsync()` is
    * available for code paths that need to block.
    */
-reindex(): Promise<void>
+  reindex(): Promise<void>
 
-/**
+  /**
    * Async reindex that resolves when the index is fully rebuilt.
    * Equivalent to `plur sync --full`: drop the index and rebuild from YAML.
    */
-reindexAsync(): Promise<void>
+  reindexAsync(): Promise<void>
 
-/**
+  /**
    * Embed any active engrams missing a row in engram_embeddings and upsert them.
    * Runs after every syncFromYaml/reindex so learn()/learnAsync()/
    * sync() keep the PGLite vector index in step with YAML. Skips silently when
@@ -49,20 +49,20 @@ reindexAsync(): Promise<void>
    * path until the next cycle) or when the active embedder dim differs from the
    * indexed column (run `plur sync --reembed --full` to migrate intentionally).
    */
-/** @internal */
-_autoEmbedNewEngrams(adapter: PGLiteAdapter): Promise<void>
+  /** @internal */
+  _autoEmbedNewEngrams(adapter: PGLiteAdapter): Promise<void>
 
-/**
+  /**
    * Kick (or coalesce into) the background primary-store auto-embed pass.
    * Fire-and-track: callers never await it — a write must not pay
    * embedding latency, and a semantic recall must not block on a backfill.
    * The pass is tracked on `_pgliteInitPromise` so `waitForIndex()` covers it
    * exactly like the PGLite background chains.
    */
-/** @internal */
-_kickPrimaryAutoEmbed(adapter: StorageAdapter): void
+  /** @internal */
+  _kickPrimaryAutoEmbed(adapter: StorageAdapter): void
 
-/**
+  /**
    * Embed active engrams missing a row in the primary store's embedding table
    * — the Postgres-primary counterpart of `_autoEmbedNewEngrams`.
    *
@@ -84,90 +84,90 @@ _kickPrimaryAutoEmbed(adapter: StorageAdapter): void
    *   - anything else: recorded via `lastIndexError()` and logged. Never
    *     thrown — a background embed must not be able to fail a write.
    */
-/** @internal */
-_autoEmbedPrimaryStore(adapter: StorageAdapter): Promise<void>
+  /** @internal */
+  _autoEmbedPrimaryStore(adapter: StorageAdapter): Promise<void>
 
-/** Record a background index failure for later surfacing. */
-/** @internal */
-_recordIndexError(op: IndexSyncError['op'], err: unknown): void
+  /** Record a background index failure for later surfacing. */
+  /** @internal */
+  _recordIndexError(op: IndexSyncError['op'], err: unknown): void
 
-/**
+  /**
    * Last background index failure, or null when the most recent pass
    * succeeded. The background chains (initial sync, syncFromYaml,
    * reindex, auto-embed) swallow rejections so waitForIndex() never throws;
    * this is the state-based surface for CLI/MCP callers. Also included in
    * status().index_error.
    */
-lastIndexError(): IndexSyncError | null
+  lastIndexError(): IndexSyncError | null
 
-/**
+  /**
    * Sync the index after a write to the primary store.
    *
    * No-op when no index is active, and — via `requiresIndexSync` — when the
    * adapter declares `role: 'primary'`, because then the write already landed
    * in the backend that answers queries and there is no delta to apply.
    */
-/** @internal */
-_syncIndex(): Promise<void>
+  /** @internal */
+  _syncIndex(): Promise<void>
 
-/** Block until any in-flight PGLite background sync completes. Useful in tests. */
-waitForIndex(): Promise<void>
+  /** Block until any in-flight PGLite background sync completes. Useful in tests. */
+  waitForIndex(): Promise<void>
 
-/** Search packs for an engram by ID and apply feedback, writing back to the pack's engrams.yaml. */
-/**
+  /** Search packs for an engram by ID and apply feedback, writing back to the pack's engrams.yaml. */
+  /**
    * @param unreachedStores stores the caller's remote walk could not probe, so
    *   the terminal "not found" can say so rather than claiming a search that
    *   did not run.
    */
-/** @internal */
-_feedbackPack(id: string, signal: 'positive' | 'negative' | 'neutral', unreachedStores?: string[], applyOpts?: { source?: FeedbackSource }): Promise<void>
+  /** @internal */
+  _feedbackPack(id: string, signal: 'positive' | 'negative' | 'neutral', unreachedStores?: string[], applyOpts?: { source?: FeedbackSource }): Promise<void>
 
-/** Capture an episodic memory. */
-capture(summary: string, context?: CaptureContext): Episode
+  /** Capture an episodic memory. */
+  capture(summary: string, context?: CaptureContext): Episode
 
-/** Query the episode timeline. */
-timeline(query?: TimelineQuery): Episode[]
+  /** Query the episode timeline. */
+  timeline(query?: TimelineQuery): Episode[]
 
-/** Rule-based extraction of engram candidates from content. */
-ingest(content: string, options?: IngestOptions): Promise<IngestCandidate[]>
+  /** Rule-based extraction of engram candidates from content. */
+  ingest(content: string, options?: IngestOptions): Promise<IngestCandidate[]>
 
-/** Preview a pack before installing — shows manifest, engrams, and security scan. */
-previewPack(source: string): ReturnType<typeof previewPack>
+  /** Preview a pack before installing — shows manifest, engrams, and security scan. */
+  previewPack(source: string): ReturnType<typeof previewPack>
 
-/**
+  /**
    * Install a pack from a source path. Runs security scan (blocks on secrets
    * and on prompt-injection text unless opts.allowInjection), clamps host-
    * overriding fields (pinned / locked), detects conflicts, records in registry.
    */
-installPack(source: string, opts?: { allowInjection?: boolean; allowModified?: boolean }): Promise<ReturnType<typeof installPack>>
+  installPack(source: string, opts?: { allowInjection?: boolean; allowModified?: boolean }): Promise<ReturnType<typeof installPack>>
 
-/** Uninstall a pack by name. */
-uninstallPack(name: string): ReturnType<typeof uninstallPack>
+  /** Uninstall a pack by name. */
+  uninstallPack(name: string): ReturnType<typeof uninstallPack>
 
-/**
+  /**
    * Export engrams as a shareable pack with privacy scanning and integrity hash.
    *
    * Throws when no licence has been chosen — by the caller here, or once in
    * `provenance.default_license`. That is deliberate: see `exportPack`.
    */
-exportPack(engrams: Engram[], outputDir: string, manifest: ExportOptions): ReturnType<typeof exportPack>
+  exportPack(engrams: Engram[], outputDir: string, manifest: ExportOptions): ReturnType<typeof exportPack>
 
-/** List all installed packs (with integrity hashes). */
-listPacks(): ReturnType<typeof listPacks>
+  /** List all installed packs (with integrity hashes). */
+  listPacks(): ReturnType<typeof listPacks>
 
-/**
+  /**
    * Re-baseline installed packs' registry integrity from v1 to `sha256:v2:`
    * (ENGRAM-STANDARD-v1 §5.5), only for packs that still verify clean under v1.
    * `dryRun: true` reports without writing. See `migratePackIntegrity`.
    */
-migratePackIntegrity(opts?: { dryRun?: boolean }): ReturnType<typeof migratePackIntegrity>
+  migratePackIntegrity(opts?: { dryRun?: boolean }): ReturnType<typeof migratePackIntegrity>
 
-/** Get the PLUR storage root path. */
-getStorageRoot(): string
+  /** Get the PLUR storage root path. */
+  getStorageRoot(): string
 }
 
 export const maintenanceMethods: MaintenanceMethods & ThisType<Plur> = {
-async compact(): Promise<{ removed: number; remaining: number }> {
+  async compact(): Promise<{ removed: number; remaining: number }> {
     this._assertWritable()
     this._remoteOnlyRefuseLocalStore('Compacting the store (run it outside the remote-only folder)')
     return await this._withStoreLock(this.paths.engrams, async () => {
@@ -199,15 +199,15 @@ async compact(): Promise<{ removed: number; remaining: number }> {
     })
   },
 
-// There is deliberately no batch decay. Decay is a pure function of
-// last_accessed and is computed at READ time (see inject.ts — decayedStrength
-// on every candidate); reinforcement re-anchors last_accessed on access
-// (_reactivateResults). Materializing decay back into the store would lower
-// stored strength without advancing last_accessed, so read-time decay would
-// double-count it, and it would rewrite the whole YAML store on a schedule.
-// Archival of long-cold engrams, if wanted, should be an explicit,
-// reversible, logged maintenance op.
-async reindex(): Promise<void> {
+  // There is deliberately no batch decay. Decay is a pure function of
+  // last_accessed and is computed at READ time (see inject.ts — decayedStrength
+  // on every candidate); reinforcement re-anchors last_accessed on access
+  // (_reactivateResults). Materializing decay back into the store would lower
+  // stored strength without advancing last_accessed, so read-time decay would
+  // double-count it, and it would rewrite the whole YAML store on a schedule.
+  // Archival of long-cold engrams, if wanted, should be an explicit,
+  // reversible, logged maintenance op.
+  async reindex(): Promise<void> {
     this._remoteOnlyRefuseLocalStore('Reindexing the store (run it outside the remote-only folder)')
     if (this.pgliteAdapter) {
       // Only a DERIVED index has anything to rebuild. A `role: 'primary'`
@@ -231,7 +231,7 @@ async reindex(): Promise<void> {
     await this.indexedStorage.reindex()
   },
 
-async reindexAsync(): Promise<void> {
+  async reindexAsync(): Promise<void> {
     this._remoteOnlyRefuseLocalStore('Reindexing the store (run it outside the remote-only folder)')
     if (this.pgliteAdapter) {
       const adapter = asDerivedIndex(this.pgliteAdapter)
@@ -246,7 +246,7 @@ async reindexAsync(): Promise<void> {
     await this.indexedStorage.reindex()
   },
 
-async _autoEmbedNewEngrams(adapter: PGLiteAdapter): Promise<void> {
+  async _autoEmbedNewEngrams(adapter: PGLiteAdapter): Promise<void> {
     try {
       const { embed } = await import('../embeddings.js')
       const indexedDim = await adapter.getVectorColumnDim()
@@ -274,7 +274,7 @@ async _autoEmbedNewEngrams(adapter: PGLiteAdapter): Promise<void> {
     }
   },
 
-_kickPrimaryAutoEmbed(adapter: StorageAdapter): void {
+  _kickPrimaryAutoEmbed(adapter: StorageAdapter): void {
     if (this._primaryEmbedPass) {
       // A pass is mid-flight. It re-queries the anti-join per batch, but a
       // write landing after its final query would be missed — request one
@@ -294,7 +294,7 @@ _kickPrimaryAutoEmbed(adapter: StorageAdapter): void {
     this._pgliteInitPromise = pass
   },
 
-async _autoEmbedPrimaryStore(adapter: StorageAdapter): Promise<void> {
+  async _autoEmbedPrimaryStore(adapter: StorageAdapter): Promise<void> {
     if (typeof adapter.listEngramsMissingEmbeddings !== 'function') return
     try {
       const { embed, embedderStatus } = await import('../embeddings.js')
@@ -384,7 +384,7 @@ async _autoEmbedPrimaryStore(adapter: StorageAdapter): Promise<void> {
     }
   },
 
-_recordIndexError(op: IndexSyncError['op'], err: unknown): void {
+  _recordIndexError(op: IndexSyncError['op'], err: unknown): void {
     this._lastIndexError = {
       op,
       message: (err as Error)?.message ?? String(err),
@@ -392,11 +392,11 @@ _recordIndexError(op: IndexSyncError['op'], err: unknown): void {
     }
   },
 
-lastIndexError(): IndexSyncError | null {
+  lastIndexError(): IndexSyncError | null {
     return this._lastIndexError
   },
 
-async _syncIndex(): Promise<void> {
+  async _syncIndex(): Promise<void> {
     if (this.pgliteAdapter) {
       // `IndexedStorage` below is unconditionally a derived index (it rebuilds
       // itself from YAML by construction), so only the adapter path needs the
@@ -434,13 +434,13 @@ async _syncIndex(): Promise<void> {
     }
   },
 
-async waitForIndex(): Promise<void> {
+  async waitForIndex(): Promise<void> {
     if (this._pgliteInitPromise) {
       await this._pgliteInitPromise
     }
   },
 
-async _feedbackPack(id: string, signal: 'positive' | 'negative' | 'neutral', unreachedStores: string[] = [], applyOpts: { source?: FeedbackSource } = {}): Promise<void> {
+  async _feedbackPack(id: string, signal: 'positive' | 'negative' | 'neutral', unreachedStores: string[] = [], applyOpts: { source?: FeedbackSource } = {}): Promise<void> {
     if (!fs.existsSync(this.paths.packs)) throw new Error(`Engram not found: ${id}`)
 
     // A pack id of the older form (from before the pack-id digest)
@@ -496,20 +496,20 @@ async _feedbackPack(id: string, signal: 'positive' | 'negative' | 'neutral', unr
     )
   },
 
-capture(summary: string, context?: CaptureContext): Episode {
+  capture(summary: string, context?: CaptureContext): Episode {
     // The timeline lives on this machine and can hold session content, so a
     // remote-only folder captures none.
     if (this._remoteOnly) throw this._remoteOnlyError('timeline')
     return captureEpisode(this.paths.episodes, summary, context)
   },
 
-timeline(query?: TimelineQuery): Episode[] {
+  timeline(query?: TimelineQuery): Episode[] {
     // remote-only: the local timeline is personal session history.
     if (this._remoteOnly) return []
     return queryTimeline(this.paths.episodes, query)
   },
 
-async ingest(content: string, options?: IngestOptions): Promise<IngestCandidate[]> {
+  async ingest(content: string, options?: IngestOptions): Promise<IngestCandidate[]> {
     const candidates: IngestCandidate[] = []
     const seen = new Set<string>()
 
@@ -551,22 +551,22 @@ async ingest(content: string, options?: IngestOptions): Promise<IngestCandidate[
     return candidates
   },
 
-previewPack(source: string): ReturnType<typeof previewPack> {
+  previewPack(source: string): ReturnType<typeof previewPack> {
     return previewPack(source)
   },
 
-// `allowModified` lets a corrected pack be installed after a false-positive
-// scan: correcting a pack moves the hash it shipped.
-async installPack(source: string, opts?: { allowInjection?: boolean; allowModified?: boolean }): Promise<ReturnType<typeof installPack>> {
+  // `allowModified` lets a corrected pack be installed after a false-positive
+  // scan: correcting a pack moves the hash it shipped.
+  async installPack(source: string, opts?: { allowInjection?: boolean; allowModified?: boolean }): Promise<ReturnType<typeof installPack>> {
     const existing = await this._loadAllEngrams()
     return installPack(this.paths.packs, source, existing, opts)
   },
 
-uninstallPack(name: string): ReturnType<typeof uninstallPack> {
+  uninstallPack(name: string): ReturnType<typeof uninstallPack> {
     return uninstallPack(this.paths.packs, name)
   },
 
-exportPack(engrams: Engram[], outputDir: string, manifest: ExportOptions): ReturnType<typeof exportPack> {
+  exportPack(engrams: Engram[], outputDir: string, manifest: ExportOptions): ReturnType<typeof exportPack> {
     this._remoteOnlyRefuseLocalStore('Exporting a pack')
     // A pack is a permanent copy: never of a queued remote-only save, bound or
     // not.
@@ -576,15 +576,15 @@ exportPack(engrams: Engram[], outputDir: string, manifest: ExportOptions): Retur
     return exportPack(engrams, outputDir, manifest, configured)
   },
 
-listPacks(): ReturnType<typeof listPacks> {
+  listPacks(): ReturnType<typeof listPacks> {
     return listPacks(this.paths.packs)
   },
 
-migratePackIntegrity(opts: { dryRun?: boolean } = {}): ReturnType<typeof migratePackIntegrity> {
+  migratePackIntegrity(opts: { dryRun?: boolean } = {}): ReturnType<typeof migratePackIntegrity> {
     return migratePackIntegrity(this.paths.packs, opts)
   },
 
-getStorageRoot(): string {
+  getStorageRoot(): string {
     return this.paths.root
   },
 }

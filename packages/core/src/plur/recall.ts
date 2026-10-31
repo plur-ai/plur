@@ -28,29 +28,29 @@ import { isCurrentlyValid } from '../validity.js'
 import { GET_BY_IDS_REMOTE_CAP, PUSHDOWN_MAX_ROUNDS, PUSHDOWN_OVERFETCH, rrfScoreOf } from './helpers.js'
 
 export interface RecallMethods {
-/**
+  /**
    * Search engrams, filter by scope/domain/strength, reactivate accessed.
    * Supports two modes:
    *   - 'fast' (default): BM25 keyword search, instant, no API calls
    *   - 'agentic': LLM-assisted semantic search, higher accuracy, requires llm function
    */
-/** Search engrams using fast BM25 keyword matching over the local corpus,
+  /** Search engrams using fast BM25 keyword matching over the local corpus,
    *  merged with the live server-authoritative remote leg when a
    *  configured remote host is implicated by the current project/work.
    *  `remote: false` (internal callers) or PLUR_REMOTE_RECALL=off keeps it
    *  fully local. */
-recall(query: string, options?: Omit<RecallOptions, 'mode' | 'llm'>): Promise<Engram[]>
+  recall(query: string, options?: Omit<RecallOptions, 'mode' | 'llm'>): Promise<Engram[]>
 
-/**
+  /**
    * {@link recall}, plus what happened on THIS call: the remote leg's
    * state per host (`remote`), and whether the results are complete. Returns
    * within the recall deadline (`deadline_ms`, default
    * {@link DEFAULT_RECALL_DEADLINE_MS}) whatever the server or a store-lock
    * holder does.
    */
-recallWithMeta(query: string, options?: Omit<RecallOptions, 'mode' | 'llm'>): Promise<{ engrams: Engram[]; remote: RecallRemoteReport; results_complete: boolean; local_complete?: boolean }>
+  recallWithMeta(query: string, options?: Omit<RecallOptions, 'mode' | 'llm'>): Promise<{ engrams: Engram[]; remote: RecallRemoteReport; results_complete: boolean; local_complete?: boolean }>
 
-/**
+  /**
    * The primary store, when it can also answer queries itself.
    *
    * A `role: 'primary'` adapter IS the source of truth and the query engine at
@@ -63,38 +63,38 @@ recallWithMeta(query: string, options?: Omit<RecallOptions, 'mode' | 'llm'>): Pr
    * path keeps loading and ranking in memory, which is the right answer for a
    * file.
    */
-/** @internal */
-_primaryQueryAdapter(): StorageAdapter | null
+  /** @internal */
+  _primaryQueryAdapter(): StorageAdapter | null
 
-/** Search engrams using LLM-assisted semantic filtering. Async, requires llm function. */
-recallAsync(query: string, options: RecallOptions & { llm: LlmFunction }): Promise<Engram[]>
+  /** Search engrams using LLM-assisted semantic filtering. Async, requires llm function. */
+  recallAsync(query: string, options: RecallOptions & { llm: LlmFunction }): Promise<Engram[]>
 
-/** Search engrams using local embeddings. Async, no API calls. Routes through PGLite/pgvector when active or a Postgres primary store's vector index, with optional intent routing + cross-encoder rerank. */
-recallSemantic(query: string, options?: Omit<RecallOptions, 'mode' | 'llm'>): Promise<Engram[]>
+  /** Search engrams using local embeddings. Async, no API calls. Routes through PGLite/pgvector when active or a Postgres primary store's vector index, with optional intent routing + cross-encoder rerank. */
+  recallSemantic(query: string, options?: Omit<RecallOptions, 'mode' | 'llm'>): Promise<Engram[]>
 
-/** Hybrid search: BM25 + embeddings merged via Reciprocal Rank Fusion. Async, no API calls. Delegates to recallHybridWithMeta so it gets intent/rerank/PGLite routing too. */
-recallHybrid(query: string, options?: Omit<RecallOptions, 'mode' | 'llm'>): Promise<Engram[]>
+  /** Hybrid search: BM25 + embeddings merged via Reciprocal Rank Fusion. Async, no API calls. Delegates to recallHybridWithMeta so it gets intent/rerank/PGLite routing too. */
+  recallHybrid(query: string, options?: Omit<RecallOptions, 'mode' | 'llm'>): Promise<Engram[]>
 
-/**
+  /**
    * Hybrid search with diagnostic metadata — returns both the engrams and
    * whether embeddings actually contributed (mode: "hybrid" vs "hybrid-degraded").
    * Use this when you want to surface degraded-mode warnings to users.
    */
-recallHybridWithMeta(query: string, options?: Omit<RecallOptions, 'mode' | 'llm'>): Promise<HybridSearchResult>
+  recallHybridWithMeta(query: string, options?: Omit<RecallOptions, 'mode' | 'llm'>): Promise<HybridSearchResult>
 
-/** Resolve the cross-encoder rerank options for a call. */
-/** @internal */
-_resolveRerankOptions(rerank?: boolean): Promise<RerankOptions | undefined>
+  /** Resolve the cross-encoder rerank options for a call. */
+  /** @internal */
+  _resolveRerankOptions(rerank?: boolean): Promise<RerankOptions | undefined>
 
-/**
+  /**
    * Reranker-enable path advisory: when this store's cached self-eval
    * says the resolved reranker is net-negative HERE, warn once per instance.
    * Never disables anything — the loud-once log is the whole intervention.
    */
-/** @internal */
-_maybeLogRerankerEvalAdvisory(rerankerName: string): Promise<void>
+  /** @internal */
+  _maybeLogRerankerEvalAdvisory(rerankerName: string): Promise<void>
 
-/**
+  /**
    * Run the per-store reranker self-eval gate: sample this store's own
    * engrams, synthesize probe queries from their statements, and compare the
    * cross-encoder's ordering against RRF-only. Returns the cached verdict when
@@ -102,7 +102,7 @@ _maybeLogRerankerEvalAdvisory(rerankerName: string): Promise<void>
    * unless `force` is set. The result is persisted to `.reranker-eval.json`
    * in the store root and surfaced by plur_doctor + the enable-path advisory.
    */
-rerankerSelfEval(options?: {
+  rerankerSelfEval(options?: {
     /** Reranker to evaluate. Default: the PLUR_RERANKER-resolved adapter. */
     reranker?: RerankerName
     /** Max probes to sample (default 20). */
@@ -113,14 +113,14 @@ rerankerSelfEval(options?: {
     force?: boolean
   }): Promise<{ result: RerankerEvalResult; cached: boolean }>
 
-/**
+  /**
    * Read this store's cached reranker self-eval verdict without
    * running anything. Returns null when the store has never been evaluated
    * for the given (or env-resolved) reranker.
    */
-rerankerEvalStatus(rerankerName?: string): Promise<{ result: RerankerEvalResult; stale: boolean } | null>
+  rerankerEvalStatus(rerankerName?: string): Promise<{ result: RerankerEvalResult; stale: boolean } | null>
 
-/**
+  /**
    * Probe whether the configured reranker produces useful signal on this
    * store's engrams. Scores same-domain vs cross-domain pairs and
    * returns a separability measure — callers use it to decide whether to
@@ -129,31 +129,31 @@ rerankerEvalStatus(rerankerName?: string): Promise<{ result: RerankerEvalResult;
    * @param opts.sampleSize  Max engrams to sample (default 100).
    * @param opts.rerankerName  Which reranker to probe (default: PLUR_RERANKER).
    */
-checkRerankerFit(opts?: { sampleSize?: number; rerankerName?: string }): Promise<FitCheckResult>
+  checkRerankerFit(opts?: { sampleSize?: number; rerankerName?: string }): Promise<FitCheckResult>
 
-/** Resolve the query-intent routing profile for a call. undefined = no routing (general). */
-/** @internal */
-_resolveIntentProfile(query: string, intentOverride?: QueryIntent): { intent: QueryIntent; profile: IntentRoutingProfile } | undefined
+  /** Resolve the query-intent routing profile for a call. undefined = no routing (general). */
+  /** @internal */
+  _resolveIntentProfile(query: string, intentOverride?: QueryIntent): { intent: QueryIntent; profile: IntentRoutingProfile } | undefined
 
-/**
+  /**
    * PGLite/pgvector hybrid recall. Routes the vector portion through
    * the persistent pgvector index, intersects hits against the YAML-rooted
    * `filtered` set (the yaml-as-truth defense — a DB-only row can't surface),
    * RRF-fuses with BM25, then applies the optional rerank. Falls back to the
    * JSON-cache hybrid path on cold-start / embedder-unavailable / PGLite error.
    */
-/** @internal */
-_pgliteHybridRecall(query: string, limit: number, filtered: Engram[], rerank?: RerankOptions, restrict?: Pick<RecallOptions, 'scope' | 'scopes'>): Promise<HybridSearchResult>
+  /** @internal */
+  _pgliteHybridRecall(query: string, limit: number, filtered: Engram[], rerank?: RerankOptions, restrict?: Pick<RecallOptions, 'scope' | 'scopes'>): Promise<HybridSearchResult>
 
-/**
+  /**
    * PGLite/pgvector semantic recall. Vector search via pgvector,
    * intersected with the YAML-rooted `filtered` set. Falls back to the JSON
    * cache on cold-start / embedder-unavailable / PGLite error.
    */
-/** @internal */
-_pgliteSemanticRecall(query: string, limit: number, filtered: Engram[], restrict?: Pick<RecallOptions, 'scope' | 'scopes'>): Promise<Engram[]>
+  /** @internal */
+  _pgliteSemanticRecall(query: string, limit: number, filtered: Engram[], restrict?: Pick<RecallOptions, 'scope' | 'scopes'>): Promise<Engram[]>
 
-/**
+  /**
    * Semantic recall pushed into a primary query store's vector index — the
    * `recall()` pushdown's vector twin, so the Postgres tier does not load and
    * embed the corpus in memory (the O(N) path the tier exists to escape).
@@ -186,41 +186,41 @@ _pgliteSemanticRecall(query: string, limit: number, filtered: Engram[], restrict
    * one edited engram degrading the whole store. Edits kick the backfill from
    * the write path, so they converge without this gate's help.
    */
-/** @internal */
-_primarySemanticRecall(adapter: StorageAdapter, query: string, limit: number, options?: Omit<RecallOptions, 'mode' | 'llm'>): Promise<Engram[]>
+  /** @internal */
+  _primarySemanticRecall(adapter: StorageAdapter, query: string, limit: number, options?: Omit<RecallOptions, 'mode' | 'llm'>): Promise<Engram[]>
 
-/** Inspect embedder availability without forcing a load. */
-embedderStatus(): EmbedderStatus
+  /** Inspect embedder availability without forcing a load. */
+  embedderStatus(): EmbedderStatus
 
-/** Reset cached embedder failure state — next call will retry the model load. */
-resetEmbedder(): void
+  /** Reset cached embedder failure state — next call will retry the model load. */
+  resetEmbedder(): void
 
-/**
+  /**
    * Inspect reranker runtime state — engaged/failed counters and the
    * last failure with its classification (corrupt-cache vs unavailable).
    * Lets doctor/recall surface "reranking requested but not happening".
    */
-rerankerStatus(): RerankerRuntimeStatus
+  rerankerStatus(): RerankerRuntimeStatus
 
-/**
+  /**
    * Reset cached reranker state — adapter cache, load-pipeline cache,
    * and the runtime failure tracker. The next rerank call retries the model
    * load from scratch (e.g. after purging a corrupt HF cache).
    */
-resetReranker(): void
+  resetReranker(): void
 
-/** Embedding search returning {engram, score}[] with cosine similarity scores. Async, no API calls. */
-similaritySearch(query: string, options?: { limit?: number; scope?: string; domain?: string }): Promise<SimilarityResult[]>
+  /** Embedding search returning {engram, score}[] with cosine similarity scores. Async, no API calls. */
+  similaritySearch(query: string, options?: { limit?: number; scope?: string; domain?: string }): Promise<SimilarityResult[]>
 
-/** Expanded search: LLM query expansion + hybrid search + RRF merge. Opt-in, requires LLM function. */
-recallExpanded(query: string, options: RecallOptions & { llm: LlmFunction }): Promise<Engram[]>
+  /** Expanded search: LLM query expansion + hybrid search + RRF merge. Opt-in, requires LLM function. */
+  recallExpanded(query: string, options: RecallOptions & { llm: LlmFunction }): Promise<Engram[]>
 
-recallAutoSearch(query: string, options?: RecallOptions): Promise<AutoSearchResult>
+  recallAutoSearch(query: string, options?: RecallOptions): Promise<AutoSearchResult>
 
-/** Get a single engram by ID, regardless of status. Searches primary + all stores. */
-getById(id: string): Promise<Engram | null>
+  /** Get a single engram by ID, regardless of status. Searches primary + all stores. */
+  getById(id: string): Promise<Engram | null>
 
-/**
+  /**
    * The pack row an id of the EARLIER pack-id form names (before pack names
    * not in slug form got a digest: `ENG-X-pack-release-rules` for the pack
    * `Release Rules`, now `ENG-X-pack-release-rules--<digest>`). Such ids were
@@ -228,30 +228,30 @@ getById(id: string): Promise<Engram | null>
    * row carries `id` exactly, and only when exactly one pack row answers to it
    * ({@link matchLegacyPackId}); an id two packs shared names neither.
    */
-/** @internal */
-_matchLegacyPackId(engrams: Engram[], id: string): Engram | null
+  /** @internal */
+  _matchLegacyPackId(engrams: Engram[], id: string): Engram | null
 
-/**
+  /**
    * The pack row a pack's OWN id names, for ids handed out before pack rows
    * got their pack ids (e.g. `ENG-PFR-001`). Reached only when no loaded row
    * carries `id` exactly, so an id one of my memories holds — active or
    * forgotten — never leads to a pack row. Only when exactly one pack
    * row carries it.
    */
-/** @internal */
-_matchPackOriginalId(engrams: Engram[], id: string): Engram | null
+  /** @internal */
+  _matchPackOriginalId(engrams: Engram[], id: string): Engram | null
 
-/**
+  /**
    * The one loaded row an id in the legacy three-letter store form names, or
    * null. Only a dated server-form id qualifies (a pack id such as
    * `ENG-PFR-001` is not one), and only when exactly one loaded store row
    * answers to it: the old prefix was shared by every team store of an org,
    * so two rows can answer to one old id, and then it names neither.
    */
-/** @internal */
-_matchOldFormId(engrams: Engram[], id: string): Engram | null
+  /** @internal */
+  _matchOldFormId(engrams: Engram[], id: string): Engram | null
 
-/**
+  /**
    * Get several engrams by ID. The primary store is read by primary
    * key; only ids it does not hold fall back to the full walk over stores and
    * packs, once. Ids that exist nowhere are simply absent from the result.
@@ -265,15 +265,15 @@ _matchOldFormId(engrams: Engram[], id: string): Engram | null
    * at most {@link GET_BY_IDS_REMOTE_CAP} per store, each on the driver's
    * bounded fetch. Without the option nothing is fetched.
    */
-getByIds(ids: string[], options?: { remoteCapability?: string }): Promise<Engram[]>
+  getByIds(ids: string[], options?: { remoteCapability?: string }): Promise<Engram[]>
 
-/** @internal */
-_fetchRemoteByIds(ids: string[], capability: string): Promise<Engram[]>
+  /** @internal */
+  _fetchRemoteByIds(ids: string[], capability: string): Promise<Engram[]>
 
-/** List all active engrams, optionally filtered by scope/domain. No search — returns all matches. */
-list(options?: { scope?: string; scopes?: string[]; domain?: string; min_strength?: number; include_expired?: boolean }): Promise<Engram[]>
+  /** List all active engrams, optionally filtered by scope/domain. No search — returns all matches. */
+  list(options?: { scope?: string; scopes?: string[]; domain?: string; min_strength?: number; include_expired?: boolean }): Promise<Engram[]>
 
-/**
+  /**
    * Resolve once the work the constructor kicked off has finished.
    *
    * A constructor cannot await, so one-time migrations start in the background.
@@ -283,10 +283,10 @@ list(options?: { scope?: string; scopes?: string[]; domain?: string; min_strengt
    *
    * Cheap and idempotent: it is the same settled promise on every call.
    */
-ready(): Promise<void>
+  ready(): Promise<void>
 
-/** Filter engrams by scope/domain/strength (shared by both modes) */
-/**
+  /** Filter engrams by scope/domain/strength (shared by both modes) */
+  /**
    * Predicates a store CANNOT answer, applied after a pushdown narrows.
    *
    * `searchBM25` filters status/scope/domain/scopes in SQL. Temporal validity
@@ -298,10 +298,10 @@ ready(): Promise<void>
    * `_filterEngrams`: two implementations of "which engrams count" would let
    * the pushdown branch silently disagree with `list()`.
    */
-/** @internal */
-_applyResidualFilters(engrams: Engram[], options?: RecallOptions & { include_expired?: boolean }): Engram[]
+  /** @internal */
+  _applyResidualFilters(engrams: Engram[], options?: RecallOptions & { include_expired?: boolean }): Engram[]
 
-/**
+  /**
    * Mounted-scope visibility grants: the deduplicated scopes of every
    * `config.yaml` `stores:` entry — path AND url entries alike. Mounting a
    * store with your own token is the consent act, so its scope passes a
@@ -313,10 +313,10 @@ _applyResidualFilters(engrams: Engram[], options?: RecallOptions & { include_exp
    * pushdown) and MUST NEVER be folded into `options.scopes` — that list is
    * the authorization decision and grants never widen it.
    */
-/** @internal */
-_grantedScopes(): string[]
+  /** @internal */
+  _grantedScopes(): string[]
 
-/**
+  /**
    * Candidates for the hybrid path — narrowed by the store when that is
    * PROVABLY equivalent, otherwise the full filtered corpus.
    *
@@ -340,13 +340,13 @@ _grantedScopes(): string[]
    * is the precondition for the whole approach; if it ever stops holding, this
    * must revert to `_filterEngrams` rather than narrow.
    */
-/** @internal */
-_hybridCandidates(query: string, options?: RecallOptions & { include_expired?: boolean }): Promise<Engram[]>
+  /** @internal */
+  _hybridCandidates(query: string, options?: RecallOptions & { include_expired?: boolean }): Promise<Engram[]>
 
-/** @internal */
-_filterEngrams(options?: RecallOptions & { include_expired?: boolean }): Promise<Engram[]>
+  /** @internal */
+  _filterEngrams(options?: RecallOptions & { include_expired?: boolean }): Promise<Engram[]>
 
-/**
+  /**
    * The post-recall bookkeeping, held to the recall's deadline.
    *
    * Freshness bookkeeping is not the answer to the read, and a read must not
@@ -359,10 +359,10 @@ _filterEngrams(options?: RecallOptions & { include_expired?: boolean }): Promise
    * Uncontended, nothing changes: the lock is taken in milliseconds and the
    * refresh lands before the reply.
    */
-/** @internal */
-_reactivateWithinDeadline(results: Engram[], deadlineAt: number): Promise<void>
+  /** @internal */
+  _reactivateWithinDeadline(results: Engram[], deadlineAt: number): Promise<void>
 
-/**
+  /**
    * Run a bookkeeping write under the store lock, held to `deadlineAt` — the
    * same rules as {@link _reactivateWithinDeadline}:
    * the lock wait is at most {@link RECALL_BOOKKEEPING_LOCK_WAIT_MS} and never
@@ -371,22 +371,22 @@ _reactivateWithinDeadline(results: Engram[], deadlineAt: number): Promise<void>
    * and `tooLate()` lets a running write stop before it writes). Without a
    * deadline it waits for the lock as every writer does.
    */
-/** @internal */
-_bookkeepingWithinDeadline(deadlineAt: number | undefined, body: (tooLate: () => boolean) => Promise<void>): Promise<void>
+  /** @internal */
+  _bookkeepingWithinDeadline(deadlineAt: number | undefined, body: (tooLate: () => boolean) => Promise<void>): Promise<void>
 
-/** Reactivate accessed engrams and update co-access associations.
+  /** Reactivate accessed engrams and update co-access associations.
    *  `lockWaitMs`: give up — skip the refresh — when the store lock is
    *  not taken within that time. Unset: wait as every writer does. */
-/** @internal */
-_reactivateResults(results: Engram[], opts?: { lockWaitMs?: number; deadlineAt?: number; cancel?: { abandoned: boolean } }): Promise<void>
+  /** @internal */
+  _reactivateResults(results: Engram[], opts?: { lockWaitMs?: number; deadlineAt?: number; cancel?: { abandoned: boolean } }): Promise<void>
 }
 
 export const recallMethods: RecallMethods & ThisType<Plur> = {
-async recall(query: string, options?: Omit<RecallOptions, 'mode' | 'llm'>): Promise<Engram[]> {
+  async recall(query: string, options?: Omit<RecallOptions, 'mode' | 'llm'>): Promise<Engram[]> {
     return (await this.recallWithMeta(query, options)).engrams
   },
 
-async recallWithMeta(query: string, options?: Omit<RecallOptions, 'mode' | 'llm'>): Promise<{ engrams: Engram[]; remote: RecallRemoteReport; results_complete: boolean; local_complete?: boolean }> {
+  async recallWithMeta(query: string, options?: Omit<RecallOptions, 'mode' | 'llm'>): Promise<{ engrams: Engram[]; remote: RecallRemoteReport; results_complete: boolean; local_complete?: boolean }> {
     const deadlineAt = this._recallDeadlineAt(options)
     const limit = options?.limit ?? 20
 
@@ -527,13 +527,13 @@ async recallWithMeta(query: string, options?: Omit<RecallOptions, 'mode' | 'llm'
     }
   },
 
-_primaryQueryAdapter(): StorageAdapter | null {
+  _primaryQueryAdapter(): StorageAdapter | null {
     const s = this._primaryStore as unknown as Partial<StorageAdapter>
     if (s?.role === 'primary' && typeof s.searchBM25 === 'function') return s as StorageAdapter
     return null
   },
 
-async recallAsync(query: string, options: RecallOptions & { llm: LlmFunction }): Promise<Engram[]> {
+  async recallAsync(query: string, options: RecallOptions & { llm: LlmFunction }): Promise<Engram[]> {
     // remote-only: no model sees the query or the team's text.
     if (this._activeBinding()) return await this.recall(query, options)
     const filtered = await this._filterEngrams(options)
@@ -543,7 +543,7 @@ async recallAsync(query: string, options: RecallOptions & { llm: LlmFunction }):
     return results
   },
 
-async recallSemantic(query: string, options?: Omit<RecallOptions, 'mode' | 'llm'>): Promise<Engram[]> {
+  async recallSemantic(query: string, options?: Omit<RecallOptions, 'mode' | 'llm'>): Promise<Engram[]> {
     const limit = options?.limit ?? 20
     // remote-only: no reranker model either.
     const rerank = this._remoteOnly ? null : await this._resolveRerankOptions(options?.rerank)
@@ -585,7 +585,7 @@ async recallSemantic(query: string, options?: Omit<RecallOptions, 'mode' | 'llm'
     return results
   },
 
-async recallHybrid(query: string, options?: Omit<RecallOptions, 'mode' | 'llm'>): Promise<Engram[]> {
+  async recallHybrid(query: string, options?: Omit<RecallOptions, 'mode' | 'llm'>): Promise<Engram[]> {
     const limit = options?.limit ?? 20
     const result = await this.recallHybridWithMeta(query, options)
     if (result.engrams.length === 0 && result.local_complete === false) {
@@ -595,7 +595,7 @@ async recallHybrid(query: string, options?: Omit<RecallOptions, 'mode' | 'llm'>)
     return result.engrams.slice(0, limit)
   },
 
-async recallHybridWithMeta(query: string, options?: Omit<RecallOptions, 'mode' | 'llm'>): Promise<HybridSearchResult> {
+  async recallHybridWithMeta(query: string, options?: Omit<RecallOptions, 'mode' | 'llm'>): Promise<HybridSearchResult> {
     const deadlineAt = this._recallDeadlineAt(options)
     // Remote leg starts BEFORE the local pipeline (added latency =
     // max(0, remote − local)); merged below via RRF.
@@ -728,7 +728,7 @@ async recallHybridWithMeta(query: string, options?: Omit<RecallOptions, 'mode' |
     return result
   },
 
-async _resolveRerankOptions(rerank?: boolean): Promise<RerankOptions | undefined> {
+  async _resolveRerankOptions(rerank?: boolean): Promise<RerankOptions | undefined> {
     if (rerank === false) return undefined
     if (rerank === true) {
       // Explicit opt-in: if PLUR_RERANKER is off (the default), upgrade to
@@ -749,7 +749,7 @@ async _resolveRerankOptions(rerank?: boolean): Promise<RerankOptions | undefined
     return { reranker: this._reranker }
   },
 
-async _maybeLogRerankerEvalAdvisory(rerankerName: string): Promise<void> {
+  async _maybeLogRerankerEvalAdvisory(rerankerName: string): Promise<void> {
     if (this._rerankerEvalAdvisoryDone) return
     this._rerankerEvalAdvisoryDone = true
     try {
@@ -757,7 +757,7 @@ async _maybeLogRerankerEvalAdvisory(rerankerName: string): Promise<void> {
     } catch { /* advisory must never break recall */ }
   },
 
-async rerankerSelfEval(options?: {
+  async rerankerSelfEval(options?: {
     /** Reranker to evaluate. Default: the PLUR_RERANKER-resolved adapter. */
     reranker?: RerankerName
     /** Max probes to sample (default 20). */
@@ -792,7 +792,7 @@ async rerankerSelfEval(options?: {
     return { result, cached: false }
   },
 
-async rerankerEvalStatus(rerankerName?: string): Promise<{ result: RerankerEvalResult; stale: boolean } | null> {
+  async rerankerEvalStatus(rerankerName?: string): Promise<{ result: RerankerEvalResult; stale: boolean } | null> {
     const name = rerankerName ?? resolveRerankerName()
     if (name === 'off') return null
     const cached = loadRerankerEvalCache(this.paths.root)[name]
@@ -800,21 +800,21 @@ async rerankerEvalStatus(rerankerName?: string): Promise<{ result: RerankerEvalR
     return { result: cached, stale: isRerankerEvalStale(cached, (await this._filterEngrams()).length) }
   },
 
-async checkRerankerFit(opts?: { sampleSize?: number; rerankerName?: string }): Promise<FitCheckResult> {
+  async checkRerankerFit(opts?: { sampleSize?: number; rerankerName?: string }): Promise<FitCheckResult> {
     const name = (opts?.rerankerName as RerankerName | undefined) ?? resolveRerankerName()
     const adapter = getReranker(name === 'off' ? undefined : name)
     const engrams = (await this.list()).map(e => ({ statement: e.statement, domain: e.domain }))
     return checkRerankerFit(engrams, adapter, { sampleSize: opts?.sampleSize })
   },
 
-_resolveIntentProfile(query: string, intentOverride?: QueryIntent): { intent: QueryIntent; profile: IntentRoutingProfile } | undefined {
+  _resolveIntentProfile(query: string, intentOverride?: QueryIntent): { intent: QueryIntent; profile: IntentRoutingProfile } | undefined {
     if (isIntentRoutingDisabled()) return undefined
     const intent: QueryIntent = intentOverride ?? classifyQuery(query).intent
     if (intent === 'general') return undefined
     return { intent, profile: routeForIntent(intent) }
   },
 
-async _pgliteHybridRecall(query: string, limit: number, filtered: Engram[], rerank?: RerankOptions, restrict?: Pick<RecallOptions, 'scope' | 'scopes'>): Promise<HybridSearchResult> {
+  async _pgliteHybridRecall(query: string, limit: number, filtered: Engram[], rerank?: RerankOptions, restrict?: Pick<RecallOptions, 'scope' | 'scopes'>): Promise<HybridSearchResult> {
     if (!this.pgliteAdapter) {
       return hybridSearchWithMeta(filtered, query, limit, this.paths.root, rerank)
     }
@@ -876,7 +876,7 @@ async _pgliteHybridRecall(query: string, limit: number, filtered: Engram[], rera
     return { engrams: reranked.engrams.slice(0, limit), mode, embedderError: null, topScore, reranked: reranked.count }
   },
 
-async _pgliteSemanticRecall(query: string, limit: number, filtered: Engram[], restrict?: Pick<RecallOptions, 'scope' | 'scopes'>): Promise<Engram[]> {
+  async _pgliteSemanticRecall(query: string, limit: number, filtered: Engram[], restrict?: Pick<RecallOptions, 'scope' | 'scopes'>): Promise<Engram[]> {
     if (!this.pgliteAdapter) return []
     const { embed } = await import('../embeddings.js')
     const queryVec = await embed(query, 'query')
@@ -919,7 +919,7 @@ async _pgliteSemanticRecall(query: string, limit: number, filtered: Engram[], re
     }
   },
 
-async _primarySemanticRecall(adapter: StorageAdapter, query: string, limit: number, options?: Omit<RecallOptions, 'mode' | 'llm'>): Promise<Engram[]> {
+  async _primarySemanticRecall(adapter: StorageAdapter, query: string, limit: number, options?: Omit<RecallOptions, 'mode' | 'llm'>): Promise<Engram[]> {
     const fallback = async () =>
       embeddingSearch(await this._filterEngrams(options), query, limit, this.paths.root)
     const { embed } = await import('../embeddings.js')
@@ -960,26 +960,26 @@ async _primarySemanticRecall(adapter: StorageAdapter, query: string, limit: numb
     }
   },
 
-embedderStatus(): EmbedderStatus {
+  embedderStatus(): EmbedderStatus {
     return embedderStatus()
   },
 
-resetEmbedder(): void {
+  resetEmbedder(): void {
     resetEmbedder()
   },
 
-rerankerStatus(): RerankerRuntimeStatus {
+  rerankerStatus(): RerankerRuntimeStatus {
     return rerankerStatus()
   },
 
-resetReranker(): void {
+  resetReranker(): void {
     _resetRerankerCache()
     _resetCrossEncoderCaches()
     resetRerankerStatus()
     this._reranker = null
   },
 
-async similaritySearch(query: string, options?: { limit?: number; scope?: string; domain?: string }): Promise<SimilarityResult[]> {
+  async similaritySearch(query: string, options?: { limit?: number; scope?: string; domain?: string }): Promise<SimilarityResult[]> {
     // remote-only: no embedder, so no similarity scores.
     if (this._activeBinding()) return []
     const filtered = await this._filterEngrams(options)
@@ -987,7 +987,7 @@ async similaritySearch(query: string, options?: { limit?: number; scope?: string
     return embeddingSearchWithScores(filtered, query, limit, this.paths.root)
   },
 
-async recallExpanded(query: string, options: RecallOptions & { llm: LlmFunction }): Promise<Engram[]> {
+  async recallExpanded(query: string, options: RecallOptions & { llm: LlmFunction }): Promise<Engram[]> {
     // remote-only: no model and no embedder.
     if (this._activeBinding()) return await this.recall(query, options)
     const filtered = await this._filterEngrams(options)
@@ -997,7 +997,7 @@ async recallExpanded(query: string, options: RecallOptions & { llm: LlmFunction 
     return results
   },
 
-async recallAutoSearch(query: string, options?: RecallOptions): Promise<AutoSearchResult> {
+  async recallAutoSearch(query: string, options?: RecallOptions): Promise<AutoSearchResult> {
     // remote-only: keyword search only, no model and no embedder.
     if (this._activeBinding()) return { results: await this.recall(query, options), strategy_used: 'bm25' }
     const filtered = await this._filterEngrams(options)
@@ -1007,7 +1007,7 @@ async recallAutoSearch(query: string, options?: RecallOptions): Promise<AutoSear
     return result
   },
 
-async getById(id: string): Promise<Engram | null> {
+  async getById(id: string): Promise<Engram | null> {
     // remote-only: personal rows are not found.
     const engrams = this._remoteOnly ? await this._remoteOnlyVisible() : await this._loadAllEngrams()
     const exact = engrams.find(e => e.id === id)
@@ -1027,7 +1027,7 @@ async getById(id: string): Promise<Engram | null> {
     return this._matchOldFormId(engrams, id)
   },
 
-_matchLegacyPackId(engrams: Engram[], id: string): Engram | null {
+  _matchLegacyPackId(engrams: Engram[], id: string): Engram | null {
     const rows: Array<{ row: Engram; pack: string }> = []
     for (const e of engrams) {
       const pack = (e as { _pack?: unknown })._pack
@@ -1037,7 +1037,7 @@ _matchLegacyPackId(engrams: Engram[], id: string): Engram | null {
     return matchLegacyPackId(rows, id)
   },
 
-_matchPackOriginalId(engrams: Engram[], id: string): Engram | null {
+  _matchPackOriginalId(engrams: Engram[], id: string): Engram | null {
     const matches = engrams.filter(e => {
       const pack = (e as { _pack?: unknown })._pack
       return typeof pack === 'string' && e.id === packEngramId(id, pack)
@@ -1045,7 +1045,7 @@ _matchPackOriginalId(engrams: Engram[], id: string): Engram | null {
     return matches.length === 1 ? matches[0] : null
   },
 
-_matchOldFormId(engrams: Engram[], id: string): Engram | null {
+  _matchOldFormId(engrams: Engram[], id: string): Engram | null {
     // An id in the legacy three-letter store form still finds its engram — but
     // only when exactly one loaded row carries it. The legacy prefix is shared
     // by every team store of an org, so two rows can answer to one old id;
@@ -1062,7 +1062,7 @@ _matchOldFormId(engrams: Engram[], id: string): Engram | null {
     return matches.length === 1 ? matches[0] : null
   },
 
-async getByIds(ids: string[], options?: { remoteCapability?: string }): Promise<Engram[]> {
+  async getByIds(ids: string[], options?: { remoteCapability?: string }): Promise<Engram[]> {
     const wanted = [...new Set(ids.filter(Boolean))]
     if (wanted.length === 0) return []
     if (this._remoteOnly) {
@@ -1106,7 +1106,7 @@ async getByIds(ids: string[], options?: { remoteCapability?: string }): Promise<
     return [...primary, ...rest, ...remote]
   },
 
-async _fetchRemoteByIds(ids: string[], capability: string): Promise<Engram[]> {
+  async _fetchRemoteByIds(ids: string[], capability: string): Promise<Engram[]> {
     const out: Engram[] = []
     const taken = new Set<string>()
     for (const entry of (this.config.stores ?? [])) {
@@ -1147,15 +1147,15 @@ async _fetchRemoteByIds(ids: string[], capability: string): Promise<Engram[]> {
     return out
   },
 
-async list(options?: { scope?: string; scopes?: string[]; domain?: string; min_strength?: number; include_expired?: boolean }): Promise<Engram[]> {
+  async list(options?: { scope?: string; scopes?: string[]; domain?: string; min_strength?: number; include_expired?: boolean }): Promise<Engram[]> {
     return await this._filterEngrams(options)
   },
 
-async ready(): Promise<void> {
+  async ready(): Promise<void> {
     await this._readyPromise
   },
 
-_applyResidualFilters(engrams: Engram[], options?: RecallOptions & { include_expired?: boolean }): Engram[] {
+  _applyResidualFilters(engrams: Engram[], options?: RecallOptions & { include_expired?: boolean }): Engram[] {
     // A query adapter's rows never include a queued remote-only save.
     let out = withoutRemoteOnlyQueued(engrams)
     if (!options?.include_expired) {
@@ -1171,11 +1171,11 @@ _applyResidualFilters(engrams: Engram[], options?: RecallOptions & { include_exp
     return out
   },
 
-_grantedScopes(): string[] {
+  _grantedScopes(): string[] {
     return [...new Set((this.config.stores ?? []).map(s => s.scope))]
   },
 
-async _hybridCandidates(query: string, options?: RecallOptions & { include_expired?: boolean }): Promise<Engram[]> {
+  async _hybridCandidates(query: string, options?: RecallOptions & { include_expired?: boolean }): Promise<Engram[]> {
     const adapter = this._remoteOnly ? null : this._primaryQueryAdapter()
     if (adapter?.searchBM25Exhaustive) {
       try {
@@ -1196,7 +1196,7 @@ async _hybridCandidates(query: string, options?: RecallOptions & { include_expir
     return await this._filterEngrams(options)
   },
 
-async _filterEngrams(options?: RecallOptions & { include_expired?: boolean }): Promise<Engram[]> {
+  async _filterEngrams(options?: RecallOptions & { include_expired?: boolean }): Promise<Engram[]> {
     let engrams: Engram[]
     if (this.indexedStorage && !this._remoteOnly) {
       engrams = await this.indexedStorage.loadFiltered({
@@ -1300,7 +1300,7 @@ async _filterEngrams(options?: RecallOptions & { include_expired?: boolean }): P
     return withoutRemoteOnlyQueued(engrams)
   },
 
-async _reactivateWithinDeadline(results: Engram[], deadlineAt: number): Promise<void> {
+  async _reactivateWithinDeadline(results: Engram[], deadlineAt: number): Promise<void> {
     // The lock wait is bounded by the time left, so the lock
     // is never taken after the reply; with no time left the refresh is skipped.
     const remaining = deadlineAt - Date.now()
@@ -1317,7 +1317,7 @@ async _reactivateWithinDeadline(results: Engram[], deadlineAt: number): Promise<
     if (!waited.done) cancel.abandoned = true
   },
 
-async _bookkeepingWithinDeadline(deadlineAt: number | undefined, body: (tooLate: () => boolean) => Promise<void>): Promise<void> {
+  async _bookkeepingWithinDeadline(deadlineAt: number | undefined, body: (tooLate: () => boolean) => Promise<void>): Promise<void> {
     if (deadlineAt === undefined || !Number.isFinite(deadlineAt)) {
       await this._withStoreLock(this.paths.engrams, () => body(() => false))
       return
@@ -1339,7 +1339,7 @@ async _bookkeepingWithinDeadline(deadlineAt: number | undefined, body: (tooLate:
     if (waited.error !== undefined) throw waited.error
   },
 
-async _reactivateResults(results: Engram[], opts?: { lockWaitMs?: number; deadlineAt?: number; cancel?: { abandoned: boolean } }): Promise<void> {
+  async _reactivateResults(results: Engram[], opts?: { lockWaitMs?: number; deadlineAt?: number; cancel?: { abandoned: boolean } }): Promise<void> {
     // Read-only instance: SKIP the activation refresh, silently. Recall is a
     // read and must succeed on a read-only engine; the write it piggybacks
     // (retrieval_strength / last_accessed / frequency / co-access edges) is

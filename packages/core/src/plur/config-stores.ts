@@ -19,7 +19,7 @@ import { REFUSED_CREDENTIAL_WRITE, withLock } from '../sync.js'
 import { AddRemoteStoreError, isFromServerEntry, serverEntryIdOf, serverEntryScopeRefusal, stringList } from './helpers.js'
 
 export interface ConfigStoresMethods {
-/**
+  /**
    * Register an additional engram store.
    *
    * Two shapes — exactly one of `pathOrUrl` semantics applies:
@@ -42,11 +42,11 @@ export interface ConfigStoresMethods {
    * requested one), or `overwritten` (same scope reassigned to this endpoint
    * via overwriteScope).
    */
-/** mtime (ms) of config.yaml, or 0 if it cannot be stat'd. */
-/** @internal */
-statConfigMtime(): number
+  /** mtime (ms) of config.yaml, or 0 if it cannot be stat'd. */
+  /** @internal */
+  statConfigMtime(): number
 
-/**
+  /**
    * Load config.yaml for in-memory use, dropping a LOCAL store entry only when
    * it would load engrams that are already loaded, compared by canonical path:
    *
@@ -63,23 +63,23 @@ statConfigMtime(): number
    * writebacks start from the raw file (addStore / persistScopeMetadata), so
    * nothing is deleted from disk. `ignoredDuplicateStores()` reports it.
    */
-/** @internal */
-_loadConfig(): PlurConfig
+  /** @internal */
+  _loadConfig(): PlurConfig
 
-/** Local store entries in config.yaml that are ignored because they name the
+  /** Local store entries in config.yaml that are ignored because they name the
    *  primary file, or repeat an earlier entry's file and scope. */
-ignoredDuplicateStores(): StoreEntry[]
+  ignoredDuplicateStores(): StoreEntry[]
 
-/**
+  /**
    * Remove the config.yaml store entries that name the primary engrams file
    * (`plur stores prune`). They are already ignored at load; this stops
    * the warning for good. Only those entries are removed and the rest of
    * config.yaml is kept byte for byte — see {@link removePrimaryStoreEntries}.
    * Returns the removed entries.
    */
-removeDuplicatePrimaryStores(): StoreEntry[]
+  removeDuplicatePrimaryStores(): StoreEntry[]
 
-/**
+  /**
    * Reload this.config from disk if config.yaml changed since the last load.
    *
    * The MCP server holds ONE long-lived Plur instance, so a store added by
@@ -90,10 +90,10 @@ removeDuplicatePrimaryStores(): StoreEntry[]
    *
    * @returns true if the config was reloaded.
    */
-/** @internal */
-reloadConfigIfChanged(): boolean
+  /** @internal */
+  reloadConfigIfChanged(): boolean
 
-/** Persist a new stores list to config.yaml, preserving other keys, then
+  /** Persist a new stores list to config.yaml, preserving other keys, then
    *  refresh the in-memory config + mtime. Shared by addStore's append and
    *  token-rotation paths, and by persistScopeMetadata (which passes
    *  `serverSensitivityScopes` — see {@link mergeStoresForWriteback}).
@@ -104,8 +104,8 @@ reloadConfigIfChanged(): boolean
    *  last-writer-wins away the other's change. Same lock discipline as
    *  engrams.yaml. Lock scope is kept tight — read + merge + write only; the
    *  in-memory refresh happens after release. */
-/** @internal */
-persistStores(stores: StoreEntry[], opts?: {
+  /** @internal */
+  persistStores(stores: StoreEntry[], opts?: {
     serverSensitivityScopes?: Set<string>
     onConfigWrite?: (before: string | null, after: string) => void
     /** A new key for a server entry: written in place onto the one
@@ -115,7 +115,7 @@ persistStores(stores: StoreEntry[], opts?: {
     serverEntryToken?: { entry: StoreEntry; token: string; tokenEnv?: string }
   }): void
 
-/**
+  /**
    * MERGE the typed `stores` array onto the RAW (freshly-read YAML) entries so a
    * writeback never strips fields the typed schema doesn't know about.
    * `stores` is `StoreEntry[]` — the typed parse output —
@@ -133,10 +133,10 @@ persistStores(stores: StoreEntry[], opts?: {
    * update for those entries. Every other caller omits it and keeps the
    * restore-raw behavior.
    */
-/** @internal */
-mergeStoresForWriteback(rawStores: unknown, stores: StoreEntry[], serverSensitivityScopes?: Set<string>): StoreEntry[]
+  /** @internal */
+  mergeStoresForWriteback(rawStores: unknown, stores: StoreEntry[], serverSensitivityScopes?: Set<string>): StoreEntry[]
 
-addStore(storePath: string, scope: string, options?: {
+  addStore(storePath: string, scope: string, options?: {
       shared?: boolean; readonly?: boolean; url?: string; token?: string; overwriteScope?: boolean
       /** The environment variable `token` was read from. The entry then
        *  stores `token_env: <name>` and never the token itself. */
@@ -148,7 +148,7 @@ addStore(storePath: string, scope: string, options?: {
     token_scopes?: string[]
   }
 
-/**
+  /**
    * Register a company server as one store entry and fold the per-scope
    * entries that hold the same key into it.
    *
@@ -175,7 +175,7 @@ addStore(storePath: string, scope: string, options?: {
    * file byte-identical). With `tokenEnv` the file holds the variable's name,
    * never the key. No key reaches the result, an error or the log.
    */
-registerEnterpriseServer(url: string, opts: {
+  registerEnterpriseServer(url: string, opts: {
     token?: string; tokenEnv?: string; personalScope: string; enterprise?: Record<string, string>; removeStale?: boolean
     migrateLegacyPersonal?: boolean
     /** Required for a legacy conversion; verifies its backup under this lock. */
@@ -190,7 +190,7 @@ registerEnterpriseServer(url: string, opts: {
     beforeRemove?: (configPath: string) => void
   }): Promise<{ status: 'added' | 'updated' | 'unchanged'; fold: FoldReport; removed: ScopeHolder[]; migratedLegacy?: boolean }>
 
-/**
+  /**
    * Register a remote (url) store only after the server has vouched for it.
    * {@link addStore} is synchronous and never checks the token, so an
    * installer script using it could write a dead token, or a scope the token
@@ -211,7 +211,7 @@ registerEnterpriseServer(url: string, opts: {
    * includes the server's response body, which is not ours to trust, so every
    * occurrence of the token is scrubbed before it is rethrown.
    */
-addRemoteStore(opts: {
+  addRemoteStore(opts: {
     url: string; token: string; scope: string
     /** The environment variable `token` was read from: only its name is stored. */
     tokenEnv?: string
@@ -222,18 +222,18 @@ addRemoteStore(opts: {
     overwriteScope?: boolean
   }): Promise<{ status: 'added' | 'already_registered' | 'token_rotated' | 'overwritten'; scope: string; username?: string; authorised: string[]; token_scopes?: string[] }>
 
-/**
+  /**
    * Every check {@link addRemoteStore} makes, and no write: the URL,
    * the token against `/me`, `scope` among the authorised scopes, and no
    * other store already holding `scope` (unless `overwriteScope`). Throws the
    * same {@link AddRemoteStoreError}s. `plur remote --scopes a,b` runs it for
    * every scope first, so one refused scope leaves config.yaml untouched.
    */
-verifyRemoteStore(opts: {
+  verifyRemoteStore(opts: {
     url: string; token: string; scope: string; timeoutMs?: number; overwriteScope?: boolean
   }): Promise<{ scope: string; username?: string; authorised: string[] }>
 
-/**
+  /**
    * Materialize a filesystem store file if absent — the existsSync→write
    * sequence runs under the store's own `<path>.lock` file so it cannot race
    * a concurrent writer or a second registration and clobber their content
@@ -243,16 +243,16 @@ verifyRemoteStore(opts: {
    * `_withStoreLock`. Parent dirs are created up front — the lock file lives
    * next to the store file.
    */
-/** @internal */
-_materializeLocalStore(storePath: string): void
+  /** @internal */
+  _materializeLocalStore(storePath: string): void
 }
 
 export const configStoresMethods: ConfigStoresMethods & ThisType<Plur> = {
-statConfigMtime(): number {
+  statConfigMtime(): number {
     try { return fs.statSync(this.paths.config).mtimeMs } catch { return 0 }
   },
 
-_loadConfig(): PlurConfig {
+  _loadConfig(): PlurConfig {
     const config = loadConfig(this.paths.config)
     const stores = config.stores ?? []
     // Two different scopes behind one id prefix: said once at load, and every
@@ -299,11 +299,11 @@ _loadConfig(): PlurConfig {
     return ignored.length ? { ...config, stores: kept } : config
   },
 
-ignoredDuplicateStores(): StoreEntry[] {
+  ignoredDuplicateStores(): StoreEntry[] {
     return this._ignoredDuplicates.map(d => d.entry)
   },
 
-removeDuplicatePrimaryStores(): StoreEntry[] {
+  removeDuplicatePrimaryStores(): StoreEntry[] {
     const removed = removePrimaryStoreEntries(this.paths.config, this.paths.engrams)
     if (removed.length) {
       this.config = this._loadConfig()
@@ -312,7 +312,7 @@ removeDuplicatePrimaryStores(): StoreEntry[] {
     return removed
   },
 
-reloadConfigIfChanged(): boolean {
+  reloadConfigIfChanged(): boolean {
     const mtime = this.statConfigMtime()
     if (mtime === 0 || mtime === this.configMtimeMs) return false
     this.config = this._loadConfig()
@@ -329,7 +329,7 @@ reloadConfigIfChanged(): boolean {
     return true
   },
 
-persistStores(stores: StoreEntry[], opts?: {
+  persistStores(stores: StoreEntry[], opts?: {
     serverSensitivityScopes?: Set<string>
     onConfigWrite?: (before: string | null, after: string) => void
     /** A new key for a server entry: written in place onto the one
@@ -428,7 +428,7 @@ persistStores(stores: StoreEntry[], opts?: {
     this.configMtimeMs = this.statConfigMtime()
   },
 
-mergeStoresForWriteback(rawStores: unknown, stores: StoreEntry[], serverSensitivityScopes?: Set<string>): StoreEntry[] {
+  mergeStoresForWriteback(rawStores: unknown, stores: StoreEntry[], serverSensitivityScopes?: Set<string>): StoreEntry[] {
     if (!Array.isArray(rawStores)) return stores
     // Key on url+scope (remote) or path+scope (local); never url alone — one
     // enterprise URL hosts many scopes (addStore dedup identity is url+scope).
@@ -495,7 +495,7 @@ mergeStoresForWriteback(rawStores: unknown, stores: StoreEntry[], serverSensitiv
     })
   },
 
-addStore(storePath: string, scope: string, options?: {
+  addStore(storePath: string, scope: string, options?: {
       shared?: boolean; readonly?: boolean; url?: string; token?: string; overwriteScope?: boolean
       /** The environment variable `token` was read from. The entry then
        *  stores `token_env: <name>` and never the token itself. */
@@ -665,7 +665,7 @@ addStore(storePath: string, scope: string, options?: {
     return { status: scopeConflict ? 'overwritten' : 'added', scope }
   },
 
-async registerEnterpriseServer(url: string, opts: {
+  async registerEnterpriseServer(url: string, opts: {
     token?: string; tokenEnv?: string; personalScope: string; enterprise?: Record<string, string>; removeStale?: boolean
     migrateLegacyPersonal?: boolean
     /** Required for a legacy conversion; verifies its backup under this lock. */
@@ -765,7 +765,7 @@ async registerEnterpriseServer(url: string, opts: {
     return { status: r.status, fold: { ...r.report, queued_by_scope }, removed: r.removed, ...(r.migratedLegacy ? { migratedLegacy: true } : {}) }
   },
 
-async addRemoteStore(opts: {
+  async addRemoteStore(opts: {
     url: string; token: string; scope: string
     /** The environment variable `token` was read from: only its name is stored. */
     tokenEnv?: string
@@ -785,7 +785,7 @@ async addRemoteStore(opts: {
     return { status, scope, ...(username ? { username } : {}), authorised, ...(token_scopes ? { token_scopes } : {}) }
   },
 
-async verifyRemoteStore(opts: {
+  async verifyRemoteStore(opts: {
     url: string; token: string; scope: string; timeoutMs?: number; overwriteScope?: boolean
   }): Promise<{ scope: string; username?: string; authorised: string[] }> {
     const { url, token, scope } = opts
@@ -861,7 +861,7 @@ async verifyRemoteStore(opts: {
     return { scope, ...(username ? { username } : {}), authorised }
   },
 
-_materializeLocalStore(storePath: string): void {
+  _materializeLocalStore(storePath: string): void {
     try {
       const dir = dirname(storePath)
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })

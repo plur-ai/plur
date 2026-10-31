@@ -20,12 +20,12 @@ import { DISCOVERY_SNAPSHOT_KEYS, discoveryChanged, isEnterpriseServerEntry, isP
 import { CheckResult, RegisterDiscoveredResult, RemoteHealth, RemoteScopeDiscovery, ServerDiscoveryOutcome, ServerStoreCheck, StoreSummary } from './types.js'
 
 export interface DiscoveryMethods {
-/** Build the primary-store summary row. Shared by listStores +
+  /** Build the primary-store summary row. Shared by listStores +
    * listStoresAsync to keep them in lockstep. */
-/** @internal */
-_primaryStoreRow(): Promise<StoreSummary>
+  /** @internal */
+  _primaryStoreRow(): Promise<StoreSummary>
 
-/**
+  /**
    * @deprecated Use {@link listStoresAsync} for accurate remote engram counts.
    * The sync variant reads only the remote drivers' in-memory peek cache,
    * which does not self-populate: a remote store's engram_count stays 0 on
@@ -33,9 +33,9 @@ _primaryStoreRow(): Promise<StoreSummary>
    * (`warmRemoteCaches()`, e.g. via session_start). Retained for callers
    * that cannot await.
    */
-listStores(): Promise<Array<StoreSummary>>
+  listStores(): Promise<Array<StoreSummary>>
 
-/**
+  /**
    * List all configured stores with accurate remote engram counts. Awaits
    * remote driver loads with a 5s per-store timeout so a single slow or
    * unreachable remote can never hang the entire call.
@@ -43,9 +43,9 @@ listStores(): Promise<Array<StoreSummary>>
    * Use for `plur_stores_list` and CLI diagnostics where freshness matters
    * more than latency.
    */
-listStoresAsync(): Promise<Array<StoreSummary>>
+  listStoresAsync(): Promise<Array<StoreSummary>>
 
-/**
+  /**
    * Pre-load all remote store caches so subsequent sync reads see data.
    * Call once before injection to avoid the cold-start race.
    *
@@ -54,12 +54,12 @@ listStoresAsync(): Promise<Array<StoreSummary>>
    * listStoresAsync. clearTimeout on the success path prevents
    * accumulating dangling timers in the long-lived MCP server process.
    */
-warmRemoteCaches(): Promise<void>
+  warmRemoteCaches(): Promise<void>
 
-/** Return writable remote store scopes for AI caller guidance. */
-getWritableRemoteScopes(): Array<{ scope: string; url: string }>
+  /** Return writable remote store scopes for AI caller guidance. */
+  getWritableRemoteScopes(): Array<{ scope: string; url: string }>
 
-/**
+  /**
    * Group configured remote stores by distinct URL, returning one entry per URL
    * with the token to query it. Tokens should be identical across a URL's
    * entries (same user, same instance); the first is used.
@@ -76,15 +76,15 @@ getWritableRemoteScopes(): Array<{ scope: string; url: string }>
    * collapse is only safe for probes (`/me`, health) where any of the tokens
    * answers the identity question.
    */
-_distinctRemoteEndpoints(): Array<{ url: string; token?: string }>
+  _distinctRemoteEndpoints(): Array<{ url: string; token?: string }>
 
-/** All store entries registered against `url` under ANY spelling of that
+  /** All store entries registered against `url` under ANY spelling of that
    *  endpoint — the identity-normalized counterpart of
    *  `stores.filter(s => s.url === url)`. Public for the remote-recall leg's
    *  callers and tests. */
-_storesForEndpoint(url: string): StoreEntry[]
+  _storesForEndpoint(url: string): StoreEntry[]
 
-/**
+  /**
    * Distinct (url, token) groups among the configured remote stores —
    * the AUTH-identity counterpart of {@link _distinctRemoteEndpoints}. Same
    * `::` composite key as `_remoteRecallHosts`: two entries on one URL
@@ -94,9 +94,9 @@ _storesForEndpoint(url: string): StoreEntry[]
    * normalized ({@link normalizeEndpointUrl}); the first-configured spelling
    * is reported. `scopes` lists the group's registered scopes in config order.
    */
-remoteEndpointTokenGroups(): Array<{ url: string; token?: string; scopes: string[]; tokenEnv?: string }>
+  remoteEndpointTokenGroups(): Array<{ url: string; token?: string; scopes: string[]; tokenEnv?: string }>
 
-/**
+  /**
    * Discover which scopes each configured remote token is authorized for, via
    * `GET /api/v1/me`. For each distinct remote URL, reports the
    * server-authorized scope set and which of those are not yet registered
@@ -108,18 +108,18 @@ remoteEndpointTokenGroups(): Array<{ url: string; token?: string; scopes: string
    * never sinks discovery for the others. Restricted to a single URL via
    * `opts.url`.
    */
-discoverRemoteScopes(opts?: { url?: string; timeoutMs?: number }): Promise<RemoteScopeDiscovery[]>
+  discoverRemoteScopes(opts?: { url?: string; timeoutMs?: number }): Promise<RemoteScopeDiscovery[]>
 
-/**
+  /**
    * One `GET /api/v1/me` on this url's cached driver, raced against a timeout.
    * Shared by {@link discoverRemoteScopes}, {@link checkRemoteHealth} and
    * {@link refreshServerScopes}. Throws the driver's error (a
    * {@link RemoteHttpError} for a non-2xx answer) or a timeout error.
    */
-/** @internal */
-_probeMe(url: string, token: string | undefined, timeoutMs: number, scope?: string): Promise<MeResponse>
+  /** @internal */
+  _probeMe(url: string, token: string | undefined, timeoutMs: number, scope?: string): Promise<MeResponse>
 
-/**
+  /**
    * Discover each server entry's scopes from `GET /api/v1/me` and write the
    * discovery cache into config.yaml.
    *
@@ -147,7 +147,7 @@ _probeMe(url: string, token: string | undefined, timeoutMs: number, scope?: stri
    * entries under the config lock, so every other key of the entry (unknown
    * keys too) is kept as it is on disk.
    */
-/**
+  /**
    * The endpoints {@link refreshServerScopes} probes, keyed by normalized url:
    * the server entries in config.yaml that carry a `scopes` list and an
    * `enterprise` block, each with its configured url and the cached
@@ -156,38 +156,38 @@ _probeMe(url: string, token: string | undefined, timeoutMs: number, scope?: stri
    * background or probed by the legacy session-start path, never neither, and
    * so a server with an empty scope cache still has a status.
    */
-_serverDiscoveryEndpoints(): Map<string, { url: string; status?: string; checked_at?: string }>
+  _serverDiscoveryEndpoints(): Map<string, { url: string; status?: string; checked_at?: string }>
 
-refreshServerScopes(opts?: { url?: string; timeoutMs?: number; onConfigWrite?: (before: string | null, after: string) => void }): Promise<ServerDiscoveryOutcome[]>
+  refreshServerScopes(opts?: { url?: string; timeoutMs?: number; onConfigWrite?: (before: string | null, after: string) => void }): Promise<ServerDiscoveryOutcome[]>
 
-/** The raw `stores` array of config.yaml as on disk ([] when absent or unreadable). */
-/** @internal */
-_readRawStores(strict?: boolean): unknown[]
+  /** The raw `stores` array of config.yaml as on disk ([] when absent or unreadable). */
+  /** @internal */
+  _readRawStores(strict?: boolean): unknown[]
 
-/**
+  /**
    * Read-modify-write of the raw `stores` array under the config lock, written
    * atomically only when `mutate` reports a change; every other top-level key
    * and every untouched entry is kept. Same discipline as
    * {@link persistDismissedScopes}: a read error other than ENOENT aborts.
    */
-/** @internal */
-_updateRawStores(mutate: (rawStores: unknown[]) => boolean, onConfigWrite?: (before: string | null, after: string) => void): void
+  /** @internal */
+  _updateRawStores(mutate: (rawStores: unknown[]) => boolean, onConfigWrite?: (before: string | null, after: string) => void): void
 
-/** Observational diagnostics: never refresh grants, change permissions or flush saves. */
-checkServerStores(opts?: { timeoutMs?: number }): Promise<ServerStoreCheck[]>
+  /** Observational diagnostics: never refresh grants, change permissions or flush saves. */
+  checkServerStores(opts?: { timeoutMs?: number }): Promise<ServerStoreCheck[]>
 
-/** @internal */
-_enterpriseRecoveryEndpoint(url: string): boolean
+  /** @internal */
+  _enterpriseRecoveryEndpoint(url: string): boolean
 
-/**
+  /**
    * Local-only read of each configured remote token's JWT expiry. No
    * network. Returns one entry per distinct remote URL; `expiresInDays`/`expired`
    * are null/false for opaque (non-JWT) keys. Used by session_start to warn
    * about imminent/past expiry without a round-trip.
    */
-remoteTokenExpiries(now?: number): Array<{ url: string; scopes: string[]; enterprise?: boolean; expiresAt: string | null; expiresInDays: number | null; expired: boolean }>
+  remoteTokenExpiries(now?: number): Array<{ url: string; scopes: string[]; enterprise?: boolean; expiresAt: string | null; expiresInDays: number | null; expired: boolean }>
 
-/**
+  /**
    * Probe each configured remote credential's auth/reachability by
    * calling `GET /api/v1/me` (raced against a timeout), combined with a local
    * JWT-expiry read. Distinguishes 'auth_expired' (token rejected or JWT exp
@@ -203,9 +203,9 @@ remoteTokenExpiries(now?: number): Array<{ url: string; scopes: string[]; enterp
    * `tokenOrg` — unverified) and, on a successful probe, the server-confirmed
    * `username`/`orgId`/`grantedScopes` from `/me`.
    */
-checkRemoteHealth(opts?: { timeoutMs?: number }): Promise<RemoteHealth[]>
+  checkRemoteHealth(opts?: { timeoutMs?: number }): Promise<RemoteHealth[]>
 
-/**
+  /**
    * Register every authorized-but-unregistered scope discovered for the
    * configured remote URL(s). One token → all the user's team scopes in
    * a single action. Relies on URL+scope dedup so multiple scopes coexist
@@ -216,9 +216,9 @@ checkRemoteHealth(opts?: { timeoutMs?: number }): Promise<RemoteHealth[]>
    * Returns per-URL what was newly `added` vs `already_registered`. A URL whose
    * `/me` failed yields `ok:false` and registers nothing.
    */
-registerDiscoveredScopes(opts?: { url?: string; timeoutMs?: number }): Promise<RegisterDiscoveredResult[]>
+  registerDiscoveredScopes(opts?: { url?: string; timeoutMs?: number }): Promise<RegisterDiscoveredResult[]>
 
-/**
+  /**
    * The single source of truth for the "authorized but unregistered" OFFER
    * offer, shared by the `plur scopes` CLI and the session-start hint. Returns
    * the shared-family scopes the token is authorized for that are neither
@@ -234,12 +234,12 @@ registerDiscoveredScopes(opts?: { url?: string; timeoutMs?: number }): Promise<R
    * offer" from "couldn't reach the server" — the CLI must not report an empty
    * offer when it simply failed to talk to the remote.
    */
-offerableScopes(opts?: { url?: string; timeoutMs?: number }): Promise<{
+  offerableScopes(opts?: { url?: string; timeoutMs?: number }): Promise<{
     scopes: Array<{ scope: string; url: string; description?: string }>
     failures: Array<{ url: string; error?: string }>
   }>
 
-/**
+  /**
    * Register a SINGLE authorized-but-unregistered shared scope — the
    * per-scope counterpart to {@link registerDiscoveredScopes} (all-or-nothing).
    * Discovers which configured remote authorizes `scope`, then adds one store
@@ -250,28 +250,28 @@ offerableScopes(opts?: { url?: string; timeoutMs?: number }): Promise<{
    * routing target for the user's default/unscoped writes. Throws if no
    * configured remote authorizes the scope.
    */
-registerScope(scope: string, opts?: { url?: string; timeoutMs?: number }): Promise<{ url: string; status: 'added' | 'already_registered' | 'overwritten' | 'token_rotated' }>
+  registerScope(scope: string, opts?: { url?: string; timeoutMs?: number }): Promise<{ url: string; status: 'added' | 'already_registered' | 'overwritten' | 'token_rotated' }>
 
-/**
+  /**
    * Dismiss a scope from the "authorized but unregistered" offer. It is
    * remembered in config (`dismissed_scopes`) and excluded from
    * discoverRemoteScopes().unregistered + the session-start hint until
    * {@link reofferScopes}. No-op if already dismissed.
    */
-dismissScope(scope: string): void
+  dismissScope(scope: string): void
 
-/** Lowercased `dismissed_scopes` for case-insensitive membership tests.
+  /** Lowercased `dismissed_scopes` for case-insensitive membership tests.
    *  The stored values keep their original case. */
-/** @internal */
-_dismissedScopeKeys(): Set<string>
+  /** @internal */
+  _dismissedScopeKeys(): Set<string>
 
-/** Clear all dismissals — dismissed scopes are offered again. */
-reofferScopes(): void
+  /** Clear all dismissals — dismissed scopes are offered again. */
+  reofferScopes(): void
 
-/** The scopes currently dismissed from the offer. */
-getDismissedScopes(): string[]
+  /** The scopes currently dismissed from the offer. */
+  getDismissedScopes(): string[]
 
-/**
+  /**
    * Persist `dismissed_scopes` to config.yaml, preserving every other top-level
    * key, then refresh the in-memory config + mtime. Mirrors {@link persistStores}:
    * a transient read error on an EXISTING config aborts rather than truncating,
@@ -280,10 +280,10 @@ getDismissedScopes(): string[]
    * case-insensitive (first spelling wins) so case variants of one scope
    * never accumulate.
    */
-/** @internal */
-persistDismissedScopes(list: string[]): void
+  /** @internal */
+  persistDismissedScopes(list: string[]): void
 
-/**
+  /**
    * Sync server-authoritative scope metadata (covers/description/sensitivity)
    * from /me discoveries into the matching local config store entries.
    *
@@ -314,9 +314,9 @@ persistDismissedScopes(list: string[]): void
    * scopes are named to persistStores (`serverSensitivityScopes`) so
    * mergeStoresForWriteback's raw-forbid restore doesn't discard the update.
    */
-persistScopeMetadata(discoveries: RemoteScopeDiscovery[], onConfigWrite?: (before: string | null, after: string) => void): void
+  persistScopeMetadata(discoveries: RemoteScopeDiscovery[], onConfigWrite?: (before: string | null, after: string) => void): void
 
-/**
+  /**
    * Set a session-level default scope — the fallback in learn/learnRouted when
    * no explicit scope is provided.
    *
@@ -332,9 +332,9 @@ persistScopeMetadata(discoveries: RemoteScopeDiscovery[], onConfigWrite?: (befor
    * session pins it to "no session scope" (unscoped writes auto-route), which
    * is distinct from never having registered it (inherits the process slot).
    */
-setSessionScope(scope: string | null, opts?: { session?: string }): void
+  setSessionScope(scope: string | null, opts?: { session?: string }): void
 
-/**
+  /**
    * Adjust the session default scope MID-session — `setSessionScope`
    * plus observability: appends a `session_scope_changed` history event so the
    * scope active at any point in a session can be reconstructed retrospectively
@@ -348,27 +348,27 @@ setSessionScope(scope: string | null, opts?: { session?: string }): void
    *
    * Returns the previous and new effective scope for the targeted slot.
    */
-adjustSessionScope(scope: string | null, opts?: { session?: string; reason?: string; trigger?: 'set' | 'clear' }): { previous: string | null; next: string | null }
+  adjustSessionScope(scope: string | null, opts?: { session?: string; reason?: string; trigger?: 'set' | 'clear' }): { previous: string | null; next: string | null }
 
-/**
+  /**
    * Get the session-level default scope for `opts.session`, or the process-wide
    * one when no session is named. Returns null if not set.
    */
-getSessionScope(opts?: { session?: string }): string | null
+  getSessionScope(opts?: { session?: string }): string | null
 
-/**
+  /**
    * Forget a session's scope registration. Call on session end: a long-lived
    * deployment would otherwise retain one entry per session it has ever served.
    * Omitting `session` clears the process-wide slot.
    */
-clearSessionScope(opts?: { session?: string }): void
+  clearSessionScope(opts?: { session?: string }): void
 
-/** Session keys with their own scope registration. Diagnostic / test seam. */
-trackedSessionScopes(): string[]
+  /** Session keys with their own scope registration. Diagnostic / test seam. */
+  trackedSessionScopes(): string[]
 }
 
 export const discoveryMethods: DiscoveryMethods & ThisType<Plur> = {
-async _primaryStoreRow(): Promise<StoreSummary> {
+  async _primaryStoreRow(): Promise<StoreSummary> {
     return {
       path: this.paths.engrams,
       scope: 'global',
@@ -378,7 +378,7 @@ async _primaryStoreRow(): Promise<StoreSummary> {
     }
   },
 
-async listStores(): Promise<Array<StoreSummary>> {
+  async listStores(): Promise<Array<StoreSummary>> {
     this.reloadConfigIfChanged()  // pick up out-of-process config edits
     const stores = this.config.stores ?? []
     const additional = stores.map(async s => {
@@ -403,7 +403,7 @@ async listStores(): Promise<Array<StoreSummary>> {
     return [await this._primaryStoreRow(), ...(await Promise.all(additional))]
   },
 
-async listStoresAsync(): Promise<Array<StoreSummary>> {
+  async listStoresAsync(): Promise<Array<StoreSummary>> {
     this.reloadConfigIfChanged()  // pick up out-of-process config edits
     const stores = this.config.stores ?? []
     const REMOTE_LOAD_TIMEOUT_MS = 5000
@@ -453,7 +453,7 @@ async listStoresAsync(): Promise<Array<StoreSummary>> {
     return [await this._primaryStoreRow(), ...(await Promise.all(additional))]
   },
 
-async warmRemoteCaches(): Promise<void> {
+  async warmRemoteCaches(): Promise<void> {
     const stores = this.config.stores ?? []
     // remote-only: only the folder's own team store.
     const ro = this._activeBinding()
@@ -476,13 +476,13 @@ async warmRemoteCaches(): Promise<void> {
     )
   },
 
-getWritableRemoteScopes(): Array<{ scope: string; url: string }> {
+  getWritableRemoteScopes(): Array<{ scope: string; url: string }> {
     return (this.config.stores ?? [])
       .filter(s => s.url && !s.readonly)
       .map(s => ({ scope: s.scope, url: s.url! }))
   },
 
-_distinctRemoteEndpoints(): Array<{ url: string; token?: string }> {
+  _distinctRemoteEndpoints(): Array<{ url: string; token?: string }> {
     const byUrl = new Map<string, { url: string; token?: string }>()
     for (const s of this.config.stores ?? []) {
       if (!s.url) continue
@@ -492,12 +492,12 @@ _distinctRemoteEndpoints(): Array<{ url: string; token?: string }> {
     return [...byUrl.values()]
   },
 
-_storesForEndpoint(url: string): StoreEntry[] {
+  _storesForEndpoint(url: string): StoreEntry[] {
     const key = normalizeEndpointUrl(url)
     return (this.config.stores ?? []).filter(s => s.url !== undefined && normalizeEndpointUrl(s.url) === key)
   },
 
-remoteEndpointTokenGroups(): Array<{ url: string; token?: string; scopes: string[]; tokenEnv?: string }> {
+  remoteEndpointTokenGroups(): Array<{ url: string; token?: string; scopes: string[]; tokenEnv?: string }> {
     const groups = new Map<string, { url: string; token?: string; scopes: string[]; tokenEnv?: string }>()
     for (const s of this.config.stores ?? []) {
       if (!s.url) continue
@@ -510,7 +510,7 @@ remoteEndpointTokenGroups(): Array<{ url: string; token?: string; scopes: string
     return [...groups.values()]
   },
 
-async discoverRemoteScopes(opts?: { url?: string; timeoutMs?: number }): Promise<RemoteScopeDiscovery[]> {
+  async discoverRemoteScopes(opts?: { url?: string; timeoutMs?: number }): Promise<RemoteScopeDiscovery[]> {
     const timeoutMs = opts?.timeoutMs ?? 5000
     // Endpoint identity is normalized so a caller
     // restricting by one spelling still matches an entry configured under
@@ -555,7 +555,7 @@ async discoverRemoteScopes(opts?: { url?: string; timeoutMs?: number }): Promise
     }))
   },
 
-async _probeMe(url: string, token: string | undefined, timeoutMs: number, scope = ''): Promise<MeResponse> {
+  async _probeMe(url: string, token: string | undefined, timeoutMs: number, scope = ''): Promise<MeResponse> {
     const driver = this._getRemoteDriver({ url, token, scope })
     let timeoutHandle: ReturnType<typeof setTimeout> | undefined
     return Promise.race([
@@ -566,7 +566,7 @@ async _probeMe(url: string, token: string | undefined, timeoutMs: number, scope 
     ])
   },
 
-_serverDiscoveryEndpoints(): Map<string, { url: string; status?: string; checked_at?: string }> {
+  _serverDiscoveryEndpoints(): Map<string, { url: string; status?: string; checked_at?: string }> {
     const out = new Map<string, { url: string; status?: string; checked_at?: string }>()
     for (const r of this._readRawStores().filter(isEnterpriseServerEntry)) {
       const key = normalizeEndpointUrl(r.url)
@@ -581,7 +581,7 @@ _serverDiscoveryEndpoints(): Map<string, { url: string; status?: string; checked
     return out
   },
 
-async refreshServerScopes(opts?: { url?: string; timeoutMs?: number; onConfigWrite?: (before: string | null, after: string) => void }): Promise<ServerDiscoveryOutcome[]> {
+  async refreshServerScopes(opts?: { url?: string; timeoutMs?: number; onConfigWrite?: (before: string | null, after: string) => void }): Promise<ServerDiscoveryOutcome[]> {
     const timeoutMs = opts?.timeoutMs ?? 5000
     this.reloadConfigIfChanged()
     const wanted = opts?.url ? normalizeEndpointUrl(opts.url) : undefined
@@ -716,7 +716,7 @@ async refreshServerScopes(opts?: { url?: string; timeoutMs?: number; onConfigWri
     return outcomes
   },
 
-_readRawStores(strict = false): unknown[] {
+  _readRawStores(strict = false): unknown[] {
     try {
       const data = yaml.load(fs.readFileSync(this.paths.config, 'utf8')) as Record<string, unknown> | null
       if (strict && data != null && (!isPlainObject(data) || (data.stores !== undefined && !Array.isArray(data.stores)))) throw new Error('invalid configuration structure')
@@ -727,7 +727,7 @@ _readRawStores(strict = false): unknown[] {
     }
   },
 
-_updateRawStores(mutate: (rawStores: unknown[]) => boolean, onConfigWrite?: (before: string | null, after: string) => void): void {
+  _updateRawStores(mutate: (rawStores: unknown[]) => boolean, onConfigWrite?: (before: string | null, after: string) => void): void {
     let wrote = false
     withLock(this.paths.config, () => {
       let configData: Record<string, unknown> = {}
@@ -752,7 +752,7 @@ _updateRawStores(mutate: (rawStores: unknown[]) => boolean, onConfigWrite?: (bef
     this.configMtimeMs = this.statConfigMtime()
   },
 
-async checkServerStores(opts?: { timeoutMs?: number }): Promise<ServerStoreCheck[]> {
+  async checkServerStores(opts?: { timeoutMs?: number }): Promise<ServerStoreCheck[]> {
     let entries: Array<Record<string, unknown> & { url: string }>
     try {
       const raw = this._readRawStores(true)
@@ -846,7 +846,7 @@ async checkServerStores(opts?: { timeoutMs?: number }): Promise<ServerStoreCheck
     }))
   },
 
-_enterpriseRecoveryEndpoint(url: string): boolean {
+  _enterpriseRecoveryEndpoint(url: string): boolean {
     const key = normalizeEndpointUrl(url)
     const entries = this._readRawStores().filter(s => isPlainObject(s) && typeof s.url === 'string' && normalizeEndpointUrl(s.url) === key)
     // Host-level outcomes cannot distinguish two keys on the same endpoint.
@@ -854,7 +854,7 @@ _enterpriseRecoveryEndpoint(url: string): boolean {
     return entries.length > 0 && entries.every(isEnterpriseServerEntry)
   },
 
-remoteTokenExpiries(now: number = Date.now()): Array<{ url: string; scopes: string[]; enterprise?: boolean; expiresAt: string | null; expiresInDays: number | null; expired: boolean }> {
+  remoteTokenExpiries(now: number = Date.now()): Array<{ url: string; scopes: string[]; enterprise?: boolean; expiresAt: string | null; expiresInDays: number | null; expired: boolean }> {
     return this._distinctRemoteEndpoints().map(({ url, token }) => {
       const scopes = this._storesForEndpoint(url).map(s => s.scope)
       const exp = decodeJwtExpiry(token, now)
@@ -868,7 +868,7 @@ remoteTokenExpiries(now: number = Date.now()): Array<{ url: string; scopes: stri
     })
   },
 
-async checkRemoteHealth(opts?: { timeoutMs?: number }): Promise<RemoteHealth[]> {
+  async checkRemoteHealth(opts?: { timeoutMs?: number }): Promise<RemoteHealth[]> {
     const timeoutMs = opts?.timeoutMs ?? 5000
     // Decode the token that is on DISK now, not the one read at construction:
     // reporting an expiry from a stale in-memory copy of a credential the
@@ -919,7 +919,7 @@ async checkRemoteHealth(opts?: { timeoutMs?: number }): Promise<RemoteHealth[]> 
     }))
   },
 
-async registerDiscoveredScopes(opts?: { url?: string; timeoutMs?: number }): Promise<RegisterDiscoveredResult[]> {
+  async registerDiscoveredScopes(opts?: { url?: string; timeoutMs?: number }): Promise<RegisterDiscoveredResult[]> {
     const discoveries = await this.discoverRemoteScopes(opts)
     const results = discoveries.map(d => {
       if (!d.ok) return { url: d.url, ok: false, added: [], already_registered: [], skipped: [], error: d.error }
@@ -986,7 +986,7 @@ async registerDiscoveredScopes(opts?: { url?: string; timeoutMs?: number }): Pro
     return results
   },
 
-async offerableScopes(opts?: { url?: string; timeoutMs?: number }): Promise<{
+  async offerableScopes(opts?: { url?: string; timeoutMs?: number }): Promise<{
     scopes: Array<{ scope: string; url: string; description?: string }>
     failures: Array<{ url: string; error?: string }>
   }> {
@@ -1009,7 +1009,7 @@ async offerableScopes(opts?: { url?: string; timeoutMs?: number }): Promise<{
     return { scopes, failures }
   },
 
-async registerScope(scope: string, opts?: { url?: string; timeoutMs?: number }): Promise<{ url: string; status: 'added' | 'already_registered' | 'overwritten' | 'token_rotated' }> {
+  async registerScope(scope: string, opts?: { url?: string; timeoutMs?: number }): Promise<{ url: string; status: 'added' | 'already_registered' | 'overwritten' | 'token_rotated' }> {
     if (!isSharedScope(scope)) {
       throw new Error(`refusing to register non-shared scope "${scope}" — only shared-family scopes (group:/project:/space:/team:/org:/public) can be registered from discovery; add a personal-backed store explicitly with \`plur stores add\``)
     }
@@ -1033,7 +1033,7 @@ async registerScope(scope: string, opts?: { url?: string; timeoutMs?: number }):
     return { url: match.url, status }
   },
 
-dismissScope(scope: string): void {
+  dismissScope(scope: string): void {
     const current = this.config.dismissed_scopes ?? []
     // Case-insensitive membership: dismissing `Group:x` when `group:x` is
     // already recorded must stay a no-op, not a duplicate.
@@ -1041,19 +1041,19 @@ dismissScope(scope: string): void {
     this.persistDismissedScopes([...current, scope])
   },
 
-_dismissedScopeKeys(): Set<string> {
+  _dismissedScopeKeys(): Set<string> {
     return new Set((this.config.dismissed_scopes ?? []).map(s => s.toLowerCase()))
   },
 
-reofferScopes(): void {
+  reofferScopes(): void {
     this.persistDismissedScopes([])
   },
 
-getDismissedScopes(): string[] {
+  getDismissedScopes(): string[] {
     return [...(this.config.dismissed_scopes ?? [])]
   },
 
-persistDismissedScopes(list: string[]): void {
+  persistDismissedScopes(list: string[]): void {
     const seen = new Set<string>()
     const deduped: string[] = []
     for (const s of list) {
@@ -1082,7 +1082,7 @@ persistDismissedScopes(list: string[]): void {
     this.configMtimeMs = this.statConfigMtime()
   },
 
-persistScopeMetadata(discoveries: RemoteScopeDiscovery[], onConfigWrite?: (before: string | null, after: string) => void): void {
+  persistScopeMetadata(discoveries: RemoteScopeDiscovery[], onConfigWrite?: (before: string | null, after: string) => void): void {
     // Raw config, not this.config: the in-memory list drops ignored duplicate
     // local entries, and writing it back would delete them from disk.
     const stores = loadConfig(this.paths.config).stores ?? []
@@ -1143,11 +1143,11 @@ persistScopeMetadata(discoveries: RemoteScopeDiscovery[], onConfigWrite?: (befor
     if (changed) this.persistStores(updated, { serverSensitivityScopes, onConfigWrite })
   },
 
-setSessionScope(scope: string | null, opts?: { session?: string }): void {
+  setSessionScope(scope: string | null, opts?: { session?: string }): void {
     this._sessionScopes.set(scope, opts?.session)
   },
 
-adjustSessionScope(scope: string | null, opts?: { session?: string; reason?: string; trigger?: 'set' | 'clear' }): { previous: string | null; next: string | null } {
+  adjustSessionScope(scope: string | null, opts?: { session?: string; reason?: string; trigger?: 'set' | 'clear' }): { previous: string | null; next: string | null } {
     const previous = this._sessionScopes.get(opts?.session)
     this._sessionScopes.set(scope, opts?.session)
     this._appendHistory({
@@ -1165,15 +1165,15 @@ adjustSessionScope(scope: string | null, opts?: { session?: string; reason?: str
     return { previous, next: scope }
   },
 
-getSessionScope(opts?: { session?: string }): string | null {
+  getSessionScope(opts?: { session?: string }): string | null {
     return this._sessionScopes.get(opts?.session)
   },
 
-clearSessionScope(opts?: { session?: string }): void {
+  clearSessionScope(opts?: { session?: string }): void {
     this._sessionScopes.clear(opts?.session)
   },
 
-trackedSessionScopes(): string[] {
+  trackedSessionScopes(): string[] {
     return this._sessionScopes.trackedSessions
   },
 }

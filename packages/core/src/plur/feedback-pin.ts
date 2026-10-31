@@ -16,7 +16,7 @@ import { REMOTE_PROBE_TIMEOUT_MS } from './helpers.js'
 import { MutationOutcome } from './types.js'
 
 export interface FeedbackPinMethods {
-/**
+  /**
    * Update feedback_signals and adjust retrieval_strength. Searches primary, stores, then packs.
    *
    * Pass `scope` to route directly to a specific store and bypass the first-match-wins
@@ -32,9 +32,9 @@ export interface FeedbackPinMethods {
    * any other remote is skipped. The ambiguity guard below does not dial a
    * cold remote for it, because hooks must not wait on the network.
    */
-feedback(id: string, signal: 'positive' | 'negative' | 'neutral', scope?: string, options?: { source?: FeedbackSource }): Promise<MutationOutcome>
+  feedback(id: string, signal: 'positive' | 'negative' | 'neutral', scope?: string, options?: { source?: FeedbackSource }): Promise<MutationOutcome>
 
-/**
+  /**
    * Log an injection_outcome event linking a feedback verdict to the
    * co_injection event the engram came from. Only positive/negative
    * verdicts are outcomes — "ignored" is the absence of an outcome, so
@@ -42,10 +42,10 @@ feedback(id: string, signal: 'positive' | 'negative' | 'neutral', scope?: string
    * Link resolution: in-process map first, then a bounded history scan for
    * injections logged by another process (hook-inject, CLI).
    */
-/** @internal */
-_logInjectionOutcome(engramId: string, signal: 'positive' | 'negative' | 'neutral', source?: FeedbackSource): void
+  /** @internal */
+  _logInjectionOutcome(engramId: string, signal: 'positive' | 'negative' | 'neutral', source?: FeedbackSource): void
 
-/**
+  /**
    * Save extracted meta-engrams to the engram store. Skips IDs that already
    * exist.
    *
@@ -64,9 +64,9 @@ _logInjectionOutcome(engramId: string, signal: 'positive' | 'negative' | 'neutra
    * `_offendingHitsForScope` returns [], so the guard only acts on a
    * shared-scope meta.
    */
-saveMetaEngrams(metas: Engram[]): Promise<{ saved: number; skipped: number }>
+  saveMetaEngrams(metas: Engram[]): Promise<{ saved: number; skipped: number }>
 
-/**
+  /**
    * Update an existing engram by ID. Returns true if it was found and written,
    * false if no local or writable remote store holds it.
    *
@@ -74,19 +74,19 @@ saveMetaEngrams(metas: Engram[]): Promise<{ saved: number; skipped: number }>
    * means the write happened. {@link updateEngramAsync} is the same operation
    * returning the written engram.
    */
-updateEngram(updated: Engram): Promise<boolean>
+  updateEngram(updated: Engram): Promise<boolean>
 
-/**
+  /**
    * @deprecated Use {@link updateEngram}, which also awaits the remote PATCH.
    * This differs only in returning the written engram (the server-authoritative
    * view for a remote hit) instead of a boolean.
    */
-updateEngramAsync(updated: Engram): Promise<Engram | null>
+  updateEngramAsync(updated: Engram): Promise<Engram | null>
 
-/** @internal */
-_updateEngramReturning(updated: Engram): Promise<Engram | null>
+  /** @internal */
+  _updateEngramReturning(updated: Engram): Promise<Engram | null>
 
-/**
+  /**
    * An update that changes the scope of a row still queued for a remote store
    * (`_outbox` on the STORED row) behaves like `rescope()`:
    *   - new scope local-family (`isLocalOnlyScope`, config-aware) → the
@@ -102,36 +102,36 @@ _updateEngramReturning(updated: Engram): Promise<Engram | null>
    * and so is `_retireRemote` — a caller-set value of either
    * would otherwise direct a push or a remote DELETE. Mutates `toWrite`.
    */
-/** @internal */
-_reconcileQueuedScope(stored: Engram, toWrite: Engram): void
+  /** @internal */
+  _reconcileQueuedScope(stored: Engram, toWrite: Engram): void
 
-/**
+  /**
    * Toggle the always-load (pinned) flag for an engram.
    *
    * Returns the updated engram on success, `null` if it is not found in the
    * local primary store or in any writable remote. The remote PATCH is awaited
    * and the real engram returned — {@link setPinnedAsync} is the same call.
    */
-setPinned(id: string, pinned: boolean, options?: { scope?: string }): Promise<Engram | null>
+  setPinned(id: string, pinned: boolean, options?: { scope?: string }): Promise<Engram | null>
 
-/**
+  /**
    * @deprecated Use {@link setPinned}, which also awaits the remote PATCH.
    * This is an alias of it.
    */
-setPinnedAsync(id: string, pinned: boolean, options?: { scope?: string }): Promise<Engram | null>
+  setPinnedAsync(id: string, pinned: boolean, options?: { scope?: string }): Promise<Engram | null>
 
-/** List engrams that have pinned: true. */
-listPinned(): Promise<Engram[]>
+  /** List engrams that have pinned: true. */
+  listPinned(): Promise<Engram[]>
 
-/**
+  /**
    * Token cap of the HARD pinned tier at write time (pinned two-tier model):
    * `injection.pinned_hard_ratio` of the same quota {@link pinnedQuota}
    * enforces. The ratio is bounded to [0, 1], so the hard tier can never
    * exceed the pinned quota. Default: 0.5 × 1000 = 500 tokens.
    */
-hardTierCap(): number
+  hardTierCap(): number
 
-/**
+  /**
    * Refuse a write that would grow the hard pinned tier past
    * {@link hardTierCap}. The ONE check every write path that can produce a
    * hard-tier engram goes through: `learn()`, both halves of `learnRouted()`'s
@@ -165,10 +165,10 @@ hardTierCap(): number
    *   batch that `listPinned` cannot see yet.
    * @returns the candidate's cost if it counts toward the tier, else 0.
    */
-/** @internal */
-_assertHardTierFits(candidate: Engram, pendingTokens?: number): Promise<number>
+  /** @internal */
+  _assertHardTierFits(candidate: Engram, pendingTokens?: number): Promise<number>
 
-/**
+  /**
    * Pinned-budget accounting.
    *
    * `pinned` is an "always-load flag", so injection must not silently evict
@@ -176,7 +176,7 @@ _assertHardTierFits(candidate: Engram, pendingTokens?: number): Promise<number>
    * time, where a human is present to decide: over quota, the user unpins
    * something or raises the limit.
    */
-pinnedQuota(candidateId?: string, options?: { scope?: string }): Promise<{
+  pinnedQuota(candidateId?: string, options?: { scope?: string }): Promise<{
     quota: number
     used: number
     free: number
@@ -188,7 +188,7 @@ pinnedQuota(candidateId?: string, options?: { scope?: string }): Promise<{
     candidate?: { id: string; cost: number; would_be: number; fits: boolean }
   }>
 
-/**
+  /**
    * Recompute `content_hash` for primary-store engrams whose hash no longer
    * describe their statement.
    *
@@ -224,7 +224,7 @@ pinnedQuota(candidateId?: string, options?: { scope?: string }): Promise<{
    *
    * Read-only unless `apply` is set.
    */
-repairContentHashes(opts?: { apply?: boolean }): Promise<{
+  repairContentHashes(opts?: { apply?: boolean }): Promise<{
     scanned: number
     stale: Array<{ id: string; statement: string }>
     missing: Array<{ id: string; statement: string }>
@@ -234,7 +234,7 @@ repairContentHashes(opts?: { apply?: boolean }): Promise<{
 }
 
 export const feedbackPinMethods: FeedbackPinMethods & ThisType<Plur> = {
-async feedback(id: string, signal: 'positive' | 'negative' | 'neutral', scope?: string, options?: { source?: FeedbackSource }): Promise<MutationOutcome> {
+  async feedback(id: string, signal: 'positive' | 'negative' | 'neutral', scope?: string, options?: { source?: FeedbackSource }): Promise<MutationOutcome> {
     this._assertWritable()
     await this._remoteOnlyRefuseLocalRow(id, 'Rating', scope)
     const warnings: string[] = []
@@ -497,7 +497,7 @@ async feedback(id: string, signal: 'positive' | 'negative' | 'neutral', scope?: 
     return { warnings }
   },
 
-_logInjectionOutcome(engramId: string, signal: 'positive' | 'negative' | 'neutral', source?: FeedbackSource): void {
+  _logInjectionOutcome(engramId: string, signal: 'positive' | 'negative' | 'neutral', source?: FeedbackSource): void {
     if (signal === 'neutral') return
     try {
       const injectionId = this._lastInjectionByEngram.get(engramId)
@@ -512,7 +512,7 @@ _logInjectionOutcome(engramId: string, signal: 'positive' | 'negative' | 'neutra
     } catch { /* best-effort — outcome logging must never break feedback */ }
   },
 
-async saveMetaEngrams(metas: Engram[]): Promise<{ saved: number; skipped: number }> {
+  async saveMetaEngrams(metas: Engram[]): Promise<{ saved: number; skipped: number }> {
     this._assertWritable()
     this._remoteOnlyRefuseLocalStore('Saving meta-engrams (they are written to the personal store)')
     return await this._withStoreLock(this.paths.engrams, async () => {
@@ -575,15 +575,15 @@ async saveMetaEngrams(metas: Engram[]): Promise<{ saved: number; skipped: number
     })
   },
 
-async updateEngram(updated: Engram): Promise<boolean> {
+  async updateEngram(updated: Engram): Promise<boolean> {
     return (await this._updateEngramReturning(updated)) !== null
   },
 
-async updateEngramAsync(updated: Engram): Promise<Engram | null> {
+  async updateEngramAsync(updated: Engram): Promise<Engram | null> {
     return await this._updateEngramReturning(updated)
   },
 
-async _updateEngramReturning(updated: Engram): Promise<Engram | null> {
+  async _updateEngramReturning(updated: Engram): Promise<Engram | null> {
     this._assertWritable()
     await this._remoteOnlyRefuseLocalRow(updated.id, 'Updating')
     // Guards and routing below read the current config.
@@ -803,7 +803,7 @@ async _updateEngramReturning(updated: Engram): Promise<Engram | null> {
     return null
   },
 
-_reconcileQueuedScope(stored: Engram, toWrite: Engram): void {
+  _reconcileQueuedScope(stored: Engram, toWrite: Engram): void {
     const storedSd = (stored as any).structured_data as Record<string, unknown> | undefined
     const sd: Record<string, unknown> = { ...(((toWrite as any).structured_data as Record<string, unknown> | undefined) ?? {}) }
     let changed = false
@@ -865,7 +865,7 @@ _reconcileQueuedScope(stored: Engram, toWrite: Engram): void {
     if (changed) (toWrite as any).structured_data = Object.keys(sd).length > 0 ? sd : undefined
   },
 
-async setPinned(id: string, pinned: boolean, options?: { scope?: string }): Promise<Engram | null> {
+  async setPinned(id: string, pinned: boolean, options?: { scope?: string }): Promise<Engram | null> {
     this._assertWritable()
     await this._remoteOnlyRefuseLocalRow(id, 'Pinning', options?.scope)
     // Which store holds it. Ids are minted per store, so a bare id can name
@@ -1042,16 +1042,16 @@ async setPinned(id: string, pinned: boolean, options?: { scope?: string }): Prom
     return patched
   },
 
-async setPinnedAsync(id: string, pinned: boolean, options?: { scope?: string }): Promise<Engram | null> {
+  async setPinnedAsync(id: string, pinned: boolean, options?: { scope?: string }): Promise<Engram | null> {
     return await this.setPinned(id, pinned, options)
   },
 
-async listPinned(): Promise<Engram[]> {
+  async listPinned(): Promise<Engram[]> {
     const all = await this._readCorpus()
     return all.filter(e => (e as any).pinned === true && e.status === 'active')
   },
 
-hardTierCap(): number {
+  hardTierCap(): number {
     return pinnedHardCap(
       this.config.injection_budget ?? 2000,
       this.config.injection?.pinned_hard_ratio ?? DEFAULT_PINNED_HARD_RATIO,
@@ -1059,7 +1059,7 @@ hardTierCap(): number {
     )
   },
 
-async _assertHardTierFits(candidate: Engram, pendingTokens = 0): Promise<number> {
+  async _assertHardTierFits(candidate: Engram, pendingTokens = 0): Promise<number> {
     if (!isHardPinned(candidate as never)) return 0
     // A retired (or otherwise non-active) engram is not injected, so it is
     // outside the tier: editing or retiring it must never be refused because
@@ -1085,7 +1085,7 @@ async _assertHardTierFits(candidate: Engram, pendingTokens = 0): Promise<number>
     return cost
   },
 
-async pinnedQuota(candidateId?: string, options?: { scope?: string }): Promise<{
+  async pinnedQuota(candidateId?: string, options?: { scope?: string }): Promise<{
     quota: number
     used: number
     free: number
@@ -1166,7 +1166,7 @@ async pinnedQuota(candidateId?: string, options?: { scope?: string }): Promise<{
     }
   },
 
-async repairContentHashes(opts: { apply?: boolean } = {}): Promise<{
+  async repairContentHashes(opts: { apply?: boolean } = {}): Promise<{
     scanned: number
     stale: Array<{ id: string; statement: string }>
     missing: Array<{ id: string; statement: string }>

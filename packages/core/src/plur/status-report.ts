@@ -19,39 +19,39 @@ import type {
 import { StatusResult } from './types.js'
 
 export interface StatusReportMethods {
-/**
+  /**
    * Promote an episode to an episodic engram.
    * Creates a new engram with memory_class='episodic' from an episode's summary.
    */
-episodeToEngram(episodeId: string, context?: Omit<LearnContext, 'memory_class'>): Promise<Engram>
+  episodeToEngram(episodeId: string, context?: Omit<LearnContext, 'memory_class'>): Promise<Engram>
 
-/**
+  /**
    * Get history events for a specific engram.
    * Returns all events across all months for the given engram ID.
    */
-getEngramHistory(engramId: string): import('../history.js').HistoryEvent[]
+  getEngramHistory(engramId: string): import('../history.js').HistoryEvent[]
 
-/**
+  /**
    * An id plus the legacy spelling(s) of the same engram: for a current-form
    * store id, the old three-letter form that older records carry.
    * Records keyed by id (history, tensions) match on this set. Not the
    * reverse — an old-form id was shared by every team store of an org.
    */
-/** @internal */
-_idWithOldForms(engramId: string): Set<string>
+  /** @internal */
+  _idWithOldForms(engramId: string): Set<string>
 
-/**
+  /**
    * Report a failure for a procedural engram.
    * If LLM is provided, generates an improved procedure and updates the engram.
    * Without LLM, logs the failure without rewriting.
    * Returns the updated engram and the failure episode.
    */
-reportFailure(engramId: string, failureContext: string, llm?: LlmFunction): Promise<{ engram: Engram; episode: Episode; evolved: boolean; blocked?: boolean }>
+  reportFailure(engramId: string, failureContext: string, llm?: LlmFunction): Promise<{ engram: Engram; episode: Episode; evolved: boolean; blocked?: boolean }>
 
-/** Return system health info. */
-status(options?: { created_after?: string; domain?: string }): Promise<StatusResult>
+  /** Return system health info. */
+  status(options?: { created_after?: string; domain?: string }): Promise<StatusResult>
 
-/**
+  /**
    * Counted report of what memory retrieved for this user — the "memory
    * receipt". Local and read-only: reads the primary engram store, installed
    * packs and the co_injection history, and transmits nothing.
@@ -61,11 +61,11 @@ status(options?: { created_after?: string; domain?: string }): Promise<StatusRes
    * from the cold CLI or the warm MCP server; retrievals of team engrams are
    * reported separately as `external_retrieved` rather than counted as deleted.
    */
-receipt(options?: { days?: number; now?: Date }): Promise<Receipt>
+  receipt(options?: { days?: number; now?: Date }): Promise<Receipt>
 }
 
 export const statusReportMethods: StatusReportMethods & ThisType<Plur> = {
-async episodeToEngram(episodeId: string, context?: Omit<LearnContext, 'memory_class'>): Promise<Engram> {
+  async episodeToEngram(episodeId: string, context?: Omit<LearnContext, 'memory_class'>): Promise<Engram> {
     this._remoteOnlyRefuseLocalStore('Turning a timeline episode into a memory')
     const episodes = queryTimeline(this.paths.episodes)
     const episode = episodes.find(e => e.id === episodeId)
@@ -89,7 +89,7 @@ async episodeToEngram(episodeId: string, context?: Omit<LearnContext, 'memory_cl
     return engram
   },
 
-getEngramHistory(engramId: string): import('../history.js').HistoryEvent[] {
+  getEngramHistory(engramId: string): import('../history.js').HistoryEvent[] {
     // remote-only: history is personal-store bookkeeping.
     if (this._remoteOnly) return []
     // A team engram's older events are keyed by its legacy three-letter id
@@ -99,7 +99,7 @@ getEngramHistory(engramId: string): import('../history.js').HistoryEvent[] {
     return readHistoryForEngram(this.paths.root, this._idWithOldForms(engramId))
   },
 
-_idWithOldForms(engramId: string): Set<string> {
+  _idWithOldForms(engramId: string): Set<string> {
     const ids = new Set([engramId])
     const ns = parseNamespacedId(engramId, true)
     if (!ns) return ids
@@ -110,7 +110,7 @@ _idWithOldForms(engramId: string): Set<string> {
     return ids
   },
 
-async reportFailure(engramId: string, failureContext: string, llm?: LlmFunction): Promise<{ engram: Engram; episode: Episode; evolved: boolean; blocked?: boolean }> {
+  async reportFailure(engramId: string, failureContext: string, llm?: LlmFunction): Promise<{ engram: Engram; episode: Episode; evolved: boolean; blocked?: boolean }> {
     this._assertWritable()
     // A namespaced id evolves the engram in the one store it names.
     engramId = await this._resolveNamespacedId(engramId, 'evolve')
@@ -331,7 +331,7 @@ Generate an improved version of the procedure that prevents this failure. Return
     return { engram: updated ?? engram, episode, evolved }
   },
 
-async status(options?: { created_after?: string; domain?: string }): Promise<StatusResult> {
+  async status(options?: { created_after?: string; domain?: string }): Promise<StatusResult> {
     // Every artifact this diagnostic reads is behind a refuse-on-corrupt loader,
     // and a diagnostic must REPORT a broken artifact rather than die on it.
     // Each is isolated so one bad file cannot suppress the rest of the report —
@@ -428,7 +428,7 @@ async status(options?: { created_after?: string; domain?: string }): Promise<Sta
     }
   },
 
-async receipt(options?: { days?: number; now?: Date }): Promise<Receipt> {
+  async receipt(options?: { days?: number; now?: Date }): Promise<Receipt> {
     const primary = (await this._loadCached(this.paths.engrams)).filter(e => e.status === 'active')
     const ownIds = primary.map(e => e.id)
 

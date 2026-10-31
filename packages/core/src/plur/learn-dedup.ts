@@ -10,28 +10,28 @@ import type {
 import { LLM_BREAKER_COOLDOWN_MS, LLM_BREAKER_THRESHOLD, LLM_BREAKER_WINDOW_MS } from './helpers.js'
 
 export interface LearnDedupMethods {
-/** Apply a duplicate-write to an existing engram: increment write_count,
+  /** Apply a duplicate-write to an existing engram: increment write_count,
    * append source, persist to the store the engram lives in.
    * Mutates the engram and (best-effort) writes back. */
-/** @internal */
-_recordDuplicate(hit: Engram, engrams: Engram[], scope: string, context: LearnContext | undefined, statement?: string): Promise<Engram>
+  /** @internal */
+  _recordDuplicate(hit: Engram, engrams: Engram[], scope: string, context: LearnContext | undefined, statement?: string): Promise<Engram>
 
-/**
+  /**
    * May a cross-scope hit absorb a write INTO `scope`? Not when `scope` is
    * backed by a writable remote store: the write is then an explicit egress to
    * a team store, and absorbing it into a local engram of another scope would
    * mean the team never receives it. The same-scope dedup still applies there.
    */
-/** @internal */
-_crossScopeRecurrenceApplies(scope: string): boolean
+  /** @internal */
+  _crossScopeRecurrenceApplies(scope: string): boolean
 
-/** Find an active engram with the same content_hash but a DIFFERENT scope.
+  /** Find an active engram with the same content_hash but a DIFFERENT scope.
    * A hit indicates cross-context recurrence — the same knowledge is being
    * re-learned across scopes, which is evidence of universal applicability. */
-/** @internal */
-_crossScopeRecurrenceDetect(statement: string, engrams: Engram[], currentScope: string): Engram | null
+  /** @internal */
+  _crossScopeRecurrenceDetect(statement: string, engrams: Engram[], currentScope: string): Engram | null
 
-/**
+  /**
    * A shared-scope save that matched an engram in another scope. The match is
    * credited as a recurrence (counted, a `validated_by` source, commitment
    * escalated by the ladder up to `recurrence.max_commitment`) and the team
@@ -40,31 +40,31 @@ _crossScopeRecurrenceDetect(statement: string, engrams: Engram[], currentScope: 
    * The user may then hold several engrams with the same text; that is
    * intended.
    */
-/** @internal */
-_isTeamValidation(scope: string, _hit: Engram): boolean
+  /** @internal */
+  _isTeamValidation(scope: string, _hit: Engram): boolean
 
-/** The ladder's ceiling, from `recurrence.max_commitment`. */
-/** @internal */
-_maxRecurrenceCommitment(): 'locked' | 'decided'
+  /** The ladder's ceiling, from `recurrence.max_commitment`. */
+  /** @internal */
+  _maxRecurrenceCommitment(): 'locked' | 'decided'
 
-/**
+  /**
    * One step up the commitment ladder (exploring → leaning → decided →
    * locked), never past `recurrence.max_commitment`, and never into `locked`
    * while `lockBlocked` (an unresolved tension).
    */
-/** @internal */
-_stepCommitment(c: Engram['commitment'] | undefined, lockBlocked: boolean): Engram['commitment']
+  /** @internal */
+  _stepCommitment(c: Engram['commitment'] | undefined, lockBlocked: boolean): Engram['commitment']
 
-/**
+  /**
    * An engram bound for a remote team store — queued in the
    * outbox for one, served by one, or in a scope a url store is registered for
    * — must never be rewritten to `global` by the recurrence ladder. Otherwise
    * the outbox pushes `scope: global` into the team store.
    */
-/** @internal */
-_isTeamStoreBound(e: Engram): boolean
+  /** @internal */
+  _isTeamStoreBound(e: Engram): boolean
 
-/**
+  /**
    * Copy-on-promote. `hit` is an engram the ladder would broaden to
    * global, but either it is bound for a team store (what is in a team store
    * stays there) or a global engram with the same text already exists. Leave
@@ -97,22 +97,22 @@ _isTeamStoreBound(e: Engram): boolean
    * with the write-path seams it asks the store for the id and never loads the
    * corpus.
    */
-/** @internal */
-_promoteTeamCopy(hit: Engram, engrams: Engram[], scope: string, context: LearnContext | undefined, twin: Engram | null): Promise<Engram>
+  /** @internal */
+  _promoteTeamCopy(hit: Engram, engrams: Engram[], scope: string, context: LearnContext | undefined, twin: Engram | null): Promise<Engram>
 
-/** The store capability set `learn()` delegates on — see there. */
-/** @internal */
-_canDelegateLearn(): boolean
+  /** The store capability set `learn()` delegates on — see there. */
+  /** @internal */
+  _canDelegateLearn(): boolean
 
-/**
+  /**
    * An active `global` engram in the primary store with `hit`'s text. Asked
    * of the store when it has the seam, so this never
    * loads the corpus there; otherwise found in the corpus in hand.
    */
-/** @internal */
-_findGlobalTwin(hit: Engram, engrams: Engram[]): Promise<Engram | null>
+  /** @internal */
+  _findGlobalTwin(hit: Engram, engrams: Engram[]): Promise<Engram | null>
 
-/** Record a cross-scope recurrence: append source, increment counters,
+  /** Record a cross-scope recurrence: append source, increment counters,
    * escalate commitment, and broaden scope to 'global' once the threshold
    * is crossed — except for a row still queued for a remote store (`_outbox`),
    * whose scope is never changed. Returns the (possibly
@@ -125,16 +125,16 @@ _findGlobalTwin(hit: Engram, engrams: Engram[]): Promise<Engram | null>
    *
    * Locked engrams stop escalating (you can't promote past locked).
    */
-/** @internal */
-_recordCrossScopeRecurrence(hit: Engram, engrams: Engram[], scope: string, context: LearnContext | undefined): Promise<Engram>
+  /** @internal */
+  _recordCrossScopeRecurrence(hit: Engram, engrams: Engram[], scope: string, context: LearnContext | undefined): Promise<Engram>
 
-/** @internal */
-_isLlmDedupAvailable(): boolean
+  /** @internal */
+  _isLlmDedupAvailable(): boolean
 
-/** @internal */
-_recordLlmFailure(): void
+  /** @internal */
+  _recordLlmFailure(): void
 
-/**
+  /**
    * Record a successful LLM call.
    *
    * Deliberately NOT a reset: under concurrent calls a reset would let one
@@ -142,12 +142,12 @@ _recordLlmFailure(): void
    * breaker would never trip. Successes only fail to *add* to the window;
    * failures leave it by aging out.
    */
-/** @internal */
-_recordLlmSuccess(): void
+  /** @internal */
+  _recordLlmSuccess(): void
 }
 
 export const learnDedupMethods: LearnDedupMethods & ThisType<Plur> = {
-async _recordDuplicate(hit: Engram, engrams: Engram[], scope: string, context: LearnContext | undefined, statement = ''): Promise<Engram> {
+  async _recordDuplicate(hit: Engram, engrams: Engram[], scope: string, context: LearnContext | undefined, statement = ''): Promise<Engram> {
     // Apply the increment to the row from the CALLER'S array, not to `hit`.
     // On the remote route `hit` was found OUTSIDE the write lock and may be a
     // stale copy; writing it over the fresh row would revert a concurrent
@@ -216,11 +216,11 @@ async _recordDuplicate(hit: Engram, engrams: Engram[], scope: string, context: L
     return target
   },
 
-_crossScopeRecurrenceApplies(scope: string): boolean {
+  _crossScopeRecurrenceApplies(scope: string): boolean {
     return !this._isRemoteWriteScope(scope)
   },
 
-_crossScopeRecurrenceDetect(statement: string, engrams: Engram[], currentScope: string): Engram | null {
+  _crossScopeRecurrenceDetect(statement: string, engrams: Engram[], currentScope: string): Engram | null {
     // Same guard as `_hashDedup`: an unhashable statement would report
     // every other unhashable statement as the same fact recurring, and this
     // path ESCALATES on a hit — broadening scope to global and hardening
@@ -243,15 +243,15 @@ _crossScopeRecurrenceDetect(statement: string, engrams: Engram[], currentScope: 
     return fallback
   },
 
-_isTeamValidation(scope: string, _hit: Engram): boolean {
+  _isTeamValidation(scope: string, _hit: Engram): boolean {
     return isSharedScope(scope)
   },
 
-_maxRecurrenceCommitment(): 'locked' | 'decided' {
+  _maxRecurrenceCommitment(): 'locked' | 'decided' {
     return (this.config as any).recurrence?.max_commitment === 'decided' ? 'decided' : 'locked'
   },
 
-_stepCommitment(c: Engram['commitment'] | undefined, lockBlocked: boolean): Engram['commitment'] {
+  _stepCommitment(c: Engram['commitment'] | undefined, lockBlocked: boolean): Engram['commitment'] {
     // Only the four ladder rungs advance. `draft` (pending human approval) and
     // any unknown/extension value are not the ladder's to move — the same rule
     // as `feedback.ts` `nextCommitment`.
@@ -264,7 +264,7 @@ _stepCommitment(c: Engram['commitment'] | undefined, lockBlocked: boolean): Engr
     }
   },
 
-_isTeamStoreBound(e: Engram): boolean {
+  _isTeamStoreBound(e: Engram): boolean {
     // What is in a team store stays there. A team
     // store is any url store or any `shared: true` file-path store; an engram
     // it serves, or one queued for it, keeps its scope. The ladder may still
@@ -277,7 +277,7 @@ _isTeamStoreBound(e: Engram): boolean {
     return false
   },
 
-async _promoteTeamCopy(hit: Engram, engrams: Engram[], scope: string, context: LearnContext | undefined, twin: Engram | null): Promise<Engram> {
+  async _promoteTeamCopy(hit: Engram, engrams: Engram[], scope: string, context: LearnContext | undefined, twin: Engram | null): Promise<Engram> {
     const source = this._buildSourceEntry(scope, context)
     const lockedAt = new Date().toISOString()
     const step = (e: any, lockBlocked: boolean, count: number): void => {
@@ -361,12 +361,12 @@ async _promoteTeamCopy(hit: Engram, engrams: Engram[], scope: string, context: L
     return copy
   },
 
-_canDelegateLearn(): boolean {
+  _canDelegateLearn(): boolean {
     const ps = this._primaryStore
     return Boolean(ps.findActiveByContentHash && ps.nextEngramId && ps.append && ps.updateMany && ps.loadByIds)
   },
 
-async _findGlobalTwin(hit: Engram, engrams: Engram[]): Promise<Engram | null> {
+  async _findGlobalTwin(hit: Engram, engrams: Engram[]): Promise<Engram | null> {
     if (!isHashable(hit.statement)) return null
     const hash = (hit as any).content_hash ?? computeContentHash(hit.statement)
     if (this._canDelegateLearn()) {
@@ -376,7 +376,7 @@ async _findGlobalTwin(hit: Engram, engrams: Engram[]): Promise<Engram | null> {
       && e.id !== hit.id && (e as any).content_hash === hash) ?? null
   },
 
-async _recordCrossScopeRecurrence(hit: Engram, engrams: Engram[], scope: string, context: LearnContext | undefined): Promise<Engram> {
+  async _recordCrossScopeRecurrence(hit: Engram, engrams: Engram[], scope: string, context: LearnContext | undefined): Promise<Engram> {
     const previousScope = hit.scope
     const previousCommitment = hit.commitment
     const teamValidation = this._isTeamValidation(scope, hit)
@@ -553,7 +553,7 @@ async _recordCrossScopeRecurrence(hit: Engram, engrams: Engram[], scope: string,
     return hit
   },
 
-_isLlmDedupAvailable(): boolean {
+  _isLlmDedupAvailable(): boolean {
     if (this._llmDisabledUntil !== null) {
       if (Date.now() < this._llmDisabledUntil) return false
       this._llmDisabledUntil = null
@@ -562,7 +562,7 @@ _isLlmDedupAvailable(): boolean {
     return true
   },
 
-_recordLlmFailure(): void {
+  _recordLlmFailure(): void {
     const now = Date.now()
     // Age out failures older than the window, then count what is left. Purely
     // additive — nothing here erases a failure another in-flight call recorded.
@@ -574,7 +574,7 @@ _recordLlmFailure(): void {
     }
   },
 
-_recordLlmSuccess(): void {
+  _recordLlmSuccess(): void {
     const now = Date.now()
     this._llmFailures = this._llmFailures.filter(t => now - t < LLM_BREAKER_WINDOW_MS)
   },
