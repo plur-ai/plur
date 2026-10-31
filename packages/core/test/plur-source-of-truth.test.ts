@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, existsSync, readFileSync } from 'fs'
+import { mkdtempSync, rmSync, existsSync, readFileSync, readdirSync } from 'fs'
 import { join, dirname } from 'path'
 import { tmpdir } from 'os'
 import { fileURLToPath } from 'url'
@@ -87,13 +87,13 @@ describe('Plur is source-of-truth agnostic', () => {
 })
 
 describe('Plur does not reach past its PrimaryStore', () => {
-  it('index.ts contains no direct loadEngrams/saveEngrams calls', () => {
+  it('the Plur class (index.ts and src/plur/*.ts) contains no direct loadEngrams/saveEngrams calls', () => {
     // A structural guard, not a style rule: every such call is a place that
-    // assumes YAML-on-disk and would silently bypass an injected store. This
-    // fails on the pre-refactor tree (35 loadEngrams + 3 saveEngrams call
-    // sites) and must keep failing if one is reintroduced.
-    const source = readFileSync(join(here, '..', 'src', 'index.ts'), 'utf8')
-    const calls = source.match(/(?<![\w.])(loadEngrams|saveEngrams)\s*\(/g) ?? []
+    // assumes YAML-on-disk and would silently bypass an injected store.
+    const plurDir = join(here, '..', 'src', 'plur')
+    const files = [join(here, '..', 'src', 'index.ts'), ...readdirSync(plurDir).filter(f => f.endsWith('.ts')).map(f => join(plurDir, f))]
+    expect(files.length).toBeGreaterThan(10)
+    const calls = files.flatMap(f => (readFileSync(f, 'utf8').match(/(?<![\w.])(loadEngrams|saveEngrams)\s*\(/g) ?? []).map(c => `${f}: ${c}`))
     expect(calls).toEqual([])
   })
 
