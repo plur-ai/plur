@@ -493,7 +493,7 @@ describe('H2: the cli and the mcp package use one matcher', () => {
   it('the mcp package has no copy of the matcher', () => {
     expect(existsSync(join(__dirname, '..', '..', 'mcp', 'src', 'hook-command.ts'))).toBe(false)
     const mcpIndex = readFileSync(join(__dirname, '..', '..', 'mcp', 'src', 'index.ts'), 'utf8')
-    expect(mcpIndex).toMatch(/import \{ isPlurHookSpec \} from '@plur-ai\/gateway'/)
+    expect(mcpIndex).toMatch(/import \{[^}]*\bisPlurHookSpec\b[^}]*\} from '@plur-ai\/gateway'/)
   })
 })
 

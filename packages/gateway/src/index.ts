@@ -11,3 +11,13 @@ export {
   nextRecordedEntries,
 } from './hook-command.js'
 export { makeHttpLlm, llmFromEnv } from './llm.js'
+export {
+  CLAUDE_INJECT_TIMEOUT_S,
+  asHookLaunch,
+  buildClaudeHooks,
+  buildEnforcementHooks,
+  buildInjectionHooks,
+  mergeHookMaps,
+  type HookEntry,
+  type HookLaunch,
+} from './claude-hooks.js'

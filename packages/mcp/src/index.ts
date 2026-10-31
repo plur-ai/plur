@@ -7,7 +7,7 @@ import { fileURLToPath } from 'url'
 import { homedir, platform } from 'os'
 
 import { VERSION } from './version.js'
-import { isPlurHookSpec } from '@plur-ai/gateway'
+import { buildClaudeHooks, isPlurHookSpec, type HookEntry } from '@plur-ai/gateway'
 
 const HELP = `plur-mcp v${VERSION} — persistent memory for AI agents
 
@@ -106,70 +106,9 @@ const _shimName = platform() === 'win32' ? 'plur-hook.cmd' : 'plur-hook'
 const _shimCandidate = join(homedir(), '.plur', 'bin', _shimName)
 const CLI = existsSync(_shimCandidate) ? _shimCandidate : 'npx @plur-ai/cli'
 
-/**
- * Hook set for `plur-mcp init`: the same hooks `plur init` writes to user
- * settings, i.e. @plur-ai/cli's `buildEnforcementHooks` plus
- * `buildInjectionHooks` (this package cannot import the CLI). Both installers
- * must give the agent the same memory behaviour; test/init-hooks.test.ts
- * compares the full sets and fails when they diverge (#1279).
- */
+/** Hook set for `plur-mcp init`: the shared set `plur init` installs too. */
 export function buildPlurHooks(cli: string): Record<string, HookEntry[]> {
-  return {
-    // --- Session lifecycle ---
-    // Sync with a 20s budget, like `plur init` (#1313): async context reaches
-    // Claude Code only at the next safe point, so a first reply without tool
-    // calls had no memory. hook-inject exits by itself after 15s, so the
-    // timeout sits above that. Keep in step with CLAUDE_INJECT_TIMEOUT_S in
-    // @plur-ai/cli's lib/claude-inject-budget.ts.
-    UserPromptSubmit: [{
-      hooks: [{ type: 'command', command: `${cli} hook-inject`, timeout: 20 }],
-    }],
-    // Re-inject after compaction. SessionStart with matcher "compact" fires
-    // right after compaction and can carry context; PostCompact cannot
-    // (#1274, #1279). Re-running init moves an old PostCompact entry here.
-    SessionStart: [{
-      // Reminds the agent to start the PLUR session first (hook-session-guard
-      // below nudges once if it does not).
-      hooks: [{ type: 'command', command: `${cli} hook-session-remind`, timeout: 3 }],
-    }, {
-      matcher: 'compact',
-      hooks: [{ type: 'command', command: `${cli} hook-inject --rehydrate`, timeout: 20 }],
-    }, {
-      // `claude --resume` keeps the session id, and SessionEnd below deleted
-      // its folder-question nonces: the resumed session is asked again with a
-      // fresh nonce (#1347, option C). Identical to `plur init`'s entry.
-      matcher: 'resume',
-      hooks: [{ type: 'command', command: `${cli} hook-session-resume`, timeout: 3 }],
-    }],
-    // Auto-close the memory lifecycle at session end (Claude Code SessionEnd,
-    // shipped v1.0.85) — captures a closing episode and cleans up the session
-    // checkpoint even if the agent forgot to call plur_session_end (#217).
-    SessionEnd: [{
-      hooks: [{ type: 'command', command: `${cli} hook-session-end`, timeout: 5 }],
-    }],
-    // --- Contextual injection ---
-    PreToolUse: [
-      // Session guard first, so it runs before any other PreToolUse hook.
-      { matcher: '*', hooks: [{ type: 'command', command: `${cli} hook-session-guard`, timeout: 3 }] },
-      { matcher: 'EnterPlanMode', hooks: [{ type: 'command', command: `${cli} hook-inject --event plan_mode`, timeout: 10 }] },
-      { matcher: 'Skill', hooks: [{ type: 'command', command: `${cli} hook-inject --event skill`, timeout: 10 }] },
-      { matcher: 'Agent', hooks: [{ type: 'command', command: `${cli} hook-inject --event agent`, timeout: 10 }] },
-      { matcher: 'Bash|Edit|Write|Agent', hooks: [{ type: 'command', command: `${cli} hook-observe`, timeout: 3 }] },
-    ],
-    PostToolUse: [
-      // Marks the session started for the guard (any `mcp__<server>__plur_session_start`).
-      { matcher: 'mcp__.*__plur_session_start', hooks: [{ type: 'command', command: `${cli} hook-session-mark`, timeout: 3 }] },
-      { matcher: 'Bash|Edit|Write|Agent', hooks: [{ type: 'command', command: `${cli} hook-observe --post`, timeout: 3 }] },
-    ],
-    SubagentStart: [
-      { matcher: '.*', hooks: [{ type: 'command', command: `${cli} hook-inject --event subagent`, timeout: 10 }] },
-    ],
-    Stop: [
-      { matcher: '*', hooks: [{ type: 'command', command: `${cli} hook-learn-check`, timeout: 2 }] },
-      // Rates the engrams injected this turn from the reply (#1310); synchronous, as in `plur init`.
-      { matcher: '*', hooks: [{ type: 'command', command: `${cli} hook-auto-rate claude`, timeout: 10 }] },
-    ],
-  }
+  return buildClaudeHooks(cli)
 }
 
 const PLUR_HOOKS = buildPlurHooks(CLI)
@@ -186,10 +125,7 @@ export interface Settings {
   [key: string]: unknown
 }
 
-export interface HookEntry {
-  matcher?: string
-  hooks: Array<{ type: string; command: string; args?: string[]; timeout?: number; async?: boolean }>
-}
+export type { HookEntry }
 
 /**
  * Closes the CLAUDE.md section. Same as PLUR_INSTRUCTIONS_MARKER in
