@@ -6,7 +6,8 @@ import { engramSearchText } from './fts.js'
 import { existsSync, readFileSync, mkdirSync, appendFileSync, unlinkSync, statSync, openSync, readSync, closeSync } from 'fs'
 import { join, dirname } from 'path'
 import { createHash } from 'crypto'
-import { atomicWrite, withLock } from './sync.js'
+import { withLock } from './file-lock.js'
+import { atomicWrite } from './atomic-write.js'
 import { logger } from './logger.js'
 
 /**

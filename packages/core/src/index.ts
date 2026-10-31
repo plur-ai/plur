@@ -230,7 +230,8 @@ export type { SyncRemoteType, SyncResult, SyncStatus } from './sync.js'
  * drifting in the unsafe direction.
  */
 export { initActorKey, keyFingerprint, keysDirFor, keysRegistryPath, loadKeysRegistry, loadPrivateKeyBuffer, lookupPublicKey, privateKeyPath, registerPublicKey, safeFileName, signWithActorKey, verifySignature, type KeysRegistry, type PublicKeyEntry } from './actor-keys.js'
-export { atomicWrite, withLock } from './sync.js'
+export { withLock } from './file-lock.js'
+export { atomicWrite } from './atomic-write.js'
 export { hashStoreFile, verifyChain, type BreakReason, type ChainBreak, type ChainFork, type ChainVerifyOutcome, type ChainVerifyResult, type SignatureResult, type SignatureVerdict, type VerifyChainOptions } from './verify-chain.js'
 /**
  * Owner-only protection: `writeConfigFile` is how config.yaml is

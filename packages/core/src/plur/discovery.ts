@@ -15,7 +15,7 @@ import { acceptDiscoveredScopes } from '../server-discovery.js'
 import { isSafeScopeName, safeOrigin, withCompatScope } from '../store-expand.js'
 import type { MeResponse } from '../store/remote-store.js'
 import { normalizeEndpointUrl, RemoteHttpError, RemoteStore, tokenEnvUnsetMessage } from '../store/remote-store.js'
-import { withLock } from '../sync.js'
+import { withLock } from '../file-lock.js'
 import { DISCOVERY_SNAPSHOT_KEYS, discoveryChanged, isEnterpriseServerEntry, isPlainObject, sanitizeForbidCategories, scopesServedElsewhere, serverCredential, stableJson, stringList } from './helpers.js'
 import { type CheckResult, type RegisterDiscoveredResult, type RemoteHealth, type RemoteScopeDiscovery, type ServerDiscoveryOutcome, type ServerStoreCheck, type StoreSummary } from './types.js'
 

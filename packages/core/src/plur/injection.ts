@@ -18,7 +18,7 @@ import type { Engram } from '../schemas/engram.js'
 import { NO_SESSION } from '../session-scopes.js'
 import { resolveScopeTarget } from '../store-resolver.js'
 import { normalizeEndpointUrl } from '../store/remote-store.js'
-import { withLock } from '../sync.js'
+import { withLock } from '../file-lock.js'
 import type { DegradedReason, InjectionResult, InjectOptions } from '../types.js'
 
 export interface InjectionMethods {

@@ -13,7 +13,7 @@ import {
 } from '../remote-only.js'
 import type { Engram } from '../schemas/engram.js'
 import { ATTRIBUTION_UNIDENTIFIED } from '../schemas/engram.js'
-import { withLock } from '../sync.js'
+import { withLock } from '../file-lock.js'
 import type {
     LearnContext
 } from '../types.js'

@@ -4,7 +4,7 @@ import * as path from 'path'
 import { loadEngrams, saveEngrams } from '../engrams.js'
 import type { Engram } from '../schemas/engram.js'
 import type { PackManifest } from '../schemas/pack.js'
-import { fsyncDir } from '../sync.js'
+import { fsyncDir } from '../atomic-write.js'
 import { sanitizePackEngrams } from './privacy.js'
 
 

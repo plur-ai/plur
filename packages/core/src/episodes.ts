@@ -2,7 +2,8 @@ import { existsSync, readFileSync } from 'fs'
 import yaml from 'js-yaml'
 import type { Episode } from './schemas/episode.js'
 import type { CaptureContext, TimelineQuery } from './types.js'
-import { atomicWrite, withLock } from './sync.js'
+import { withLock } from './file-lock.js'
+import { atomicWrite } from './atomic-write.js'
 import { parseRecordArrayFile } from './engrams.js'
 
 function generateEpisodeId(): string {

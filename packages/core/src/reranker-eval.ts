@@ -31,7 +31,7 @@ import type { Engram } from './schemas/engram.js'
 import { hybridSearch } from './hybrid-search.js'
 import { isRerankerOff } from './rerankers/index.js'
 import type { RerankerAdapter } from './rerankers/types.js'
-import { atomicWrite } from './sync.js'
+import { atomicWrite } from './atomic-write.js'
 import { logger } from './logger.js'
 
 // ─── Tunables ────────────────────────────────────────────────────────

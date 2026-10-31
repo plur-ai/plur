@@ -1,5 +1,5 @@
 import * as fs from 'fs'
-import { withLock } from './sync.js'
+import { withLock } from './file-lock.js'
 import * as yaml from 'js-yaml'
 import { logger } from './logger.js'
 import { join } from 'path'

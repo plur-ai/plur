@@ -2,7 +2,7 @@ import { readFileSync } from 'fs'
 import { isDeepStrictEqual } from 'util'
 import yaml from 'js-yaml'
 import { canonicalize } from './project-config.js'
-import { withLock } from './sync.js'
+import { withLock } from './file-lock.js'
 import { writeConfigFile } from './config-file.js'
 import type { StoreEntry } from './schemas/config.js'
 

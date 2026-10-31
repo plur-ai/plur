@@ -46,7 +46,7 @@ import { dirname, join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 
 import { isTelemetryEnabled } from './telemetry.js'
-import { withLock } from './sync.js'
+import { withLock } from './file-lock.js'
 import { holderIsAlive } from './store/async-lock.js'
 
 export type CounterEvent = 'learn' | 'recall' | 'session'

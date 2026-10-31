@@ -8,7 +8,7 @@
  */
 import { existsSync, readFileSync } from 'fs'
 import yaml from 'js-yaml'
-import { atomicWrite } from './sync.js'
+import { atomicWrite } from './atomic-write.js'
 import { parseRecordArrayFile } from './engrams.js'
 import { TensionRecordSchema, type TensionRecord, type TensionCategory } from './schemas/tension.js'
 import type { Engram } from './schemas/engram.js'

@@ -70,7 +70,7 @@ import { isScopeWithin, isSharedScope } from './scope-util.js'
 import { namespaceEngramId } from './engrams.js'
 import { logger } from './logger.js'
 import { enterpriseRecoveryHint } from './enterprise.js'
-import { withLock } from './sync.js'
+import { withLock } from './file-lock.js'
 
 // ---------------------------------------------------------------------------
 // Constants

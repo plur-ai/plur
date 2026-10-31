@@ -2,7 +2,8 @@ import * as fs from 'fs'
 import yaml from 'js-yaml'
 import * as path from 'path'
 import { isTransientPackDir, loadPack } from '../engrams.js'
-import { atomicWrite, withLock } from '../sync.js'
+import { withLock } from '../file-lock.js'
+import { atomicWrite } from '../atomic-write.js'
 
 
 // --- Registry ---

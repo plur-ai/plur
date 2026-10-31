@@ -1,6 +1,6 @@
 import { existsSync, chmodSync } from 'fs'
 import { basename } from 'path'
-import { atomicWrite, ALLOW_UNPROTECTED_ENV, CONFIG_FILE_MODE, _atomicWriteAcl } from './sync.js'
+import { atomicWrite, ALLOW_UNPROTECTED_ENV, CONFIG_FILE_MODE, _atomicWriteAcl } from './atomic-write.js'
 import { checkOwnerOnly, protectOwnerOnly, type OwnerOnlyResult } from './owner-only.js'
 
 /**

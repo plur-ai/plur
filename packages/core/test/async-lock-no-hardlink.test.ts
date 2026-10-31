@@ -25,7 +25,7 @@ vi.mock('fs', async (orig) => {
 })
 
 const { withAsyncLock } = await import('../src/store/async-lock.js')
-const { withLock } = await import('../src/sync.js')
+const { withLock } = await import('../src/file-lock.js')
 
 let dir: string
 let filePath: string

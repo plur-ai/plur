@@ -15,7 +15,8 @@ import { IndexedStorage } from '../storage-indexed.js'
 import { classifyStoreDuplicates, removePrimaryStoreEntries } from '../store-duplicates.js'
 import { collapseExpandedStores, identityBaseOf, isSafeScopeName, isServerStoreEntry, safeOrigin, serverEntryIdentities } from '../store-expand.js'
 import { normalizeEndpointUrl, RemoteStore } from '../store/remote-store.js'
-import { REFUSED_CREDENTIAL_WRITE, withLock } from '../sync.js'
+import { withLock } from '../file-lock.js'
+import { REFUSED_CREDENTIAL_WRITE } from '../atomic-write.js'
 import { AddRemoteStoreError, isFromServerEntry, serverEntryIdOf, serverEntryScopeRefusal, stringList } from './helpers.js'
 
 export interface ConfigStoresMethods {

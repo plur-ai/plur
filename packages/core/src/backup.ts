@@ -38,7 +38,8 @@ import { createHash, randomUUID } from 'crypto'
 import * as yaml from 'js-yaml'
 import { parseEngramEntry } from './engrams.js'
 import { logger } from './logger.js'
-import { atomicWrite, withLock } from './sync.js'
+import { atomicWrite } from './atomic-write.js'
+import { withLock } from './file-lock.js'
 
 /** Directory under the plur root holding snapshots and their state. */
 export const BACKUP_DIR = 'backups'
