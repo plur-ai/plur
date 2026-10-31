@@ -1,14 +1,10 @@
 /**
- * The hook matcher `plur-mcp init` uses to see whether PLUR's Claude Code
- * hooks are already installed, so it never adds a second set next to the
- * ones `plur init` wrote, and to remove only PLUR's own hooks when it heals
- * a stale PostCompact entry (#1279, #1303). A copy of @plur-ai/cli's
- * matcher: this package cannot import the CLI. The region below is kept
- * byte-identical with the cli's; test/hook-command.test.ts also runs the
- * same cases against both copies.
+ * Recognises the Claude Code hook entries PLUR writes, so `plur init` and
+ * `plur-mcp init` both detect an existing install instead of adding a second
+ * set, and remove only PLUR's own hooks when they rewrite settings.
  *
  * Pure apart from reading `~/.plur/bin/plur-hook.meta.json` (the exec-form
- * check), so tests can import it without loading the `plur-mcp` bin entry.
+ * check), so tests can import it without loading either bin entry.
  */
 import { homedir } from 'os'
 import { readFileSync } from 'fs'
@@ -16,10 +12,8 @@ import { join } from 'path'
 
 /**
  * The subcommands `plur init` and `plur-mcp init` have written into a Claude
- * Code settings.json (every version since the first, including the
- * `npx @plur-ai/cli` era). No longer an allow-list: since decision H2 the
- * matcher claims ANY `hook-*` behind PLUR's launcher, so a new hook needs no
- * list update. Kept as the reference list the tests iterate.
+ * Code settings.json. The matcher claims any `hook-*` behind PLUR's launcher,
+ * so this is a reference list for tests, not an allow-list.
  */
 export const PLUR_SETTINGS_SUBCOMMANDS = [
   'hook-inject',
@@ -31,10 +25,6 @@ export const PLUR_SETTINGS_SUBCOMMANDS = [
   'hook-session-end',
   'hook-session-resume',
 ] as const
-
-// BEGIN shared hook matcher — packages/mcp/src/hook-command.ts keeps a
-// byte-identical copy of this region (the mcp package cannot import the
-// CLI); test/hook-decisions-h2-h3.test.ts fails when they drift.
 
 /**
  * Is this Claude Code hook spec one PLUR wrote? A spec with `args` is the
@@ -193,4 +183,17 @@ export function matchesPlurHookLauncher(command: string): boolean {
   return homeShimPaths().some((p) => normalised.startsWith(p) && HOME_SHIM_TAIL.test(normalised.slice(p.length)))
 }
 
-// END shared hook matcher
+/** How many CLI js entries plur-hook.meta.json remembers (most recent kept). */
+export const RECORDED_ENTRIES_MAX = 10
+
+/**
+ * The `entrypoints` list to write into plur-hook.meta.json when init records
+ * `current`: every entry recorded before (a legacy single-entry file becomes
+ * a list of one), with `current` moved or appended to the end, trimmed to
+ * the RECORDED_ENTRIES_MAX most recent. Only PLUR's own init writes this list,
+ * so a foreign checkout is never in it.
+ */
+export function nextRecordedEntries(previousMeta: unknown, current: string): string[] {
+  const kept = entriesOf(previousMeta).filter((e) => normEntry(e) !== normEntry(current))
+  return [...kept, current].slice(-RECORDED_ENTRIES_MAX)
+}

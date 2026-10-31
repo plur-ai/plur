@@ -15,7 +15,7 @@
  * `& "<path>"` and `plur doctor` reports it.
  */
 import { describe, it, expect } from 'vitest'
-import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs'
+import { readFileSync, existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import {
@@ -33,7 +33,7 @@ import {
 import {
   isPlurHookCommand as mcpIsPlurHookCommand,
   matchesPlurHookLauncher as mcpMatchesPlurHookLauncher,
-} from '../../mcp/src/hook-command.js'
+} from '@plur-ai/gateway'
 import { buildCursorHooks, mergeCursorHooks } from '../src/cursor-hooks.js'
 import { buildCodexHooks, mergeCodexHooks } from '../src/codex-hooks.js'
 
@@ -484,26 +484,16 @@ describe('#1270 review: the unquoted spaced shim path is claimed only as this ho
   })
 })
 
-describe('H2: the mcp package keeps an identical copy of the matcher', () => {
-  const region = (path: string): string => {
-    const src = readFileSync(path, 'utf8')
-    const start = src.indexOf('// BEGIN shared hook matcher')
-    const end = src.indexOf('// END shared hook matcher')
-    expect(start).toBeGreaterThan(-1)
-    expect(end).toBeGreaterThan(start)
-    return src.slice(start, end)
-  }
-
-  it('the two source regions are byte-identical', () => {
-    expect(region(join(__dirname, '..', '..', 'mcp', 'src', 'hook-command.ts')))
-      .toBe(region(join(__dirname, '..', 'src', 'lib', 'hook-command.ts')))
+describe('H2: the cli and the mcp package use one matcher', () => {
+  it('the cli re-exports the shared matcher instead of keeping its own', () => {
+    expect(isPlurHookCommand).toBe(mcpIsPlurHookCommand)
+    expect(matchesPlurHookLauncher).toBe(mcpMatchesPlurHookLauncher)
   })
 
-  it.each([
-    [`${SHIM_POSIX} hook-auto-rate`], [`"${SHIM_WIN}" hook-inject`], ['npx @plur-ai/cli hook-x'],
-    ['/usr/local/bin/mytool hook-foo'], [`${SHIM_POSIX} status`],
-  ])('both copies agree on %s', (cmd) => {
-    expect(mcpIsPlurHookCommand(cmd)).toBe(isPlurHookCommand(cmd))
+  it('the mcp package has no copy of the matcher', () => {
+    expect(existsSync(join(__dirname, '..', '..', 'mcp', 'src', 'hook-command.ts'))).toBe(false)
+    const mcpIndex = readFileSync(join(__dirname, '..', '..', 'mcp', 'src', 'index.ts'), 'utf8')
+    expect(mcpIndex).toMatch(/import \{ isPlurHookSpec \} from '@plur-ai\/gateway'/)
   })
 })
 
