@@ -11,7 +11,7 @@ import { resolveScopeTarget } from '../store-resolver.js'
 import { normalizeEndpointUrl, RemoteStore } from '../store/remote-store.js'
 import type { UploadLocalResult } from '../types.js'
 import { REMOTE_PROBE_TIMEOUT_MS } from './helpers.js'
-import { MutationOutcome, RescopeOptions, RescopeResult } from './types.js'
+import { type MutationOutcome, type RescopeOptions, type RescopeResult } from './types.js'
 
 export interface ForgetRescopeMethods {
   /** Set engram status to 'retired'. Supports primary and store engrams.

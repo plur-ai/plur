@@ -13,7 +13,7 @@ import { computeRecordHash } from '../session-manifest.js'
 import { resolveScopeTarget, ScopeConflictError } from '../store-resolver.js'
 import { FEEDBACK_SOURCE_CAPABILITY, RemoteStore } from '../store/remote-store.js'
 import { REMOTE_PROBE_TIMEOUT_MS } from './helpers.js'
-import { MutationOutcome } from './types.js'
+import { type MutationOutcome } from './types.js'
 
 export interface FeedbackPinMethods {
   /**

@@ -28,7 +28,7 @@ import type {
     LlmFunction
 } from '../types.js'
 import { buildAttribution, buildProvenanceBlock, DEFAULT_REMOTE_WRITE_TIMEOUT_MS, relatedIds, TYPE_TO_COGNITIVE, TYPE_TO_MEMORY_CLASS } from './helpers.js'
-import { LearnDelivery, LearnRoutedOptions, OutboxReasonCode, SecondarySupersede } from './types.js'
+import { type LearnDelivery, type LearnRoutedOptions, type OutboxReasonCode, type SecondarySupersede } from './types.js'
 
 export interface LearnMethods {
   learn(statement: string, context?: LearnContext): Promise<Engram>

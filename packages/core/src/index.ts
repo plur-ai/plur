@@ -21,7 +21,7 @@ import { scopeGuardsMethods, type ScopeGuardsMethods } from './plur/scope-guards
 import { statusReportMethods, type StatusReportMethods } from './plur/status-report.js'
 import { storeIoMethods, type StoreIoMethods } from './plur/store-io.js'
 import { tensionsMethods, type TensionsMethods } from './plur/tensions.js'
-import { IndexSyncError } from './plur/types.js'
+import { type IndexSyncError } from './plur/types.js'
 import { type RerankerAdapter } from './rerankers/index.js'
 import { ServerStoreEntrySchema } from './schemas/config.js'
 import { IndexedStorage } from './storage-indexed.js'

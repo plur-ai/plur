@@ -17,7 +17,7 @@ import type { MeResponse } from '../store/remote-store.js'
 import { normalizeEndpointUrl, RemoteHttpError, RemoteStore, tokenEnvUnsetMessage } from '../store/remote-store.js'
 import { withLock } from '../sync.js'
 import { DISCOVERY_SNAPSHOT_KEYS, discoveryChanged, isEnterpriseServerEntry, isPlainObject, sanitizeForbidCategories, scopesServedElsewhere, serverCredential, stableJson, stringList } from './helpers.js'
-import { CheckResult, RegisterDiscoveredResult, RemoteHealth, RemoteScopeDiscovery, ServerDiscoveryOutcome, ServerStoreCheck, StoreSummary } from './types.js'
+import { type CheckResult, type RegisterDiscoveredResult, type RemoteHealth, type RemoteScopeDiscovery, type ServerDiscoveryOutcome, type ServerStoreCheck, type StoreSummary } from './types.js'
 
 export interface DiscoveryMethods {
   /** Build the primary-store summary row. Shared by listStores +

@@ -23,7 +23,7 @@ import { RemoteOnlyStoreGuard } from '../store/remote-only-store-guard.js'
 import { RemoteHttpError } from '../store/remote-store.js'
 import { YamlPrimaryStore } from '../store/yaml-primary-store.js'
 import { REMOTE_GUARD_BUDGET_MS, REMOTE_PROBE_TIMEOUT_MS } from './helpers.js'
-import { CollisionProbe } from './types.js'
+import { type CollisionProbe } from './types.js'
 
 export interface StoreIoMethods {
   /**

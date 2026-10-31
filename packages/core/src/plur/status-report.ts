@@ -16,7 +16,7 @@ import type {
     LearnContext,
     LlmFunction
 } from '../types.js'
-import { StatusResult } from './types.js'
+import { type StatusResult } from './types.js'
 
 export interface StatusReportMethods {
   /**

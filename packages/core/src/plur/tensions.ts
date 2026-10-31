@@ -8,7 +8,7 @@ import type { TensionRecord, TensionStatus } from '../schemas/tension.js'
 import { withLock } from '../sync.js'
 import { categorizeTension, generateTensionId, loadTensions, loadTensionsWithQuarantine, saveTensions, tensionPairKey } from '../tension-store.js'
 import type { TensionPair } from '../tensions.js'
-import { SecondarySupersede } from './types.js'
+import { type SecondarySupersede } from './types.js'
 
 export interface TensionsMethods {
   /** List persisted tension records, optionally filtered by status. */

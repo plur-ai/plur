@@ -20,7 +20,7 @@ import type {
     TimelineQuery
 } from '../types.js'
 import { INGEST_PATTERNS, isStoreTeardownError, PRIMARY_AUTO_EMBED_BATCH } from './helpers.js'
-import { IndexSyncError, IngestCandidate, IngestOptions } from './types.js'
+import { type IndexSyncError, type IngestCandidate, type IngestOptions } from './types.js'
 
 export interface MaintenanceMethods {
   /** Remove retired engrams from storage. Returns count of removed and remaining. */
