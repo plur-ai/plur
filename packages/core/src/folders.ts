@@ -530,13 +530,6 @@ function editedMapText(root: string, map: FolderMap, edit: FolderMapEdit): strin
   return text
 }
 
-/**
- * The current file with only the changed bytes rewritten: a changed
- * value is replaced in place, so a comment after it stays, and the template's
- * `folders: []` takes its first entry. Null when that cannot be done safely —
- * no file, not valid UTF-8, or a result that does not read back (strictly, as
- * the loader reads) as exactly `map`. Then {@link editedMapText} is tried.
- */
 /** A new file: the commented template holding `map`, or null when it does not read back (strictly) as exactly `map`. */
 function templateMapText(map: FolderMap): string | null {
   const text = renderFolderMapText(null, map.folders.map(cleanEntry) as unknown as Record<string, unknown>[])
@@ -545,6 +538,13 @@ function templateMapText(map: FolderMap): string | null {
   return sortedJson(back.map.folders.map(cleanEntry)) === sortedJson(map.folders.map(cleanEntry)) ? text : null
 }
 
+/**
+ * The current file with only the changed bytes rewritten: a changed
+ * value is replaced in place, so a comment after it stays, and the template's
+ * `folders: []` takes its first entry. Null when that cannot be done safely —
+ * no file, not valid UTF-8, or a result that does not read back (strictly, as
+ * the loader reads) as exactly `map`. Then {@link editedMapText} is tried.
+ */
 function surgicalMapText(root: string, map: FolderMap): string | null {
   const r = readMapText(folderMapPath(root))
   if (r === null || 'unreadable' in r || !r.utf8) return null
@@ -883,8 +883,8 @@ function resolveExplicitFolderPolicy(dir: string, opts: FolderPolicyOptions): Fo
   // (above) still wins, and so does a MORE specific entry of the user's own.
   //
   // Only an explicit MODE (on/off/ask/remote-only) decides here: an entry
-  // that only sets `trusted` or a `scope` is not a decision about memory
-  //. And a remote-only entry matches the same spellings
+  // that only sets `trusted` or a `scope` is not a decision about memory.
+  // A remote-only entry matches the same spellings
   // `off` does: a confidentiality mode fails closed, like `off`.
   const modeEntries = entries.map((e, i) => ({ e, i })).filter(c => c.e.plur !== undefined &&
     (c.e.plur === 'remote-only' ? entryCovers(c.e, lax, home, true) : entryCovers(c.e, strict, home, false)))

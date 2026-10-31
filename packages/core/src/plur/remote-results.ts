@@ -89,13 +89,6 @@ export interface RemoteResultsMethods {
   _filterRemoteRows(rows: Engram[], options?: RecallOptions & { include_expired?: boolean }): Engram[]
 
   /**
-   * Merge the remote leg into a local result set via RRF. Server rows go
-   * FIRST so the server copy wins object identity for ids present in both
-   * sets (the local set can hold a stale peek-cache copy of the same remote
-   * row); RRF scoring itself is order-independent, so this affects identity
-   * only, not ranking.
-   */
-  /**
    * Wait for the remote leg until the recall's deadline. The leg
    * itself stops at the deadline — it aborts what is still in flight and
    * keeps what answered — so this normally gets its per-host
@@ -120,6 +113,13 @@ export interface RemoteResultsMethods {
   /** @internal */
   _recallDeadlineAt(options?: { deadline_ms?: number; deadline_at?: number }): number
 
+  /**
+   * Merge the remote leg into a local result set via RRF. Server rows go
+   * FIRST so the server copy wins object identity for ids present in both
+   * sets (the local set can hold a stale peek-cache copy of the same remote
+   * row); RRF scoring itself is order-independent, so this affects identity
+   * only, not ranking.
+   */
   /** @internal */
   _mergeRemoteRecall(local: Engram[], remotePromise: (Promise<RemoteRecallResult> & { hostUrls?: string[] }) | null, options: (RecallOptions & { include_expired?: boolean }) | undefined, limit: number, deadlineAt?: number): Promise<{ engrams: Engram[]; remote: RecallRemoteReport }>
 

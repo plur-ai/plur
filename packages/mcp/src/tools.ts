@@ -861,13 +861,6 @@ export function trustCommand(dir: string | null, storageRoot?: string, platform:
   return store === null ? null : `plur --path ${store} trust ${target}`
 }
 
-/**
- * The command that turns PLUR back on for a folder-map entry, for the answer
- * the memory tools give in an `off` folder (folder-gate.ts). Same store rule
- * as {@link trustCommand}: a non-default store is named with `--path`, or the
- * change lands in a map this server never reads. Null when the entry cannot
- * be quoted safely.
- */
 /** plur_status's `folder_map` field: present only when the map is broken. */
 function folderMapStatus(root: string): { folder_map?: Record<string, unknown> } {
   let p: FolderMapProblem | null
@@ -889,6 +882,13 @@ function folderMapStatus(root: string): { folder_map?: Record<string, unknown> }
   }
 }
 
+/**
+ * The command that turns PLUR back on for a folder-map entry, for the answer
+ * the memory tools give in an `off` folder (folder-gate.ts). Same store rule
+ * as {@link trustCommand}: a non-default store is named with `--path`, or the
+ * change lands in a map this server never reads. Null when the entry cannot
+ * be quoted safely.
+ */
 export function folderOnCommand(entry: string, storageRoot?: string, platform: NodeJS.Platform = process.platform): string | null {
   if (_UNSAFE_PATH_CHARS.test(entry)) return null
   const target = _shellWord(entry, platform)

@@ -275,13 +275,6 @@ const YAML_DUMP_OPTS = { lineWidth: 120, noRefs: true, quotingType: '"' as const
 const SIBLING_STRIP_FILES = ['episodes.yaml', 'candidates.yaml', 'tensions.yaml'] as const
 
 /**
- * Canonical engram id token, matched anywhere inside a serialized record
- * (schema: `/^(ENG|ABS|META)-[A-Za-z0-9-]+$/` in schemas/engram.ts). Greedy
- * over the id charset, so a longer unknown token ("ENG-0011" around "ENG-001")
- * extracts as itself and simply fails push-set membership — conservative.
- */
-
-/**
  * Dump options matching the sibling-file writers (episodes.ts / tension-store.ts
  * both use `{ lineWidth: 120, noRefs: true }`), so a stripped sibling blob is
  * byte-identical to what the file would contain if it only ever held the kept

@@ -221,7 +221,7 @@ export interface OutboxMethods {
    */
   outboxClaimsProblem(): string | undefined
 
-  /** Counts by state plus one line per needs_action scope . */
+  /** Counts by state plus one line per needs_action scope. */
   outboxSummary(): Promise<OutboxSummary>
 
   /** A url store accepting writes for exactly this scope — the flush's own lookup. */
@@ -313,7 +313,7 @@ export interface OutboxMethods {
 
   /**
    * Mint and persist an idempotency key for every pending outbox row that has
-   * none (rows queued by clients that predate keys), BEFORE any is posted
+   * none (rows queued by clients that predate keys), BEFORE any is posted.
    * Under the store lock; a row another writer keyed in the
    * meantime keeps that key. Updates `pending` in place. Never throws: a row
    * whose key could not be saved stays keyless and is not posted this flush.
@@ -550,8 +550,8 @@ export const outboxMethods: OutboxMethods & ThisType<Plur> = {
     // called from inside `_withStoreLock`. The in-process queue is FIFO with no
     // timeout — unlike the file lock, which has `acquireTimeout` — so nesting
     // hangs the process rather than erroring (see async-lock's "NOT REENTRANT"
-    // header). Callers are the `plur_sync` MCP tool and the `plur sync` CLI
-    // command, both top-level.
+    // header). Every caller (the `plur_sync` MCP tool, the `plur sync` CLI
+    // command, the claw plugin) calls it from the top level, outside the lock.
     const result = await this._withStoreLock(this.paths.engrams, async () => {
       return gitSync(this.paths.root, remote, { remoteType })
     })
@@ -654,7 +654,7 @@ export const outboxMethods: OutboxMethods & ThisType<Plur> = {
     for (const e of engrams) {
       const sd = (e as any).structured_data as { _outbox?: Entry; _retireRemote?: Entry } | undefined
       // Advisory only, read from the entry's claim file alone.
-      // A live claim (any holder's, this instance's own included —
+      // A live claim (any holder's, this instance's own included)
       // says the entry is being pushed now.
       const claimUntil = sd ? this._outboxClaimUntil(e.id, now) : undefined
       const leased = claimUntil ? { leased_until: claimUntil } : {}
@@ -739,7 +739,7 @@ export const outboxMethods: OutboxMethods & ThisType<Plur> = {
     type OutboxEntry = {
       target_url: string; target_scope: string; queued_at: string
       last_attempt: string; attempt_count: number; last_error: string
-      /** HTTP status of the last failed push . */
+      /** HTTP status of the last failed push. */
       last_status?: number
       last_token_fp?: string
       /** Unique per logical write, stable across its retries. */
@@ -932,7 +932,10 @@ export const outboxMethods: OutboxMethods & ThisType<Plur> = {
     //
     // The server assigns its own id on flush, so a `supersedes` pointing at a
     // LOCAL id means nothing there. Without the edge, a correction and the
-    // thing it corrected land as independent, equally authoritative records.
+    // thing it corrected land as independent, equally authoritative records:
+    // tension scans skip supersedes-linked pairs, so a dropped edge keeps the
+    // stale statement live at equal weight and makes the pair look like a
+    // genuine contradiction.
     // When both are queued together, the mapping is available within this
     // flush, provided the target goes first.
     //
@@ -1123,7 +1126,7 @@ export const outboxMethods: OutboxMethods & ThisType<Plur> = {
         continue
       }
       if (offending.length > 0 && isRemoteOnlyQueued(engram)) {
-        // A save from a remote-only folder is never demoted to a local row
+        // A save from a remote-only folder is never demoted to a local row:
         // it stays queued, not pushed, and says why.
         const patterns = [...new Set(offending.map(h => h.pattern))].join(', ')
         outbox.last_attempt = now.toISOString()

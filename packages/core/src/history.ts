@@ -514,8 +514,7 @@ export function findPredecessorHash(historyDir: string, currentMonthFile: string
  *
  * Events without hash or prev fields are loaded and reported as-is, never
  * silently upgraded, never errored.
- */
-/**
+ *
  * @returns `true` when the event was written, `false` when it could not be.
  *
  * This function deliberately does NOT throw: an unwritable history directory
