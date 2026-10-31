@@ -30,11 +30,6 @@ export class EngramStoreUnreadableError extends Error {
 }
 
 /**
- * Read engrams from a YAML store. A missing file is `[]`. An existing file that does not parse, is zero-length or
- * has no `engrams` key THROWS {@link EngramStoreUnreadableError} — every write saves the whole file, and PLUR cannot
- * tell an empty corpus from a destroyed one. Invalid entries are QUARANTINED and written back by {@link saveEngrams}.
- */
-/**
  * The one shape rule for an engram store document, shared with sync's `readEngramList` and backup's `validateStore`
  * (a looser reader could push a file PLUR cannot load). Returns the raw `engrams:` entries, or throws.
  */
@@ -534,6 +529,12 @@ export function parseRecordArrayFile<T>(
   return { valid, quarantined }
 }
 
+/**
+ * Read engrams from a YAML store. A missing file is `[]`. An existing file that does not parse, is zero-length or
+ * has no `engrams` key THROWS {@link EngramStoreUnreadableError} — every write saves the whole file, and PLUR cannot
+ * tell an empty corpus from a destroyed one. Invalid entries are QUARANTINED and written back by {@link saveEngrams}.
+ * A caller that wants "unreadable means empty" must catch the error and say so at the call site.
+ */
 export function loadEngrams(filePath: string): Engram[] {
   if (!fs.existsSync(filePath)) return []
   // A directory is a misconfiguration (`stores[].path` must name an

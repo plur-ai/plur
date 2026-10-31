@@ -605,7 +605,7 @@ function missingSiblingRecords(current: readonly unknown[], held: readonly unkno
  * Put held records back after a pull (successful, failed, or being recovered). Idempotent.
  * - File unchanged since before the hold → nothing; unchanged by the pull → saved bytes back verbatim.
  * - Changed by the pull → new file plus held records not in it; a same-id clash re-ids the held LOCAL record
- *   ({@link mergeHeldRecords}), records the rename and makes held sibling references follow.
+ *   (never pushed, so nothing outside this machine refers to it; {@link mergeHeldRecords}), records the rename and makes held sibling references follow.
  * - Unreadable now: if HEAD carries the pulled version it is KEPT and returned `unresolved` (held records stay in
  *   the recovery file); writing pre-pull bytes would commit a revert. Only when HEAD still holds the pre-pull blob
  *   do the saved bytes go back.

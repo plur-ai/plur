@@ -16,10 +16,12 @@ import { folderOnCommand } from './tools.js'
  * `plur: off` in `<PLUR home>/folders.yaml`, gated tools answer (not error)
  * that PLUR is off and touch no store: no local file, outbox row or remote request.
  * - Gated: FOLDER_GATED_TOOLS (anything reading, writing or returning engram or
- *   episode text). Ungated: ADMIN_UNGATED_TOOLS and plur_admin `help`. Every
- *   tool is in exactly one set (a test holds this).
+ *   episode text). Ungated: ADMIN_UNGATED_TOOLS and plur_admin `help`; some of
+ *   these read stores to count or probe them, but none returns engram text.
+ *   Every tool is in exactly one set (a test holds this).
  * - An unreadable folder map fails SAFE; `ask` folders get the folder question
- *   (createFolderGate). The gate never writes folders.yaml itself.
+ *   (createFolderGate). The gate never writes folders.yaml itself (only the
+ *   one-time trust.yaml import can create it).
  */
 export const FOLDER_GATED_TOOLS: ReadonlySet<string> = new Set([
   // write engrams
@@ -381,7 +383,9 @@ function isFilesystemRoot(dir: string): boolean {
 /**
  * The folder map per MCP session (one per createServer): `off` and `ask`.
  * - `ask`: gated tools return the folder question; each answer's nonce is bound
- *   to this session (`--session`), reused until answered or expired.
+ *   to this session (`--session`), reused until answered or expired. A nonce from
+ *   another session, or naming none, is refused; the agent runs the command only
+ *   after the user's explicit answer.
  * - The server never writes the folder map; the next call after the user's
  *   command re-resolves. "Not now" (`--not-now`) writes nothing: off for this session.
  * - Precedence off > ask > on, `off` checked on every folder incl. cwd; home,

@@ -102,7 +102,8 @@ export interface StoreIoMethods {
   /**
    * Non-primary rows (secondary file and url stores, packs) must all go through one
    * implementation: ids collide across stores, and `feedback()` / `forget()` resolve by
-   * exact id, so skipping namespacing, `global` narrowing or `isScopeWithin` breaks reads.
+   * exact id, so skipping namespacing, `global` narrowing or `isScopeWithin` makes them change an
+   * unrelated engram. Kept separate from the primary load because BM25 reaches these rows without it.
    */
   /**
    * Installed packs, each row under its pack id ({@link packEngramId}) on every read path,

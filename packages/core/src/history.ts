@@ -423,7 +423,8 @@ export function findPredecessorHash(historyDir: string, currentMonthFile: string
  * Append a history event to {root}/history/YYYY-MM.jsonl, setting `prev` (the
  * predecessor hash, across months) and `hash` over the canonical bytes.
  * - Read-tail, hash and append run under a short cross-process lock on the
- *   history dir; lock order is store lock then this one, never the reverse.
+ *   history dir; lock order is store lock then this one, never the reverse
+ *   (nothing here calls back into store code). Callers need not hold the store lock.
  * - Lock failure or unreadable predecessor writes `prev: null` (a declared gap,
  *   never a fabricated hash); the write must still land. Legacy events stay as-is.
  * @returns `true` when written. Never throws, so callers that must stay

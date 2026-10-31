@@ -52,8 +52,10 @@ export interface OutboxMethods {
    * decision is made by O_EXCL, never read-compare-rename:
    * - Free: publish a fully written claim with `link(2)`.
    * - Lapsed: one racer creates `<claim>.takeover-<tag>`, re-reads, renames a fresh claim over it, removes the
-   *   marker. A dead marker is replaced by `…-<tag>-<tag>` once the stale claim changed hands.
-   * Fails CLOSED and never throws: an unrecordable claim is `busy` with the error, never `claimed`.
+   *   marker. A dead marker is stepped past at once (`…-<tag>-<tag>`) but removed only after the stale claim
+   *   changed hands, so two racers never win at two levels. Cleanup after the decision never changes it.
+   * Fails CLOSED and never throws: an unrecordable claim is `busy` with the error, never `claimed`, because an
+   * unrecorded claim would let two processes push the same engram.
    */
   /** @internal */
   _claimOutboxEntry(id: string, keyFor: () => string): { status: 'busy'; error?: string } | { status: 'claimed'; key: string }

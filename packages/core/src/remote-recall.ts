@@ -5,8 +5,8 @@
  *   two consecutive 403s forbidden (one is unreachable); 404 unsupported 10 min; 429 honours Retry-After; 422 is neutral.
  * - Breaker, cooldown and 404 TTL are per HOST; 403 streak and 429 per CREDENTIAL. Persisted under the
  *   file lock in `<root>/cache/remote-health.json` (hooks are one-shot); tokens only as truncated hashes.
- * - Dial only relevant scopes (same org; `user:` only with org context; see `Plur._remoteRecallHosts`); no
- *   context → zero calls. `dial: always|never` per store and `PLUR_REMOTE_RECALL=off` override.
+ * - Dial only relevant scopes (see `Plur._remoteRecallHosts`): same org; a personal `user:` scope dials only the
+ *   store entry whose scope equals it exactly, never another user's and never wider; no context → zero calls. `dial: always|never` per store and `PLUR_REMOTE_RECALL=off` override.
  */
 
 import * as fs from 'fs'

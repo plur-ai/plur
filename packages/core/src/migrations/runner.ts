@@ -237,7 +237,7 @@ export function runMigrations(
    * EVERYTHING (read version, plan, back up, migrate, save, stamp) runs under the corpus lock, so concurrent run and
    * rollback cannot leave a version that mismatches the contents.
    * LOCK ORDER is corpus -> config (`setSchemaVersion` nests the config lock); nothing takes them the other way
-   * round, and new code must keep that order. `withLock` is NOT reentrant and load/saveEngrams do not lock.
+   * round (`addStore` takes them one after the other, never nested), and new code must keep that order. `withLock` is NOT reentrant and load/saveEngrams do not lock.
    */
   withLock(engramsPath, () => {
     if (options?.dryRun && fs.existsSync(`${engramsPath}.migration.json`)) throw new Error('Interrupted migration needs recovery before a dry run')

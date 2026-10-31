@@ -55,7 +55,7 @@ export const DEFAULT_STALE_THRESHOLD = 60_000
  * {@link DEFAULT_STALE_THRESHOLD}, so a waiter behind a stuck holder reaches the
  * stale check instead of throwing (and losing e.g. a `plur_learn`). Must also
  * exceed the longest legitimate hold: `Plur.sync()` holds the lock across git
- * fetch/pull/push (30s timeout each). Anything that raises git's per-command
+ * fetch/pull/push (30s timeout each, ~90s plus local staging). Anything that raises git's per-command
  * timeout must raise this too.
  */
 export const DEFAULT_ACQUIRE_TIMEOUT = 180_000
@@ -440,9 +440,12 @@ function isAbandoned(holder: string, mtimeMs: number, staleThreshold: number): b
  * `combined_mutex`). Returns false when another contender is taking over the
  * same lock instance.
  * - The guard is needed because two waiters can both DECIDE to steal the same lock.
+ *   A ladder, not one `.takeover` file: removing a crashed single guard is itself a
+ *   read-then-unlink race.
  * - Slots are keyed by the judged token, so only a slot's writer unlinks it; a
  *   dead slot is stepped over, never deleted.
- * - Under the slot, claim only the same token AND inode, and only if STILL abandoned.
+ * - Under the slot, claim only the same token AND inode (empty locks have equal
+ *   contents), and only if STILL abandoned (the holder may have refreshed its mtime).
  */
 async function takeOver(lockPath: string, staleThreshold: number): Promise<boolean> {
   const seen = await inspectLock(lockPath)

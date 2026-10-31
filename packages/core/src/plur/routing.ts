@@ -88,7 +88,6 @@ export interface RoutingMethods {
   /** @internal */
   _scopedUrlEntry(scope: string, outcome: string): StoreEntry | undefined
 
-  /** The store a scoped pin PATCHes: {@link _scopedUrlEntry} over writable stores; two writable servers conflict. */
   /**
    * The stores a scoped pin resolves over: every path store (even readonly)
    * and the writable url stores.
@@ -96,6 +95,7 @@ export interface RoutingMethods {
   /** @internal */
   _pinCandidateStores(): StoreEntry[]
 
+  /** The store a scoped pin PATCHes: {@link _scopedUrlEntry} over writable stores; two writable servers conflict. */
   /** @internal */
   _pinTargetEntry(scope: string, outcome: string): StoreEntry | undefined
 
