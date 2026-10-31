@@ -12,7 +12,7 @@ import { tmpdir } from 'os'
 import { pathToFileURL } from 'url'
 import { execFileSync } from 'child_process'
 import { isPlurHookCommand, isPlurHookSpec } from '../src/lib/hook-command.js'
-import { isPlurHookCommand as mcpIsPlurHookCommand } from '@plur-ai/gateway'
+import { isPlurHookCommand as mcpIsPlurHookCommand } from '@plur-ai/gateway/harness'
 import { builtCliPath } from './helpers/built-cli.js'
 import { isolatedHomeEnv } from './helpers/isolated-env.js'
 

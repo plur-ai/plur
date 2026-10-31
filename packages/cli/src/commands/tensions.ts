@@ -2,7 +2,7 @@ import { createPlur, type GlobalFlags } from '../plur.js'
 import { remoteOnlyCommandRefusal } from '../lib/folder-gate.js'
 import { shouldOutputJson, outputJson, outputText, outputInfo, exit } from '../output.js'
 import type { LlmFunction } from '@plur-ai/core'
-import { makeHttpLlm, llmFromEnv } from '@plur-ai/gateway'
+import { makeHttpLlm, llmFromEnv } from '@plur-ai/gateway/harness'
 
 /**
  * plur tensions — scan for contradictions, manage the tension lifecycle.

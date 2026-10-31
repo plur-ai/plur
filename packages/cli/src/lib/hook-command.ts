@@ -159,4 +159,4 @@ export {
   PLUR_SETTINGS_SUBCOMMANDS,
   RECORDED_ENTRIES_MAX,
   nextRecordedEntries,
-} from '@plur-ai/gateway'
+} from '@plur-ai/gateway/harness'

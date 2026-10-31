@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { existsSync } from 'fs'
 import { fileURLToPath } from 'url'
-import { isPlurHookCommand, PLUR_SETTINGS_SUBCOMMANDS } from '@plur-ai/gateway'
+import { isPlurHookCommand, PLUR_SETTINGS_SUBCOMMANDS } from '@plur-ai/gateway/harness'
 
 /**
  * `isPlurHookCommand` is the shared matcher in @plur-ai/gateway, used by both

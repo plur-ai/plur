@@ -7,7 +7,7 @@ import { fileURLToPath } from 'url'
 import { homedir, platform } from 'os'
 
 import { VERSION } from './version.js'
-import { buildClaudeHooks, isPlurHookSpec, type HookEntry } from '@plur-ai/gateway'
+import { buildClaudeHooks, isPlurHookSpec, type HookEntry } from '@plur-ai/gateway/harness'
 
 const HELP = `plur-mcp v${VERSION} — persistent memory for AI agents
 

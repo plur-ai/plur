@@ -1,1 +1,1 @@
-export { CLAUDE_INJECT_TIMEOUT_S } from '@plur-ai/gateway'
+export { CLAUDE_INJECT_TIMEOUT_S } from '@plur-ai/gateway/harness'

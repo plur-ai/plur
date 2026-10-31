@@ -14,7 +14,7 @@ import {
   mergeHookMaps,
   type HookEntry,
   type HookLaunch,
-} from '@plur-ai/gateway'
+} from '@plur-ai/gateway/harness'
 import { plurRoot } from '../lib/folder-gate.js'
 import { recordHookInstall } from '../lib/hook-runs.js'
 import {

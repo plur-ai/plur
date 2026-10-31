@@ -33,7 +33,7 @@ import {
 import {
   isPlurHookCommand as mcpIsPlurHookCommand,
   matchesPlurHookLauncher as mcpMatchesPlurHookLauncher,
-} from '@plur-ai/gateway'
+} from '@plur-ai/gateway/harness'
 import { buildCursorHooks, mergeCursorHooks } from '../src/cursor-hooks.js'
 import { buildCodexHooks, mergeCodexHooks } from '../src/codex-hooks.js'
 
@@ -493,7 +493,7 @@ describe('H2: the cli and the mcp package use one matcher', () => {
   it('the mcp package has no copy of the matcher', () => {
     expect(existsSync(join(__dirname, '..', '..', 'mcp', 'src', 'hook-command.ts'))).toBe(false)
     const mcpIndex = readFileSync(join(__dirname, '..', '..', 'mcp', 'src', 'index.ts'), 'utf8')
-    expect(mcpIndex).toMatch(/import \{[^}]*\bisPlurHookSpec\b[^}]*\} from '@plur-ai\/gateway'/)
+    expect(mcpIndex).toMatch(/import \{[^}]*\bisPlurHookSpec\b[^}]*\} from '@plur-ai\/gateway(?:\/harness)?'/)
   })
 })
 
