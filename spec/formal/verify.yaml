@@ -11,6 +11,26 @@ models:
   - model: PlurSpec/UploadLocal.lean
     covers:
       - packages/core/src/index.ts
+      - packages/core/src/plur/config-stores.ts
+      - packages/core/src/plur/discovery.ts
+      - packages/core/src/plur/feedback-pin.ts
+      - packages/core/src/plur/folders-policy.ts
+      - packages/core/src/plur/forget-rescope.ts
+      - packages/core/src/plur/helpers.ts
+      - packages/core/src/plur/injection.ts
+      - packages/core/src/plur/learn-dedup.ts
+      - packages/core/src/plur/learn.ts
+      - packages/core/src/plur/maintenance.ts
+      - packages/core/src/plur/outbox.ts
+      - packages/core/src/plur/provenance-identity.ts
+      - packages/core/src/plur/recall.ts
+      - packages/core/src/plur/remote-results.ts
+      - packages/core/src/plur/routing.ts
+      - packages/core/src/plur/scope-guards.ts
+      - packages/core/src/plur/status-report.ts
+      - packages/core/src/plur/store-io.ts
+      - packages/core/src/plur/tensions.ts
+      - packages/core/src/plur/types.ts
       - packages/core/src/types.ts
       - packages/core/src/store/remote-store.ts
   - model: PlurSpec/LegacyProjectCleanup.lean
@@ -24,6 +44,26 @@ models:
       - packages/cli/src/lib/folder-gate.ts
       - packages/core/src/folders.ts
       - packages/core/src/index.ts
+      - packages/core/src/plur/config-stores.ts
+      - packages/core/src/plur/discovery.ts
+      - packages/core/src/plur/feedback-pin.ts
+      - packages/core/src/plur/folders-policy.ts
+      - packages/core/src/plur/forget-rescope.ts
+      - packages/core/src/plur/helpers.ts
+      - packages/core/src/plur/injection.ts
+      - packages/core/src/plur/learn-dedup.ts
+      - packages/core/src/plur/learn.ts
+      - packages/core/src/plur/maintenance.ts
+      - packages/core/src/plur/outbox.ts
+      - packages/core/src/plur/provenance-identity.ts
+      - packages/core/src/plur/recall.ts
+      - packages/core/src/plur/remote-results.ts
+      - packages/core/src/plur/routing.ts
+      - packages/core/src/plur/scope-guards.ts
+      - packages/core/src/plur/status-report.ts
+      - packages/core/src/plur/store-io.ts
+      - packages/core/src/plur/tensions.ts
+      - packages/core/src/plur/types.ts
       - packages/core/src/types.ts
       - packages/mcp/src/folder-gate.ts
       - packages/mcp/src/server.ts
@@ -31,6 +71,26 @@ models:
   - model: PlurSpec/ServerDiagnostics.lean
     covers:
       - packages/core/src/index.ts
+      - packages/core/src/plur/config-stores.ts
+      - packages/core/src/plur/discovery.ts
+      - packages/core/src/plur/feedback-pin.ts
+      - packages/core/src/plur/folders-policy.ts
+      - packages/core/src/plur/forget-rescope.ts
+      - packages/core/src/plur/helpers.ts
+      - packages/core/src/plur/injection.ts
+      - packages/core/src/plur/learn-dedup.ts
+      - packages/core/src/plur/learn.ts
+      - packages/core/src/plur/maintenance.ts
+      - packages/core/src/plur/outbox.ts
+      - packages/core/src/plur/provenance-identity.ts
+      - packages/core/src/plur/recall.ts
+      - packages/core/src/plur/remote-results.ts
+      - packages/core/src/plur/routing.ts
+      - packages/core/src/plur/scope-guards.ts
+      - packages/core/src/plur/status-report.ts
+      - packages/core/src/plur/store-io.ts
+      - packages/core/src/plur/tensions.ts
+      - packages/core/src/plur/types.ts
       - packages/core/src/store/remote-store.ts
       - packages/cli/src/commands/doctor.ts
       - packages/cli/src/commands/init.ts
@@ -41,10 +101,50 @@ models:
       - packages/core/src/session-scopes.ts
       - packages/core/src/scope-routing.ts
       - packages/core/src/index.ts
+      - packages/core/src/plur/config-stores.ts
+      - packages/core/src/plur/discovery.ts
+      - packages/core/src/plur/feedback-pin.ts
+      - packages/core/src/plur/folders-policy.ts
+      - packages/core/src/plur/forget-rescope.ts
+      - packages/core/src/plur/helpers.ts
+      - packages/core/src/plur/injection.ts
+      - packages/core/src/plur/learn-dedup.ts
+      - packages/core/src/plur/learn.ts
+      - packages/core/src/plur/maintenance.ts
+      - packages/core/src/plur/outbox.ts
+      - packages/core/src/plur/provenance-identity.ts
+      - packages/core/src/plur/recall.ts
+      - packages/core/src/plur/remote-results.ts
+      - packages/core/src/plur/routing.ts
+      - packages/core/src/plur/scope-guards.ts
+      - packages/core/src/plur/status-report.ts
+      - packages/core/src/plur/store-io.ts
+      - packages/core/src/plur/tensions.ts
+      - packages/core/src/plur/types.ts
       - packages/core/src/store/remote-store.ts
   - model: PlurSpec/Outbox.lean
     covers:
       - packages/core/src/index.ts
+      - packages/core/src/plur/config-stores.ts
+      - packages/core/src/plur/discovery.ts
+      - packages/core/src/plur/feedback-pin.ts
+      - packages/core/src/plur/folders-policy.ts
+      - packages/core/src/plur/forget-rescope.ts
+      - packages/core/src/plur/helpers.ts
+      - packages/core/src/plur/injection.ts
+      - packages/core/src/plur/learn-dedup.ts
+      - packages/core/src/plur/learn.ts
+      - packages/core/src/plur/maintenance.ts
+      - packages/core/src/plur/outbox.ts
+      - packages/core/src/plur/provenance-identity.ts
+      - packages/core/src/plur/recall.ts
+      - packages/core/src/plur/remote-results.ts
+      - packages/core/src/plur/routing.ts
+      - packages/core/src/plur/scope-guards.ts
+      - packages/core/src/plur/status-report.ts
+      - packages/core/src/plur/store-io.ts
+      - packages/core/src/plur/tensions.ts
+      - packages/core/src/plur/types.ts
       - packages/core/src/outbox-health.ts
       - packages/core/src/store/remote-store.ts
       - packages/core/src/remote-recall.ts
@@ -62,6 +162,8 @@ models:
     covers:
       - packages/core/src/engrams.ts
       - packages/core/src/sync.ts
+      - packages/core/src/file-lock.ts
+      - packages/core/src/atomic-write.ts
       - packages/core/src/migrations/runner.ts
       - packages/core/src/store/async-lock.ts
       - packages/core/src/storage-postgres.ts
@@ -69,6 +171,12 @@ models:
       - packages/core/src/outbox-order.ts
       - packages/core/src/learn-async.ts
       - packages/core/src/packs.ts
+      - packages/core/src/packs/download.ts
+      - packages/core/src/packs/export.ts
+      - packages/core/src/packs/integrity.ts
+      - packages/core/src/packs/privacy.ts
+      - packages/core/src/packs/registry.ts
+      - packages/core/src/packs/staging.ts
       - packages/core/src/owner-only.ts
       - packages/core/src/config-file.ts
       - packages/core/src/store-duplicates.ts
@@ -99,6 +207,26 @@ models:
   - model: PlurSpec/R2CoreA.lean
     covers:
       - packages/core/src/index.ts
+      - packages/core/src/plur/config-stores.ts
+      - packages/core/src/plur/discovery.ts
+      - packages/core/src/plur/feedback-pin.ts
+      - packages/core/src/plur/folders-policy.ts
+      - packages/core/src/plur/forget-rescope.ts
+      - packages/core/src/plur/helpers.ts
+      - packages/core/src/plur/injection.ts
+      - packages/core/src/plur/learn-dedup.ts
+      - packages/core/src/plur/learn.ts
+      - packages/core/src/plur/maintenance.ts
+      - packages/core/src/plur/outbox.ts
+      - packages/core/src/plur/provenance-identity.ts
+      - packages/core/src/plur/recall.ts
+      - packages/core/src/plur/remote-results.ts
+      - packages/core/src/plur/routing.ts
+      - packages/core/src/plur/scope-guards.ts
+      - packages/core/src/plur/status-report.ts
+      - packages/core/src/plur/store-io.ts
+      - packages/core/src/plur/tensions.ts
+      - packages/core/src/plur/types.ts
       - packages/core/src/provenance.ts
       - packages/core/src/importers/engine.ts
   - model: PlurSpec/R2CoreB.lean
@@ -119,6 +247,8 @@ models:
     covers:
       - packages/core/src/store/async-lock.ts
       - packages/core/src/sync.ts
+      - packages/core/src/file-lock.ts
+      - packages/core/src/atomic-write.ts
       - packages/core/src/engrams.ts
       - packages/core/src/backup.ts
       - packages/core/src/storage-postgres.ts
@@ -148,17 +278,63 @@ models:
   - model: PlurSpec/PacksV2.lean
     covers:
       - packages/core/src/packs.ts
+      - packages/core/src/packs/download.ts
+      - packages/core/src/packs/export.ts
+      - packages/core/src/packs/integrity.ts
+      - packages/core/src/packs/privacy.ts
+      - packages/core/src/packs/registry.ts
+      - packages/core/src/packs/staging.ts
   - model: PlurSpec/StoreEntry.lean
     covers:
       - packages/core/src/store-expand.ts
       - packages/core/src/sensitivity-writeback.ts
       - packages/core/src/config.ts
       - packages/core/src/index.ts
+      - packages/core/src/plur/config-stores.ts
+      - packages/core/src/plur/discovery.ts
+      - packages/core/src/plur/feedback-pin.ts
+      - packages/core/src/plur/folders-policy.ts
+      - packages/core/src/plur/forget-rescope.ts
+      - packages/core/src/plur/helpers.ts
+      - packages/core/src/plur/injection.ts
+      - packages/core/src/plur/learn-dedup.ts
+      - packages/core/src/plur/learn.ts
+      - packages/core/src/plur/maintenance.ts
+      - packages/core/src/plur/outbox.ts
+      - packages/core/src/plur/provenance-identity.ts
+      - packages/core/src/plur/recall.ts
+      - packages/core/src/plur/remote-results.ts
+      - packages/core/src/plur/routing.ts
+      - packages/core/src/plur/scope-guards.ts
+      - packages/core/src/plur/status-report.ts
+      - packages/core/src/plur/store-io.ts
+      - packages/core/src/plur/tensions.ts
+      - packages/core/src/plur/types.ts
   - model: PlurSpec/RoutingDiscovery.lean
     covers:
       - packages/core/src/store-resolver.ts
       - packages/core/src/server-discovery.ts
       - packages/core/src/index.ts
+      - packages/core/src/plur/config-stores.ts
+      - packages/core/src/plur/discovery.ts
+      - packages/core/src/plur/feedback-pin.ts
+      - packages/core/src/plur/folders-policy.ts
+      - packages/core/src/plur/forget-rescope.ts
+      - packages/core/src/plur/helpers.ts
+      - packages/core/src/plur/injection.ts
+      - packages/core/src/plur/learn-dedup.ts
+      - packages/core/src/plur/learn.ts
+      - packages/core/src/plur/maintenance.ts
+      - packages/core/src/plur/outbox.ts
+      - packages/core/src/plur/provenance-identity.ts
+      - packages/core/src/plur/recall.ts
+      - packages/core/src/plur/remote-results.ts
+      - packages/core/src/plur/routing.ts
+      - packages/core/src/plur/scope-guards.ts
+      - packages/core/src/plur/status-report.ts
+      - packages/core/src/plur/store-io.ts
+      - packages/core/src/plur/tensions.ts
+      - packages/core/src/plur/types.ts
   - model: PlurSpec/GitScope.lean
     covers:
       - packages/core/src/git-origin.ts
@@ -166,6 +342,26 @@ models:
     covers:
       - packages/core/src/folders.ts
       - packages/core/src/index.ts
+      - packages/core/src/plur/config-stores.ts
+      - packages/core/src/plur/discovery.ts
+      - packages/core/src/plur/feedback-pin.ts
+      - packages/core/src/plur/folders-policy.ts
+      - packages/core/src/plur/forget-rescope.ts
+      - packages/core/src/plur/helpers.ts
+      - packages/core/src/plur/injection.ts
+      - packages/core/src/plur/learn-dedup.ts
+      - packages/core/src/plur/learn.ts
+      - packages/core/src/plur/maintenance.ts
+      - packages/core/src/plur/outbox.ts
+      - packages/core/src/plur/provenance-identity.ts
+      - packages/core/src/plur/recall.ts
+      - packages/core/src/plur/remote-results.ts
+      - packages/core/src/plur/routing.ts
+      - packages/core/src/plur/scope-guards.ts
+      - packages/core/src/plur/status-report.ts
+      - packages/core/src/plur/store-io.ts
+      - packages/core/src/plur/tensions.ts
+      - packages/core/src/plur/types.ts
       - packages/cli/src/lib/folder-gate.ts
       - packages/mcp/src/server.ts
       - packages/opencode/src/scope.ts
@@ -187,6 +383,26 @@ models:
       - packages/core/src/save-destination.ts
       - packages/core/src/enterprise.ts
       - packages/core/src/index.ts
+      - packages/core/src/plur/config-stores.ts
+      - packages/core/src/plur/discovery.ts
+      - packages/core/src/plur/feedback-pin.ts
+      - packages/core/src/plur/folders-policy.ts
+      - packages/core/src/plur/forget-rescope.ts
+      - packages/core/src/plur/helpers.ts
+      - packages/core/src/plur/injection.ts
+      - packages/core/src/plur/learn-dedup.ts
+      - packages/core/src/plur/learn.ts
+      - packages/core/src/plur/maintenance.ts
+      - packages/core/src/plur/outbox.ts
+      - packages/core/src/plur/provenance-identity.ts
+      - packages/core/src/plur/recall.ts
+      - packages/core/src/plur/remote-results.ts
+      - packages/core/src/plur/routing.ts
+      - packages/core/src/plur/scope-guards.ts
+      - packages/core/src/plur/status-report.ts
+      - packages/core/src/plur/store-io.ts
+      - packages/core/src/plur/tensions.ts
+      - packages/core/src/plur/types.ts
       - packages/cli/src/commands/learn.ts
       - packages/mcp/src/tools.ts
   - model: PlurSpec/Provenance.lean
@@ -197,6 +413,28 @@ models:
       - packages/cli/src/commands/verify-manifest.ts
       - packages/cli/src/lib/notary.ts
       - packages/core/src/index.ts
+      - packages/core/src/plur/config-stores.ts
+      - packages/core/src/plur/discovery.ts
+      - packages/core/src/plur/feedback-pin.ts
+      - packages/core/src/plur/folders-policy.ts
+      - packages/core/src/plur/forget-rescope.ts
+      - packages/core/src/plur/helpers.ts
+      - packages/core/src/plur/injection.ts
+      - packages/core/src/plur/learn-dedup.ts
+      - packages/core/src/plur/learn.ts
+      - packages/core/src/plur/maintenance.ts
+      - packages/core/src/plur/outbox.ts
+      - packages/core/src/plur/provenance-identity.ts
+      - packages/core/src/plur/recall.ts
+      - packages/core/src/plur/remote-results.ts
+      - packages/core/src/plur/routing.ts
+      - packages/core/src/plur/scope-guards.ts
+      - packages/core/src/plur/status-report.ts
+      - packages/core/src/plur/store-io.ts
+      - packages/core/src/plur/tensions.ts
+      - packages/core/src/plur/types.ts
       - packages/mcp/src/tools.ts
       - packages/core/src/sync.ts
+      - packages/core/src/file-lock.ts
+      - packages/core/src/atomic-write.ts
       - packages/gateway/src/client.ts
