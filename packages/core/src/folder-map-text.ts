@@ -3,7 +3,7 @@ import jsyaml from 'js-yaml'
 
 /**
  * The text of `<PLUR home>/folders.yaml`, written so that a person's edits
- * survive the CLI's (owner decision 2026-10-01).
+ * survive the CLI's.
  *
  * A new file starts from {@link FOLDER_MAP_TEMPLATE}: a commented example of
  * every setting, each with one line saying what it does, placed where removing
@@ -65,8 +65,8 @@ function lineEndIncl(src: string, pos: number): number {
   return i === -1 ? src.length : i + 1
 }
 
-// Every value is WRITTEN with js-yaml, the reader PLUR loads the file with
-// (review of #1521): the `yaml` package (YAML 1.2 core) writes `2026-10-02`
+// Every value is WRITTEN with js-yaml, the reader PLUR loads the file with:
+// the `yaml` package (YAML 1.2 core) writes `2026-10-02`
 // or `0b101` unquoted, which js-yaml then reads back as a date or a number.
 // The `yaml` package only locates entries and values in the source text.
 function renderScalar(v: unknown): string {

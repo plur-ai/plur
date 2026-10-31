@@ -1,9 +1,7 @@
 /**
- * Embedder adapter interface — Sprint 0 PR 4 (feat/embedder-bake-off).
- *
- * Four candidate models live behind this shape so the benchmark harness can
- * swap them via --embedder and the PGLite vector column can be sized at
- * construction time based on `dim`.
+ * Embedder adapter interface. Every embedding model sits behind this shape so
+ * callers can swap them via --embedder and the PGLite vector column can be
+ * sized at construction time from `dim`.
  *
  * Adapters are responsible for:
  *   - lazy model load on first embed call
@@ -32,12 +30,12 @@ export interface EmbedderAdapter {
   embed(text: string, role?: EmbedRole): Promise<Float32Array>
   /** Embed N texts. Output order matches input order. */
   embedBatch(texts: string[]): Promise<Float32Array[]>
-  /** Optional (#1586 round 3): the model is loaded in this process. */
+  /** Optional: the model is loaded in this process. */
   isLoaded?(): boolean
-  /** Optional (#1586 rounds 3-6): are the model's files on disk where a load
+  /** Optional: are the model's files on disk where a load
    *  would read them? Null when the adapter cannot tell. */
   modelPresent?(): Promise<boolean | null>
-  /** Optional (#1586 round 6): the embedder is a remote API (no local model,
+  /** Optional: the embedder is a remote API (no local model,
    *  no cold start), so no background cache fill is started for it. */
   readonly remote?: boolean
   /**

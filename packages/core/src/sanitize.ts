@@ -7,26 +7,17 @@
  * line terminator followed by an opening bracket. A statement that contains
  * that sequence therefore mints a SECOND entry when rendered — and the renderer
  * emits that block at system-prompt authority, so the forged entry is read as
- * an instruction rather than as data. #940 and #952 are the same defect reached
- * through two different doors.
+ * an instruction rather than as data.
  *
  * ## Why this lives in core, in its own module
  *
- * The first fix put the collapse inside `Plur.learn()`, on the reasoning that
- * every write path funnels through it. That is not true. `learnRouted()` calls
- * `learn()` ONLY on its local route: when a remote store resolves for the
- * scope, it builds the engram shape and posts it without entering `learn()` at
- * all, and the outbox fallback writes the same raw shape locally. The CLI and
- * the Python SDK both go through `learnRouted`, and a comment in the source
- * calls it the primary production write path.
- *
- * So the highest-impact variant survived that fix: `plur learn` with a forged
- * boundary, against a scope backed by a remote store, still stored and
- * propagated it — and a forged entry on a SHARED store reaches other people's
- * system prompts.
- *
- * A helper called by both routes is the only shape that makes the claim
- * "no write path can bypass this" true rather than aspirational.
+ * Not every write path goes through `Plur.learn()`. `learnRouted()` calls
+ * `learn()` only on its local route: when a remote store resolves for the
+ * scope, it posts the engram without entering `learn()`, and the outbox
+ * fallback writes the same raw shape locally. The CLI and the Python SDK both
+ * go through `learnRouted`. A forged entry on a shared store reaches other
+ * people's system prompts, so a helper called by every route is the only way
+ * to guarantee no write path bypasses the sanitisation.
  *
  * ## The character class
  *
@@ -62,11 +53,8 @@ const SPACES_AROUND_TERMINATORS =
  * local route) is not a bug.
  */
 export function collapseLineTerminators(statement: string): string {
-  // Consume spaces and tabs ADJACENT to a terminator run, not every run of
-  // spaces in the statement. The earlier form appended a blanket / {2,}/
-  // collapse, which also rewrote legitimate multi-space content that had
-  // nothing to do with the forgery — a behaviour change beyond the fix's remit,
-  // and one a caller storing aligned or code-like text would notice.
+  // Consume only spaces and tabs adjacent to a terminator run, so legitimate
+  // multi-space content (aligned or code-like text) is left unchanged.
   return statement
     .replace(SPACES_AROUND_TERMINATORS, ' ')
     .trimEnd()

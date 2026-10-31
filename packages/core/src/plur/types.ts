@@ -23,12 +23,11 @@ export interface IngestCandidate {
 
 
 /**
- * Last failure of a background index operation (#272). The PGLite index
- * refresh (and the auto-embed/reembed pass that rides on it) runs in a
- * fire-and-forget promise whose .catch used to swallow the error entirely —
- * a failed refresh reported "Sync: ok". Recorded and exposed via
- * `lastIndexError()` / `status().index_error` so CLI and MCP callers can
- * surface it. Cleared when the next background pass succeeds.
+ * Last failure of a background index operation. The PGLite index refresh (and
+ * the auto-embed/reembed pass that rides on it) runs in a fire-and-forget
+ * promise, so failures are recorded and exposed via `lastIndexError()` /
+ * `status().index_error` for CLI and MCP callers to surface. Cleared when the
+ * next background pass succeeds.
  */
 export interface IndexSyncError {
   /** Which background operation failed. */
@@ -47,10 +46,8 @@ export interface StatusResult {
   config: PlurConfig
   /**
    * The identity this instance records as `attribution.asserted_by` on every
-   * engram it writes (`provenance.identity` in config.yaml, #1049). Surfaced because `provenance.identity` otherwise has no
-   * user-facing surface at all — it is absent from the README, the docs, the
-   * `plur init` template, the CLI and the MCP schemas, so in practice every
-   * engram would ship as `agent:unidentified` and nobody would know why.
+   * engram it writes (`provenance.identity` in config.yaml). Surfaced so users
+   * can see why engrams are attributed as they are.
    * `agent:unidentified` when none is configured.
    */
   provenance_identity: string
@@ -59,32 +56,26 @@ export interface StatusResult {
   tension_count?: number
   versioned_engram_count?: number
   outbox_count?: number
-  /** Queued writes a retry cannot deliver (401/403/404/422, refusal, no store) (#1299). */
+  /** Queued writes a retry cannot deliver (401/403/404/422, refusal, no store). */
   outbox_needs_action?: number
   /** Present when `outbox_needs_action` > 0: one row per scope and reason, with its next step. */
   outbox_attention?: OutboxSummary['scopes']
   /** Queued writes held on this machine for a stated reason, e.g. a push claim
-   *  that could not be recorded (#1581 audit L1). Present only when there are some. */
+   *  that could not be recorded. Present only when there are some. */
   outbox_held?: OutboxSummary['held']
-  /** Present when the most recent background index pass failed (#272). */
+  /** Present when the most recent background index pass failed. */
   index_error?: IndexSyncError
-  /** Injection-provenance event/label counts (#452) — feeds #202's volume gate. */
+  /** Injection-provenance event/label counts. */
   history_events?: InjectionEventCounts
   /**
-   * Artifacts `status()` could not read, by name (#805 follow-up; audit
-   * 2026-08-03 finding 6).
+   * Artifacts `status()` could not read, by name.
    *
    * `status()` is the command an operator reaches for WHEN something is wrong,
-   * so it must REPORT a broken artifact rather than die on it. The refuse-on-
-   * corrupt loaders are right for the write paths they protect — a write that
-   * proceeds from a phantom-empty store destroys data — but propagating those
-   * throws out of the diagnostic takes it down along with the thing being
-   * diagnosed.
-   *
-   * The first version of this covered only the pack registry, which left
-   * `episodes.yaml` and `tensions.yaml` able to do exactly the same thing. That
-   * mattered more than it looks: MCP `session_start` awaits `status()`, so a
-   * truncated episodes file meant no session could start at all.
+   * so it must REPORT a broken artifact rather than die on it. The
+   * refuse-on-corrupt loaders protect the write paths (a write that proceeds
+   * from a phantom-empty store destroys data), but propagating those throws out
+   * of the diagnostic would take it down too. MCP `session_start` awaits
+   * `status()`, so a single truncated file must not block session start.
    *
    * Keys are artifact names (`packs`, `episodes`, `tensions`); values are the
    * loader's message, which already carries the repair instructions.
@@ -104,16 +95,9 @@ export interface StatusResult {
 
 
 /**
- * Per-URL result of scope discovery against an enterprise server's `/api/v1/me`
- * (#292). `unregistered` is the actionable set: scopes the token is authorized
- * for but that aren't yet in local config.
- */
-/**
  * One row of `listStores` / `listStoresAsync`. The primary local store plus
  * each configured `stores` entry. `description`/`covers` are present only when
- * the entry declares self-describing scope metadata (#345) — additive, so
- * existing consumers that read only path/url/scope/.../engram_count are
- * unaffected.
+ * the entry declares self-describing scope metadata.
  */
 export interface StoreSummary {
   path?: string
@@ -122,13 +106,18 @@ export interface StoreSummary {
   shared: boolean
   readonly: boolean
   engram_count: number
-  /** Self-describing scope description (#345), when the entry declares it. */
+  /** Self-describing scope description, when the entry declares it. */
   description?: string
-  /** Topics/domains this scope covers (#345), when the entry declares it. */
+  /** Topics/domains this scope covers, when the entry declares it. */
   covers?: string[]
 }
 
 
+/**
+ * Per-URL result of scope discovery against an enterprise server's `/api/v1/me`.
+ * `unregistered` is the actionable set: scopes the token is authorized for but
+ * that aren't yet in local config.
+ */
 export interface RemoteScopeDiscovery {
   url: string
   /** True when `/me` responded; false on network error, 401, etc. */
@@ -140,13 +129,13 @@ export interface RemoteScopeDiscovery {
   authorized: string[]
   /** Scopes already registered in local config for this URL. */
   registered: string[]
-  /** Authorized minus registered minus dismissed (#647) — the scopes a user could still add. */
+  /** Authorized minus registered minus dismissed: the scopes a user could still add. */
   unregistered: string[]
   /**
-   * Server-authoritative scope metadata (#345 D2) for the authorized scopes,
-   * when the remote serves it via `/api/v1/me` (`scope_metadata`). Each entry
-   * is a validated {@link ScopeMetadata}. Empty when the server is older /
-   * declares no metadata — discovery still works, just without descriptions.
+   * Server-authoritative scope metadata for the authorized scopes, when the
+   * remote serves it via `/api/v1/me` (`scope_metadata`). Each entry is a
+   * validated {@link ScopeMetadata}. Empty when the server declares no
+   * metadata; discovery still works, just without descriptions.
    */
   metadata: ScopeMetadata[]
   /** Present when `ok` is false. */
@@ -155,7 +144,7 @@ export interface RemoteScopeDiscovery {
 
 
 /**
- * Result of {@link Plur.refreshServerScopes} for one server entry (#1631).
+ * Result of {@link Plur.refreshServerScopes} for one server entry.
  * `applied` is true when the answer replaced the cached `scopes` list.
  */
 export interface ServerDiscoveryOutcome {
@@ -173,7 +162,7 @@ export interface ServerDiscoveryOutcome {
 
 
 /**
- * Health of one configured remote endpoint (#295). Combines a live `/me`
+ * Health of one configured remote endpoint. Combines a live `/me`
  * probe with a local JWT-expiry read so callers can distinguish "auth
  * expired" (actionable: reauth) from "unreachable" (network), and warn
  * before a token expires rather than after.
@@ -190,7 +179,7 @@ export interface RemoteHealth {
   ok: boolean
   /**
    * Set when the token comes from a `token_env` variable that is unset where
-   * PLUR runs (#1564 review M2): the variable's name. No request was sent;
+   * PLUR runs: the variable's name. No request was sent;
    * the fix is to set the variable, not to re-authenticate.
    */
   tokenEnvUnset?: string
@@ -200,9 +189,9 @@ export interface RemoteHealth {
   tokenExpiresAt?: string
   /** Whole days until token expiry (negative if past), or null if unknown. */
   tokenExpiresInDays?: number | null
-  /** JWT `sub` claim — UNVERIFIED, display only (#587). Absent for opaque keys. */
+  /** JWT `sub` claim, UNVERIFIED, display only. Absent for opaque keys. */
   tokenSubject?: string
-  /** JWT org claim (`orgId`/`org_id`/`org`) — UNVERIFIED, display only (#587). */
+  /** JWT org claim (`orgId`/`org_id`/`org`), UNVERIFIED, display only. */
   tokenOrg?: string
   /** Server-confirmed identity from the live `/me` probe (status 'ok' only). */
   username?: string
@@ -222,21 +211,20 @@ export interface ServerStoreCheck {
 }
 
 
-/** Outcome of registering discovered scopes for one URL (#292). */
+/** Outcome of registering discovered scopes for one URL. */
 export interface RegisterDiscoveredResult {
   url: string
   ok: boolean
   added: string[]
   already_registered: string[]
-  /** Scopes refused auto-registration: personal-family scopes a `/me` returned
-   *  (#382), scopes whose addStore threw (#397), and dismissed scopes the batch
-   *  path respects (scope-audit 2026-07-24). */
+  /** Scopes refused auto-registration: personal-family scopes a `/me` returned,
+   *  scopes whose addStore threw, and dismissed scopes. */
   skipped: string[]
   error?: string
 }
 
 
-/** Options for {@link Plur.rescope} (#676). */
+/** Options for {@link Plur.rescope}. */
 export interface RescopeOptions {
   /**
    * After a successful REMOTE push, keep the local source engram active
@@ -251,7 +239,7 @@ export interface RescopeOptions {
 }
 
 
-/** Per-engram outcome of {@link Plur.rescope} (#676). */
+/** Per-engram outcome of {@link Plur.rescope}. */
 export interface RescopeResult {
   /** Source engram id the caller passed. */
   id: string
@@ -259,7 +247,7 @@ export interface RescopeResult {
    * 'rescoped'  — moved (or, with dry_run, would move).
    * 'deduped'   — an identical engram (content-hash + scope match) already
    *               exists at the target: idempotent success, nothing pushed;
-   *               the source is still retired per keep_local (constraint 5).
+   *               the source is still retired per keep_local.
    * 'noop'      — source already carries the target scope.
    * 'error'     — nothing was changed for this id; see `error`.
    */
@@ -280,15 +268,13 @@ export interface RescopeResult {
   dry_run?: boolean
   /**
    * Set when the source carried a PENDING outbox delivery that the rescope
-   * cancelled (#848).
+   * cancelled.
    *
    * A failed remote write queues the engram with `structured_data._outbox`
-   * naming the target url + scope. Rescoping used to rewrite the scope and
-   * leave that entry untouched, so when the original store recovered the
-   * engram was delivered to the store the user explicitly moved it away from —
-   * silently undoing the rescope, arbitrarily later. Reported rather than done
-   * quietly, because the caller cannot otherwise tell a rescope that cancelled
-   * a queued delivery from one that did not.
+   * naming the target url + scope. Leaving that entry in place would deliver
+   * the engram to the store the user moved it away from once that store
+   * recovers. Reported so the caller can tell a rescope that cancelled a
+   * queued delivery from one that did not.
    */
   cancelled_outbox?: { target_url: string; target_scope: string }
   error?: string
@@ -296,7 +282,7 @@ export interface RescopeResult {
 
 
 /**
- * Where a learn result went (#1264). `remote`: a url store accepted it.
+ * Where a learn result went. `remote`: a url store accepted it.
  * `outbox`: it is saved here and queued for a url store (the push is deferred,
  * or failed and will be retried). `local`: it exists on this machine only.
  */
@@ -304,7 +290,7 @@ export type LearnDelivery = 'remote' | 'outbox' | 'local'
 
 
 /**
- * Why an engram went to the outbox instead of the server (0.21.1).
+ * Why an engram went to the outbox instead of the server.
  * `auth_rejected`: the store answered 401/403 — the token is expired, revoked
  * or lacks rights, and retrying will not help until a person fixes it.
  * `unreachable`: no answer (network error or the caller's deadline passed).
@@ -314,7 +300,7 @@ export type LearnDelivery = 'remote' | 'outbox' | 'local'
 export type OutboxReasonCode = 'auth_rejected' | 'unreachable' | 'server_error' | 'no_store' | 'token_env_unset'
 
 
-/** Options for {@link Plur.learnRouted} (0.21.1). */
+/** Options for {@link Plur.learnRouted}. */
 export interface LearnRoutedOptions {
   /**
    * Deadline for the server request, in ms. When it passes, the engram is
@@ -326,18 +312,18 @@ export interface LearnRoutedOptions {
 }
 
 
-/** What {@link Plur.forget} and {@link Plur.feedback} did not refuse but want said (0.21.1). */
+/** What {@link Plur.forget} and {@link Plur.feedback} did not refuse but want said. */
 export interface MutationOutcome {
   /** Plain-language warnings, e.g. a remote whose token was rejected during the collision probe. */
   warnings: string[]
 }
 
 
-/** Per-store answer of the id-collision probe run by forget, feedback and setPinned. */
-/** A dedup supersede target held in a writable secondary store (audit 5 F4). */
+/** A dedup supersede target held in a writable secondary store. */
 export interface SecondarySupersede { id: string; path: string; originalId: string }
 
 
+/** Per-store answer of the id-collision probe run by forget, feedback and setPinned. */
 export interface CollisionProbe {
   scope: string
   url: string

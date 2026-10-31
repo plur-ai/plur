@@ -139,9 +139,8 @@ export async function expandedSearch(
   const resultSets = await Promise.all(searchPromises)
 
   // Step 3: Merge via RRF. The aggregation floor of 50 above widens the pool
-  // each variant contributes; the RETURNED list is capped at the caller's
-  // limit, as on every hybrid path since #770 (formal R2, core-retrieval#9:
-  // this path still returned max(limit, 50)).
+  // each variant contributes; the RETURNED list is still capped at the
+  // caller's limit.
   const merged = rrfMerge(resultSets)
   return merged.slice(0, limit)
 }

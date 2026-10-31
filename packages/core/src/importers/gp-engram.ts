@@ -1,5 +1,5 @@
 /**
- * Gentleman-Programming/engram importer (issue #441) — the flagship importer.
+ * Gentleman-Programming/engram importer.
  *
  * gp-engram is a Go + SQLite(FTS5) memory tool for AI coding agents. Its
  * source of truth is the `observations` table (internal/store/store.go):
@@ -21,8 +21,8 @@
  *   pinned          → pinned
  *   created_at      → temporal.learned_at (SQLite datetimes are UTC → normalized to ISO Z)
  *   last_seen_at    → activation.last_accessed (updated_at fallback)
- *   expires_at      → temporal.valid_until (a real expiry; upstream keeps it
- *                     NULL in "Phase 1" but the migration column exists)
+ *   expires_at      → temporal.valid_until (a real expiry, when the column
+ *                     exists and is set)
  *   row id          → source `gp-engram:<file>#<id>`
  *
  * Deliberately NOT mapped: `review_after` (gp-engram's decay "review by" date —
@@ -30,9 +30,8 @@
  * date, which is stronger than the source semantics), soft-deleted rows
  * (deleted_at IS NOT NULL), sessions/user_prompts/memory_relations tables.
  *
- * Reuses the workspace's existing better-sqlite3 (already an optional
- * dependency of @plur-ai/core) via the same createRequire pattern as
- * store/sqlite-store.ts — no new dependencies.
+ * Loads better-sqlite3 (an optional dependency of @plur-ai/core) via the same
+ * createRequire pattern as store/sqlite-store.ts.
  */
 import { existsSync } from 'fs'
 import { basename } from 'path'

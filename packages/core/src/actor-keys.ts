@@ -1,5 +1,5 @@
 /**
- * Per-actor Ed25519 signing keys for engram store checkpoints (#1055).
+ * Per-actor Ed25519 signing keys for engram store checkpoints.
  *
  * ## Key storage layout
  *
@@ -10,7 +10,7 @@
  *
  * When a key exists for the acting identity, `emitCheckpoint` gains a
  * `signature` field — Ed25519 over the checkpoint event's canonical bytes
- * (the same §3 form everything else hashes). `plur verify --signatures`
+ * (the same canonical form everything else hashes). `plur verify --signatures`
  * then checks that field against the public key in `keys.yaml`.
  *
  * An unsigned checkpoint is a valid L2 object; the signature upgrades it to
@@ -19,8 +19,8 @@
  *
  * ## No external dependencies
  *
- * All operations use `node:crypto`. Law 6: YAML stays truth; zero new runtime
- * deps in plur core.
+ * All operations use `node:crypto`. YAML stays the source of truth; no
+ * runtime dependencies are added to plur core.
  */
 import * as fs from 'node:fs'
 import * as crypto from 'node:crypto'
@@ -62,10 +62,10 @@ export function privateKeyPath(identity: string, keysDir: string): string {
  * A file name for an identity or session id, on every platform.
  *
  * Reversible percent-encoding: every byte outside [A-Za-z0-9._-] becomes %XX
- * (decodeURIComponent undoes it). A plain replacement made `agent/x` and
- * `agent_x` share a file and kept `:`, which on NTFS names an alternate data
- * stream (0.23 audit, finding 17). Names longer than 120 characters keep a
- * readable prefix and a hash of the whole id, so they cannot collide either.
+ * (decodeURIComponent undoes it), so `agent/x` and `agent_x` never share a
+ * file and no `:` survives (on NTFS it names an alternate data stream). Names
+ * longer than 120 characters keep a readable prefix and a hash of the whole
+ * id, so they cannot collide either.
  */
 export function safeFileName(id: string): string {
   const enc = Array.from(id, ch => /[A-Za-z0-9._-]/.test(ch)
@@ -77,23 +77,21 @@ export function safeFileName(id: string): string {
 }
 
 /**
- * Derive the path for the store's public key registry.
- */
-/**
  * The one folder private signing keys live in: `PLUR_KEYS_DIR` if set, else
  * `<store>/keys`. `plur keys init`, `plur checkpoint` and the MCP session end
- * all resolve it here, so the key that was made is the key that signs (0.23
- * code review, finding 8: a `--keys-dir` flag on init alone wrote keys where
- * signing never looked).
+ * all resolve it here, so the key that was made is the key that signs.
  */
 export function keysDirFor(storeRoot: string): string {
   const env = process.env.PLUR_KEYS_DIR?.trim()
   // A relative value is taken relative to the store, never to whichever
   // directory a process happens to run in — `plur keys init` in a shell and the
-  // MCP server an editor starts must find the same keys (code review of 0.23, R10).
+  // MCP server an editor starts must find the same keys.
   return env ? resolve(storeRoot, env) : join(storeRoot, 'keys')
 }
 
+/**
+ * Derive the path for the store's public key registry.
+ */
 export function keysRegistryPath(storeRoot: string): string {
   return join(storeRoot, 'keys.yaml')
 }
@@ -260,8 +258,8 @@ export function lookupPublicKey(storeRoot: string, identity: string): string | n
  *
  * Idempotent: if the identity is already registered with the same public key,
  * the registry is left unchanged. If registered with a DIFFERENT key, the
- * entry is updated and the old key noted in a comment via the `added_at` field
- * (it is replaced, not appended — key rotation is a future concern, #1055 flags it).
+ * entry is replaced (not appended) and `added_at` updated; key rotation is
+ * not handled.
  *
  * The registry is written atomically (temp-file + rename).
  *
@@ -280,8 +278,7 @@ export function registerPublicKey(
   const registryPath = keysRegistryPath(storeRoot)
 
   // A registry that will not parse is refused, never replaced: starting from
-  // an empty list here deleted every other registered identity on the next
-  // `plur keys init` (0.23 audit, finding 15).
+  // an empty list here would delete every other registered identity.
   let registry: KeysRegistry
   try {
     registry = loadKeysRegistry(storeRoot)

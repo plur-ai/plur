@@ -1,7 +1,7 @@
 /**
- * Remove a known secret from text that is about to be shown (#1265, audit of
- * #1272). A server that answers with an error body can hand the caller's own
- * token back, and not always verbatim: a URL-encoded query echo, a JSON-escaped
+ * Remove a known secret from text that is about to be shown. A server that
+ * answers with an error body can hand the caller's own token back, and not
+ * always verbatim: a URL-encoded query echo, a JSON-escaped
  * field, or a base64 Basic-auth style blob all carry it. An exact-string scrub
  * misses every one of those, so each encoding is removed too.
  *

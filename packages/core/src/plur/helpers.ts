@@ -14,11 +14,10 @@ import type {
 
 
 /**
- * Sanitize a remote-served `forbid` list to the known SENSITIVITY_CATEGORIES
- * (scope-audit 2026-07-24). Belt-and-braces behind the /me schema validation:
- * persistScopeMetadata may receive discoveries built by other callers (tests,
- * future code paths), and a `forbid` that sanitizes to EMPTY would be maximal
- * loosening — so empty falls to the safe default, mirroring
+ * Sanitize a remote-served `forbid` list to the known SENSITIVITY_CATEGORIES.
+ * Belt-and-braces behind the /me schema validation: persistScopeMetadata may
+ * receive discoveries built by other callers, and a `forbid` that sanitizes to
+ * EMPTY would be maximal loosening — so empty falls to the safe default, mirroring
  * ScopeSensitivitySchema's preprocess. See the trust rule on
  * {@link Plur.persistScopeMetadata}.
  */
@@ -30,12 +29,11 @@ export function sanitizeForbidCategories(forbid: readonly string[]): Sensitivity
 
 
 /**
- * Key-order-insensitive JSON for VALUE-equality comparison (scope-audit
- * 2026-07-24). persistScopeMetadata's change-detector compares "what will be
- * persisted" against the loaded entry; a plain JSON.stringify is key-order
- * sensitive, and object spreads vs a zod re-parse can order the same keys
- * differently — which would report a phantom "change" forever (the exact
- * rewrite-every-session_start loop the detector exists to prevent). Arrays
+ * Key-order-insensitive JSON for VALUE-equality comparison.
+ * persistScopeMetadata's change-detector compares "what will be persisted"
+ * against the loaded entry; a plain JSON.stringify is key-order sensitive, and
+ * object spreads vs a zod re-parse can order the same keys differently, which
+ * would report a phantom change and rewrite config on every session start. Arrays
  * keep their order (element order is meaningful for covers/forbid).
  */
 export function stableJson(v: unknown): string {
@@ -47,30 +45,13 @@ export function stableJson(v: unknown): string {
 
 
 /**
- * LLM dedup circuit breaker (convergence Phase 2).
- *
- * Sliding window rather than a consecutive-failure counter: see
- * `_recordLlmSuccess`. The threshold of 3 is unchanged from the counter
- * version; the window is what makes it concurrency-safe. It is generous enough
- * (5 min) that three failures inside it still mean "the LLM is broken", and
- * short enough that three failures spread across an afternoon do not.
- */
-/**
- * Cap on the persisted outbox local→server id map.
- *
- * One row per remote write, forever, unless bounded. Sized so a busy install
- * keeps months of mappings while the file stays well under a megabyte —
- * comfortably more history than the queued-correction case that needs it.
- */
-/**
  * Total time an ambiguity guard may spend probing remotes, across ALL stores.
  *
  * The per-request bound (`fetchBounded`, 30s) stops one host hanging forever;
  * it does not stop N hosts costing N × 30s. These guards run INSIDE the primary
  * store lock, whose acquire budget is 180s — so four stalled remotes would
- * exhaust it and every waiting writer would throw "Failed to acquire lock",
- * which is the silent-lost-write failure the per-request bound was added to
- * close. A budget for the WHOLE walk is what actually bounds it.
+ * exhaust it and every waiting writer would throw "Failed to acquire lock".
+ * A budget for the WHOLE walk bounds it.
  *
  * 45s: comfortably above one healthy round-trip per store for a handful of
  * stores, comfortably below the lock budget even when every store is stalled.
@@ -84,6 +65,12 @@ export function stableJson(v: unknown): string {
 export const REMOTE_GUARD_BUDGET_MS = 45_000
 
 
+/**
+ * Cap on the persisted outbox local→server id map.
+ *
+ * One row per remote write, forever, unless bounded. Sized so a busy install
+ * keeps months of mappings while the file stays well under a megabyte.
+ */
 export const OUTBOX_ID_MAP_MAX = 5000
 
 
@@ -136,6 +123,14 @@ export function pidAlive(pid: number): boolean {
 }
 
 
+/**
+ * LLM dedup circuit breaker.
+ *
+ * Sliding window rather than a consecutive-failure counter (see
+ * `_recordLlmSuccess`); the window is what makes it concurrency-safe. It is
+ * generous enough (5 min) that three failures inside it still mean "the LLM is
+ * broken", and short enough that three failures spread across an afternoon do not.
+ */
 export const LLM_BREAKER_THRESHOLD = 3
 
 export const LLM_BREAKER_WINDOW_MS = 5 * 60 * 1000
@@ -143,7 +138,6 @@ export const LLM_BREAKER_WINDOW_MS = 5 * 60 * 1000
 export const LLM_BREAKER_COOLDOWN_MS = 60 * 60 * 1000
 
 
-/** Map engram type to default cognitive level (Idea 5). */
 /**
  * `LearnContext.related` as a list of ids. A plain string is one id; anything
  * else that is not an array of non-empty strings contributes nothing.
@@ -155,6 +149,7 @@ export function relatedIds(related: unknown): string[] {
 }
 
 
+/** Map engram type to default cognitive level. */
 export const TYPE_TO_COGNITIVE: Record<string, string> = {
   behavioral: 'apply',
   terminological: 'remember',
@@ -163,7 +158,7 @@ export const TYPE_TO_COGNITIVE: Record<string, string> = {
 }
 
 
-/** Default memory_class per engram type when the caller sets none (SP2 Idea 3). */
+/** Default memory_class per engram type when the caller sets none. */
 export const TYPE_TO_MEMORY_CLASS: Record<string, 'semantic' | 'episodic' | 'procedural' | 'metacognitive'> = {
   behavioral: 'semantic',
   terminological: 'semantic',
@@ -204,23 +199,19 @@ export const PUSHDOWN_OVERFETCH = 3
  * the shortfall is bounded and deterministic — recall returns what the last
  * 27x page yielded rather than escalating into an unbounded scan.
  *
- * Cost note, measured against the one shipping `role: 'primary'` adapter:
- * `PostgresAdapter.searchBM25` deliberately computes the FULL candidate set
+ * Cost note: `PostgresAdapter.searchBM25` computes the FULL candidate set
  * regardless of the fetch limit (its trigram prefilter cannot rank, so SQL
- * LIMIT before scoring would drop true positives). For that adapter a widening
- * round therefore re-runs an identical query to take a longer slice of an
- * answer it already computed — a 2–3x amplification exactly in the
- * high-rejection case, correctness-preserving but wasteful. The loop cannot
- * see this: `narrowed.length == fetch` is indistinguishable from "more rows
- * exist". An adapter-side exhaustion signal (return fewer than `fetch` when
- * the candidate set is complete) is the fix, tracked in #753.
+ * LIMIT before scoring would drop true positives), so a widening round re-runs
+ * an identical query to take a longer slice. On its own the loop cannot tell
+ * `narrowed.length == fetch` from "more rows exist"; adapters that report
+ * exhaustion (`searchBM25Exhaustive`) let it stop early.
  */
 export const PUSHDOWN_MAX_ROUNDS = 3
 
 
 /**
  * Rows per `listEngramsMissingEmbeddings` batch in the primary-store
- * auto-embed pass (#762). Bounds how much of the corpus is ever held in
+ * auto-embed pass. Bounds how much of the corpus is ever held in
  * memory by the pass — the pass itself runs to convergence, one batch at a
  * time, in the background. Each batch is a fresh anti-join, so concurrent
  * writers and a mid-pass crash both converge on the next pass.
@@ -230,16 +221,14 @@ export const PRIMARY_AUTO_EMBED_BATCH = 100
 
 /**
  * True when a background-pass error means "the store was torn down under
- * us", not "something is wrong" (#762 follow-up, caught by smoke-packaged).
+ * us", not "something is wrong".
  *
- * The auto-embed pass is fire-and-track, so a short-lived process — the
- * packaged smoke, a CLI invocation, any script that closes or drops its
- * store when its work is done — can legitimately tear the store down while
- * a pass is mid-flight. That is a benign cancellation: there is nothing to
- * fix, nothing to retry, and the next engine over a live store converges.
- * Reporting it as a background FAILURE (warning + `lastIndexError`) is
- * noise at best; at worst the stray warning lands after the process's real
- * output, which is exactly how the release smoke's last-line gate caught it.
+ * The auto-embed pass is fire-and-track, so a short-lived process (a CLI
+ * invocation, any script that closes or drops its store when its work is
+ * done) can legitimately tear the store down while a pass is mid-flight. That
+ * is a benign cancellation: nothing to fix or retry, and the next engine over
+ * a live store converges. Reporting it as a background failure would emit a
+ * stray warning, possibly after the process's real output.
  *
  * Patterns, each tied to a specific teardown path:
  *   - Postgres `42P01` (undefined_table) / `3F000` (invalid_schema_name):
@@ -256,25 +245,15 @@ export function isStoreTeardownError(err: unknown): boolean {
 }
 
 
-/**
- * The origin block, written only when the caller chose a licence (#970).
- *
- * The block is left off otherwise. A default licence written into every engram
- * would be indistinguishable from one somebody picked, and the whole point of
- * marking defaults is that the difference is visible.
- */
 /** How far back a derivation chain is followed before it is truncated. */
 export const MAX_CHAIN_DEPTH = 32
 
 
 /**
- * The ancestors of a new engram, nearest first (#958, spec §4.1).
+ * The ancestors of a new engram, nearest first.
  *
- * `chain` was the last of the four origin fields that nothing ever wrote — not
- * read anywhere, not written anywhere, for the whole life of the schema.
- *
- * It is a SHORTCUT, not the truth. Section 2.1 of the profile is explicit that
- * where the shortcut and the history log disagree, the log wins. It exists so a
+ * It is a SHORTCUT, not the truth: where the chain and the history log
+ * disagree, the log wins. It exists so a
  * reader can see the lineage without walking a log they may not have — which is
  * exactly the case for a portable record.
  *
@@ -308,12 +287,8 @@ export function buildChain(
 
 
 /**
- * The origin block, written when there is something to record in it.
- *
- * Was gated on a licence alone, which meant the other three fields could only
- * be written by somebody who happened to be licensing their memory — so `chain`
- * stayed empty even where the lineage was known. It is now written whenever any
- * of origin, chain or licence has content.
+ * The origin block, written whenever any of origin, chain or licence has
+ * content.
  *
  * A licence is still only recorded when somebody chose one. A default written
  * here would be indistinguishable from a decision, which is the whole point of
@@ -339,7 +314,7 @@ export function buildProvenanceBlock(
 
 
 /**
- * Assemble the attribution block for a new engram (#961).
+ * Assemble the attribution block for a new engram.
  *
  * Returns undefined when the caller supplied nothing, so the field is absent
  * rather than present-and-empty. We never invent a runtime, and we never read
@@ -359,9 +334,8 @@ export function buildAttribution(
   //   the user configured one    -> use that
   //   neither                    -> the `unidentified` marker, written OUT
   //
-  // Writing the marker rather than omitting the field is what makes the record
-  // honest. An absent field cannot be told apart from a record written before
-  // identity was captured at all; the marker says we looked and found nobody.
+  // An absent field cannot be told apart from a record written before identity
+  // was captured at all; the marker says we looked and found nobody.
   //
   // Never the operating system account. That writes a real person's name into
   // shared records because they installed software, not because they chose to
@@ -371,11 +345,10 @@ export function buildAttribution(
   // WHAT WROTE IT. Always recorded, because it is the one fact we always have:
   // software knows its own name.
   //
-  // No version here, deliberately. Core has no version constant, and adding one
-  // would create a seventeenth place `release.sh` has to bump — a standing cost
-  // for a value that is almost never the one a reader wants. Every real write
-  // arrives through a wrapper that DOES track its version (plur-mcp, plur-cli),
-  // and those pass name and version both; this is the honest floor beneath them.
+  // No version here, deliberately: core has no version constant, and adding one
+  // would be one more place `release.sh` has to bump. Every real write arrives
+  // through a wrapper that DOES track its version (plur-mcp, plur-cli) and
+  // passes name and version both; this is the floor beneath them.
   out.runtime = a?.runtime ?? { name: 'plur-core' }
 
   if (a?.model) out.model = a.model
@@ -385,14 +358,14 @@ export function buildAttribution(
 }
 
 
-/** Most remote ids `getByIds` fetches from one store in one call (#1318 review). */
+/** Most remote ids `getByIds` fetches from one store in one call. */
 export const GET_BY_IDS_REMOTE_CAP = 20
 
 
 /**
  * Reciprocal-rank-fusion score of `id` across ranked lists — the same formula
  * (`Σ 1/(k + rank + 1)`, k = 60) `hybrid-search.ts` `rrfMerge` sums. Used by
- * the PGLite recall path to report its top score (decision I4).
+ * the PGLite recall path to report its top score.
  */
 export function rrfScoreOf(id: string, lists: ReadonlyArray<ReadonlyArray<{ id: string }>>, k = 60): number {
   let score = 0
@@ -404,31 +377,28 @@ export function rrfScoreOf(id: string, lists: ReadonlyArray<ReadonlyArray<{ id: 
 }
 
 
-/** Budget for ONE live collision probe (0.21.1). Was the 30 s request deadline. */
+/** Budget (ms) for ONE live collision probe. */
 export const REMOTE_PROBE_TIMEOUT_MS = 5_000
 
 
 /**
  * Deadline for a routed save's server request when the caller sets none
- * (#1532 review F3): MCP plur_learn, learnBatch, the Claw and opencode
- * plugins. Past it the engram is saved here and queued in the outbox, so a
- * hanging server costs 10 s instead of the driver's 30 s. A request that lands
- * after the deadline is collapsed on retry by its idempotency key, which the
- * team server honours; a server that ignores the key could store it twice,
- * exactly as with the 30 s deadline before.
+ * (MCP plur_learn, learnBatch, the Claw and opencode plugins). Past it the
+ * engram is saved here and queued in the outbox, so a hanging server costs
+ * 10 s instead of the driver's 30 s. A request that lands after the deadline
+ * is collapsed on retry by its idempotency key, which the team server honours;
+ * a server that ignores the key could store it twice.
  */
 export const DEFAULT_REMOTE_WRITE_TIMEOUT_MS = 10_000
 
 
-/** Refusal from {@link Plur.addRemoteStore} (#1265). `code` is stable for
- *  callers; `message` never contains the token. */
-/** True for an in-memory entry expanded from a multi-scope server entry (#1631). */
+/** True for an in-memory entry expanded from a multi-scope server entry. */
 export function isFromServerEntry(entry: StoreEntry): boolean {
   return typeof serverEntryIdOf(entry) === 'string'
 }
 
 
-/** The identity of the server entry an in-memory entry was expanded from (#1631). */
+/** The identity of the server entry an in-memory entry was expanded from. */
 export function serverEntryIdOf(entry: StoreEntry): string | undefined {
   const id = (entry as unknown as Record<string, unknown>)[EXPANDED_FROM]
   return typeof id === 'string' ? id : undefined
@@ -446,7 +416,7 @@ export function stringList(v: unknown): string[] {
 }
 
 
-/** A raw config entry that {@link Plur.refreshServerScopes} may update (C6):
+/** A raw config entry that {@link Plur.refreshServerScopes} may update:
  *  an http(s) `url`, a `scopes` list and an `enterprise` block. */
 export function isEnterpriseServerEntry(raw: unknown): raw is Record<string, unknown> & { url: string } {
   return isPlainObject(raw) && typeof raw.url === 'string' && Array.isArray(raw.scopes) && isPlainObject(raw.enterprise)
@@ -454,7 +424,7 @@ export function isEnterpriseServerEntry(raw: unknown): raw is Record<string, unk
 
 
 /** scope → url for every remote entry whose normalized url is not `exceptUrl`:
- *  the scopes another server already serves (#1631). */
+ *  the scopes another server already serves. */
 export function scopesServedElsewhere(rawStores: unknown[], exceptUrl: string): Map<string, string> {
   const out = new Map<string, string>()
   for (const r of rawStores) {
@@ -466,8 +436,7 @@ export function scopesServedElsewhere(rawStores: unknown[], exceptUrl: string): 
 }
 
 
-/** The key a server entry's /me request is sent with, and its revision (#1631,
- *  Codex round 2 finding 1): the source (`token`, or `token_env:<NAME>`) plus a
+/** The key a server entry's /me request is sent with, and its revision: the source (`token`, or `token_env:<NAME>`) plus a
  *  sha256 fingerprint of the resolved key — never the key. An answer may land
  *  only on an entry whose revision is still the one it was requested with. */
 export function serverCredential(r: Record<string, unknown>): { token: string | undefined; tokenEnv: string | undefined; revision: string } {
@@ -481,15 +450,14 @@ export function serverCredential(r: Record<string, unknown>): { token: string | 
 
 
 /** The known fields of a server entry's `discovery` snapshot that an accepted
- *  answer replaces; every other key is kept as it is on disk (#1631, Codex
- *  round 2 finding 5). */
+ *  answer replaces; every other key is kept as it is on disk. */
 export const DISCOVERY_SNAPSHOT_KEYS = [
   'discovered_at', 'scopes_status', 'gitlab_host', 'project_paths', 'username',
   'org_id', 'key_expires_at', 'status', 'checked_at',
 ] as const
 
 
-/** How often an unchanged discovery answer refreshes its timestamp (#1631).
+/** How often an unchanged discovery answer refreshes its timestamp.
  *  Well inside the 7-day stale-cache limit, so an unchanged answer keeps the
  *  cache fresh while writing config.yaml at most once a day. */
 export const DISCOVERY_TIMESTAMP_REFRESH_MS = 24 * 60 * 60 * 1000
@@ -520,6 +488,8 @@ export function serverEntryScopeRefusal(scope: string, url: string): string {
 }
 
 
+/** Refusal from {@link Plur.addRemoteStore}. `code` is stable for
+ *  callers; `message` never contains the token. */
 export class AddRemoteStoreError extends Error {
   constructor(
     readonly code: 'invalid_url' | 'missing_token' | 'missing_scope' | 'auth_rejected' | 'unreachable' | 'scope_not_authorised' | 'scope_conflict',

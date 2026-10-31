@@ -35,14 +35,14 @@ export interface RecallMethods {
    *   - 'agentic': LLM-assisted semantic search, higher accuracy, requires llm function
    */
 /** Search engrams using fast BM25 keyword matching over the local corpus,
-   *  merged with the live server-authoritative remote leg (#776) when a
+   *  merged with the live server-authoritative remote leg when a
    *  configured remote host is implicated by the current project/work.
    *  `remote: false` (internal callers) or PLUR_REMOTE_RECALL=off keeps it
    *  fully local. */
 recall(query: string, options?: Omit<RecallOptions, 'mode' | 'llm'>): Promise<Engram[]>
 
 /**
-   * {@link recall}, plus what happened on THIS call (#1586): the remote leg's
+   * {@link recall}, plus what happened on THIS call: the remote leg's
    * state per host (`remote`), and whether the results are complete. Returns
    * within the recall deadline (`deadline_ms`, default
    * {@link DEFAULT_RECALL_DEADLINE_MS}) whatever the server or a store-lock
@@ -69,7 +69,7 @@ _primaryQueryAdapter(): StorageAdapter | null
 /** Search engrams using LLM-assisted semantic filtering. Async, requires llm function. */
 recallAsync(query: string, options: RecallOptions & { llm: LlmFunction }): Promise<Engram[]>
 
-/** Search engrams using local embeddings. Async, no API calls. Routes through PGLite/pgvector when active (#226) or a Postgres primary store's vector index (#762), with optional intent routing (#224) + cross-encoder rerank (#220). */
+/** Search engrams using local embeddings. Async, no API calls. Routes through PGLite/pgvector when active or a Postgres primary store's vector index, with optional intent routing + cross-encoder rerank. */
 recallSemantic(query: string, options?: Omit<RecallOptions, 'mode' | 'llm'>): Promise<Engram[]>
 
 /** Hybrid search: BM25 + embeddings merged via Reciprocal Rank Fusion. Async, no API calls. Delegates to recallHybridWithMeta so it gets intent/rerank/PGLite routing too. */
@@ -82,12 +82,12 @@ recallHybrid(query: string, options?: Omit<RecallOptions, 'mode' | 'llm'>): Prom
    */
 recallHybridWithMeta(query: string, options?: Omit<RecallOptions, 'mode' | 'llm'>): Promise<HybridSearchResult>
 
-/** Resolve the cross-encoder rerank options for a call (#220). */
+/** Resolve the cross-encoder rerank options for a call. */
 /** @internal */
 _resolveRerankOptions(rerank?: boolean): Promise<RerankOptions | undefined>
 
 /**
-   * Reranker-enable path advisory (#451): when this store's cached self-eval
+   * Reranker-enable path advisory: when this store's cached self-eval
    * says the resolved reranker is net-negative HERE, warn once per instance.
    * Never disables anything — the loud-once log is the whole intervention.
    */
@@ -95,7 +95,7 @@ _resolveRerankOptions(rerank?: boolean): Promise<RerankOptions | undefined>
 _maybeLogRerankerEvalAdvisory(rerankerName: string): Promise<void>
 
 /**
-   * Run the per-store reranker self-eval gate (#451): sample this store's own
+   * Run the per-store reranker self-eval gate: sample this store's own
    * engrams, synthesize probe queries from their statements, and compare the
    * cross-encoder's ordering against RRF-only. Returns the cached verdict when
    * fresh (same reranker, within the staleness bound, store size stable)
@@ -114,7 +114,7 @@ rerankerSelfEval(options?: {
   }): Promise<{ result: RerankerEvalResult; cached: boolean }>
 
 /**
-   * Read this store's cached reranker self-eval verdict (#451) without
+   * Read this store's cached reranker self-eval verdict without
    * running anything. Returns null when the store has never been evaluated
    * for the given (or env-resolved) reranker.
    */
@@ -122,7 +122,7 @@ rerankerEvalStatus(rerankerName?: string): Promise<{ result: RerankerEvalResult;
 
 /**
    * Probe whether the configured reranker produces useful signal on this
-   * store's engrams (#451). Scores same-domain vs cross-domain pairs and
+   * store's engrams. Scores same-domain vs cross-domain pairs and
    * returns a separability measure — callers use it to decide whether to
    * enable the reranker by default.
    *
@@ -131,12 +131,12 @@ rerankerEvalStatus(rerankerName?: string): Promise<{ result: RerankerEvalResult;
    */
 checkRerankerFit(opts?: { sampleSize?: number; rerankerName?: string }): Promise<FitCheckResult>
 
-/** Resolve the query-intent routing profile for a call (#224). undefined = no routing (general). */
+/** Resolve the query-intent routing profile for a call. undefined = no routing (general). */
 /** @internal */
 _resolveIntentProfile(query: string, intentOverride?: QueryIntent): { intent: QueryIntent; profile: IntentRoutingProfile } | undefined
 
 /**
-   * PGLite/pgvector hybrid recall (#226 B-1). Routes the vector portion through
+   * PGLite/pgvector hybrid recall. Routes the vector portion through
    * the persistent pgvector index, intersects hits against the YAML-rooted
    * `filtered` set (the yaml-as-truth defense — a DB-only row can't surface),
    * RRF-fuses with BM25, then applies the optional rerank. Falls back to the
@@ -146,7 +146,7 @@ _resolveIntentProfile(query: string, intentOverride?: QueryIntent): { intent: Qu
 _pgliteHybridRecall(query: string, limit: number, filtered: Engram[], rerank?: RerankOptions, restrict?: Pick<RecallOptions, 'scope' | 'scopes'>): Promise<HybridSearchResult>
 
 /**
-   * PGLite/pgvector semantic recall (#226 B-1). Vector search via pgvector,
+   * PGLite/pgvector semantic recall. Vector search via pgvector,
    * intersected with the YAML-rooted `filtered` set. Falls back to the JSON
    * cache on cold-start / embedder-unavailable / PGLite error.
    */
@@ -154,11 +154,9 @@ _pgliteHybridRecall(query: string, limit: number, filtered: Engram[], rerank?: R
 _pgliteSemanticRecall(query: string, limit: number, filtered: Engram[], restrict?: Pick<RecallOptions, 'scope' | 'scopes'>): Promise<Engram[]>
 
 /**
-   * Semantic recall pushed into a primary query store's vector index (#762) —
-   * the `recall()` pushdown's vector twin. Until this existed the Postgres
-   * tier answered `recallSemantic` by loading the corpus and embedding it in
-   * memory: the O(N) path the tier exists to escape, silently, because
-   * nothing populated `engram_embeddings` and nothing read it.
+   * Semantic recall pushed into a primary query store's vector index — the
+   * `recall()` pushdown's vector twin, so the Postgres tier does not load and
+   * embed the corpus in memory (the O(N) path the tier exists to escape).
    *
    * Shape mirrors `recall()`'s BM25 pushdown:
    *   - scope/scopes/visibilityGrants go INTO the k-NN query (dilution guard —
@@ -181,7 +179,7 @@ _pgliteSemanticRecall(query: string, limit: number, filtered: Engram[], restrict
    * the first semantic recall starts the backfill even if nothing was ever
    * written through this instance.
    *
-   * Deliberately WITHOUT `includeStale` (#812): a stale vector still returns
+   * Deliberately WITHOUT `includeStale`: a stale vector still returns
    * its engram, merely ranked by older text, so it is not the silent
    * incompleteness this gate is about. Opening the gate on staleness would put
    * every semantic recall on the O(N) fallback until the backfill drained —
@@ -198,14 +196,14 @@ embedderStatus(): EmbedderStatus
 resetEmbedder(): void
 
 /**
-   * Inspect reranker runtime state (#341) — engaged/failed counters and the
+   * Inspect reranker runtime state — engaged/failed counters and the
    * last failure with its classification (corrupt-cache vs unavailable).
    * Lets doctor/recall surface "reranking requested but not happening".
    */
 rerankerStatus(): RerankerRuntimeStatus
 
 /**
-   * Reset cached reranker state (#341) — adapter cache, load-pipeline cache,
+   * Reset cached reranker state — adapter cache, load-pipeline cache,
    * and the runtime failure tracker. The next rerank call retries the model
    * load from scratch (e.g. after purging a corrupt HF cache).
    */
@@ -237,35 +235,35 @@ _matchLegacyPackId(engrams: Engram[], id: string): Engram | null
    * The pack row a pack's OWN id names, for ids handed out before pack rows
    * got their pack ids (e.g. `ENG-PFR-001`). Reached only when no loaded row
    * carries `id` exactly, so an id one of my memories holds — active or
-   * forgotten — never leads to a pack row (PCK-4). Only when exactly one pack
+   * forgotten — never leads to a pack row. Only when exactly one pack
    * row carries it.
    */
 /** @internal */
 _matchPackOriginalId(engrams: Engram[], id: string): Engram | null
 
 /**
-   * The one loaded row an id in the OLD three-letter store form names, or
+   * The one loaded row an id in the legacy three-letter store form names, or
    * null. Only a dated server-form id qualifies (a pack id such as
    * `ENG-PFR-001` is not one), and only when exactly one loaded store row
    * answers to it: the old prefix was shared by every team store of an org,
-   * so two rows can answer to one old id, and then it names neither (H1).
+   * so two rows can answer to one old id, and then it names neither.
    */
 /** @internal */
 _matchOldFormId(engrams: Engram[], id: string): Engram | null
 
 /**
-   * Get several engrams by ID (#1310). The primary store is read by primary
+   * Get several engrams by ID. The primary store is read by primary
    * key; only ids it does not hold fall back to the full walk over stores and
    * packs, once. Ids that exist nowhere are simply absent from the result.
    *
    * Remote stores: the walk only peeks at their in-process cache, which is
    * empty in a fresh process (a hook). With `remoteCapability`, ids still
    * missing after the walk are fetched BY ID from each url store whose server
-   * advertises that capability, and whose namespace prefix the id carries
-   * (#1318 review). A store without the capability is never asked. Bounded:
+   * advertises that capability, and whose namespace prefix the id carries.
+   * A store without the capability is never asked. Bounded:
    * one GET per id (the REST surface has no batch-by-id route), in parallel,
    * at most {@link GET_BY_IDS_REMOTE_CAP} per store, each on the driver's
-   * bounded fetch. Without the option nothing is fetched — unchanged.
+   * bounded fetch. Without the option nothing is fetched.
    */
 getByIds(ids: string[], options?: { remoteCapability?: string }): Promise<Engram[]>
 
@@ -279,10 +277,9 @@ list(options?: { scope?: string; scopes?: string[]; domain?: string; min_strengt
    * Resolve once the work the constructor kicked off has finished.
    *
    * A constructor cannot await, so one-time migrations start in the background.
-   * While the write path was synchronous that was invisible — they completed
-   * before anything could observe otherwise. With an async store they do not,
-   * and a caller that depends on the migration having run (a test, a first
-   * read after upgrade) needs somewhere to wait.
+   * With an async store they may still be running, and a caller that depends
+   * on the migration having run (a test, a first read after upgrade) needs
+   * somewhere to wait.
    *
    * Cheap and idempotent: it is the same settled promise on every call.
    */
@@ -298,14 +295,14 @@ ready(): Promise<void>
    * have to run here, on the rows that came back.
    *
    * Deliberately a shared helper rather than a copy of the tail of
-   * `_filterEngrams`: two implementations of "which engrams count" is how the
-   * pushdown branch came to silently disagree with `list()` in the first place.
+   * `_filterEngrams`: two implementations of "which engrams count" would let
+   * the pushdown branch silently disagree with `list()`.
    */
 /** @internal */
 _applyResidualFilters(engrams: Engram[], options?: RecallOptions & { include_expired?: boolean }): Engram[]
 
 /**
-   * Mounted-scope visibility grants (#775): the deduplicated scopes of every
+   * Mounted-scope visibility grants: the deduplicated scopes of every
    * `config.yaml` `stores:` entry — path AND url entries alike. Mounting a
    * store with your own token is the consent act, so its scope passes a
    * project-scope VISIBILITY filter exactly like the personal family (see
@@ -321,23 +318,20 @@ _grantedScopes(): string[]
 
 /**
    * Candidates for the hybrid path — narrowed by the store when that is
-   * PROVABLY equivalent, otherwise the full filtered corpus (#906).
+   * PROVABLY equivalent, otherwise the full filtered corpus.
    *
-   * `recallHybridWithMeta` called `_filterEngrams()` unconditionally, and for a
-   * Postgres primary query store that is a full scan on every call: `indexTier`
-   * resolves to 'none' when a primary query store is present (ADR-0005 — such
-   * an adapter IS both the source of truth and the query engine), so it takes
-   * `_filterEngrams`'s else branch and loads everything. `plur_recall` defaults
-   * to hybrid, so that is one whole-corpus read per query, on exactly the
-   * deployment where a scan is expensive.
+   * For a Postgres primary query store, `_filterEngrams()` is a full scan:
+   * `indexTier` resolves to 'none' when a primary query store is present
+   * (ADR-0005 — such an adapter IS both the source of truth and the query
+   * engine), so it loads everything. `plur_recall` defaults to hybrid, so that
+   * would be one whole-corpus read per query.
    *
    * Narrowing before RRF would normally be a RECALL-QUALITY change — the vector
-   * leg can only rank what it is given — and would need a plur-bench number
-   * before shipping. This does not, because it narrows only when the adapter
+   * leg can only rank what it is given. This one is not, because it narrows only when the adapter
    * reports `exhausted`: the returned rows are then not a sample but everything
    * the store holds for that filter, so ranking over them is identical to
    * ranking over the full corpus BY CONSTRUCTION. Not exhausted, and it falls
-   * back to the previous behaviour untouched.
+   * back to `_filterEngrams`.
    *
    * The filters are passed through in full. `searchBM25Exhaustive` takes
    * `{ limit } & StorageFilter`, and StorageFilter carries every field
@@ -353,12 +347,12 @@ _hybridCandidates(query: string, options?: RecallOptions & { include_expired?: b
 _filterEngrams(options?: RecallOptions & { include_expired?: boolean }): Promise<Engram[]>
 
 /**
-   * The post-recall bookkeeping, held to the recall's deadline (#1586).
+   * The post-recall bookkeeping, held to the recall's deadline.
    *
    * Freshness bookkeeping is not the answer to the read, and a read must not
-   * queue behind a writer for it: the store lock waited up to 180 s
-   * (`DEFAULT_ACQUIRE_TIMEOUT`) behind another process's write or a sync. Now
-   * the lock is tried for {@link RECALL_BOOKKEEPING_LOCK_WAIT_MS}; if it is not
+   * queue behind a writer for it (a normal lock wait can be minutes, behind
+   * another process's write or a sync). So the lock is tried for
+   * {@link RECALL_BOOKKEEPING_LOCK_WAIT_MS}; if it is not
    * taken by then the refresh is skipped (the next recall of the same engrams
    * does it). Once the lock is held the write runs, but the reply waits for it
    * only until the deadline; past that it finishes in the background.
@@ -369,8 +363,8 @@ _filterEngrams(options?: RecallOptions & { include_expired?: boolean }): Promise
 _reactivateWithinDeadline(results: Engram[], deadlineAt: number): Promise<void>
 
 /**
-   * Run a bookkeeping write under the store lock, held to `deadlineAt`
-   * (#1586 re-audit N1) — the same rules as {@link _reactivateWithinDeadline}:
+   * Run a bookkeeping write under the store lock, held to `deadlineAt` — the
+   * same rules as {@link _reactivateWithinDeadline}:
    * the lock wait is at most {@link RECALL_BOOKKEEPING_LOCK_WAIT_MS} and never
    * longer than the time left; with no time left the write is skipped; past
    * the deadline it is abandoned (a lock that comes later is released at once,
@@ -381,7 +375,7 @@ _reactivateWithinDeadline(results: Engram[], deadlineAt: number): Promise<void>
 _bookkeepingWithinDeadline(deadlineAt: number | undefined, body: (tooLate: () => boolean) => Promise<void>): Promise<void>
 
 /** Reactivate accessed engrams and update co-access associations.
-   *  `lockWaitMs` (#1586): give up — skip the refresh — when the store lock is
+   *  `lockWaitMs`: give up — skip the refresh — when the store lock is
    *  not taken within that time. Unset: wait as every writer does. */
 /** @internal */
 _reactivateResults(results: Engram[], opts?: { lockWaitMs?: number; deadlineAt?: number; cancel?: { abandoned: boolean } }): Promise<void>
@@ -396,38 +390,25 @@ async recallWithMeta(query: string, options?: Omit<RecallOptions, 'mode' | 'llm'
     const deadlineAt = this._recallDeadlineAt(options)
     const limit = options?.limit ?? 20
 
-    // #776: start the remote leg BEFORE the local pipeline so the effective
+    // Start the remote leg BEFORE the local pipeline so the effective
     // added latency is max(0, remote − local), not remote + local.
     const remotePromise = this._startRemoteRecall(query, options, deadlineAt)
 
     const localLeg = async (): Promise<Engram[]> => {
 
-      // Push the search into the store when the store can answer it.
-      //
-      // Until now this always loaded the corpus into memory and ranked it here,
-      // which is correct at YAML scale and is the whole cost the Postgres tier
-      // exists to avoid. `searchBM25` and `corpusStats` were implemented and
-      // parity-tested against real Postgres but had ZERO call sites — built and
-      // unreachable. This is the wiring.
+      // Push the search into the store when the store can answer it, instead of
+      // loading the corpus into memory (the cost the Postgres tier exists to
+      // avoid).
       //
       // Scope, domain and the permitted-scope allow-list go INTO the query, so
       // `limit` is not spent on rows the caller may not see.
       //
-      // The rest of `_filterEngrams`'s work still has to happen, and an earlier
-      // version of this branch simply returned here — which silently dropped four
-      // things the in-memory path applies:
+      // The rest of `_filterEngrams`'s work still has to happen here:
       //
-      //   - temporal validity: an engram whose `valid_until` has passed was
-      //     returned as current. A fact explicitly withdrawn in 2020 was injected
-      //     into an agent's context by `recall()` while `list()` correctly
-      //     excluded it. Reproduced, not theorised.
+      //   - temporal validity (an expired engram must not be returned as current)
       //   - `min_strength`
       //   - engrams merged in from `config.stores` (team/enterprise stores)
       //   - pack engrams
-      //
-      // The last two are the ones that would have been reported as "recall is
-      // broken": on the Postgres tier `plur_recall` stopped returning the team
-      // store entirely, while `recallHybrid` on the SAME instance still did.
       //
       // The adapter cannot answer those — it queries one table and knows nothing
       // about packs, secondary stores, or the caller's clock. So the pushdown is
@@ -441,7 +422,7 @@ async recallWithMeta(query: string, options?: Omit<RecallOptions, 'mode' | 'llm'
           status: 'active' as const,
           scope: options?.scope,
           scopes: options?.scopes,
-          // Mounted-scope visibility grants (#775) go INTO the pushdown so
+          // Mounted-scope visibility grants go INTO the pushdown so
           // `limit` counts granted team rows too. Visibility-only — widens the
           // `scope` clause, never the `scopes` authorization clause.
           visibilityGrants: this._grantedScopes(),
@@ -463,16 +444,14 @@ async recallWithMeta(query: string, options?: Omit<RecallOptions, 'mode' | 'llm'
         let surviving: Engram[] = []
         let fetch = Math.max(limit * PUSHDOWN_OVERFETCH, limit)
         for (let round = 0; round < PUSHDOWN_MAX_ROUNDS; round++) {
-          // #753: prefer the exhaustion-aware call when the adapter offers one.
+          // Prefer the exhaustion-aware call when the adapter offers one.
           //
           // `narrowed.length < fetch` is the only exhaustion signal core can
           // derive, and it is wrong for an adapter whose prefilter cannot rank:
           // PostgresAdapter computes and scores the FULL candidate set and slices
-          // to `limit` here, so a full page means "your slice was full", not
-          // "there is more". The loop then re-ran an identical query up to three
-          // times to take a longer slice of an answer already computed — a 2-3x
-          // amplification, concentrated in the high-rejection case the widening
-          // exists to serve, at the scale that selects this tier.
+          // to `limit`, so a full page means "your slice was full", not "there is
+          // more" — the loop would re-run an identical query to take a longer
+          // slice of an answer already computed.
           let exhausted = false
           if (adapter.searchBM25Exhaustive) {
             const res = await adapter.searchBM25Exhaustive(query, { ...pushdownFilter, limit: fetch })
@@ -492,35 +471,27 @@ async recallWithMeta(query: string, options?: Omit<RecallOptions, 'mode' | 'llm'
         const extra = this._applyResidualFilters(outsiders, options)
         let results: Engram[]
         if (extra.length > 0) {
-          // Rank the union TOGETHER, rather than appending the outsiders.
-          //
-          // This used to be `[...narrowed, ...extra].slice(0, limit)`, which puts
-          // every secondary-store and pack engram after every primary one. With a
-          // primary store holding `limit` matches — the normal case — a team
-          // engram that is the single best match for the query never appeared at
-          // all. The bug is invisible from the primary store's side: results come
-          // back, they are just the wrong ones.
+          // Rank the union TOGETHER, rather than appending the outsiders:
+          // appended, a team engram that is the best match would never appear
+          // whenever the primary store holds `limit` matches (the normal case).
           //
           // Scored with the UNION's statistics: the store supplies corpus-wide
           // figures for the primary side, and `extendCorpusStats` folds the
           // outsiders in exactly — they are already materialised in memory, so
           // their `df`/length contributions cost one tokenisation pass.
           //
-          // The first version of this ranking scored the union with primary-only
-          // stats and called the outsiders' IDF "an approximation". It was not a
-          // bounded one: a query term absent from the primary corpus priced at
-          // log(N/1) — maximally rare regardless of how common it is in the
-          // store it actually lives in — and team-store jargon is by nature
-          // common there and absent here. Measured: the single best primary
-          // match for a mixed query ranked 197th behind 196 weak outsider rows.
+          // Primary-only stats are not a bounded approximation: a query term
+          // absent from the primary corpus would price at log(N/1) — maximally
+          // rare regardless of how common it is in the store it lives in.
+          //
           // The fold takes the PRE-residual outsiders, deliberately asymmetric
           // with the `extra` that gets ranked: the primary side's `corpusStats`
           // counts every active row — SQL cannot evaluate expiry or
           // min_strength — so folding only residual-surviving outsiders would
           // describe a hybrid corpus (full primary + filtered outsiders) and
           // under-weight outsider vocabulary whenever outsiders are expired or
-          // weak. Both sides now contribute the same population: post-scope,
-          // pre-residual (#752, iteration 2).
+          // weak. Both sides contribute the same population: post-scope,
+          // pre-residual.
           const queryTokens = ftsTokenize(query)
           const primaryStats = adapter.corpusStats
             ? await adapter.corpusStats(queryTokens, pushdownFilter)
@@ -539,7 +510,7 @@ async recallWithMeta(query: string, options?: Omit<RecallOptions, 'mode' | 'llm'
       return searchEngrams(filtered, query, limit)
     }
 
-    // #1586: the local search is bounded by the same deadline. Past it the
+    // The local search is bounded by the same deadline. Past it the
     // reply carries what the remote leg returned and says the local part is
     // missing; the abandoned search finishes (read-only) in the background.
     const local = await settleBy(localLeg(), deadlineAt)
@@ -563,7 +534,7 @@ _primaryQueryAdapter(): StorageAdapter | null {
   },
 
 async recallAsync(query: string, options: RecallOptions & { llm: LlmFunction }): Promise<Engram[]> {
-    // remote-only: no model sees the query or the team's text (Codex round 5 on #1663).
+    // remote-only: no model sees the query or the team's text.
     if (this._activeBinding()) return await this.recall(query, options)
     const filtered = await this._filterEngrams(options)
     const limit = options?.limit ?? 20
@@ -574,7 +545,7 @@ async recallAsync(query: string, options: RecallOptions & { llm: LlmFunction }):
 
 async recallSemantic(query: string, options?: Omit<RecallOptions, 'mode' | 'llm'>): Promise<Engram[]> {
     const limit = options?.limit ?? 20
-    // remote-only: no reranker model either (Codex round 3).
+    // remote-only: no reranker model either.
     const rerank = this._remoteOnly ? null : await this._resolveRerankOptions(options?.rerank)
     const intent = this._resolveIntentProfile(query, options?.intentOverride)
     // Two over-fetch sources stack: intent routing wants headroom for its
@@ -589,7 +560,7 @@ async recallSemantic(query: string, options?: Omit<RecallOptions, 'mode' | 'llm'
       // remote-only: rank the read corpus in memory by keyword. The index and
       // the primary adapter hold the personal store, and no embedder is used
       // here: a cloud one would receive the query and team text, a local one
-      // keeps their vectors in this machine's cache (Codex round 3).
+      // keeps their vectors in this machine's cache.
       const filtered = await this._filterEngrams(options)
       results = searchEngrams(filtered, isQueryRewriteDisabled() ? query : rewriteLexicalQuery(query), fetchLimit)
     } else if (this.pgliteAdapter) {
@@ -618,7 +589,7 @@ async recallHybrid(query: string, options?: Omit<RecallOptions, 'mode' | 'llm'>)
     const limit = options?.limit ?? 20
     const result = await this.recallHybridWithMeta(query, options)
     if (result.engrams.length === 0 && result.local_complete === false) {
-      // A bare array cannot say it is incomplete; the log can (R1).
+      // A bare array cannot say it is incomplete; the log can.
       logger.warning('[plur] recall: the local search did not load its candidates within the recall deadline — this empty result is incomplete, not "no matches".')
     }
     return result.engrams.slice(0, limit)
@@ -626,14 +597,14 @@ async recallHybrid(query: string, options?: Omit<RecallOptions, 'mode' | 'llm'>)
 
 async recallHybridWithMeta(query: string, options?: Omit<RecallOptions, 'mode' | 'llm'>): Promise<HybridSearchResult> {
     const deadlineAt = this._recallDeadlineAt(options)
-    // #776: remote leg starts BEFORE the local pipeline (added latency =
+    // Remote leg starts BEFORE the local pipeline (added latency =
     // max(0, remote − local)); merged below via RRF.
     const remotePromise = this._startRemoteRecall(query, options, deadlineAt)
     const limit = options?.limit ?? 20
     // Stops the abandoned local search's remaining work — the embeddings
-    // cache save in particular — once the deadline has passed (#1586 audit L3).
+    // cache save in particular — once the deadline has passed.
     const localAbort = new AbortController()
-    // #1586 round 3 (R1): what the local leg has so far, so the deadline never
+    // What the local leg has so far, so the deadline never
     // empties it — the candidates once loaded, and the fused ranking once the
     // embedding leg is done (only the reranker can still be late then).
     let candidates: Engram[] | undefined
@@ -650,14 +621,14 @@ async recallHybridWithMeta(query: string, options?: Omit<RecallOptions, 'mode' |
       reranked: 0,
     })
     const localLeg = async (): Promise<HybridSearchResult> => {
-      // #906: narrowed by the store when provably equivalent, else the full read.
+      // Narrowed by the store when provably equivalent, else the full read.
       const filtered = await this._hybridCandidates(query, options)
       candidates = filtered
-      // remote-only: keyword ranking only, no embedder (Codex round 3; see recallSemantic).
+      // remote-only: keyword ranking only, no embedder (see recallSemantic).
       if (this._remoteOnly) {
         return { engrams: searchEngrams(filtered, isQueryRewriteDisabled() ? query : rewriteLexicalQuery(query), limit), mode: 'bm25-only', embedderError: null, topScore: null, reranked: 0 }
       }
-      // A recall never downloads the model (#1586 rounds 3-4): when it is not
+      // A recall never downloads the model: when it is not
       // on disk, answer by keyword and say how to get it (`plur doctor`).
       if (await semanticModelState() === 'missing') {
         semanticSkipped = 'embedding_model_missing'
@@ -692,11 +663,11 @@ async recallHybridWithMeta(query: string, options?: Omit<RecallOptions, 'mode' |
       }
       return result
     }
-    // #1586: the local pipeline (store load, embedder, reranker) is bounded by
+    // The local pipeline (store load, embedder, reranker) is bounded by
     // the same deadline. Past it the reply carries the remote rows and says
     // the local part is missing; the abandoned search finishes in the background.
     const local = await settleBy(localLeg(), deadlineAt)
-    // Past the deadline (R1): keep what the local leg already has — the fused
+    // Past the deadline: keep what the local leg already has — the fused
     // ranking if only the reranker was late, else keyword results over the
     // loaded candidates. Only when even the candidates were not loaded in time
     // is the local part empty, and the reply says so (`local_complete: false`).
@@ -712,7 +683,7 @@ async recallHybridWithMeta(query: string, options?: Omit<RecallOptions, 'mode' |
     let result: HybridSearchResult = local.done
       ? local.value!
       : lateFallback ?? { engrams: [], mode: 'bm25-only', embedderError: null, topScore: null, reranked: 0 }
-    // #776: fold the server leg in (RRF) before reactivation so displaced
+    // Fold the server leg in (RRF) before reactivation so displaced
     // local rows are not reactivated and server rows rank on merged order.
     const mergedLegs = await this._mergeRemoteRecall(result.engrams, remotePromise, options, limit, deadlineAt)
     result = {
@@ -724,7 +695,7 @@ async recallHybridWithMeta(query: string, options?: Omit<RecallOptions, 'mode' |
     }
     // Belt-and-suspenders: all inner paths apply slice(0, limit) before
     // returning, but recallHybridWithMeta is called directly by the MCP layer
-    // (#770) and lacks the outer guard that recallHybrid() adds. Note
+    // and lacks the outer guard that recallHybrid() adds. Note
     // _mergeRemoteRecall only slices when the remote leg returned rows — on the
     // common local-only path it returns the local result unsliced. Enforce here
     // so no over-fetch floor (Math.max(N, 50) for reranker/aggregation paths)
@@ -733,18 +704,17 @@ async recallHybridWithMeta(query: string, options?: Omit<RecallOptions, 'mode' |
       result = { ...result, engrams: result.engrams.slice(0, limit) }
     }
     await this._reactivateWithinDeadline(result.engrams, deadlineAt)
-    // WS5 demand flywheel: a zero-result or low-top-score recall is a demand
-    // signal. Emit an anonymized, content-free miss-signal (query fingerprint +
-    // scope/domain + timestamp; never the raw query). Opt-in/default-off and
-    // fire-and-forget — never disturbs the recall path. Both backends report
-    // the RRF fusion top score (decision I4 — the PGLite path returned null,
-    // which read as `no_results` whenever it found something).
+    // A zero-result or low-top-score recall is a demand signal. Emit an
+    // anonymized, content-free miss-signal (query fingerprint + scope/domain +
+    // timestamp; never the raw query). Opt-in/default-off and fire-and-forget —
+    // never disturbs the recall path. Both backends report the RRF fusion top
+    // score, so they classify the same way.
     //
     // One retrieval leg (embeddings off by choice, or the embedder failed —
-    // `mode` is not 'hybrid'): the threshold (I3, 0.025) sits between 1/61 and
+    // `mode` is not 'hybrid'): the threshold (0.025) sits between 1/61 and
     // 2/61 and is calibrated for TWO legs, so every non-empty one-leg recall
-    // would read as `low_score`. Offer only `no_results` then (follow-up to
-    // I3, round 2): a weak one-leg top hit is not evidence of a miss.
+    // would read as `low_score`. Offer only `no_results` then: a weak one-leg
+    // top hit is not evidence of a miss.
     const oneLeg = result.mode !== 'hybrid'
     if (!(oneLeg && result.engrams.length > 0)) {
       void emitMissSignal({
@@ -797,7 +767,7 @@ async rerankerSelfEval(options?: {
     /** Re-run even when a fresh cached verdict exists. */
     force?: boolean
   }): Promise<{ result: RerankerEvalResult; cached: boolean }> {
-    // remote-only: the evaluation runs the models over the corpus (Codex round 5 on #1663).
+    // remote-only: the evaluation runs the models over the corpus.
     if (this._activeBinding()) throw this._remoteOnlyError('local-store', undefined, 'Evaluating the reranker')
     const name = options?.reranker ?? resolveRerankerName()
     if (name === 'off') {
@@ -863,16 +833,13 @@ async _pgliteHybridRecall(query: string, limit: number, filtered: Engram[], rera
     try {
     // The scope restriction goes INTO the k-NN query, not onto its results.
     //
-    // This used to fetch an unrestricted neighbour list and intersect it with
-    // the already-filtered set afterwards. That is the dilution failure
-    // `ScopeRestriction` exists to prevent: `limit` is spent on rows the caller
-    // may not be permitted to see, so a principal whose permitted scopes are a
-    // small share of the corpus asks for N results and silently gets far fewer,
-    // with relevant permitted rows sitting just below the cut. The intersection
-    // kept it CORRECT — nothing out of scope was ever returned — but it made it
-    // INCOMPLETE, which is the harder failure to notice.
+    // Intersecting an unrestricted neighbour list afterwards stays correct but
+    // is INCOMPLETE: `limit` is spent on rows the caller may not see, so a
+    // principal whose permitted scopes are a small share of the corpus asks
+    // for N results and silently gets far fewer (the dilution failure
+    // `ScopeRestriction` exists to prevent).
     //
-    // `scope` + mounted-scope visibilityGrants (#775) go in for the same
+    // `scope` + mounted-scope visibilityGrants go in for the same
     // reason: `filtered` already honours them, so a k-NN restricted to
     // `scopes` alone spends `limit` on rows the intersection below is about
     // to discard — and a granted team engram never surfaces via the vector
@@ -892,18 +859,17 @@ async _pgliteHybridRecall(query: string, limit: number, filtered: Engram[], rera
       return hybridSearchWithMeta(filtered, query, limit, this.paths.root, rerank)
     }
     const bm25Limit = Math.min(filtered.length, wantReranker ? Math.max(limit * 3, 50) : limit * 3)
-    // #224 remainder: the lexical leg gets the deterministic rewrite, same
+    // The lexical leg gets the deterministic rewrite, same
     // as the YAML-path hybridSearchWithMeta. Vector leg + reranker keep the
     // original query.
     const lexicalQuery = isQueryRewriteDisabled() ? query : rewriteLexicalQuery(query)
     const bm25Results = searchEngrams(filtered, lexicalQuery, bm25Limit)
     const merged = pgliteRrfMerge([bm25Results, pgHits])
-    // Decision I4 "rrf" (2026-09-26): report the top candidate's RRF fusion
-    // score, captured BEFORE the rerank exactly as hybridSearchWithMeta does,
-    // so the miss-signal classifies a PGLite recall the same way as a YAML one.
-    // It was null here, and classifyMiss reads null-with-results as
-    // `no_results` — every PGLite recall that FOUND something was reported as
-    // a miss. Same k (60) and the same two lists the merge just fused.
+    // Report the top candidate's RRF fusion score, captured BEFORE the rerank
+    // exactly as hybridSearchWithMeta does, so the miss-signal classifies a
+    // PGLite recall the same way as a YAML one (classifyMiss reads
+    // null-with-results as `no_results`). Same k (60) and the same two lists
+    // the merge just fused.
     const topScore = merged.length > 0 ? rrfScoreOf(merged[0].id, [bm25Results, pgHits]) : null
     const reranked = await applyReranker(merged, query, rerank)
     const mode: HybridSearchResult['mode'] = status.disabled ? 'bm25-only' : 'hybrid'
@@ -920,16 +886,13 @@ async _pgliteSemanticRecall(query: string, limit: number, filtered: Engram[], re
     try {
     // The scope restriction goes INTO the k-NN query, not onto its results.
     //
-    // This used to fetch an unrestricted neighbour list and intersect it with
-    // the already-filtered set afterwards. That is the dilution failure
-    // `ScopeRestriction` exists to prevent: `limit` is spent on rows the caller
-    // may not be permitted to see, so a principal whose permitted scopes are a
-    // small share of the corpus asks for N results and silently gets far fewer,
-    // with relevant permitted rows sitting just below the cut. The intersection
-    // kept it CORRECT — nothing out of scope was ever returned — but it made it
-    // INCOMPLETE, which is the harder failure to notice.
+    // Intersecting an unrestricted neighbour list afterwards stays correct but
+    // is INCOMPLETE: `limit` is spent on rows the caller may not see, so a
+    // principal whose permitted scopes are a small share of the corpus asks
+    // for N results and silently gets far fewer (the dilution failure
+    // `ScopeRestriction` exists to prevent).
     //
-    // `scope` + mounted-scope visibilityGrants (#775) go in for the same
+    // `scope` + mounted-scope visibilityGrants go in for the same
     // reason: `filtered` already honours them, so a k-NN restricted to
     // `scopes` alone spends `limit` on rows the intersection below is about
     // to discard — and a granted team engram never surfaces via the vector
@@ -961,8 +924,8 @@ async _primarySemanticRecall(adapter: StorageAdapter, query: string, limit: numb
       embeddingSearch(await this._filterEngrams(options), query, limit, this.paths.root)
     const { embed } = await import('../embeddings.js')
     const queryVec = await embed(query, 'query')
-    // Embedder disabled or unavailable: exactly the degraded path this method
-    // replaced — embeddingSearch reports [] without an embedder, never throws.
+    // Embedder disabled or unavailable: the in-memory degraded path —
+    // embeddingSearch reports [] without an embedder, never throws.
     if (!queryVec) return fallback()
     try {
       if (typeof adapter.listEngramsMissingEmbeddings === 'function') {
@@ -1017,7 +980,7 @@ resetReranker(): void {
   },
 
 async similaritySearch(query: string, options?: { limit?: number; scope?: string; domain?: string }): Promise<SimilarityResult[]> {
-    // remote-only: no embedder, so no similarity scores (Codex round 4 on #1663).
+    // remote-only: no embedder, so no similarity scores.
     if (this._activeBinding()) return []
     const filtered = await this._filterEngrams(options)
     const limit = options?.limit ?? 20
@@ -1025,7 +988,7 @@ async similaritySearch(query: string, options?: { limit?: number; scope?: string
   },
 
 async recallExpanded(query: string, options: RecallOptions & { llm: LlmFunction }): Promise<Engram[]> {
-    // remote-only: no model and no embedder (Codex round 5 on #1663).
+    // remote-only: no model and no embedder.
     if (this._activeBinding()) return await this.recall(query, options)
     const filtered = await this._filterEngrams(options)
     const limit = options?.limit ?? 20
@@ -1035,7 +998,7 @@ async recallExpanded(query: string, options: RecallOptions & { llm: LlmFunction 
   },
 
 async recallAutoSearch(query: string, options?: RecallOptions): Promise<AutoSearchResult> {
-    // remote-only: keyword search only, no model and no embedder (Codex round 5 on #1663).
+    // remote-only: keyword search only, no model and no embedder.
     if (this._activeBinding()) return { results: await this.recall(query, options), strategy_used: 'bm25' }
     const filtered = await this._filterEngrams(options)
     const limit = options?.limit ?? 20
@@ -1045,13 +1008,13 @@ async recallAutoSearch(query: string, options?: RecallOptions): Promise<AutoSear
   },
 
 async getById(id: string): Promise<Engram | null> {
-    // remote-only: personal rows are not found (audit of #1521, B2).
+    // remote-only: personal rows are not found.
     const engrams = this._remoteOnly ? await this._remoteOnlyVisible() : await this._loadAllEngrams()
     const exact = engrams.find(e => e.id === id)
     if (exact) return exact
-    // A reference another store holds to one of my primary rows (audit 6 N2).
-    // The same visibility as the bare id: none in remote-only mode (B2), and a
-    // save queued from a remote-only folder is never returned (#1663).
+    // A reference another store holds to one of my primary rows. The same
+    // visibility as the bare id: none in remote-only mode, and a save queued
+    // from a remote-only folder is never returned.
     const ns = parseNamespacedId(id)
     if (ns && !this._remoteOnly && ns.prefix === storePrefix(this._primaryRefScope())) {
       const own = withoutRemoteOnlyQueued(await this._loadCached(this.paths.engrams)).find(e => e.id === ns.bare)
@@ -1083,10 +1046,10 @@ _matchPackOriginalId(engrams: Engram[], id: string): Engram | null {
   },
 
 _matchOldFormId(engrams: Engram[], id: string): Engram | null {
-    // An id in the old three-letter store form (releases up to 0.21.0) still
-    // finds its engram — but only when exactly one loaded row carries it. The
-    // old prefix was shared by every team store of an org, so two rows can
-    // answer to one old id; then it names neither (0.21.1 audit, H1).
+    // An id in the legacy three-letter store form still finds its engram — but
+    // only when exactly one loaded row carries it. The legacy prefix is shared
+    // by every team store of an org, so two rows can answer to one old id;
+    // then it names neither.
     const ns = parseNamespacedId(id)
     if (!ns) return null
     const matches = engrams.filter(e => {
@@ -1103,7 +1066,7 @@ async getByIds(ids: string[], options?: { remoteCapability?: string }): Promise<
     const wanted = [...new Set(ids.filter(Boolean))]
     if (wanted.length === 0) return []
     if (this._remoteOnly) {
-      // remote-only: team rows, packs and queued saves only (audit of #1521, B2).
+      // remote-only: team rows, packs and queued saves only.
       const visible = (await this._remoteOnlyVisible()).filter(e => wanted.includes(e.id))
       const seen = new Set(visible.map(e => e.id))
       const missing = wanted.filter(id => !seen.has(id))
@@ -1112,7 +1075,7 @@ async getByIds(ids: string[], options?: { remoteCapability?: string }): Promise<
         : []
       return [...visible, ...remote]
     }
-    // Unbound, a queued remote-only save is not returned (Codex round 11 on #1663).
+    // Unbound, a queued remote-only save is not returned.
     const primary = withoutRemoteOnlyQueued((await this._loadTargeted(wanted)).filter(e => wanted.includes(e.id)))
     const found = new Set(primary.map(e => e.id))
     let missing = wanted.filter(id => !found.has(id))
@@ -1121,7 +1084,7 @@ async getByIds(ids: string[], options?: { remoteCapability?: string }): Promise<
     const rest = all.filter(e => missing.includes(e.id))
     for (const e of rest) found.add(e.id)
     missing = missing.filter(id => !found.has(id))
-    // Injection records written by 0.21.0 hold old-form team ids; the row is
+    // Older injection records hold legacy-form team ids; the row is
     // handed back under the id asked for, as the remote leg below does.
     for (const id of missing) {
       const m = this._matchOldFormId(all, id)
@@ -1148,10 +1111,10 @@ async _fetchRemoteByIds(ids: string[], capability: string): Promise<Engram[]> {
     const taken = new Set<string>()
     for (const entry of (this.config.stores ?? [])) {
       if (!entry.url) continue
-      // remote-only: only the folder's own team store (re-audit of #1521, C-3).
+      // remote-only: only the folder's own team store.
       if (this._remoteOnly && (entry.scope !== this._remoteOnly.scope || !this._isDeliverableTeamScope(entry.scope))) continue
       const prefixRe = new RegExp(`^(ENG|ABS|META)-${storePrefix(entry.scope)}-`)
-      // An old-form (0.21.0) id names this store only when no other url
+      // A legacy-form id names this store only when no other url
       // store shares its old prefix; then its bare form is asked for.
       const oldPrefix = legacyStorePrefix(entry.scope)
       const oldIsMine = (this.config.stores ?? []).filter(e => !!e.url && legacyStorePrefix(e.scope) === oldPrefix).length === 1
@@ -1170,7 +1133,7 @@ async _fetchRemoteByIds(ids: string[], capability: string): Promise<Engram[]> {
       }))
       for (const hit of rows) {
         if (!hit) continue
-        // remote-only: a personal row on the team host is not this folder's (Codex round 3).
+        // remote-only: a personal row on the team host is not this folder's.
         if (this._remoteOnly && hit.row.scope !== 'global' && !(this._isDeliverableTeamScope(hit.row.scope) && isScopeWithin(hit.row.scope, entry.scope))) continue
         taken.add(hit.id)
         const cloned = { ...hit.row } as Engram & { _originalId?: string; _storeScope?: string }
@@ -1193,12 +1156,12 @@ async ready(): Promise<void> {
   },
 
 _applyResidualFilters(engrams: Engram[], options?: RecallOptions & { include_expired?: boolean }): Engram[] {
-    // A query adapter's rows never include a queued remote-only save (Codex round 11 on #1663).
+    // A query adapter's rows never include a queued remote-only save.
     let out = withoutRemoteOnlyQueued(engrams)
     if (!options?.include_expired) {
-      // #1150: instants compared as instants. The lexical form this replaces
+      // Instants compared as instants, not lexically: a lexical compare would
       // read `valid_until: 2026-09-07T01:00:00Z` as still valid at noon that
-      // day, and a `valid_from` of the same shape as not yet reached.
+      // day.
       const nowMs = Date.now()
       out = out.filter(e => isCurrentlyValid(e.temporal, nowMs))
     }
@@ -1226,8 +1189,8 @@ async _hybridCandidates(query: string, options?: RecallOptions & { include_expir
         })
         if (narrowed.exhausted) return withoutRemoteOnlyQueued(narrowed.rows)
       } catch {
-        // A pushdown failure must never fail a recall — fall back to the read
-        // that has always worked.
+        // A pushdown failure must never fail a recall — fall back to the
+        // in-memory read.
       }
     }
     return await this._filterEngrams(options)
@@ -1240,7 +1203,7 @@ async _filterEngrams(options?: RecallOptions & { include_expired?: boolean }): P
         status: 'active',
         scope: options?.scope,
         scopes: options?.scopes,
-        // Mounted-scope visibility grants (#775) — widen the `scope`
+        // Mounted-scope visibility grants — widen the `scope`
         // VISIBILITY clause only; a no-op without `scope`, and never touches
         // the `scopes` authorization pushdown above.
         visibilityGrants: this._grantedScopes(),
@@ -1249,16 +1212,15 @@ async _filterEngrams(options?: RecallOptions & { include_expired?: boolean }): P
     } else {
       const adapter = this._remoteOnly ? null : this._primaryQueryAdapter()
       if (adapter && typeof adapter.loadFiltered === 'function' && !this.pgliteAdapter) {
-        // #906: primary-store adapter (e.g. Postgres) supports server-side
+        // Primary-store adapter (e.g. Postgres) supports server-side
         // filtered load. Use it instead of _loadAllEngrams + in-memory filter:
         // one scoped query replaces a full table read on every recallHybrid call.
         //
         // The `typeof loadFiltered` check is LOAD-BEARING, not defensive noise:
         // _primaryQueryAdapter() duck-types on role + searchBM25 only, so a
-        // store can qualify while implementing just the query surface —
-        // ReadonlyStoreGuard forwarded exactly that subset before it learned to
-        // forward loadFiltered, and #903's hybrid-pushdown test mock still
-        // does. Such a store must take the fallback read below, not crash here.
+        // store can qualify while implementing just the query surface (a test
+        // mock, say). Such a store must take the fallback read below, not
+        // crash here.
         //
         // `!pgliteAdapter` is a BELT, not a live branch: the two cannot both be
         // set. `pgliteAdapter` is constructed only when `indexTier === 'pglite'`,
@@ -1296,7 +1258,7 @@ async _filterEngrams(options?: RecallOptions & { include_expired?: boolean }): P
       engrams = await this._readCorpus()
       engrams = engrams.filter(e => e.status === 'active')
       if (options?.scopes !== undefined) {
-        // Permitted-scope allow-list (Phase 3). The in-memory twin of the SQL
+        // Permitted-scope allow-list. The in-memory twin of the SQL
         // `scope = ANY($n)` pushdown, so the YAML path can never be the one
         // read path that silently ignores an authorization filter. EXACT
         // membership; `[]` matches nothing — see scopeAllowFilter.
@@ -1307,13 +1269,13 @@ async _filterEngrams(options?: RecallOptions & { include_expired?: boolean }): P
         engrams = engrams.filter(e => e.domain?.startsWith(options.domain!))
       }
       if (options?.scope) {
-        // Read-side scope filter (#353/#775) — the ONE shared visibility
+        // Read-side scope filter — the ONE shared visibility
         // predicate. Segment-aware containment keeps the `startsWith` arm so
         // an explicit personal scope like `user:alice` still catches
         // sub-scopes (e.g. `user:alice:notes`). `isPersonalScope` passes ALL
         // personal-family scopes (local, global, user:*, agent:*), not just
         // global — so a project-scope recall sees personal engrams. Mounted
-        // store scopes (#775) pass the same way. D1-ASYMMETRY: an explicit
+        // store scopes pass the same way. Asymmetry: an explicit
         // `global` recall therefore includes all personal-family engrams —
         // wider than `global` inject, which is targeted to global-only (see
         // inject.ts INJECT_GLOBAL_IS_TARGETED).
@@ -1325,21 +1287,21 @@ async _filterEngrams(options?: RecallOptions & { include_expired?: boolean }): P
     // Temporal validity: exclude expired or not-yet-valid engrams.
     // `include_expired` opts out — callers that need dedup-identity parity
     // with learn()'s content-hash gate (which ignores temporal validity,
-    // e.g. the migration import engine, #441) must see the full active set.
+    // e.g. the migration import engine) must see the full active set.
     if (!options?.include_expired) {
-      // #1150: one evaluator, shared with _applyResidualFilters and injection.
+      // One evaluator, shared with _applyResidualFilters and injection.
       const nowMs = Date.now()
       engrams = engrams.filter(e => isCurrentlyValid(e.temporal, nowMs))
     }
     if (options?.min_strength !== undefined) {
       engrams = engrams.filter(e => e.activation.retrieval_strength >= options.min_strength!)
     }
-    // Unbound, a queued remote-only save is never a result (gate review of #1663).
+    // Unbound, a queued remote-only save is never a result.
     return withoutRemoteOnlyQueued(engrams)
   },
 
 async _reactivateWithinDeadline(results: Engram[], deadlineAt: number): Promise<void> {
-    // The lock wait is bounded by the time left (#1586 audit L3), so the lock
+    // The lock wait is bounded by the time left, so the lock
     // is never taken after the reply; with no time left the refresh is skipped.
     const remaining = deadlineAt - Date.now()
     if (!(remaining > 0)) return
@@ -1378,12 +1340,11 @@ async _bookkeepingWithinDeadline(deadlineAt: number | undefined, body: (tooLate:
   },
 
 async _reactivateResults(results: Engram[], opts?: { lockWaitMs?: number; deadlineAt?: number; cancel?: { abandoned: boolean } }): Promise<void> {
-    // Read-only instance: SKIP the activation refresh, silently (#731). Recall
-    // is a read and must succeed on a read-only engine; the write it piggy-
-    // backs (retrieval_strength / last_accessed / frequency / co-access edges)
-    // is freshness bookkeeping, not the answer. Refusing the whole recall
-    // because the bookkeeping is forbidden would make the read wrong — exactly
-    // the failure mode #731 warned about — so the results are returned as-is
+    // Read-only instance: SKIP the activation refresh, silently. Recall is a
+    // read and must succeed on a read-only engine; the write it piggybacks
+    // (retrieval_strength / last_accessed / frequency / co-access edges) is
+    // freshness bookkeeping, not the answer. Refusing the whole recall because
+    // the bookkeeping is forbidden would make the read wrong, so the results are returned as-is
     // and the refresh is deferred to the next writable instance that recalls
     // them. Returning before the lock also keeps a pure read from creating
     // `.lock` files.
@@ -1398,7 +1359,7 @@ async _reactivateResults(results: Engram[], opts?: { lockWaitMs?: number; deadli
       (e as any)._originalId || /^(ENG|ABS|META)-[A-Z]{3}(?:[A-Z]{8})?-/.test(e.id)
     const primaryResults = results.filter(e => !isStoreEngram(e))
     if (primaryResults.length === 0) return
-    // Bounded lock wait (#1586). The file-lock wait gives up by itself at
+    // Bounded lock wait. The file-lock wait gives up by itself at
     // `acquireTimeout`; a wait in the in-process queue, or on a store's own
     // exclusive access, is cut by `abandoned`: when the lock finally comes,
     // the refresh is skipped and the lock released at once.
@@ -1430,35 +1391,26 @@ async _reactivateResults(results: Engram[], opts?: { lockWaitMs?: number; deadli
       // `_writeEngrams`, which is a FULL REPLACE — so a store implementing
       // `loadByIds` alone (a perfectly reasonable thing to implement first)
       // would delete its entire corpus except the current page of results, on
-      // an ordinary read. No in-tree store does that today; the interface
-      // invites it.
+      // an ordinary read.
       const canTarget = Boolean(store.loadByIds && store.updateMany)
       const allEngrams = canTarget
         ? await store.loadByIds!([...resultIds])
         : await this._primaryStore.load()
       const today = new Date().toISOString().slice(0, 10)
-      // WHICH engrams changed, not merely whether any did.
-      //
-      // This wrote the whole corpus back on every read — activation is updated
-      // on each recall, and `_writeEngrams` is a full replace. Measured on
-      // Postgres: 252ms for 2,000 engrams, extrapolating to ~6.3s at 50,000,
-      // which is the corpus size at which that tier is selected in the first
-      // place. All of it under the global write lock, so every writer queued
-      // behind every reader.
-      //
-      // A recall touches a handful of rows. Tracking them lets a store that
-      // supports targeted updates write only those.
+      // WHICH engrams changed, not merely whether any did. A recall touches a
+      // handful of rows; tracking them lets a store that supports targeted
+      // updates write only those instead of the whole corpus, under the global
+      // write lock, on every read.
       const touched = new Map<string, Engram>()
 
       // Reactivate accessed engrams.
       //
-      // TRAFFIC and QUALITY are separate signals here (#846). `frequency`
-      // counts retrievals and `last_accessed` carries recency — which is what
-      // decay actually keys on, so a frequently-recalled engram still resists
-      // decay. `retrieval_strength` is deliberately NOT touched: it moves only
-      // on deliberate feedback now, because when retrieval moved it too the
-      // traffic term structurally outvoted the quality term (+0.10 per fetch
-      // against +0.05 per ★) and saturated at 1.0 within three recalls.
+      // TRAFFIC and QUALITY are separate signals here. `frequency` counts
+      // retrievals and `last_accessed` carries recency — which is what decay
+      // actually keys on, so a frequently-recalled engram still resists decay.
+      // `retrieval_strength` is deliberately NOT touched: it moves only on
+      // deliberate feedback, otherwise retrieval traffic would outvote quality
+      // feedback and saturate it within a few recalls.
       for (const e of allEngrams) {
         if (resultIds.has(e.id)) {
           e.activation.retrieval_strength = reactivate(e.activation.retrieval_strength)
@@ -1520,7 +1472,7 @@ async _reactivateResults(results: Engram[], opts?: { lockWaitMs?: number; deadli
         await store.updateMany!([...touched.values()])
       } else {
         // A single-file store has no cheaper option — the whole file is
-        // rewritten either way, so this is the same cost it always was.
+        // rewritten either way.
         await this._writeEngrams(this.paths.engrams, allEngrams)
       }
       await this._syncIndex()

@@ -1,12 +1,12 @@
 // Opt-in telemetry gate.
 //
-// Resolution order (last writer wins on ties; only `on` activates the gate):
+// Resolution order (first match wins; only `on` activates the gate):
 //   1. PLUR_TELEMETRY env var — `on` | `off` (any other value is treated as unset)
 //   2. Persisted preference at ~/.plur/telemetry.json — { enabled: boolean }
 //   3. Default: 'off' (non-interactive installs never opt in implicitly)
 //
-// This file is the gate only. No counters, no flush, no transport — those land
-// in follow-up commits behind a state of `on`. See docs/telemetry-design.md.
+// This module only decides whether telemetry is on; it collects and sends
+// nothing. See docs/telemetry-design.md.
 
 import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'

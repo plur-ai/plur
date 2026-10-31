@@ -4,7 +4,7 @@ import { normalizeEndpointUrl } from './store/remote-store.js'
 import { scopeOrg } from './remote-recall.js'
 
 /**
- * Where a write to a scope goes (#1631). ONE answer, read by write routing,
+ * Where a write to a scope goes. ONE answer, read by write routing,
  * the leak guard's remote-backed check and the delivery report, so the three
  * can never disagree about whether a save leaves this machine.
  */
@@ -20,8 +20,8 @@ export type ScopeTarget =
 
 /**
  * A scope claimed by two servers. Thrown by the write path before anything is
- * saved, and by the explicit-scope id lookups (forget, feedback, setPinned;
- * #1633 row 34) before any server is asked: `outcome` says what did not happen.
+ * saved, and by the explicit-scope id lookups (forget, feedback, setPinned)
+ * before any server is asked: `outcome` says what did not happen.
  */
 export class ScopeConflictError extends Error {
   readonly scope: string
@@ -86,7 +86,7 @@ function remoteOf(group: StoreEntry[]): ScopeTarget {
  * Rules, in order:
  * 1. A personal `user:` scope that exactly names a store → the ONE selected
  *    entry (`personalStoreEntry`: local first, then writable url, then
- *    readonly url; #1515 unchanged).
+ *    readonly url).
  * 2. Exact-scope url entries, grouped by server. Two or more servers →
  *    `conflict`; one → `remote`.
  * 3. No exact url entry, but a company server (an entry with an `enterprise`

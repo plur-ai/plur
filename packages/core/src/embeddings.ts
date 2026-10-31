@@ -16,24 +16,20 @@ import { logger } from './logger.js'
  * through the embedder factory at packages/core/src/embedders/index.ts.
  *
  * Default model: BGE-small-en-v1.5 (MIT, 384d, ~130 MB on disk q8).
- * EmbeddingGemma was briefly promoted to default in Sprint 0 PR 5 (#219) but
- * the iter-1 audit (B-2) reverted the default pending Phase C LongMemEval-S
- * evidence — see docs/audit/sprint-0/iter-1-gaps-consolidated.md and
- * docs/benchmarks/embedder-bake-off-2026-05.md. EmbeddingGemma is still
- * available via PLUR_EMBEDDER=embedding-gemma. Opt-in API tier:
+ * EmbeddingGemma is available via PLUR_EMBEDDER=embedding-gemma. Opt-in API tier:
  * `openai-3-large` (text-embedding-3-large, 3072d) — requires OPENAI_API_KEY.
  *
  * Embeddings are cached per-engram using content hashing to avoid
  * re-computation on subsequent searches. The cache file is stamped with the
  * active embedder name + dim; on mismatch the cache is invalidated and
- * rebuilt (Sprint 0 iter-2 B-1, closes RC-3).
+ * rebuilt.
  */
 
 /**
- * Dimension of the DEFAULT embedder (bge-small → 384). Exported for backward
- * compatibility with #289/#290.
+ * Dimension of the DEFAULT embedder (bge-small → 384). Kept for backward
+ * compatibility.
  *
- * NOTE (#335): the embedder is pluggable via PLUR_EMBEDDER, so the dimension of
+ * NOTE: the embedder is pluggable via PLUR_EMBEDDER, so the dimension of
  * vectors this install actually produces is NOT fixed at this value —
  * bge-base / embedding-gemma are 768, openai-3-large is 3072. Any backend that
  * persists vectors MUST size its column to the **active** embedder's dim,
@@ -127,7 +123,7 @@ export function resetEmbedder(): void {
 
 /**
  * Test-only: install a stub adapter as the active embedder so tests can
- * exercise the embed()/activeEmbedderDim() contracts (#335) without a
+ * exercise the embed()/activeEmbedderDim() contracts without a
  * model load. Mirrors rerankers' `_setCachedReranker`. Production code
  * never calls this; pair with `resetEmbedder()` in afterEach.
  */
@@ -151,10 +147,8 @@ async function getEmbedder() {
   // Loads are cheap once the model is cached; failures are rare and
   // transient (network, sandbox restrictions on first download).
   try {
-    // Sprint 0 PR 4: route through the embedder factory so PLUR_EMBEDDER
-    // controls which model is loaded. Default is bge-small (Sprint 0 iter-2
-    // B-2 revert) when the env var is unset, so existing installs are
-    // unchanged. EmbeddingGemma stays opt-in until Phase C produces evidence.
+    // Route through the embedder factory so PLUR_EMBEDDER controls which
+    // model is loaded. Default is bge-small when the env var is unset.
     const { getEmbedder: getAdapter, resolveEmbedderName } = await import('./embedders/index.js')
     const adapter = getAdapter(resolveEmbedderName())
     embedPipeline = adapter
@@ -169,7 +163,7 @@ async function getEmbedder() {
 }
 
 /**
- * Can the semantic leg answer now? (#1586 audit rounds 3-4, R1)
+ * Can the semantic leg answer now?
  *
  * - `ready`: the model is loaded in this process.
  * - `cached`: on disk (in the model cache, or under transformers.js's
@@ -196,15 +190,14 @@ export async function semanticModelState(): Promise<'ready' | 'cached' | 'missin
 /** Are the model's files on disk where a load would read them? Null when the
  *  embedder cannot say. The adapter checks weights, tokenizer, config and any
  *  external-data chunks, per file, in the cache it would use and under
- *  `localModelPath` (#1586 rounds 5-6). */
+ *  `localModelPath`. */
 async function modelPresent(embedder: { modelPresent?: () => Promise<boolean | null> }): Promise<boolean | null> {
   if (typeof embedder.modelPresent !== 'function') return null
   try { return await embedder.modelPresent() } catch { return null }
 }
 
 /**
- * The one download policy, for every path that loads the model (#1586 round 5,
- * L-learn): recall, injection, and the learn-time near-duplicate check and
+ * The one download policy, for every path that loads the model: recall, injection, and the learn-time near-duplicate check and
  * auto-indexing. With downloads off (HF_HUB_OFFLINE, TRANSFORMERS_OFFLINE,
  * PLUR_MODEL_DOWNLOAD=off, allowRemoteModels=false) a model that is not on
  * disk is not loaded at all, so nothing is fetched.
@@ -245,7 +238,7 @@ export function _resetBackgroundModelLoad(): void {
 const truthy = (v: string | undefined): boolean => !!v && ['1', 'true', 'yes', 'on'].includes(v.trim().toLowerCase())
 
 /** Downloads are off: HF_HUB_OFFLINE / TRANSFORMERS_OFFLINE, PLUR_MODEL_DOWNLOAD=off,
- *  the process inferred it is offline (TEAM-5, offline.ts), or transformers.js
+ *  the process inferred it is offline (offline.ts), or transformers.js
  *  configured with `allowRemoteModels = false`. */
 async function modelDownloadDisabled(): Promise<boolean> {
   if (downloadsOff()) return true
@@ -278,9 +271,8 @@ export async function embed(text: string, role?: EmbedRole): Promise<Float32Arra
     lastLoadError = 'the embedding model is not on disk and downloads are off — run `plur doctor` with network access to download it'
     return null
   }
-  // When the cached value is an EmbedderAdapter (PR 4 path) it has an .embed
-  // method; the legacy code path stored the raw transformers pipeline. Branch
-  // on shape so the swap is backward-compatible in tests that stub the cache.
+  // An EmbedderAdapter has an .embed method; older test stubs store the raw
+  // transformers pipeline. Branch on shape so both work.
   if (typeof embedder.embed === 'function') {
     let vector: Float32Array | null
     try {
@@ -291,11 +283,10 @@ export async function embed(text: string, role?: EmbedRole): Promise<Float32Arra
       embedPipeline = null
       return null
     }
-    // Dimension-drift check (#290 generalized to the active embedder, #335):
-    // the adapter declares its dim; if the live model produces a different
-    // length, persisted vectors would silently corrupt. Throw OUTSIDE the catch
-    // so it surfaces — degrading this to null would re-introduce the exact
-    // silent drift the contract prevents.
+    // Dimension-drift check: the adapter declares its dim; if the live model
+    // produces a different length, persisted vectors would silently corrupt.
+    // Throw OUTSIDE the catch so it surfaces — degrading this to null would
+    // hide the drift.
     if (vector && typeof embedder.dim === 'number' && vector.length !== embedder.dim) {
       throw new Error(
         `Embedding dimension mismatch: embedder "${embedder.name}" declares ${embedder.dim} dims ` +
@@ -320,8 +311,7 @@ async function getActiveEmbedderMeta(): Promise<{ name: string; dim: number } | 
   if (typeof embedder.name === 'string' && typeof embedder.dim === 'number') {
     return { name: embedder.name, dim: embedder.dim }
   }
-  // Legacy pipeline shape — pre-PR-4 raw transformers pipeline (only seen in
-  // older test stubs). Fall back to a sentinel that won't match any real
+  // Raw transformers pipeline shape (only seen in older test stubs). Fall back to a sentinel that won't match any real
   // adapter, so the cache invalidates conservatively.
   return { name: 'legacy-pipeline', dim: 0 }
 }
@@ -329,8 +319,8 @@ async function getActiveEmbedderMeta(): Promise<{ name: string; dim: number } | 
 /**
  * The dimension of vectors the ACTIVE embedder produces (per PLUR_EMBEDDER).
  * This — not the `EMBED_DIM` default constant — is the value an external store
- * must size its vector column to, so it never drifts from what core writes
- * (#335). Returns null when embeddings are disabled or the embedder failed to
+ * must size its vector column to, so it never drifts from what core writes.
+ * Returns null when embeddings are disabled or the embedder failed to
  * load (no vectors will be produced, so there is nothing to size to).
  */
 export async function activeEmbedderDim(): Promise<number | null> {
@@ -354,11 +344,11 @@ interface EmbeddingCacheEntries {
 }
 
 /**
- * Cache file format (iter-2 audit B-1/B-3).
+ * Cache file format.
  *
  * v1 stamps the file with the active embedder's name + dim. On load, if the
  * meta header differs from the active embedder, the cache is invalidated and
- * rebuilt. Backward-compat: the pre-iter-2 flat-object format
+ * rebuilt. The legacy flat-object format
  * `{ [engramId]: { hash, embedding } }` is detected by the absence of `meta`
  * and treated as a hard mismatch (no data loss — cache rebuilds from YAML on
  * the same call).
@@ -400,8 +390,7 @@ function loadCache(cachePath: string, active: { name: string; dim: number }): Em
 }
 
 /**
- * The vectors saved since the cache file was last rewritten (#1586 round 6,
- * L2): one JSON line per vector, appended. A cut-off recall appends only what
+ * The vectors saved since the cache file was last rewritten: one JSON line per vector, appended. A cut-off recall appends only what
  * it computed, instead of rewriting a cache file that grows with the store;
  * a completed search or the background fill folds the lines back into the
  * main file. A line cut short by a killed process is skipped.
@@ -426,7 +415,7 @@ function applyDelta(cache: EmbeddingCache, cachePath: string, active: { name: st
   }
 }
 
-/** Short, bounded lock around cache writes (#1586 round 6, L1): about 150 ms
+/** Short, bounded lock around cache writes: about 150 ms
  *  of retries; when it cannot be taken the save is skipped (the vectors are
  *  recomputed later), never waited out. */
 const CACHE_LOCK_OPTS = { maxRetries: 4, baseDelay: 10 }
@@ -450,7 +439,7 @@ function appendEntries(cachePath: string, meta: { name: string; dim: number }, e
   return withCacheLock(cachePath, () => {
     const dp = deltaPath(cachePath)
     // A line cut short by a killed process has no newline: start on a fresh
-    // line, so it never swallows this record (#1586 round 7, D-1).
+    // line, so it never swallows this record.
     appendFileSync(dp, (endsTorn(dp) ? '\n' : '') + lines)
   })
 }
@@ -473,7 +462,7 @@ function endsTorn(path: string): boolean {
 }
 
 /** Compact once the delta file passes this size, whether or not a search
- *  ever completes (#1586 round 7, D-2). About 1,000 vectors of 384 floats. */
+ *  ever completes. About 1,000 vectors of 384 floats. */
 const DEFAULT_DELTA_COMPACT_BYTES = 8 * 1024 * 1024
 let deltaCompactBytes = DEFAULT_DELTA_COMPACT_BYTES
 
@@ -489,7 +478,7 @@ function compactIfLarge(cachePath: string, meta: { name: string; dim: number }, 
   let size = 0
   try { size = statSync(dp).size } catch { return }
   if (size <= deltaCompactBytes) return
-  // Only this model's records count (#1586 round 8, R8-2): records of
+  // Only this model's records count: records of
   // another model are kept by every fold, so counting them would fold on
   // every search.
   if (ownDeltaBytes(dp, meta) <= deltaCompactBytes) return
@@ -517,8 +506,8 @@ function ownDeltaBytes(dp: string, meta: { name: string; dim: number }): number 
   return bytes
 }
 
-/** Estimated cost of a fold per MB of cache (main + delta). Round 6 measured
- *  about 0.4 s for 37 MB; this keeps a margin. */
+/** Estimated cost of a fold per MB of cache (main + delta). A fold of 37 MB
+ *  takes about 0.4 s; this keeps a margin. */
 const DEFAULT_FOLD_COST_MS_PER_MB = 25
 let foldCostMsPerMb = DEFAULT_FOLD_COST_MS_PER_MB
 let thresholdFolds = 0
@@ -556,8 +545,7 @@ function compactCache(cachePath: string, meta: { name: string; dim: number }, ex
     const onDisk = loadCache(cachePath, meta)
     onDisk.entries = { ...onDisk.entries, ...extra }
     saveCache(cachePath, onDisk)
-    // Records of another model or dimension stay in the delta (#1586 round
-    // 7, D-3): during a model switch, a process still on the old model must
+    // Records of another model or dimension stay in the delta: during a model switch, a process still on the old model must
     // not throw away the new model's vectors.
     const dp = deltaPath(cachePath)
     let others: string[] = []
@@ -577,12 +565,12 @@ function compactCache(cachePath: string, meta: { name: string; dim: number }, ex
   })
 }
 
-/** Test seam (#1586 round 7, D-3). */
+/** Test seam. */
 export function _compactEmbeddingCache(cachePath: string, meta: { name: string; dim: number }): boolean {
   return compactCache(cachePath, meta)
 }
 
-/** Test seam / child-process entry (#1586 round 6, L1). */
+/** Test seam / child-process entry. */
 export function _appendEmbeddingCacheEntries(cachePath: string, meta: { name: string; dim: number }, entries: EmbeddingCacheEntries): boolean {
   return appendEntries(cachePath, meta, entries)
 }
@@ -618,7 +606,7 @@ function saveCache(cachePath: string, cache: EmbeddingCache): void {
   if (dir && !existsSync(dir)) mkdirSync(dir, { recursive: true })
   // Derived state: every vector here is recomputable from the corpus, so the
   // fsync is pure cost. Losing this cache to a power cut costs a re-embed, not
-  // data (audit #794, F4).
+  // data.
   atomicWrite(cachePath, JSON.stringify(cache), { durable: false })
 }
 
@@ -629,7 +617,7 @@ function hashStatement(statement: string): string {
 /**
  * Merge externally-obtained vectors into the on-disk embeddings cache.
  *
- * The #1046 PGLite→SQLite migration's write half: vectors verified fresh
+ * Used by the PGLite→SQLite migration: vectors verified fresh
  * against the CURRENT engram text are folded into the cache under this
  * module's own key discipline (`hashStatement` of the search text), so the
  * yaml/sqlite tiers serve them exactly as if they had been computed here.
@@ -640,9 +628,8 @@ function hashStatement(statement: string): string {
  * the import (equal `hashStatement` of the search text): then the live embed
  * path already wrote a vector at least as fresh. An existing entry keyed to
  * OTHER text is stale — the caller verified the import against the engram's
- * current text — so the import replaces it; keeping it threw the verified
- * vector away and forced the re-embed this merge exists to avoid (formal R2,
- * core-retrieval#12). Returns how many entries were written.
+ * current text — so the import replaces it, avoiding a needless re-embed.
+ * Returns how many entries were written.
  */
 export function mergeEmbeddingsIntoCache(
   storagePath: string,
@@ -660,19 +647,17 @@ export function mergeEmbeddingsIntoCache(
   }
   const written = Object.keys(fresh).length
   if (written === 0) return 0
-  // Under the cache lock, with the delta folded in first and then removed
-  // (#1586 round 7, D-4): an older delta record can never be applied over an
+  // Under the cache lock, with the delta folded in first and then removed: an older delta record can never be applied over an
   // imported vector afterwards. Lock busy: nothing written, imported later.
   return compactCache(cachePath, active, fresh) ? written : 0
 }
 
 /**
- * Keeps the vectors an embedding search computes (#1586 round 5, R3).
+ * Keeps the vectors an embedding search computes.
  *
- * A recall cut off by its deadline used to throw them away, so a store without
- * an embedding cache started again at its first engram on every recall and
- * never became hybrid. Now they are saved — atomically (tmp + rename) — at the
- * moment the caller stops waiting (synchronously, inside the abort, so the
+ * Without this, a recall cut off by its deadline would discard them and a
+ * store without an embedding cache would never become hybrid. They are saved
+ * — atomically (tmp + rename) — at the moment the caller stops waiting (synchronously, inside the abort, so the
  * write lands before the reply and before a short-lived process exits), and
  * again when the search ends. Each cut-off recall makes progress.
  */
@@ -697,12 +682,12 @@ function cacheProgress(cachePath: string, cache: EmbeddingCache, signal?: AbortS
   return {
     added: (id: string) => {
       pending[id] = cache.entries[id]
-      // Save in steps while embedding (L2): what is left for the deadline is
+      // Save in steps while embedding: what is left for the deadline is
       // small, whatever the size of the cache.
       if (Object.keys(pending).length >= PROGRESS_FLUSH_EVERY || Date.now() - lastFlush > PROGRESS_FLUSH_MS) {
         flush()
         // Still inside the search (not at the deadline): the place to fold a
-        // delta that has grown past the threshold (D-2).
+        // delta that has grown past the threshold.
         compactIfLarge(cachePath, meta, deadlineAt)
       }
     },
@@ -722,14 +707,13 @@ const PROGRESS_FLUSH_EVERY = 100
 const PROGRESS_FLUSH_MS = 2000
 
 /**
- * Embed every engram the cache does not hold yet, saving as it goes (#1586
- * round 5, R3). Run in the background, once, by a long-lived process that
+ * Embed every engram the cache does not hold yet, saving as it goes. Run in the background, once, by a long-lived process that
  * opted in ({@link allowBackgroundModelLoad}) when a recall found the cache
  * incomplete. Stops at the first failure (model missing and downloads off,
  * load error); never retried. Returns how many vectors it added.
  */
 export async function fillEmbeddingCache(engrams: Engram[], storagePath?: string): Promise<number> {
-  // A queued remote-only save is never embedded or cached (gate review of #1663).
+  // A queued remote-only save is never embedded or cached.
   engrams = withoutRemoteOnlyQueued(engrams)
   const activeMeta = await getActiveEmbedderMeta()
   if (!activeMeta) return 0
@@ -762,9 +746,9 @@ export function backgroundModelLoadAllowed(): boolean {
   return backgroundModelLoadAllowed_
 }
 
-/** Options for the embedding searches (#1586 audit L3). */
+/** Options for the embedding searches. */
 export interface EmbeddingSearchOptions {
-  /** The recall's deadline (epoch ms, #1586 round 8): a fold of the cache's
+  /** The recall's deadline (epoch ms): a fold of the cache's
    *  delta file runs during the search only when it fits before it. */
   deadlineAt?: number
   /** Aborted when the caller stopped waiting (a recall past its deadline):
@@ -784,7 +768,7 @@ export async function embeddingSearch(
   storagePath?: string,
   opts?: EmbeddingSearchOptions,
 ): Promise<Engram[]> {
-  // A queued remote-only save is never embedded or cached (gate review of #1663).
+  // A queued remote-only save is never embedded or cached.
   engrams = withoutRemoteOnlyQueued(engrams)
   if (engrams.length === 0) return []
 
@@ -808,7 +792,6 @@ export async function embeddingSearch(
     return []
   }
 
-  // Embed engrams (with caching)
   const vectors: Array<{ engram: Engram; v: Float32Array }> = []
   const progress = cacheProgress(cachePath, cache, opts?.signal, opts?.deadlineAt)
 
@@ -818,7 +801,6 @@ export async function embeddingSearch(
     let engramEmbedding: Float32Array
 
     if (cache.entries[engram.id]?.hash === hash) {
-      // Cache hit
       engramEmbedding = new Float32Array(cache.entries[engram.id].embedding)
     } else {
       // Cache miss — compute embedding from enriched text. Nobody is waiting
@@ -914,7 +896,7 @@ export async function embeddingSearchWithScores(
   storagePath?: string,
   opts?: EmbeddingSearchOptions,
 ): Promise<SimilarityResult[]> {
-  // A queued remote-only save is never embedded or cached (gate review of #1663).
+  // A queued remote-only save is never embedded or cached.
   engrams = withoutRemoteOnlyQueued(engrams)
   if (engrams.length === 0) return []
 
@@ -927,14 +909,12 @@ export async function embeddingSearchWithScores(
     : '.embeddings-cache.json'
   const cache = loadCache(cachePath, activeMeta)
 
-  // Embed the query
   const queryEmbedding = await embed(query, 'query')
   if (!queryEmbedding) {
     // Embeddings unavailable — return empty (caller should fall back to BM25)
     return []
   }
 
-  // Embed engrams (with caching)
   const similarities: SimilarityResult[] = []
   const progress = cacheProgress(cachePath, cache, opts?.signal, opts?.deadlineAt)
 
@@ -944,7 +924,6 @@ export async function embeddingSearchWithScores(
     let engramEmbedding: Float32Array
 
     if (cache.entries[engram.id]?.hash === hash) {
-      // Cache hit
       engramEmbedding = new Float32Array(cache.entries[engram.id].embedding)
     } else {
       // Cache miss — compute embedding from enriched text. Nobody is waiting

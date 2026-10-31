@@ -1,40 +1,36 @@
-// Per-event counters for telemetry (slice D-2a of #51).
+// Per-event counters for telemetry.
 //
 // Pure file-local plumbing: increment hooks at plur_learn / plur_recall_hybrid
 // success persist to ~/.plur/telemetry-counters.json. NO network code lives here;
-// transport is D-2b's territory and imports getCounters/resetCounters from this
-// module.
+// transport (telemetry-flush) imports getCounters/resetCounters from this module.
 //
 // Privacy invariant: every public function MUST short-circuit on
 // !isTelemetryEnabled() BEFORE any filesystem call. A default-off install must
 // produce zero filesystem writes under ~/.plur/ for telemetry. The
 // "default-off install touches zero files" test is the load-bearing guard.
 //
-// Session semantics (silent-ratified default-pick B, 2026-05-02T12:00Z, #51):
-// 'session' fires on the first 'learn' or 'recall' recorded within a UTC day.
-// No standalone session call site.
+// Session semantics: 'session' fires on the first 'learn' or 'recall' recorded
+// within a UTC day. No standalone session call site.
 //
-// Day-rollover safety (#128): on rollover, yesterday's snapshot is moved to a
+// Day-rollover safety: on rollover, yesterday's snapshot is moved to a
 // pending-flush directory (~/.plur/telemetry-pending/<date>.json) BEFORE
 // counters.json is rewritten for today. flushIfNeeded drains that directory.
 // Without this, a long-lived process emitting an event after midnight would
 // silently overwrite yesterday's data on disk.
 //
-// Cross-process safety (formal verification R2, core-retrieval#7): every
-// read-modify-write of counters.json and pending/ runs under ONE lock file
-// (`<countersPath>.lock`, the `withLock` from sync.ts). Without it two
-// processes reading the same snapshot merged yesterday into pending twice and
-// lost same-day increments (replayed: spec/formal/findings/r2-retrieval.md §1).
-// A flush CLAIMS a pending file by renaming it (under the same lock) before the
-// POST, so a second flusher cannot send it again and a later merge for that date
-// lands in a fresh pending file instead of being deleted with the sent one.
+// Cross-process safety: every read-modify-write of counters.json and pending/
+// runs under ONE lock file (`<countersPath>.lock`, the `withLock` from
+// sync.ts), so two processes cannot merge the same snapshot twice or lose
+// same-day increments. A flush CLAIMS a pending file by renaming it (under the
+// same lock) before the POST, so a second flusher cannot send it again and a
+// later merge for that date lands in a fresh pending file instead of being
+// deleted with the sent one.
 // Invariant, per date: shipped + on disk (counters, pending, claims) = recorded.
-// If the lock cannot be taken (contended for ~1 s) the event is not written
-// unlocked and not dropped: it is written to its own spill file
-// (`<countersPath>.spill.<uuid>`, temp name then rename, no lock) and the next
-// writer holding the lock, or the flush, folds the spill files in. Telemetry
-// still never blocks or fails the tool call, and events are conserved — the
-// old drop lost 1 of 160 under load. Spill files count as "on disk" above.
+// If the lock cannot be taken the event is not written unlocked and not
+// dropped: it is written to its own spill file (`<countersPath>.spill.<uuid>`,
+// temp name then rename, no lock) and the next writer holding the lock, or the
+// flush, folds the spill files in. Telemetry never blocks or fails the tool
+// call, and events are conserved. Spill files count as "on disk" above.
 
 import {
   existsSync,
@@ -99,9 +95,9 @@ function ensureParentDir(path: string): void {
   }
 }
 
-// Unique per call, not just per process (#188): pid-only tmp names collide
-// when two writes to the same path interleave in async contexts — the second
-// write clobbers the first tmp file before its rename.
+// Unique per call, not just per process: pid-only tmp names collide when two
+// writes to the same path interleave in async contexts — the second write
+// clobbers the first tmp file before its rename.
 function tmpPath(path: string): string {
   return `${path}.tmp.${process.pid}.${randomUUID()}`
 }
@@ -124,9 +120,9 @@ function atomicWriteString(path: string, data: string): void {
 const COUNTERS_LOCK = { maxRetries: 8, baseDelay: 2 }
 
 // recordEvent runs on the learn and recall path, and `withLock` waits by
-// spinning the CPU, so a contended retry ladder blocked the MCP server's event
-// loop for up to ~510 ms per event (#1240). A contended event loses nothing by
-// spilling (the next lock holder folds it in), so recordEvent makes ONE attempt.
+// spinning the CPU, so a retry ladder would block the MCP server's event loop.
+// A contended event loses nothing by spilling (the next lock holder folds it
+// in), so recordEvent makes ONE attempt.
 const RECORD_EVENT_LOCK = { maxRetries: 0, baseDelay: 2 }
 
 /**
@@ -206,8 +202,7 @@ function moveToPending(stored: StoredCounters, pendingDir: string): void {
   // If a pending file already exists for this date (a failed flush's claim put
   // back, or counters.json carrying that date again), merge counts so we don't
   // drop either snapshot. Caller holds the counters lock, so the two are
-  // disjoint sets of events: two processes can no longer both merge the SAME
-  // stale snapshot, which is what this merge used to double-count (#7).
+  // disjoint sets of events and the merge cannot double-count.
   const existing = readStoredCounters(path)
   const merged: StoredCounters =
     existing && existing.date === stored.date
@@ -228,9 +223,8 @@ function spillPath(countersPath: string): string {
 
 /** Leave one event for later folding, as its OWN file: written under a temp
  *  name and renamed into place, so a folder only ever sees complete files and
- *  nothing is ever appended to a file being folded. (A single shared spill
- *  file lost an event: an append that opened the file before the folder
- *  claimed it landed in the claimed copy after it was read.) Never throws. */
+ *  nothing is ever appended to a file being folded (an append racing a fold
+ *  could otherwise land in a copy already read). Never throws. */
 function spillEvent(countersPath: string, event: CounterEvent, date: string): void {
   try {
     ensureParentDir(countersPath)
@@ -293,11 +287,11 @@ export function settleSpilledEvents(opts: CountersOpts = {}): boolean {
       for (const c of claims) { try { unlinkSync(c) } catch { /* gone */ } }
       return true
     }
-    // Roll a stale counters.json over FIRST, exactly as recordEvent does (audit
-    // of #1228, finding 3). Without it a spill dated today, folded while
-    // counters.json still said yesterday, went to pending/<today>.json and was
-    // shipped by this very flush — and the events recorded later today shipped
-    // again at the next rollover: two heartbeats for one date.
+    // Roll a stale counters.json over FIRST, exactly as recordEvent does.
+    // Otherwise a spill dated today, folded while counters.json still says
+    // yesterday, would go to pending/<today>.json and ship in this flush, and
+    // today's later events would ship again at the next rollover: two
+    // heartbeats for one date.
     const today = utcDate((opts.now ?? (() => new Date()))())
     const stored = readStoredCounters(countersPath)
     let current: StoredCounters
@@ -343,9 +337,9 @@ export function recordEvent(event: CounterEvent, opts: CountersOpts = {}): boole
     let rolledOver = false
     if (stored && stored.date !== today) {
       // Rollover: preserve yesterday's snapshot in pending-dir BEFORE overwriting
-      // counters.json with today's fresh state. This is the load-bearing fix for
-      // #128 — without it, a long-lived process emitting an event after midnight
-      // would silently discard yesterday's counts.
+      // counters.json with today's fresh state — otherwise a long-lived process
+      // emitting an event after midnight would silently discard yesterday's
+      // counts.
       moveToPending(stored, pendingDir)
       current = freshCounters(today)
       rolledOver = true
@@ -380,7 +374,7 @@ export function recordEvent(event: CounterEvent, opts: CountersOpts = {}): boole
   return result
 }
 
-// Pending-flush directory helpers (#128). flushIfNeeded uses these to drain
+// Pending-flush directory helpers. flushIfNeeded uses these to drain
 // per-day snapshots that recordEvent stashed on rollover.
 
 export function listPendingDates(opts: CountersOpts = {}): string[] {
@@ -410,8 +404,9 @@ export function deletePending(date: string, opts: CountersOpts = {}): void {
   }
 }
 
-// Migration helper: if counters.json holds a stale date (e.g. upgrade from a
-// pre-#128 install), shunt it into pending-dir so flushIfNeeded picks it up.
+// Migration helper: if counters.json holds a stale date (e.g. an install that
+// predates the pending directory), shunt it into pending-dir so flushIfNeeded
+// picks it up.
 // Returns true when migration ran.
 export function migrateStaleCounters(opts: CountersOpts = {}): boolean {
   if (!isTelemetryEnabled(gateOpts(opts))) return false
@@ -428,7 +423,7 @@ export function migrateStaleCounters(opts: CountersOpts = {}): boolean {
   }) ?? false
 }
 
-// ── Flush claims (core-retrieval#7) ────────────────────────────────────────
+// ── Flush claims ────────────────────────────────────────────────────────────
 //
 // `claimPending` renames `pending/<date>.json` to
 // `pending/<date>.json.sending.<host>.<pid>.<uuid>` under the counters lock.
@@ -437,7 +432,7 @@ export function migrateStaleCounters(opts: CountersOpts = {}): boolean {
 // a NEW pending file that the next flush ships. After the POST the claim is
 // either deleted (sent) or merged back (failed). A claim whose owner process
 // is dead (crashed mid-POST) is merged back by the next flush — at-least-once,
-// as a pending file left by a crash always was. A claim from another host, or
+// like a pending file left by a crash. A claim from another host, or
 // whose owner cannot be probed, is left alone (never guessed dead).
 
 export type PendingClaim = { date: string; path: string; counts: StoredCounters | null }

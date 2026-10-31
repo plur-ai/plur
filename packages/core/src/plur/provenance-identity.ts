@@ -22,7 +22,7 @@ export interface ProvenanceIdentityMethods {
 /** Build the {scope, session_id, stored_at} source entry that gets appended
    * to an engram's sources[] on every write (initial or duplicate). */
 /**
-   * Build a provenance record for an engram (#964), without storing it.
+   * Build a provenance record for an engram, without storing it.
    *
    * Defaults to a portable record: one that stands on its own, names no other
    * engram, and can be handed to someone who has none of our files.
@@ -30,7 +30,7 @@ export interface ProvenanceIdentityMethods {
 provenanceFor(engramId: string, options?: ProvenanceOptions): Promise<unknown | undefined>
 
 /**
-   * Build a provenance record and store it (#964, #965).
+   * Build a provenance record and store it.
    *
    * Returns the reference the store gave back, or undefined when the engram is
    * unknown. Storage is pluggable: pass a store, or let it default to files
@@ -39,13 +39,11 @@ provenanceFor(engramId: string, options?: ProvenanceOptions): Promise<unknown | 
 writeProvenance(engramId: string, options?: ProvenanceOptions & { store?: ProvenanceStore }): Promise<string | undefined>
 
 /**
-   * Append a history event, stamped with who caused it (#959).
+   * Append a history event, stamped with who caused it.
    *
-   * Every event site in this class goes through here rather than calling
-   * `appendHistory` directly, for the same reason `buildAttribution` exists:
-   * there are 28 of them, and a policy applied at 28 call sites is a policy
-   * that will be missed at the 29th. Stamping centrally also means a new event
-   * type gets an actor without its author having to know that it should.
+   * Every event site goes through here rather than calling `appendHistory`
+   * directly, so a new event type gets an actor without its author having to
+   * know that it should.
    *
    * A caller that knows better — a dedup pass acting on behalf of somebody
    * else, say — passes its own `actor` and this leaves it alone.
@@ -58,9 +56,8 @@ writeProvenance(engramId: string, options?: ProvenanceOptions & { store?: Proven
    */
 /**
    * @returns whether the event was written — propagated from `appendHistory`,
-   *   which reports rather than throws (#1017). `inject()` gates
-   *   `injection_count` on this, so swallowing it here would put the counter
-   *   back out of step with the log it is supposed to be explained by.
+   *   which reports rather than throws. `inject()` gates `injection_count` on
+   *   this, so swallowing it here would put the counter out of step with the log.
    */
 /** @internal */
 _appendHistory(event: HistoryEventType): boolean
@@ -113,7 +110,7 @@ setIdentity(identity: string | null): { identity: string; stated: boolean; warni
 _provenanceStore(): ProvenanceStore
 
 /**
-   * Write a record at creation time, when the setting asks for it (#966).
+   * Write a record at creation time, when the setting asks for it.
    *
    * Default is `never`: a record per engram duplicates the history log, and the
    * trust boundary is the moment an engram leaves, not the moment it is written.
@@ -121,7 +118,7 @@ _provenanceStore(): ProvenanceStore
    * not fail the learn that prompted it.
    */
 /**
-   * Run fire-and-forget work only once the store has committed (#1178, F16).
+   * Run fire-and-forget work only once the store has committed.
    *
    * A transactional store runs a protected write inside one connection and one
    * ownership context. Background work started inside that context would
@@ -144,25 +141,24 @@ export const provenanceIdentityMethods: ProvenanceIdentityMethods & ThisType<Plu
 async provenanceFor(engramId: string, options: ProvenanceOptions = {}): Promise<unknown | undefined> {
     const engram = await this.getById(engramId)
     if (!engram) return undefined
-    // Decision E6: a scope backed by a remote store on this install leaves the
-    // machine; only this instance knows its stores. Current config, not a
-    // stale snapshot (core-index#9).
+    // A scope backed by a remote store on this install leaves the machine;
+    // only this instance knows its stores, so read the current config.
     this.reloadConfigIfChanged()
     const cfg = (this.config as any)?.provenance
     return buildProvenanceRecord(engram, this.getEngramHistory(engramId), {
       includeStatement: cfg?.include_statement ?? false,
       // Writable URL stores only: a readonly one is not a path off the machine,
-      // and not knowing can only withhold more (core-index#9b).
+      // and not knowing can only withhold more.
       remoteBacked: this._isRemoteWriteScope(engram.scope),
       ...options,
     })
   },
 
 async writeProvenance(engramId: string, options: ProvenanceOptions & { store?: ProvenanceStore } = {}): Promise<string | undefined> {
-    // remote-only (gate review of #1663): a provenance record can carry the
-    // statement, and the default store is this machine's disk.
+    // remote-only: a provenance record can carry the statement, and the
+    // default store is this machine's disk.
     if (this._activeBinding()) throw this._remoteOnlyError('local-store', undefined, 'Writing a provenance record')
-    // A queued remote-only save gets no local provenance, bound or not (gate review of #1663).
+    // A queued remote-only save gets no local provenance, bound or not.
     const queuedRow = (await this._basePrimaryStore.loadCached()).find(e => e.id === engramId)
     if (queuedRow && isRemoteOnlyQueued(queuedRow)) throw this._queuedStaysRemote(queuedRow)
     const record = await this.provenanceFor(engramId, options)
@@ -172,9 +168,9 @@ async writeProvenance(engramId: string, options: ProvenanceOptions & { store?: P
   },
 
 _appendHistory(event: HistoryEventType): boolean {
-    // remote-only: the local history never holds free text (audit of #1521,
-    // S6; gate review of #1663) — events keep ids, scopes, counts, flags and
-    // enum-like values, never a statement, preview, reason or message.
+    // remote-only: the local history never holds free text — events keep ids,
+    // scopes, counts, flags and enum-like values, never a statement, preview,
+    // reason or message.
     if (this._activeBinding() && (event as any).data) {
       event = { ...(event as any), data: Plur._metadataOnly((event as any).data) } as HistoryEventType
     }
@@ -207,7 +203,7 @@ setIdentity(identity: string | null): { identity: string; stated: boolean; warni
     const value = typeof identity === 'string' ? identity.trim() : ''
     // An email address is the most natural identity to type and the one that
     // silently breaks sharing: the export privacy scan flags email addresses,
-    // so every memory attributed this way is dropped from every pack (#999).
+    // so every memory attributed this way is dropped from every pack.
     // Accept it — it is the user's decision — but say so at the moment they
     // choose it rather than at the first empty export.
     const warning = value && containsEmail(value)
@@ -256,8 +252,8 @@ _afterStoreCommit(callback: () => void): void {
 
 _maybeWriteProvenance(engramId: string, row?: Engram): void {
     if (provenanceMode(this.config) !== 'always') return
-    // remote-only: no provenance kept on this machine (gate review of #1663),
-    // bound, or for a queued remote-only save being delivered.
+    // remote-only: no provenance kept on this machine, bound, or for a queued
+    // remote-only save being delivered.
     if (this._activeBinding() || isRemoteOnlyQueued(row)) return
     this._afterStoreCommit(() => {
       void this.writeProvenance(engramId).catch(err => {
@@ -270,19 +266,16 @@ _maybeWriteProvenance(engramId: string, row?: Engram): void {
 _buildSourceEntry(scope: string, context?: LearnContext): {
     scope: string; session_id: string | null; stored_at: string
   } {
-    // One emptiness rule. `??` alone let
-    // `session_id: ''` win over a genuine `session_episode_id` and persist as
-    // the empty string, while provenance fourteen lines down treated an empty
-    // identity as absent. Two different notions of "empty" in one change is how
-    // a field ends up meaning different things at two call sites.
+    // One emptiness rule: an empty string counts as absent, so
+    // `session_id: ''` never wins over a genuine `session_episode_id`.
     const present = (v: unknown): v is string => typeof v === 'string' && v.length > 0
     // Only `session_id` is a session in the provenance sense. `session` selects
-    // the default scope and can hold an internal registry key (#1562) or
+    // the default scope and can hold an internal registry key or
     // NO_SESSION, so it is never recorded here.
     const sessionId = context?.session_id
     return {
       scope,
-      // session_id takes precedence over session_episode_id (#1048).
+      // session_id takes precedence over session_episode_id.
       session_id: present(sessionId) ? sessionId
         : present(context?.session_episode_id) ? context!.session_episode_id!
         : null,

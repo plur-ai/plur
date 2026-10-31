@@ -1,9 +1,9 @@
 /**
- * Import engine (issue #441) — routes normalized ImportRecords through
+ * Import engine — routes normalized ImportRecords through
  * `plur.learn()` so every existing write gate applies (secret detection, the
  * sensitive-scope guard, routing).
  *
- * Re-running an import changes nothing (Decision R, owner 2026-09-27). A record
+ * Re-running an import changes nothing. A record
  * that learn() would resolve to an existing engram — same-scope content-hash
  * dedup or cross-scope recurrence, asked with `plur.wouldDeduplicate` (learn()'s
  * own dedup code) BEFORE learn() is called — is reported as skipped and the
@@ -64,13 +64,13 @@ export async function runImport(plur: Plur, records: ImportRecord[], opts: RunIm
   const knownIds = new Set(preExisting.map(e => e.id))
   // Dry run only: earlier records of this file, keyed both by hash and by
   // (hash, scope). The store half of the dedup question goes to
-  // `plur.wouldDeduplicate` (learn()'s own code, which follows decision A1 /
-  // F1: a shared-scope record is never absorbed by another scope's engram).
-  // Which key a record is looked up by follows `plur.dedupScopeFor`:
-  // scope-blind where learn() dedups across scopes (YAML, #176, non-shared
-  // scopes), (hash, scope) where it does not (a shared scope, a delegating
-  // Postgres/PGLite store, a writable-remote scope) — so two records of one
-  // file in different scopes are predicted as the real run imports them.
+  // `plur.wouldDeduplicate` (learn()'s own code: a shared-scope record is never
+  // absorbed by another scope's engram). Which key a record is looked up by
+  // follows `plur.dedupScopeFor`: scope-blind where learn() dedups across
+  // scopes (YAML, non-shared scopes), (hash, scope) where it does not (a shared
+  // scope, a delegating Postgres/PGLite store, a writable-remote scope) — so two
+  // records of one file in different scopes are predicted as the real run
+  // imports them.
   const hashToId = new Map<string, string>()
   const inFileKey = (hash: string, scope: string) => `${hash}\u0000${scope}`
   const allowSecrets = (await plur.status()).config?.allow_secrets === true
@@ -90,7 +90,7 @@ export async function runImport(plur: Plur, records: ImportRecord[], opts: RunIm
     }
     const scope = opts.scope ?? record.scope
     // One context for both modes: the dry run must scan and key exactly what
-    // learn() will (formal R2, core-retrieval#10).
+    // learn() will.
     let context: LearnContext
     try {
       context = importContext(record, scope, opts)
@@ -119,14 +119,13 @@ export async function runImport(plur: Plur, records: ImportRecord[], opts: RunIm
         results.push({ statement, action: 'error', error: `Secret detected in statement or context: ${secretPattern}` })
         continue
       }
-      // learn() never dedups a statement that normalizes to nothing (#896):
+    // learn() never dedups a statement that normalizes to nothing:
       // every such statement shares the empty-string hash. Predict "imported".
       if (isHashable(statement)) {
         const hash = computeContentHash(statement)
         // Against the store: ask learn()'s own dedup (`Plur.wouldDeduplicate`),
         // not a scope-blind hash map — on a delegating store (Postgres/PGLite)
-        // learn() does not treat another scope's primary row as a duplicate,
-        // so the map reported `skipped` for a record the real run imports.
+        // learn() does not treat another scope's primary row as a duplicate.
         const existing = await plur.wouldDeduplicate(statement, context)
         if (existing !== null) {
           skipped++
@@ -153,7 +152,7 @@ export async function runImport(plur: Plur, records: ImportRecord[], opts: RunIm
     }
 
     try {
-      // Decision R: a record that already exists is a TRUE skip — asked before
+      // A record that already exists is a TRUE skip — asked before
       // learn(), so the existing engram is never touched (learn() on a hit
       // bumps write_count / appends a source / records recurrence). A secret
       // record goes on to learn(), which refuses it with its own message.
@@ -274,7 +273,7 @@ function applyImportMetadata(engram: Engram, record: ImportRecord, conflictIds: 
       narrower: engram.relations?.narrower ?? [],
       related: engram.relations?.related ?? [],
       conflicts: [...new Set([...(engram.relations?.conflicts ?? []), ...conflictIds])],
-      // #240: preserve intentional-update edges when merging conflict ids
+      // Preserve intentional-update edges when merging conflict ids
       supersedes: engram.relations?.supersedes ?? [],
       superseded_by: engram.relations?.superseded_by ?? [],
     }

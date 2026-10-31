@@ -1,25 +1,23 @@
 /**
- * Ids this machine has seen on a server (#1532 re-audit R2).
+ * Ids this machine has seen on a server.
  *
  * Every store mints `ENG-<date>-NNN` from its own counter, so a bare id can
  * name a local engram and an unrelated team engram at once. Recall prints
- * team engrams under their bare server id, and a caller (an agent, the Hermes
- * bridge) can later pass that id to `forget`. When the team store then
- * rejects the token, the collision probe cannot look, and the only evidence
- * left is what this machine remembers. Recall used to leave no trace, and the
- * outbox id map is capped and lives under `cache/`.
+ * team engrams under their bare server id, and a caller can later pass that id
+ * to `forget`. When the team store then rejects the token, the collision probe
+ * cannot look, and the only evidence left is what this machine remembers (the
+ * outbox id map is capped and lives under `cache/`).
  *
  * So: an append-only JSONL record in the plur dir (not `cache/`, which is
  * pruned; not synced), one line per sighting — `{"id","scope","at"}`.
  *
- * Bounded by ROTATION, never by rewriting (#1532 re-audit 2, S1/S7). When the
- * live file passes {@link SEEN_ON_SERVER_GENERATION_BYTES} it is renamed over
- * the previous generation, and lookups read both. A rename is atomic and moves
- * the inode, so a line another process appends at that moment lands either in
- * the generation just renamed (still read) or in the fresh live file — it is
- * never overwritten by a snapshot, which is how the first version, a
- * read-compact-rename of the live file, lost concurrent lines. The total size
- * is a real byte bound, about two generations, whatever the line length.
+ * Bounded by ROTATION, never by rewriting. When the live file passes
+ * {@link SEEN_ON_SERVER_GENERATION_BYTES} it is renamed over the previous
+ * generation, and lookups read both. A rename is atomic and moves the inode,
+ * so a line another process appends at that moment lands either in the
+ * generation just renamed (still read) or in the fresh live file; a
+ * read-compact-rewrite would lose such concurrent lines. The total size is a
+ * real byte bound, about two generations, whatever the line length.
  *
  * Appends are best effort: this is evidence for a refusal, never a gate on
  * recall, so every failure is swallowed.
@@ -58,7 +56,7 @@ export function recordSeenOnServer(root: string, entries: ReadonlyArray<{ id: st
     try {
       size = fs.fstatSync(fd).size
       // A writer killed mid-append leaves a last line with no newline; glued
-      // to it, this append would be one unparseable line (S2). Start on a
+      // to it, this append would be one unparseable line. Start on a
       // fresh line instead — empty lines are skipped on read.
       if (size > 0) {
         const last = Buffer.alloc(1)
@@ -76,7 +74,7 @@ export function recordSeenOnServer(root: string, entries: ReadonlyArray<{ id: st
 /**
  * The most recent valid sighting of a bare server id, or null. Reads both
  * generations. A record without a string `id` or a numeric `at` is damaged
- * (hand-edited, torn) and ignored, never an error (S3).
+ * (hand-edited, torn) and ignored, never an error.
  */
 export function seenOnServer(root: string, id: string): SeenOnServer | null {
   const needle = JSON.stringify(id)

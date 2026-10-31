@@ -1,8 +1,7 @@
 /**
- * Deterministic intent-aware query rewriting — #224 (remainder).
+ * Deterministic intent-aware query rewriting.
  *
- * The classifier + per-intent ranking profiles landed earlier ("intent
- * routing"); this module is the rewriting layer the issue is named after:
+ * Works alongside the intent classifier and per-intent ranking profiles:
  * a deterministic (regex/lexicon, no LLM, no I/O) transform of the query
  * text that feeds the LEXICAL (BM25) leg of hybrid recall.
  *
@@ -85,11 +84,9 @@ export function isQueryRewriteDisabled(): boolean {
 /**
  * Lowercased word-character core of a whitespace token ("What's" -> "whats").
  *
- * Unicode letters, numbers and marks — the same class `ftsTokenize` keeps.
- * An ASCII-only class (`[^a-z0-9]`) gave every CJK / Cyrillic / Devanagari word
- * an empty core, and `stripScaffolding` drops empty-core tokens, so
- * "What is the 部署 process?" lost 部署 while the 2-token guard still passed
- * (formal R2, core-retrieval#8).
+ * Unicode letters, numbers and marks — the same class `ftsTokenize` keeps. An
+ * ASCII-only class would give every CJK / Cyrillic / Devanagari word an empty
+ * core, and `stripScaffolding` drops empty-core tokens.
  */
 function tokenCore(word: string): string {
   return word.toLowerCase().replace(/[^\p{L}\p{N}\p{M}]/gu, '')

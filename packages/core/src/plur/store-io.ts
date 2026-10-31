@@ -30,11 +30,11 @@ export interface StoreIoMethods {
    * Root directory of this instance's store (`~/.plur`, `PLUR_PATH`, or the
    * explicit constructor `path`). Synchronous mirror of `status().storage_root`
    * for callers that need the location without an async round-trip — e.g. the
-   * MCP server's payload-drop forensic log (plur-ai/plur#772), which must write
+   * MCP server's payload-drop forensic log, which must write
    * next to the store the dropped call was aimed at.
    */
 /**
-   * Record what a recall returned to a session (#1657), so the session's
+   * Record what a recall returned to a session, so the session's
    * manifest can list it. Called by the surfaces that answer an agent's recall
    * (MCP, CLI) — not by `recall()` itself, which inject and dedup also call.
    * Ids and a query hash only; never the query text. Best-effort: returns
@@ -43,15 +43,15 @@ export interface StoreIoMethods {
 recordRecall(input: { session_id?: string; ids: readonly string[]; query: string; source?: 'recall' | 'recall_hybrid' }): boolean
 
 /**
-   * The session memory manifest (#1657): which engrams were in this session's
+   * The session memory manifest: which engrams were in this session's
    * context, with hashes that can be checked later. Local and offline.
    */
 sessionManifest(sessionId: string, opts?: { checkpoint?: SessionManifest['checkpoint'] }): Promise<SessionManifest>
 
-/** Where session manifests are anchored (#1657). `off` unless the user turned it on. */
+/** Where session manifests are anchored. `off` unless the user turned it on. */
 receiptsConfig(): { store: 'off' | 'swarm'; gateway_url?: string; stamp_id?: string }
 
-/** Re-hash every engram a manifest lists against this store (#1657). */
+/** Re-hash every engram a manifest lists against this store. */
 verifyManifest(manifest: SessionManifest): Promise<ManifestVerification>
 
 /**
@@ -59,11 +59,6 @@ verifyManifest(manifest: SessionManifest): Promise<ManifestVerification>
    *   1. `PLUR_BACKEND` env var (yaml|sqlite|pglite|postgres)
    *   2. config.yaml `backend` field
    *   3. the size of the store — see `backend-selection.ts` / ADR-0005
-   *
-   * Step 3 is the new one. The old implementation stopped at "default: sqlite",
-   * which combined with `config.index` being undefined-by-default meant the
-   * common case built no index at all and brute-forced cosine over the entire
-   * corpus, in every process, on every recall.
    *
    * The estimate comes from `PrimaryStore.estimateCount()` — a `stat()`, not a
    * parse. Deciding which backend to build must not cost what the wrong backend
@@ -105,7 +100,7 @@ _writeDedupCorpus(scope: string): Promise<Engram[]>
 
 /**
    * The corpus the READ paths (recall, inject) rank. Everything, except in a
-   * remote-only folder (owner decisions 2026-10-01): there it is the cached
+   * remote-only folder: there it is the cached
    * rows of the folder's team store plus installed packs, never the personal
    * primary store or a local secondary store. Write paths keep
    * `_loadAllEngrams` — they need the primary corpus for ids and dedup.
@@ -118,26 +113,22 @@ _readCorpus(): Promise<Engram[]>
    * (file-path AND remote) plus installed packs, with the id namespacing, scope
    * narrowing and containment guard applied.
    *
-   * Extracted so the BM25 pushdown path can reach these rows without loading the
-   * primary corpus — the whole point of pushing the query into the store. An
-   * earlier version of that path re-implemented this loop and got three things
-   * wrong at once: it skipped `url` stores entirely (so an enterprise team store
-   * vanished from `recall()` while `list()` still showed it), and it returned
-   * rows RAW — no namespacing, no `global` narrowing, no `isScopeWithin` guard.
-   * The namespacing one had teeth beyond cosmetics: both stores mint
-   * date-sequenced ids (`ENG-YYYY-MM-DD-NNN`, legacy `ENG-YYYY-MMDD-NNN`)
-   * from a per-store daily sequence, so ids collide as the
-   * common case, and `feedback()` / `forget()` resolve by exact id against the
-   * primary store first — mutating an unrelated engram.
-   *
-   * One implementation, two callers. Duplicating it is what caused all three.
+   * Separate so the BM25 pushdown path can reach these rows without loading the
+   * primary corpus. Every caller must use this one implementation: skipping
+   * `url` stores, the id namespacing, the `global` narrowing or the
+   * `isScopeWithin` guard each breaks reads. Namespacing in particular is not
+   * cosmetic: every store mints date-sequenced ids (`ENG-YYYY-MM-DD-NNN`,
+   * legacy `ENG-YYYY-MMDD-NNN`) from a per-store daily sequence, so ids collide
+   * as the common case, and `feedback()` / `forget()` resolve by exact id
+   * against the primary store first — an un-namespaced id would mutate an
+   * unrelated engram.
    */
 /**
    * Installed packs as every read path hands them out: each row under its
    * pack id ({@link packEngramId}), never under the id its author's store
    * minted. That id can be one of MY memory ids (same day, same sequence, or
    * picked on purpose), and a pack row shown under it reads to the agent as my
-   * own memory (PCK-4). Injection, search/list and the receipt all load packs
+   * own memory. Injection, search/list and the receipt all load packs
    * through here, so the id a pack row carries is the same on every path.
    */
 /** @internal */
@@ -149,25 +140,22 @@ _loadSecondaryAndPacks(opts?: { remoteOnlyScope?: string | null }): Promise<Engr
 /**
    * Cached read from the store that owns `path`.
    *
-   * The mtime bookkeeping that used to live here now lives inside
-   * `YamlPrimaryStore` — a cache is a property of the backing medium, not of
-   * the caller, and a store whose medium has no mtime (memory, Postgres)
-   * answers `loadCached()` its own way.
+   * Caching is the store's job (`YamlPrimaryStore` tracks mtime) — a cache is
+   * a property of the backing medium, not of the caller, and a store whose
+   * medium has no mtime (memory, Postgres) answers `loadCached()` its own way.
    */
 /** @internal */
 _loadCached(path: string): Promise<Engram[]>
 
 /**
-   * What the ambiguity guards (#831 forget, #850 feedback) may conclude from a
-   * store's cache WITHOUT a network call (core-index#7, round 2).
+   * What the ambiguity guards (forget, feedback) may conclude from a
+   * store's cache WITHOUT a network call.
    *
    * - `present`: the cache holds the id — a collision, refuse.
    * - `absent`: ONLY when the cache is a complete load younger than the
    *   driver's TTL. A cold-cache `append()` seeds `{ ts: 0, [stored] }` —
    *   explicitly "one engram is not all engrams in this scope" — and a cache
-   *   past its TTL may predate the remote row. Both used to count as proof of
-   *   absence because any non-empty cache did, so after a single push the
-   *   guard retired the local engram while the same id lived remotely.
+   *   past its TTL may predate the remote row; neither proves absence.
    * - `unknown`: cold, empty, partial or stale — the caller probes live.
    *
    * Model: spec/formal/PlurSpec/R2CoreA.lean §2 (`peek_absent_sound`).
@@ -176,14 +164,14 @@ _loadCached(path: string): Promise<Engram[]>
 _remoteCacheAnswer(store: StoreEntry, serverId: string): 'present' | 'absent' | 'unknown'
 
 /**
-   * Does a bare id ALSO name an engram in a configured url store? (0.21.1)
+   * Does a bare id ALSO name an engram in a configured url store?
    *
    * One answer per url store, for the operations that act on a local row by
    * a bare id — forget, feedback, setPinned — since ids are minted per store
-   * and two stores mint the same id on the same day (#831).
+   * and two stores mint the same id on the same day.
    *
-   * Run WITHOUT the store lock. It used to run inside it, so a hanging server
-   * held the lock every other writer needs for the full 30 s request budget.
+   * Run WITHOUT the store lock, so a hanging server cannot hold the lock every
+   * other writer needs for a full request budget.
    * Each live probe is bounded by REMOTE_PROBE_TIMEOUT_MS, and the walk by
    * REMOTE_GUARD_BUDGET_MS. A warmed cache answers for free.
    *
@@ -202,7 +190,7 @@ _probeIdCollisions(id: string, opts?: { skipLive?: boolean }): Promise<Collision
 
 /**
    * Local evidence that a bare id has ALSO named an engram on a server
-   * (#1532 review F1). A 401/403 probe only says this caller cannot SEE the
+   * A 401/403 probe only says this caller cannot SEE the
    * remote row — not that there is none — so before acting on the local row,
    * look for any sign this machine ever met that id remotely:
    *   - history: an event for this id routed to a remote (a team save the
@@ -217,7 +205,7 @@ _idSeenRemotely(id: string): string | null
 
 /**
    * The refusal when a store rejected the token AND this machine has met the
-   * id remotely (#1532 review F1): the bare id may name that store's engram.
+   * id remotely: the bare id may name that store's engram.
    */
 /** @internal */
 _rejectedTokenRefusal(p: CollisionProbe, id: string, evidence: string, verb: string, localHint: string): Error
@@ -226,7 +214,7 @@ _rejectedTokenRefusal(p: CollisionProbe, id: string, evidence: string, verb: str
 /** @internal */
 _noteSeenOnServer(entries: Array<{ id: string; scope: string }>): void
 
-/** Remember the server ids of team rows among recall/inject results (#1532 re-audit R2). */
+/** Remember the server ids of team rows among recall/inject results. */
 /** @internal */
 _noteSeenRows(rows: readonly Engram[], allRemote?: boolean): void
 
@@ -246,7 +234,7 @@ _scopeMoveRefusal(updated: Engram, localScope: string, twin: string): Error
 _rejectedTokenWarning(p: CollisionProbe, id: string, acted: string): string
 
 /**
-   * forget()'s reading of the collision probe (#831, 0.21.1). Retiring is
+   * forget()'s reading of the collision probe. Retiring is
    * irreversible, so "cannot tell" refuses; a rejected token does not, since
    * this caller cannot retire anything in that store either.
    */
@@ -254,7 +242,7 @@ _rejectedTokenWarning(p: CollisionProbe, id: string, acted: string): string
 _decideForgetProbes(id: string, probes: CollisionProbe[], warnings: string[]): void
 
 /**
-   * feedback()'s reading of the collision probe (#850, 0.21.1). Same as
+   * feedback()'s reading of the collision probe. Same as
    * forget() except that "cannot tell" rates the local engram with a warning.
    */
 /** @internal */
@@ -266,43 +254,39 @@ _loadRemoteCached(store: StoreEntry): Engram[]
 /**
    * Persist engrams to the store that owns `path`.
    *
-   * The write-invalidates-cache rule now lives inside the store
-   * (`PrimaryStore.save()` drops its own cache) rather than being the caller's
-   * job. Why it matters: `YamlPrimaryStore.loadCached()` uses mtime-based
-   * invalidation, but on CI tmpfs (ubuntu-latest runners) mtime resolution can
-   * be coarse enough that a stat() taken before and after a write returns the
-   * same mtime. When that happens the cache serves a pre-write snapshot and a
-   * subsequent `getById` returns `undefined` for an engram that `learn()` just
-   * created. Invalidating on write removes the filesystem as a source of cache
-   * freshness and closes the race. See issue #25.
+   * The store invalidates its own cache on write (`PrimaryStore.save()`).
+   * `YamlPrimaryStore.loadCached()` uses mtime-based invalidation, and on some
+   * filesystems (e.g. tmpfs) mtime resolution is coarse enough that a stat()
+   * before and after a write returns the same mtime, so the cache would serve
+   * a pre-write snapshot. Invalidating on write removes the filesystem as a
+   * source of cache freshness.
    */
 /** @internal */
 _writeEngrams(path: string, engrams: Engram[], opts?: { allowShrink?: boolean }): Promise<void>
 
 /**
-   * Persist one brand-NEW engram to the primary store (#740).
+   * Persist one brand-NEW engram to the primary store.
    *
    * `corpus` is the caller's already-loaded primary corpus, held under
    * `_withStoreLock`; the engram is pushed into it here so the caller's view
    * and the fallback write stay consistent by construction. A store with the
    * `append` capability gets a true single-row INSERT; every other store gets
-   * exactly the write `learn()` has always done — one `save()` of the corpus
-   * in hand. The corpus is REUSED, never re-loaded: re-parsing a file the
-   * caller just parsed (under the same lock) was the #745 regression this
-   * shape exists to rule out.
+   * one `save()` of the corpus in hand. The corpus is REUSED, never re-loaded:
+   * re-parsing a file the caller just parsed (under the same lock) is wasted
+   * work on the hottest write path.
    */
 /** @internal */
 _appendEngram(corpus: Engram[], engram: Engram): Promise<void>
 
 /**
-   * Persist mutations to EXISTING primary-store engrams (#740).
+   * Persist mutations to EXISTING primary-store engrams.
    *
    * `changed` are rows from `corpus` (the caller's already-loaded primary
    * corpus, held under `_withStoreLock`) that the caller has mutated in place.
    * A store with `updateMany` gets a targeted write of just those rows — the
-   * same machinery recall's activation refresh uses (#749/#755), so there is
-   * ONE incremental-update seam, not two. Every other store gets the
-   * whole-corpus `save()` it always got, reusing the corpus in hand.
+   * same machinery recall's activation refresh uses, so there is ONE
+   * incremental-update seam, not two. Every other store gets a whole-corpus
+   * `save()`, reusing the corpus in hand.
    *
    * Missing-id policy: this cannot silently drop a mutation. `updateMany` is
    * an upsert on every capability store (Postgres `ON CONFLICT DO UPDATE`,
@@ -310,26 +294,24 @@ _appendEngram(corpus: Engram[], engram: Engram): Promise<void>
    * caller's locked load and this write is re-inserted rather than lost; the
    * fallback writes the corpus, which contains the mutation by construction.
    * There is deliberately no found/not-found boolean here — a signal every
-   * call site would have to remember to check (and #745's `update(): false`
-   * showed they don't) is worse than semantics that cannot lose the write.
+   * call site would have to remember to check is worse than semantics that
+   * cannot lose the write.
    */
 /**
    * Read the primary-store rows for `ids` — targeted when the store can, a
-   * whole-corpus load when it cannot (#827).
+   * whole-corpus load when it cannot.
    *
    * Every caller is the same shape: load, find one row by id, mutate it, hand
-   * it to {@link _updateEngrams}. The WRITE has been targeted since 0.17; the
-   * READ was not, so a store that implements the 0.17 pair still paid a full
-   * table scan to fetch a row by primary key on every feedback signal, pin
-   * toggle, update and forget. `_reactivateResults` already took the targeted
-   * branch for exactly this shape — these call sites were simply missed.
+   * it to {@link _updateEngrams}. A targeted read avoids a full table scan to
+   * fetch a row by primary key on every feedback signal, pin toggle, update
+   * and forget.
    *
    * `loadByIds` and `updateMany` are checked as a PAIR, and the pair is what
    * makes the return value safe to use as "the corpus in hand". Callers pass
    * the array straight on to `_updateEngrams`, which falls back to a FULL
    * REPLACE of whatever it is given when `updateMany` is absent. Taking the
    * targeted read alone would therefore hand a one-row array to a whole-corpus
-   * save and delete everything else — the #749 defect, from the write side.
+   * save and delete everything else.
    * Requiring both means the subset is only ever produced when the write that
    * consumes it is itself targeted.
    *
@@ -348,13 +330,13 @@ _updateEngrams(corpus: Engram[], changed: Engram[]): Promise<void>
    * `readonly: true`. Called at the top of every public mutator, BEFORE any
    * routing: remote-routed writes (learnRouted's server POST, outbox flush,
    * remote feedback/forget) never touch the guarded PrimaryStore, so the
-   * store guard alone cannot stop them — this gate is what does (#731).
+   * store guard alone cannot stop them — this gate is what does.
    */
 /** @internal */
 _assertWritable(): void
 
 /**
-   * Snapshot the primary store once per process per day (#799).
+   * Snapshot the primary store once per process per day.
    *
    * Called from INSIDE the lock and BEFORE `fn` runs, which is the whole point:
    * the copy must be of the on-disk bytes as they were before any write path
@@ -362,7 +344,7 @@ _assertWritable(): void
    * half-written file.
    *
    * Only the primary store, and only when writable. A read-only instance must
-   * not have write side effects (#731), and secondary stores are the remote's
+   * not have write side effects, and secondary stores are the remote's
    * or the pack's to protect — snapshotting them here would silently multiply
    * disk use for data this instance does not own.
    *
@@ -373,7 +355,7 @@ _assertWritable(): void
 _maybeDailyBackup(path: string): void
 
 /**
-   * Ids this store has minted today that are no longer in the corpus (#816).
+   * Ids this store has minted today that are no longer in the corpus.
    *
    * Read from the append-only history log, which — unlike the corpus — never
    * forgets. See `mintedIdsWithPrefix` for why an incomplete answer is safe.
@@ -382,7 +364,7 @@ _maybeDailyBackup(path: string): void
 _mintedTodayIds(): string[]
 
 /** Record an id this process just minted, so the next allocation sees it
-   *  without re-reading history (#816). */
+   *  without re-reading history. */
 /** @internal */
 _rememberMintedId(id: string): void
 
@@ -459,16 +441,16 @@ backendSelection(): BackendSelection {
 async _autoPurgeLegacyTensions(startDir: string): Promise<void> {
     // A read-only instance must not run a write migration — and must not stamp
     // the sentinel either, or the purge would be recorded as done without ever
-    // having happened. Left for the next writable instance to perform (#731).
+    // having happened. Left for the next writable instance to perform.
     if (this._readonly) return
     const sentinel = join(this.paths.root, '.tensions-purged')
     if (fs.existsSync(sentinel)) return
-    // Starting in a folder where memory is off touches no memory (#1523): the
+    // Starting in a folder where memory is off touches no memory: the
     // migration reads every store and stamps the sentinel, so it is left,
     // unstamped, for the next start outside that folder.
     if (this._startFolderOff(startDir)) return
-    // After the constructor's caller had its turn to bind the instance (Codex
-    // round 10 on #1663): a remote-only binding then refuses the purge, and it
+    // After the constructor's caller had its turn to bind the instance: a
+    // remote-only binding then refuses the purge, and it
     // is left for the next unbound instance.
     await Promise.resolve()
     if (this._boundFolder) return
@@ -488,8 +470,7 @@ async _loadAllEngrams(): Promise<Engram[]> {
     // only those) plus its read corpus — never a personal url store's cache.
     if (this._remoteOnly) return [...(await this._loadCached(this.paths.engrams)), ...(await this._readCorpus())]
     const primary = await this._loadCached(this.paths.engrams)
-    // Unbound, a queued remote-only save is not read at all (gate review of
-    // #1663): it is another folder's team memory, waiting to be delivered, and
+    // Unbound, a queued remote-only save is not read at all: it is another folder's team memory, waiting to be delivered, and
     // reading it would hand it to recall, dedup, tensions or a model here.
     // The outbox, flush, forget and update reach it through the primary store.
     return withoutRemoteOnlyQueued([...primary, ...(await this._loadSecondaryAndPacks())])
@@ -497,12 +478,12 @@ async _loadAllEngrams(): Promise<Engram[]> {
 
 async _writeDedupCorpus(scope: string): Promise<Engram[]> {
     if (!this._remoteOnly) return await this._loadAllEngrams()
-    // Only rows QUEUED for delivery to this scope (audit of #1521, B1): a
+    // Only rows QUEUED for delivery to this scope: a
     // primary row that merely carries the team scope may be private, written
     // before the store existed, or have had its delivery cancelled — it is
     // personal memory, and a team save must never be absorbed into it.
     // (An explicitly private write never carries `_outbox`: it is kept local
-    // by design, #90 — so requiring the queue marker excludes it too.)
+    // by design — so requiring the queue marker excludes it too.)
     const queued = (await this._loadCached(this.paths.engrams)).filter(e => e.scope === scope &&
       !!(e as any).structured_data?._outbox)
     return [...queued, ...(await this._readCorpus())]
@@ -512,7 +493,7 @@ async _readCorpus(): Promise<Engram[]> {
     if (!this._remoteOnly) return await this._loadAllEngrams()
     if (this._remoteOnly.blocked) return []
     // A scope that is not a deliverable team scope (a hand-written `user:`
-    // one) reads packs only (gate review of #1663).
+    // one) reads packs only.
     const ro = this._remoteOnly.scope
     return await this._loadSecondaryAndPacks({ remoteOnlyScope: ro && this._isDeliverableTeamScope(ro) ? ro : null })
   },
@@ -535,7 +516,7 @@ async _loadSecondaryAndPacks(opts?: { remoteOnlyScope?: string | null }): Promis
         ? this._loadRemoteCached(store)
         : await this._loadCached(store.path!)
       for (const e of storeEngrams) {
-        // Phase 4: Scope validation. Segment-aware (#383): a sibling that is a
+        // Scope validation, segment-aware: a sibling that is a
         // mere string-prefix of the store scope (group:plur/eng-private under a
         // group:plur/eng store) must NOT load.
         if (e.scope !== 'global' && !isScopeWithin(e.scope, store.scope)) {
@@ -543,13 +524,10 @@ async _loadSecondaryAndPacks(opts?: { remoteOnlyScope?: string | null }): Promis
           continue
         }
 
-        // The same stamp as the remote recall leg (R2-CoreB core-policy#6/#7,
-        // applied here by R2-CoreA): drop `_`-prefixed keys the row ships (a
-        // forged `_pack` made a store row pass as pack content in
-        // `withoutPacks` and injected-pack counts), narrow `global` to the
-        // store scope, and namespace the id IDEMPOTENTLY — the regex replace
-        // used here turned an id already carrying the prefix into
-        // `ENG-XXX-XXX-…`, a different id from the recall leg's for one row.
+        // The same stamp as the remote recall leg: drop `_`-prefixed keys the
+        // row ships (a forged `_pack` would make a store row pass as pack
+        // content), narrow `global` to the store scope, and namespace the id
+        // IDEMPOTENTLY, so one row gets the same id here as on the recall leg.
         const cloned = stampStoreRow(e, store.scope) as any
         // Which store served the row, not just its scope: several stores may
         // share one scope (a url store and a path store both load), and
@@ -571,13 +549,13 @@ async _loadSecondaryAndPacks(opts?: { remoteOnlyScope?: string | null }): Promis
       for (const e of pack.engrams) {
         if (e.status !== 'active') continue
         // A pack row cannot ship loader markers (`_storeScope`, `_originalId`,
-        // its own `_pack`): only this loader stamps them (R2-CoreB).
+        // its own `_pack`): only this loader stamps them.
         const cloned = Object.fromEntries(
           Object.entries(e as unknown as Record<string, unknown>).filter(([k]) => !k.startsWith('_')),
         ) as any
         cloned._pack = pack.manifest.name
-        // Sanitise HERE, at the point pack content enters the injection corpus
-        // (#940, #952). Pack install does not call learn() or learnRouted() —
+        // Sanitise HERE, at the point pack content enters the injection corpus.
+        // Pack install does not call learn() or learnRouted() —
         // it copies the pack's file into the packs directory and this loop
         // feeds those rows straight into the corpus — so a pack statement with
         // a forged boundary would mint a fabricated entry with neither write
@@ -597,7 +575,7 @@ async _loadSecondaryAndPacks(opts?: { remoteOnlyScope?: string | null }): Promis
     }
 
     // A queued remote-only save held in a secondary file store is never a
-    // candidate either (Codex round 12 on #1663): same rule as the primary.
+    // candidate either: same rule as the primary.
     return withoutRemoteOnlyQueued(all)
   },
 
@@ -625,7 +603,7 @@ async _probeIdCollisions(id: string, opts?: { skipLive?: boolean }): Promise<Col
     const deadline = Date.now() + REMOTE_GUARD_BUDGET_MS
     for (const entry of (this.config.stores ?? [])) {
       if (!entry.url) continue
-      // remote-only: a personal or non-team url store is out of reach (re-audit 3 of #1521, R3-4).
+      // remote-only: a personal or non-team url store is out of reach.
       if (this._remoteOnly && !this._remoteOnlyWalkAllows(entry.scope)) continue
       const scope = entry.scope ?? entry.url
       const serverId = this._stripRemotePrefix(id, entry.scope)
@@ -640,7 +618,7 @@ async _probeIdCollisions(id: string, opts?: { skipLive?: boolean }): Promise<Col
       try {
         const driver = this._getRemoteDriver({ url: entry.url, token: entry.token, scope: entry.scope })
         // The team store's host may also hold personal rows under the same token:
-        // act on a bare id only when its row there is in a team scope (R3-4).
+        // act on a bare id only when its row there is in a team scope.
         if (this._remoteOnly && !(await this._remoteRowOwnedByTeam(driver, serverId))) continue
         // existsById, NOT getById: getById returns null for a dead network
         // exactly as for a genuine 404 — the silent "no" this must refuse.
@@ -665,7 +643,7 @@ _idSeenRemotely(id: string): string | null {
       for (const ev of readHistoryForEngram(this.paths.root, id)) {
         const d = (ev as { data?: { routed_to?: string; outbox?: boolean; outbox_flush?: boolean } }).data
         // Events keyed by the LOCAL id are not evidence that the local id
-        // names a server engram (#1532 re-audit R3): a rescope logs the local
+        // names a server engram: a rescope logs the local
         // source (its server copy is `new_id`), and an outbox flush logs the
         // local row it delivered (the server id is in the seen record).
         const ev_ = (ev as { event?: string }).event
@@ -798,14 +776,14 @@ _decideFeedbackProbes(id: string, probes: CollisionProbe[], warnings: string[]):
 _loadRemoteCached(store: StoreEntry): Engram[] {
     const driver = this._getRemoteDriver({ url: store.url!, token: store.token, scope: store.scope })
     // Synchronously read whatever the driver currently has cached — no
-    // background refresh (#776, see JSDoc above).
+    // background refresh.
     const cached = (driver as unknown as { cache: { engrams: Engram[] } | null }).cache
     return cached?.engrams ?? []
   },
 
 async _writeEngrams(path: string, engrams: Engram[], opts?: { allowShrink?: boolean }): Promise<void> {
     const store = this._storeAt(path)
-    // Backend-independent floor (audit #794, issue #802). The YAML writer has
+    // Backend-independent floor. The YAML writer has
     // its own shrink guard, but that guard lives in `saveEngrams` and so only
     // covers YAML. `save()` is a whole-corpus replace on EVERY backend, and on
     // Postgres it ends in `DELETE FROM engrams WHERE id NOT IN (…)` — with an
@@ -814,7 +792,7 @@ async _writeEngrams(path: string, engrams: Engram[], opts?: { allowShrink?: bool
     // Emptying the corpus is never an incidental outcome: `compact`, `forget`,
     // the outbox handoff and pack uninstall all declare `allowShrink`. An
     // undeclared empty save means the caller read nothing and is about to make
-    // that permanent, which is the whole shape of this audit.
+    // that permanent.
     // (A remote-only binding writes through RemoteOnlyStoreGuard, which puts
     // every hidden row back: an empty visible set there removes queued saves
     // only.)
@@ -863,10 +841,8 @@ _maybeDailyBackup(path: string): void {
     if (this._readonly) return
     if (path !== this.paths.engrams) return
     if (this._primaryStore.kind !== 'yaml') return
-    // Snapshot the file the store ACTUALLY owns. Backing up the conventional
-    // path meant an injected store's real corpus received no backup at all,
-    // while a possibly non-existent conventional path was snapshotted in its
-    // place (#813, audit finding 11).
+    // Snapshot the file the store ACTUALLY owns, not the conventional path:
+    // an injected store's corpus may live elsewhere.
     const target = this._primaryStore.location ?? path
     try {
       maybeDailyBackup(this.paths.root, target)
@@ -879,15 +855,14 @@ _mintedTodayIds(): string[] {
     const day = new Date().toISOString().slice(0, 10)
     // Cached per process, per day.
     //
-    // Without this, every learn() re-read and re-parsed a month of
-    // history.jsonl — on the hottest write path, to answer a question whose
-    // answer this process already knows. The cache is keyed on the DAY so it
+    // Without this, every learn() would re-read and re-parse a month of
+    // history.jsonl on the hottest write path. The cache is keyed on the DAY so it
     // self-invalidates across midnight (allocation is per-day, so yesterday's
     // ids are irrelevant to today's suffix).
     //
     // Staleness is safe in the one direction that matters: ids minted by
     // ANOTHER process after this cache was filled are missing from it, which
-    // degrades to the pre-fix corpus-only behaviour rather than introducing a
+    // degrades to corpus-only allocation rather than introducing a
     // new hazard — and the corpus scan, which is always fresh, still sees any
     // engram that other process actually wrote. Ids minted by THIS process are
     // added below without a re-read, so a burst of writes in one session stays
@@ -914,7 +889,7 @@ _storeAt(path: string): AsyncPrimaryStore {
     let store = this._secondaryStores.get(path)
     if (!store) {
       store = new YamlPrimaryStore(path)
-      // Read-only instances guard SECONDARY stores too (#731): forget/feedback/
+      // Read-only instances guard SECONDARY stores too: forget/feedback/
       // recurrence on a store engram write through `_storeAt(storeInfo.path)`,
       // not through the primary store, so wrapping only the primary would leave
       // every `stores:` file writable from a "read-only" engine.

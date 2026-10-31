@@ -4,7 +4,7 @@
  * Used when `Plur` is opened for a read-only command (`plur list`, `plur
  * status`, `plur tensions` list mode, `new Plur({ readonly: true })`) so that
  * lazy engine writes — index sync side-effects, cache refresh, migration
- * fix-ups — are caught rather than silently mutating the store (#731).
+ * fix-ups — are caught rather than silently mutating the store.
  *
  * Design rules, each load-bearing:
  *
@@ -27,33 +27,20 @@
  * - **All writes reject with the same typed error**, so callers can
  *   distinguish "this instance is read-only" from a real store failure.
  * - **The query-adapter surface delegates unchanged** (`role`, `searchBM25`,
- *   `searchVector`, `vectorIndex`). These are reads, so they need no guarding —
- *   exactly like `loadByIds`. Omitting them was #830: `_primaryQueryAdapter()`
- *   keys on `role === 'primary' && typeof searchBM25 === 'function'`, so a
- *   guarded store failed that check, `recall()` fell back to `_filterEngrams()`,
- *   and for a store that answers queries ITSELF — which therefore has no
- *   `indexedStorage`, since `indexTier` resolves to 'none' when a primary query
- *   store is present — that path had nothing to read and threw. Readonly is the
- *   documented way to say "this recall must not write", and it was unusable
- *   exactly where it is most wanted: shared multi-tenant storage, where core's
- *   per-read activation write is a real cost.
+ *   `searchVector`, `vectorIndex`, ...). These are reads, like `loadByIds`.
+ *   `_primaryQueryAdapter()` keys on `role === 'primary' && typeof searchBM25
+ *   === 'function'`; without them `recall()` falls back to `_filterEngrams()`,
+ *   which for a store that answers queries itself has no index to read and
+ *   throws.
  *
- * A note on the shape, since it looks like the wrong one: this is a WHITELIST,
- * and a whitelist is why #830 happened — a new read member is silently dropped
- * until someone remembers to add it. A Proxy forwarding everything except a
- * write deny-list would not have this failure mode. It is still the right shape
- * HERE, because the two failure modes are not symmetric: a missed entry on a
- * whitelist loses functionality, where a missed entry on a deny-list PERMITS A
- * WRITE on a path whose entire purpose is that it cannot write. On a safety
- * guard, fail closed.
- *
- * This argument used to end "…loses functionality AND SOMEONE NOTICES", and
- * that half was false. #753 added `searchBM25Exhaustive` to the query-adapter
- * surface hours after #830's whitelist landed, this file was not updated, and
- * nobody noticed — because the loss was a 2-3x cost regression rather than a
- * crash. Fail-closed remains right; "it gets caught" does not. The structural
- * test in `readonly-query-adapter.test.ts` enumerates the surface so the next
- * member fails on the day it lands rather than in the next audit.
+ * This is a WHITELIST, so a new read member of the query-adapter surface is
+ * silently dropped until it is added here, and the loss may be only a silent
+ * cost regression. A Proxy with a write deny-list would avoid that, but the
+ * failure modes are not symmetric: a missed whitelist entry loses
+ * functionality, a missed deny-list entry PERMITS A WRITE on a path whose
+ * purpose is that it cannot write. On a safety guard, fail closed. The
+ * structural test in `readonly-query-adapter.test.ts` enumerates the surface so
+ * a new member that is not forwarded fails there.
  */
 import type { Engram } from '../schemas/engram.js'
 import type { PrimaryStore, PrimaryStoreKind } from './primary-store.js'
@@ -96,32 +83,23 @@ export class ReadonlyStoreGuard implements PrimaryStore {
   readonly nextEngramId?: (datePrefix: string) => Promise<string>
 
   /**
-   * Query-adapter surface (#830). All READS, all delegating unchanged.
+   * Query-adapter surface. All READS, all delegating unchanged.
    *
-   * `role` is what `_primaryQueryAdapter()` keys on, so dropping it silently
-   * disabled search pushdown for every read-only instance over a primary query
-   * store — and then crashed, because the fallback path has no index to read.
+   * `role` is what `_primaryQueryAdapter()` keys on; without it a read-only
+   * instance over a primary query store loses search pushdown and the
+   * fallback path has no index to read.
    */
   readonly role?: string
   readonly searchBM25?: (query: string, opts: { limit: number } & Record<string, unknown>) => Promise<Engram[]>
-  /** Pure read — #906's _filterEngrams pushdown calls this on any primary query
+  /** Pure read — the _filterEngrams pushdown calls this on any primary query
    *  adapter. Not forwarding it would demote every guarded query-capable store
-   *  to the whole-corpus fallback (or, before the typeof guard, crash it). */
+   *  to the whole-corpus fallback. */
   readonly loadFiltered?: (filter: Record<string, unknown>) => Promise<Engram[]>
   /**
-   * Also a read, and the one the whitelist's own argument failed on (#753,
-   * found by the 2026-08-13 panel). `recall()`'s widening loop uses it to stop
-   * as soon as the adapter reports the candidate set exhausted; a guarded store
-   * that dropped it kept widening 3L → 9L → 27L and re-ranked the same rows
-   * two extra times.
-   *
-   * That is the case the file header calls "loses functionality and is
-   * discovered" — and it was NOT discovered, because the loss is a silent 2-3x
-   * cost regression rather than a visible failure, in exactly the multi-tenant
-   * deployment read-only exists to serve. The whitelist is still the right
-   * shape for the reasons below; the argument for it is just weaker than it
-   * reads, so new members of the query-adapter surface need adding here
-   * deliberately rather than being noticed later.
+   * Also a read. `recall()`'s widening loop uses it to stop as soon as the
+   * adapter reports the candidate set exhausted; without it a guarded store
+   * keeps widening 3L → 9L → 27L and re-ranks the same rows two extra times,
+   * a silent 2-3x cost regression rather than a visible failure.
    */
   readonly searchBM25Exhaustive?: (
     query: string,
@@ -143,7 +121,7 @@ export class ReadonlyStoreGuard implements PrimaryStore {
     }
     if (_inner.nextEngramId) this.nextEngramId = () => Promise.reject(new ReadonlyStoreError())
 
-    // Query-adapter surface (#830) — reads, forwarded verbatim like loadByIds.
+    // Query-adapter surface — reads, forwarded verbatim like loadByIds.
     const inner = _inner as unknown as {
       role?: string
       searchBM25?: (q: string, o: { limit: number } & Record<string, unknown>) => Promise<Engram[]>

@@ -20,24 +20,23 @@ export interface FeedbackPinMethods {
    * Update feedback_signals and adjust retrieval_strength. Searches primary, stores, then packs.
    *
    * Pass `scope` to route directly to a specific store and bypass the first-match-wins
-   * walk (#850). Use scope: "primary" to target the local primary store, or a remote
+   * walk. Use scope: "primary" to target the local primary store, or a remote
    * scope string (e.g. "group:plur/plur-ai/engineering") to target that remote.
    * Without scope, an ID that exists in both the local store and a warmed remote cache
    * is an error — the caller must disambiguate rather than relying on resolution order.
    *
-   * `options.source: 'auto'` (#1310) marks a verdict an editor hook inferred
+   * `options.source: 'auto'` marks a verdict an editor hook inferred
    * from the reply text. It adjusts ranking only — `commitment` is never
    * advanced. A remote store receives it only when its server advertises the
-   * `feedback.source` capability in `/me` (and so promises the same rule —
-   * docs/specs/2026-09-29-feedback-source-contract.md); any other remote is
-   * skipped. The ambiguity guard below does not dial a cold remote for it,
-   * because hooks must not wait on the network.
+   * `feedback.source` capability in `/me` (and so promises the same rule);
+   * any other remote is skipped. The ambiguity guard below does not dial a
+   * cold remote for it, because hooks must not wait on the network.
    */
 feedback(id: string, signal: 'positive' | 'negative' | 'neutral', scope?: string, options?: { source?: FeedbackSource }): Promise<MutationOutcome>
 
 /**
    * Log an injection_outcome event linking a feedback verdict to the
-   * co_injection event the engram came from (#452). Only positive/negative
+   * co_injection event the engram came from. Only positive/negative
    * verdicts are outcomes — "ignored" is the absence of an outcome, so
    * neutral signals and feedback on never-injected engrams write nothing.
    * Link resolution: in-process map first, then a bounded history scan for
@@ -50,9 +49,8 @@ _logInjectionOutcome(engramId: string, signal: 'positive' | 'negative' | 'neutra
    * Save extracted meta-engrams to the engram store. Skips IDs that already
    * exist.
    *
-   * LOW-1 (#353): this is the one public persist method that runs NO part of the
-   * scope-security stack (learn/learnRouted/learnAsync/updateEngram all guard;
-   * saveMetaEngrams did not). Run the same guard before persisting each meta:
+   * This runs the same scope-security guard as learn/updateEngram before
+   * persisting each meta:
    *  - HARD `detectSecrets` check (mirrors learn/learnRouted) — a raw secret
    *    (API key, token, …) in a meta at a shared scope THROWS unless
    *    `config.allow_secrets`.
@@ -62,10 +60,9 @@ _logInjectionOutcome(engramId: string, signal: 'positive' | 'negative' | 'neutra
    *    stamped with `_demoted{from,to,patterns}` rather than written at the
    *    requested shared scope. Local write, so demotion is coherent.
    *
-   * No-op for all known in-tree callers: in-tree metas use personal scopes
-   * (global/local), and `_offendingHitsForScope` returns [] for non-shared
-   * scopes (the index.ts personal fast-path). Defense-in-depth: activates only
-   * if a future caller passes a shared-scope meta.
+   * In-tree metas use personal scopes (global/local), for which
+   * `_offendingHitsForScope` returns [], so the guard only acts on a
+   * shared-scope meta.
    */
 saveMetaEngrams(metas: Engram[]): Promise<{ saved: number; skipped: number }>
 
@@ -73,19 +70,16 @@ saveMetaEngrams(metas: Engram[]): Promise<{ saved: number; skipped: number }>
    * Update an existing engram by ID. Returns true if it was found and written,
    * false if no local or writable remote store holds it.
    *
-   * Since 0.16 a remote-routed update is awaited and its outcome reported, so a
-   * `true` means the write happened. {@link updateEngramAsync} is the same
-   * operation returning the written engram.
+   * A remote-routed update is awaited and its outcome reported, so a `true`
+   * means the write happened. {@link updateEngramAsync} is the same operation
+   * returning the written engram.
    */
 updateEngram(updated: Engram): Promise<boolean>
 
 /**
-   * @deprecated Equivalent to {@link updateEngram} since 0.16 — that method now
-   * awaits the remote PATCH too — differing only in returning the written
-   * engram (the server-authoritative view for a remote hit) instead of a
-   * boolean. Kept so existing callers keep compiling. One implementation
-   * (2026-09 audit): the two bodies had drifted on how a refusing remote is
-   * handled; both now try the next writable store rather than throwing.
+   * @deprecated Use {@link updateEngram}, which also awaits the remote PATCH.
+   * This differs only in returning the written engram (the server-authoritative
+   * view for a remote hit) instead of a boolean.
    */
 updateEngramAsync(updated: Engram): Promise<Engram | null>
 
@@ -93,9 +87,8 @@ updateEngramAsync(updated: Engram): Promise<Engram | null>
 _updateEngramReturning(updated: Engram): Promise<Engram | null>
 
 /**
-   * Decision D4 "like-rescope" (2026-09-26): an update that changes the scope
-   * of a row still queued for a remote store (`_outbox` on the STORED row)
-   * behaves like `rescope()` (#848):
+   * An update that changes the scope of a row still queued for a remote store
+   * (`_outbox` on the STORED row) behaves like `rescope()`:
    *   - new scope local-family (`isLocalOnlyScope`, config-aware) → the
    *     pending delivery is cancelled;
    *   - new scope has a writable URL store → `_outbox` is retargeted to it
@@ -106,7 +99,7 @@ _updateEngramReturning(updated: Engram): Promise<Engram | null>
    *   - a scope two servers claim → the update is refused (ScopeConflictError)
    *     before anything is written. The target comes from resolveScopeTarget.
    * The queue entry is read from the STORED row, never the caller's object,
-   * and so is `_retireRemote` (decision D1) — a caller-set value of either
+   * and so is `_retireRemote` — a caller-set value of either
    * would otherwise direct a push or a remote DELETE. Mutates `toWrite`.
    */
 /** @internal */
@@ -116,16 +109,14 @@ _reconcileQueuedScope(stored: Engram, toWrite: Engram): void
    * Toggle the always-load (pinned) flag for an engram.
    *
    * Returns the updated engram on success, `null` if it is not found in the
-   * local primary store or in any writable remote. Since 0.16 the remote PATCH
-   * is awaited and its result returned, so the value is the real engram rather
-   * than a placeholder — {@link setPinnedAsync} is the same call.
+   * local primary store or in any writable remote. The remote PATCH is awaited
+   * and the real engram returned — {@link setPinnedAsync} is the same call.
    */
 setPinned(id: string, pinned: boolean, options?: { scope?: string }): Promise<Engram | null>
 
 /**
-   * @deprecated Equivalent to {@link setPinned} since 0.16 — that method now
-   * awaits the remote PATCH too. Kept so existing callers keep compiling; it
-   * IS setPinned (2026-09 audit), so the two cannot drift apart.
+   * @deprecated Use {@link setPinned}, which also awaits the remote PATCH.
+   * This is an alias of it.
    */
 setPinnedAsync(id: string, pinned: boolean, options?: { scope?: string }): Promise<Engram | null>
 
@@ -178,19 +169,12 @@ hardTierCap(): number
 _assertHardTierFits(candidate: Engram, pendingTokens?: number): Promise<number>
 
 /**
-   * Pinned-budget accounting (#1142).
+   * Pinned-budget accounting.
    *
-   * The spec says `pinned` is an "always-load flag". The selector did not
-   * honour that: it capped pinned at a share of the injection budget and
-   * silently skipped the overflow, so pinning something could quietly evict
-   * something else the user had also pinned. Measured on a real store,
-   * lowering `injection_budget` from 56,000 to 12,000 dropped 36 of 46 pinned
-   * engrams with nothing in the output saying so.
-   *
-   * The fix is not a better eviction rule — it is to stop over-committing.
-   * Pinning is a deliberate act with a human present, so the quota is checked
-   * THERE, where someone can decide, instead of at injection time where nobody
-   * can. Over quota, the user unpins something or raises the limit.
+   * `pinned` is an "always-load flag", so injection must not silently evict
+   * pinned engrams to fit the budget. Instead the quota is checked at pin
+   * time, where a human is present to decide: over quota, the user unpins
+   * something or raises the limit.
    */
 pinnedQuota(candidateId?: string, options?: { scope?: string }): Promise<{
     quota: number
@@ -206,47 +190,37 @@ pinnedQuota(candidateId?: string, options?: { scope?: string }): Promise<{
 
 /**
    * Recompute `content_hash` for primary-store engrams whose hash no longer
-   * describes their statement (#852).
+   * describe their statement.
    *
    * ## Why this lives in core rather than in the CLI
    *
-   * The first cut of `plur reindex-hashes` did a raw load → mutate → save
-   * against `paths.engrams` in the command itself. That is a whole-corpus
-   * read-modify-write on an UNLOCKED snapshot, and the 2026-08-13 data-loss
-   * audit reproduced the loss 6/6 on a 4,642-engram store: a correctly-locked
-   * concurrent writer appends between the load and the save, and the save puts
-   * the pre-append snapshot back. The engram is gone with no error — and the
-   * shrink guard cannot see it, because the same count goes out that came in.
-   *
-   * Nothing about that was specific to the CLI. Any caller reaching for the
-   * exported `loadEngrams`/`saveEngrams` primitives can reintroduce it, so the
-   * repair belongs behind the same seam every other write uses:
-   * `_withStoreLock` (which also fires the #799 daily backup) and the
+   * A raw load → mutate → save against `paths.engrams` is a whole-corpus
+   * read-modify-write on an UNLOCKED snapshot: a correctly-locked concurrent
+   * writer that appends between the load and the save loses its engram with no
+   * error, and the shrink guard cannot see it because the count is unchanged.
+   * So the repair goes through the same seam every other write uses:
+   * `_withStoreLock` (which also fires the daily backup) and the
    * `_loadTargeted`/`_updateEngrams` capability pair, so a store that can do a
    * targeted UPDATE is not asked to replace its whole corpus to rewrite one
    * field.
    *
    * ## Why the primary store, not `list()`
    *
-   * `list()` merges packs in and drops inactive/expired rows. Measured against
-   * one real store it gave 5,388 scanned / 1 stale / 1,805 missing where the
-   * primary store itself holds 4,642 / 38 / 961: it counted pack entries this
-   * repair does not own, and hid stale hashes on retired engrams. A retired
-   * engram with a stale hash still matters — `findActiveByContentHash` is not
-   * the only reader, and a resurrected row carries the bad hash with it.
+   * `list()` merges packs in and drops inactive/expired rows: it would count
+   * pack entries this repair does not own, and hide stale hashes on retired
+   * engrams. A retired engram with a stale hash still matters —
+   * `findActiveByContentHash` is not the only reader, and a resurrected row
+   * carries the bad hash with it.
    *
    * STALE and MISSING are reported separately because they are different
-   * conditions: a stale hash is actively wrong and absorbs unrelated writes
-   * today, a missing one predates the field and is inert until something
-   * matches on it.
+   * conditions: a stale hash is actively wrong and absorbs unrelated writes,
+   * a missing one is inert until something matches on it.
    *
    * UNHASHABLE is the third category, and it is a refusal rather than a
    * finding. A statement that normalizes to nothing hashes to the SHA-256 of
    * the empty string — the same value every other such statement gets — so
-   * writing it does not record a fact about that engram, it enrols the engram
-   * in a mutual-absorption set. Before #896 that was every non-Latin statement
-   * in the store, and a `--apply` run would have stamped the shared value onto
-   * exactly the rows the report called "inert". These are listed and skipped.
+   * writing it would enrol the engram in a mutual-absorption set. These are
+   * listed and skipped.
    *
    * Read-only unless `apply` is set.
    */
@@ -276,7 +250,7 @@ async feedback(id: string, signal: 'positive' | 'negative' | 'neutral', scope?: 
         + `advertise the "${FEEDBACK_SOURCE_CAPABILITY}" capability. Rate it with plur_feedback to send an explicit signal.`,
       )
     }
-    // Only a capable server may receive an automatic verdict (#1310).
+    // Only a capable server may receive an automatic verdict.
     const remoteAccepts = async (driver: RemoteStore): Promise<boolean> =>
       !auto || await driver.hasCapability(FEEDBACK_SOURCE_CAPABILITY)
     const remoteOpts = auto ? { source: 'auto' as const } : undefined
@@ -284,15 +258,15 @@ async feedback(id: string, signal: 'positive' | 'negative' | 'neutral', scope?: 
     if (scope !== undefined && (typeof scope !== 'string' || scope.trim() === '')) {
       throw new TypeError('plur.feedback: scope must be a non-empty string')
     }
-    // Pick up out-of-process config edits (#307) so a store registered after
+    // Pick up out-of-process config edits so a store registered after
     // startup is not rejected as unknown by the validation below — mirrors
     // rescope() and forget().
     if (scope) this.reloadConfigIfChanged()
 
-    // Scope-targeted routing (#850): when the caller knows which store the engram
+    // Scope-targeted routing: when the caller knows which store the engram
     // lives in, route directly and skip the first-match-wins walk.
     if (scope && scope !== 'primary') {
-      // The resolver's entry (#1633 row 34): exact match, and a scope two
+      // The resolver's entry: exact match, and a scope two
       // servers claim is refused before either is asked.
       const entry = this._scopedUrlEntry(scope, 'nothing was rated')
       if (entry) {
@@ -319,21 +293,18 @@ async feedback(id: string, signal: 'positive' | 'negative' | 'neutral', scope?: 
         this._logInjectionOutcome(asGiven, signal, options?.source)
         return { warnings }
       }
-      // No URL-backed store carries this scope. Falling through blindly was a
-      // hole (#851 audit): because `scope` is truthy, the `if (!scope)`
-      // ambiguity guard below is skipped, so a MISTYPED scope silently
-      // disabled the guard and restored first-match-wins. Same defect as
-      // forget()'s, one severity band down — a mis-targeted signal is
-      // recoverable where a retire is not — but the same guard, so the same
-      // rule: validate that the scope names something, following rescope().
+      // No URL-backed store carries this scope. Falling through would skip the
+      // `if (!scope)` ambiguity guard below (`scope` is truthy), so a MISTYPED
+      // scope would silently restore first-match-wins. Validate that the scope
+      // names something, following rescope().
       assertScopeNamesATarget(scope, this.config.stores ?? [], 'rate in', 'rate the LOCAL engram')
     }
 
-    // A namespaced id acts on the one store it names (0.21.1 audit, H1).
+    // A namespaced id acts on the one store it names.
     if (!scope) id = await this._resolveNamespacedId(id, 'rate')
 
     // Try primary engrams first
-    // Collision probe OUTSIDE the store lock (0.21.1), bounded per store —
+    // Collision probe OUTSIDE the store lock, bounded per store —
     // the same walk forget() runs, read the same way except that "cannot
     // tell" goes ahead with a warning: a mis-targeted rating is recoverable.
     // An automatic signal never waits on the network (a cold cache reads as
@@ -347,28 +318,27 @@ async feedback(id: string, signal: 'positive' | 'negative' | 'neutral', scope?: 
       }
     }
     const found = await this._withStoreLock(this.paths.engrams, async () => {
-      // Targeted read (#827): rating one engram is a lookup by primary key,
+      // Targeted read: rating one engram is a lookup by primary key,
       // not a reason to materialise the corpus. A miss still means "not in the
       // primary store" and still falls through to the secondary stores below.
       const engrams = await this._loadTargeted([id])
       const engram = engrams.find(e => e.id === id)
       if (!engram) return false
 
-      // Ambiguity guard (#850): without an explicit scope, refuse when the same
+      // Ambiguity guard: without an explicit scope, refuse when the same
       // bare ID exists in a warmed remote cache. Silent wrong-target writes are
       // indistinguishable from correct ones; the caller must pass scope to resolve.
       // A COLD cache must not silently downgrade to first-match-wins:
-      // `_loadRemoteCached` is a synchronous peek with no fetch, and nothing
-      // here warms it, so on a fresh process the guard did not run at all.
-      // Peek first (free), then one live probe per remote only when that
+      // `_loadRemoteCached` is a synchronous peek with no fetch, so the guard
+      // peeks first (free), then probes live once per remote only when that
       // store's cache is cold — session_start warms the cache, so in normal
-      // operation this costs nothing and fires only before the first warm.
+      // operation this costs nothing.
       //
       // Unlike forget(), an unreachable store does NOT block the write. A
       // mis-targeted feedback signal is recoverable and rating is a hot path;
       // refusing here would trade a real cost for a reversible risk. Warn
       // instead, so the unverified case is visible rather than silent.
-      // The collision probe (#850) runs BEFORE this lock (0.21.1); only a row
+      // The collision probe runs BEFORE this lock; only a row
       // that appeared in between is probed here.
       if (!scope && !probedOutsideLock) {
         this._decideFeedbackProbes(id, await this._probeIdCollisions(id, { skipLive: auto }), warnings)
@@ -376,12 +346,12 @@ async feedback(id: string, signal: 'positive' | 'negative' | 'neutral', scope?: 
 
       applyFeedbackSignal(engram, signal, undefined, applyOpts)
 
-      // Incremental write (#740): only the rated engram changed.
+      // Incremental write: only the rated engram changed.
       await this._updateEngrams(engrams, [engram])
       await this._syncIndex()
-      // The counter has already changed on disk. A history failure here used to
-      // reject the call, and a retry then applied the signal a SECOND time
-      // (#813, audit finding 13). Log and continue: the mutation committed.
+      // The counter has already changed on disk. Rejecting the call on a history
+      // failure would make a retry apply the signal a SECOND time, so log and
+      // continue: the mutation committed.
       try {
         this._appendHistory({
           event: 'feedback_received',
@@ -414,11 +384,10 @@ async feedback(id: string, signal: 'positive' | 'negative' | 'neutral', scope?: 
       if (storeInfo.readonly) {
         throw new Error('Engram is in a readonly store')
       }
-      // Under the SECONDARY store's own lock — this had none, while the same
-      // operation on the primary store took one. Two processes rating the same
-      // team engram both loaded, both incremented, and both wrote back, so one
-      // increment vanished; and a whole-file replace also deletes anything the
-      // other process added in between.
+      // Under the SECONDARY store's own lock, as on the primary store: without
+      // it two processes rating the same team engram could both load, increment
+      // and write back, losing one increment, and a whole-file replace would
+      // delete anything the other process added in between.
       // Returns whether the engram was found and handled here; a miss falls
       // through to the remote-store search below.
       const handled = await this._withStoreLock(storeInfo.path, async () => {
@@ -438,15 +407,11 @@ async feedback(id: string, signal: 'positive' | 'negative' | 'neutral', scope?: 
     }
 
     // Check remote stores — the engram may live on an enterprise server.
-    // See: https://github.com/plur-ai/plur/issues/85
     //
-    // Same local-only guard as forget()'s, and it was missing here entirely —
-    // not even the `primary` case was covered, so `feedback(id, signal,
-    // 'primary')` on an id absent locally rated a REMOTE engram. One severity
-    // band below the retire (a mis-targeted signal is recoverable), same
-    // defect, same predicate.
+    // Same local-only guard as forget()'s: `feedback(id, signal, 'primary')`
+    // on an id absent locally must not rate a REMOTE engram.
     // An explicit scope the resolver keeps local (a path store, or the local
-    // store a personal scope selects) is local too (gate of #1667).
+    // store a personal scope selects) is local too.
     if (scope && (isLocalOnlyScope(scope, this.config.stores ?? [])
       || resolveScopeTarget(scope, this.config.stores ?? []).kind === 'local')) {
       throw new Error(
@@ -456,18 +421,18 @@ async feedback(id: string, signal: 'positive' | 'negative' | 'neutral', scope?: 
       )
     }
     // The ID may be prefixed (ENG-GPL-...) from _loadAllEngrams namespacing.
-    // Strip the prefix before querying the remote server. See: #86
-    /** Stores this walk could not reach — so "not found" can say so (#907). */
+    // Strip the prefix before querying the remote server.
+    /** Stores this walk could not reach — so "not found" can say so. */
     const unverifiedStores: string[] = []
     for (const entry of (this.config.stores ?? [])) {
       if (!entry.url) continue
-      // remote-only: a personal or non-team url store is out of reach (re-audit 3, R3-4).
+      // remote-only: a personal or non-team url store is out of reach.
       if (this._remoteOnly && !this._remoteOnlyWalkAllows(entry.scope, scope)) continue
-      // An explicit scope names its store exactly (#1633): the walk never
+      // An explicit scope names its store exactly: the walk never
       // rates a row of a store that does not claim that scope.
       if (scope && entry.scope !== scope) continue
       const serverId = this._stripRemotePrefix(id, entry.scope)
-      // Automatic feedback (#1310): a server that does not advertise
+      // Automatic feedback: a server that does not advertise
       // `feedback.source` is skipped before any engram lookup is spent on it.
       if (auto && !(await remoteAccepts(this._getRemoteDriver({ url: entry.url, token: entry.token, scope: entry.scope })))) continue
       if (entry.readonly === true) {
@@ -478,21 +443,15 @@ async feedback(id: string, signal: 'positive' | 'negative' | 'neutral', scope?: 
       }
       const driver = this._getRemoteDriver({ url: entry.url, token: entry.token, scope: entry.scope })
       // The team store's host may also hold personal rows under the same token:
-      // act on a bare id only when its row there is in a team scope (R3-4).
+      // act on a bare id only when its row there is in a team scope.
       if (this._remoteOnly && !(await this._remoteRowOwnedByTeam(driver, this._stripRemotePrefix(id, entry.scope)))) continue
-      // OWNERSHIP is decided by `existsById`, not `getById` (#907).
-      //
-      // `getById` catches everything and returns null, so a timeout, a 5xx or
-      // an auth rejection was indistinguishable from a genuine 404 — the walk
-      // read silence as "this store does not have it", moved on, and reported
-      // "Engram not found" for an engram the store demonstrably held. That is
-      // the exact collapse `existsById` exists to prevent, quoting its own
-      // docstring: safe for reads that only want the engram, unsafe for
-      // anything deciding whether it is free to act. Deciding which store owns
-      // an id IS deciding whether to act.
+      // OWNERSHIP is decided by `existsById`, not `getById`: `getById` returns
+      // null on a timeout, 5xx or auth rejection as well as a genuine 404, so it
+      // cannot tell "this store does not have it" from "could not ask". Deciding
+      // which store owns an id is deciding whether to act.
       let owns: boolean
       try {
-        // Bounded like the collision probe (#1532 review F2): a hanging store
+        // Bounded like the collision probe: a hanging store
         // costs seconds, not the driver's 30 s, per store.
         owns = await driver.existsById(serverId, { signal: AbortSignal.timeout(REMOTE_PROBE_TIMEOUT_MS) })
       } catch (err) {
@@ -570,7 +529,7 @@ async saveMetaEngrams(metas: Engram[]): Promise<{ saved: number; skipped: number
           continue
         }
         pendingHard += await this._assertHardTierFits(meta, pendingHard)
-        // LOW-1: guard each meta on the FULL content (statement + context
+        // Guard each meta on the FULL content (statement + context
         // fields) at its scope before persist. Do NOT call _guardExplicitUpdate
         // (its warning text is the EXPLICIT-update path); inline the demotion
         // shape here so the message is meta-specific.
@@ -627,22 +586,22 @@ async updateEngramAsync(updated: Engram): Promise<Engram | null> {
 async _updateEngramReturning(updated: Engram): Promise<Engram | null> {
     this._assertWritable()
     await this._remoteOnlyRefuseLocalRow(updated.id, 'Updating')
-    // Guards and routing below read the current config (core-index#9).
+    // Guards and routing below read the current config.
     this.reloadConfigIfChanged()
-    // A namespaced id updates the one store it names (0.21.1 audit, H1): an
+    // A namespaced id updates the one store it names: an
     // old-form id shared by several stores is resolved first, or refused.
     if (parseNamespacedId(updated.id, true)) {
       const resolved = await this._resolveNamespacedId(updated.id, 'update')
       if (resolved !== updated.id) updated = { ...updated, id: resolved }
     }
-    // The scope-move twin check (#1532 review F5), BEFORE the lock: a live
+    // The scope-move twin check, BEFORE the lock: a live
     // probe must never hold the store lock.
     let scopeMoveChecked = false
     if (this._hasUrlStore() && typeof updated.scope === 'string' && this._isRemoteBackedScope(updated.scope)) {
       const pre = (await this._loadTargeted([updated.id])).find(e => e.id === updated.id)
       if (pre && this._isScopeMoveIntoRemote(pre.scope, updated.scope)) {
-        // Only a positive "absent" from every store clears the move (#1532
-        // re-audit R1): a hang or a rejected token is "cannot tell", and on
+        // Only a positive "absent" from every store clears the move:
+        // a hang or a rejected token is "cannot tell", and on
         // this path a wrong guess overwrites an unrelated local engram.
         const probes = await this._probeIdCollisions(updated.id)
         const present = probes.find(p => p.outcome === 'present')
@@ -659,7 +618,7 @@ async _updateEngramReturning(updated: Engram): Promise<Engram | null> {
     }
     // Local primary first.
     const localResult = await this._withStoreLock(this.paths.engrams, async () => {
-      // Targeted read (#827): resolving one engram by id.
+      // Targeted read: resolving one engram by id.
       const engrams = await this._loadTargeted([updated.id])
       const idx = engrams.findIndex(e => e.id === updated.id)
       if (idx === -1) return null
@@ -667,38 +626,34 @@ async _updateEngramReturning(updated: Engram): Promise<Engram | null> {
       // A row still queued for a remote store that moves into a personal scope
       // takes the spelling a fresh write would (`_canonicalPersonalScope`, as
       // in learn), BEFORE the leak guard, so the guard scans the scope the
-      // delivery is retargeted to (#1515 re-audit 4, L-A).
+      // delivery is retargeted to.
       const storedRow = engrams[idx] as any
       if (storedRow.structured_data?._outbox && storedRow.status !== 'retired'
         && typeof updated.scope === 'string' && updated.scope !== storedRow.scope) {
         const canonical = this._canonicalPersonalScope(updated.scope)
         if (canonical !== updated.scope) updated = { ...updated, scope: canonical }
       }
-      // Ambiguity guard (0.21.1, narrowed in the #1532 review, F5). Ids are
-      // minted per store, so a team row the server returned with a bare id
-      // (learnRouted's result, say) can share that id with an unrelated local
-      // row, and local-first matching wrote the team content over it. Refused
-      // only on evidence of such a twin — checked before the lock (live probe)
-      // or, for a row that appeared since, here without the network. A plain
-      // scope move of a local engram with no twin goes through as before.
+      // Ambiguity guard. Ids are minted per store, so a team row the server
+      // returned with a bare id (learnRouted's result, say) can share that id with
+      // an unrelated local row, and local-first matching would write the team
+      // content over it. Refused only on evidence of such a twin — checked before
+      // the lock (live probe) or, for a row that appeared since, here without the
+      // network. A plain scope move of a local engram with no twin goes through.
       if (!scopeMoveChecked && this._isScopeMoveIntoRemote(engrams[idx].scope, updated.scope)) {
         // No network under the lock: clear the move only when every store's
-        // fresh cache positively answers "absent" (#1532 re-audit R1).
+        // fresh cache positively answers "absent".
         const unchecked = (this.config.stores ?? []).find(e => !!e.url
           && this._remoteCacheAnswer(e, this._stripRemotePrefix(updated.id, e.scope)) !== 'absent')
         const twin = this._cachedTwinEvidence(updated.id)
           ?? (unchecked ? `remote scope "${unchecked.scope ?? unchecked.url}" could not be checked for an engram with this id` : null)
         if (twin) throw this._scopeMoveRefusal(updated, engrams[idx].scope, twin)
       }
-      // Leak guard (#353): local-resident → demote a sensitive update in place.
-      // LOW-2: scan context fields too, not just the statement.
+      // Leak guard: local-resident → demote a sensitive update in place.
+      // Scans context fields too, not just the statement.
       const demote = this._guardExplicitUpdate(updated.statement, updated.scope, false, this._engramContextFields(updated))
-      // #1138 review: stamp `updated_at` on the mutation path, not only on
-      // creation and retirement. Without this it equalled `created_at` for
-      // every engram that had ever been edited — worse than an absent field,
-      // because it reads as authoritative. The spec added alongside it names
-      // statement, scope, commitment, relations and retirement as the tracked
-      // mutations, and this is where four of the five actually happen.
+      // Stamp `updated_at` on the mutation path, not only on creation and
+      // retirement; otherwise it equals `created_at` for edited engrams and reads
+      // as authoritative.
       const toWrite = { ...(demote ? { ...updated, ...demote } : updated), updated_at: new Date().toISOString() }
       // A whole-engram update can set `pinned` and `pinned_tier` — a write path
       // that can produce a hard-tier engram, so it passes the same cap. Checked
@@ -707,14 +662,13 @@ async _updateEngramReturning(updated: Engram): Promise<Engram | null> {
       this._reconcileQueuedScope(engrams[idx], toWrite)
       const retiresNow = engrams[idx].status !== 'retired' && toWrite.status === 'retired'
       engrams[idx] = toWrite
-      // Incremental write (#740): only the updated engram row changed.
+      // Incremental write: only the updated engram row changed.
       await this._updateEngrams(engrams, [toWrite])
       await this._syncIndex()
-      // "Every removal is explicit" (coordinator, 2026-09-27): an update that
-      // retires a row is a removal and leaves the same trace forget() does.
-      // `plur_validate_meta` retires a failing meta-engram through here, and
-      // it used to vanish with no history event. Nothing when the row was
-      // already retired or its status did not change.
+      // Every removal is explicit: an update that retires a row is a removal and
+      // leaves the same trace forget() does (e.g. `plur_validate_meta` retiring a
+      // failing meta-engram). Nothing when the row was already retired or its
+      // status did not change.
       if (retiresNow) {
         try {
           this._appendHistory({
@@ -725,10 +679,9 @@ async _updateEngramReturning(updated: Engram): Promise<Engram | null> {
           })
         } catch { /* history is an audit trail, never a gate on the write */ }
       } else if (`${toWrite.status ?? 'active'}:${computeRecordHash(toWrite)}` !== recordBefore) {
-        // A content edit through PLUR is recorded (code review of 0.23): it
-        // used to leave no history event, so to `plur verify` it looked the
-        // same as an edit made behind PLUR's back. Ids only; an update that
-        // moves only usage counters writes nothing.
+        // A content edit through PLUR is recorded, so `plur verify` can tell it
+        // from an edit made behind PLUR's back. Ids only; an update that moves only
+        // usage counters writes nothing.
         try {
           this._appendHistory({
             event: 'engram_updated',
@@ -744,39 +697,29 @@ async _updateEngramReturning(updated: Engram): Promise<Engram | null> {
 
     // Remote routing. Awaited, and the outcome reported.
     //
-    // This used to `void driver.patch(...)` and `return true` on the next line
-    // — the same defect fixed in `setPinned`, missed here. Three consequences,
-    // all reproduced: a write that failed was reported as success; the promise
-    // had no catch, so a non-2xx (RemoteStore.patch throws on anything but 404)
-    // became an UNHANDLED REJECTION, which under Node's default
-    // `--unhandled-rejections=throw` terminates a long-lived MCP server; and a
-    // 404 returned `null` while the caller was told `true`.
+    // Not fire-and-forget: a failed write must not be reported as success, a
+    // non-2xx (RemoteStore.patch throws on anything but 404) must not become an
+    // unhandled rejection that terminates a long-lived MCP server, and a 404
+    // must not be reported as `true`.
     //
-    // Verified against a stub remote returning 401: the old code logged
-    // `updateEngram RETURNED: true` alongside
-    // `UNHANDLED REJECTIONS: [Error: Remote patch failed: 401 token expired]`.
-    // Refusal rule (2026-09 audit), the same one `forget()` uses since #1109:
-    // when the id is NAMESPACED to this store (`_stripRemotePrefix` stripped
-    // its prefix), the target is unambiguous, so a refusal (auth, validation,
-    // transport) is thrown as-is — reporting it as "not found" would claim
-    // an absence that was never verified, which is how the MCP plur_pin tool
-    // came to turn a 401 into "Engram not found". A BARE id is ambiguous
-    // across stores, so there the walk keeps the graceful contract pinned by
+    // Refusal rule (same as `forget()`): when the id is NAMESPACED to this store
+    // (`_stripRemotePrefix` stripped its prefix), the target is unambiguous, so a
+    // refusal (auth, validation, transport) is thrown as-is — reporting it as
+    // "not found" would claim an absence that was never verified. A BARE id is
+    // ambiguous across stores, so the walk keeps the graceful contract pinned by
     // `set-pinned-remote.test.ts`: try the next store, and report null/false
     // rather than a success that did not happen.
-    // core-index#9 (round 2): an id NAMESPACED to a configured store names that
-    // store (the refusal rule above relies on it), so only the store(s) it is
-    // namespaced to are candidates. The walk used to run EVERY store's guard —
-    // and PATCH every store — in order until one answered, so store A's
-    // stricter policy refused an update of store B's engram, and B's content
-    // was sent to A first. A bare id keeps the full walk (ownership unknown).
-    // Audit of #1228: `storePrefix` is three letters, so two store scopes can
-    // share one and a namespaced id then names both. Disambiguate on the full
-    // store scope — the loader's `_storeScope` stamp when the caller passes
-    // the row it got from us, else the store whose scope holds the row's
-    // scope. Neither narrows to nothing: an unmatched hint keeps `namedBy`.
+    // An id NAMESPACED to a configured store names that store, so only the
+    // store(s) it is namespaced to are candidates — otherwise store A's guard
+    // could refuse an update of store B's engram, or B's content be sent to A.
+    // A bare id keeps the full walk (ownership unknown).
+    // `storePrefix` is short, so two store scopes can share one and a namespaced
+    // id then names both. Disambiguate on the full store scope — the loader's
+    // `_storeScope` stamp when the caller passes the row it got from us, else the
+    // store whose scope holds the row's scope. Neither narrows to nothing: an
+    // unmatched hint keeps `namedBy`.
     const writableRemotes = (this.config.stores ?? []).filter(e => !!e.url && e.readonly !== true &&
-      // remote-only: team stores only (re-audit 3, R3-4).
+      // remote-only: team stores only.
       (!this._remoteOnly || this._isDeliverableTeamScope(e.scope)))
     let namedBy = writableRemotes.filter(e => this._stripRemotePrefix(updated.id, e.scope) !== updated.id)
     if (namedBy.length > 1) {
@@ -787,42 +730,41 @@ async _updateEngramReturning(updated: Engram): Promise<Engram | null> {
       else if (byScope.length > 0) namedBy = byScope
     }
     // An id namespaced to a configured store that is not among the writable
-    // url stores — a readonly store, or a path store — is not theirs to
-    // patch (0.21.1 audit, H1). Walking them all sent another store's row
-    // content to whichever writable server answered for the stripped id.
+    // url stores — a readonly store, or a path store — is not theirs to patch;
+    // walking them all would send another store's row content to whichever
+    // writable server answered for the stripped id.
     const ns = parseNamespacedId(updated.id, true)
     if (namedBy.length === 0 && ns
       && (this.config.stores ?? []).some(e => typeof e.scope === 'string' && storePrefix(e.scope) === ns.prefix)) {
       return null
     }
-    // remote-only (gate review of #1663): a bare id is sent only to the
+    // remote-only: a bare id is sent only to the
     // store(s) serving the row's own scope, never first to another team
     // server that merely might hold the id.
     const walk = namedBy.length > 0 || !this._activeBinding()
       ? (namedBy.length > 0 ? namedBy : writableRemotes)
       : (() => {
           // The one store the shared resolver names for the row's scope, never
-          // a parent-scope server that merely contains it (Codex round 3).
+          // a parent-scope server that merely contains it.
           const target = typeof updated.scope === 'string' ? resolveScopeTarget(updated.scope, this.config.stores ?? []) : null
           const named = target && target.kind === 'remote' && target.writable ? target.entry : undefined
           return named ? writableRemotes.filter(e => e.url === named.url && e.scope === named.scope) : []
         })()
     for (const entry of walk) {
-      // Leak guard (#353): remote-resident, explicit update → THROW on a
+      // Leak guard: remote-resident, explicit update → THROW on a
       // forbidden hit (no coherent demotion for a remote engram).
-      // LOW-2: scan context fields too, not just the statement.
+      // Scans context fields too, not just the statement.
       this._guardExplicitUpdate(updated.statement, entry.scope, true, this._engramContextFields(updated))
       const serverId = this._stripRemotePrefix(updated.id, entry.scope)
       const driver = this._getRemoteDriver({ url: entry.url!, token: entry.token, scope: entry.scope })
       // remote-only: the row the id names on this host must be in a team
-      // scope; the host can also hold personal rows (Codex round 3).
+      // scope; the host can also hold personal rows.
       if (this._activeBinding() && !(await this._remoteRowOwnedByTeam(driver, serverId))) continue
-      // PATCH a focused subset — full-engram PATCH would require strict
-      // schema mirroring on the server and is not what enterprise PR #111
-      // exposes. Send the fields most commonly mutated by the callers
-      // (setPinned, promote, reportFailure).
+      // PATCH a focused subset — a full-engram PATCH would require strict
+      // schema mirroring on the server. Send the fields most commonly mutated by
+      // the callers (setPinned, promote, reportFailure).
       try {
-        // "Every removal is explicit and traced" (owner, 2026-09-27): a patch
+        // Every removal is explicit and traced: a patch
         // that sets `retired` reads the previous status first, so the history
         // records a real transition only. `getById` answers null for both a
         // 404 and an unreachable store, so null or a throw is "unknown" — then
@@ -869,10 +811,10 @@ _reconcileQueuedScope(stored: Engram, toWrite: Engram): void {
     else if ('_retireRemote' in sd) { delete sd._retireRemote; changed = true }
     const pending = storedSd?._outbox as { target_url?: string; target_scope?: string } | undefined
     // A queued remote-only save keeps its queue entry through a same-scope
-    // update (re-audit of #1521, B-3): it is read from the STORED row, so a
+    // update: it is read from the STORED row, so a
     // caller's object without `_outbox` cannot turn it into a local row.
     if (pending && Plur._isRemoteOnlyQueued(stored) && toWrite.status !== 'active') throw this._queuedStaysRemote(stored)
-    // No retarget, not even to another team scope (owner, 2026-10-02).
+    // No retarget, not even to another team scope.
     if (pending && Plur._isRemoteOnlyQueued(stored) && toWrite.scope !== stored.scope) throw this._queuedStaysRemote(stored)
     if (pending && Plur._isRemoteOnlyQueued(stored) && toWrite.scope === stored.scope) {
       sd._outbox = storedSd!._outbox
@@ -882,19 +824,19 @@ _reconcileQueuedScope(stored: Engram, toWrite: Engram): void {
       changed = true
       const stores = this.config.stores ?? []
       const newScope = toWrite.scope
-      // A personal scope goes where the ONE selected store is (#1515 re-audit
-      // 3): a local store sharing the identical scope keeps the row local, so
-      // its pending delivery is cancelled rather than retargeted to the url.
-      // One resolver (#1631): the retarget is the store a fresh write would
-      // use, and a scope two servers claim refuses the whole update before
-      // anything is saved, as learn does (formal RoutingDiscovery D6).
+      // A personal scope goes where the ONE selected store is: a local store
+      // sharing the identical scope keeps the row local, so its pending
+      // delivery is cancelled rather than retargeted to the url.
+      // One resolver: the retarget is the store a fresh write would use, and a
+      // scope two servers claim refuses the whole update before anything is
+      // saved, as learn does.
       const target = resolveScopeTarget(newScope, stores)
       if (target.kind === 'conflict') throw new ScopeConflictError(newScope, target.servers)
       const writable = target.kind === 'remote' && target.writable ? target.entry : undefined
       // A save queued from a remote-only folder keeps going to a team store:
-      // never cancelled into a local row (audit of #1521, B2).
-      // (A personal url store can be `writable` here, #1515/#1528: only a team
-      // scope is a destination for it — review of #1521, d.)
+      // never cancelled into a local row.
+      // (A personal url store can be `writable` here: only a team
+      // scope is a destination for it.)
       if (Plur._isRemoteOnlyQueued(stored) && (!writable || !this._isDeliverableTeamScope(newScope))) throw this._queuedStaysRemote(stored)
       const personalLocal = target.kind === 'local' && !!target.entry && newScope.toLowerCase().startsWith('user:')
       if (personalLocal) {
@@ -926,9 +868,9 @@ _reconcileQueuedScope(stored: Engram, toWrite: Engram): void {
 async setPinned(id: string, pinned: boolean, options?: { scope?: string }): Promise<Engram | null> {
     this._assertWritable()
     await this._remoteOnlyRefuseLocalRow(id, 'Pinning', options?.scope)
-    // Which store holds it (0.21.1). Ids are minted per store, so a bare id
-    // can name a local engram AND an unrelated remote one; pinning went
-    // local-first with no check and changed the wrong engram silently.
+    // Which store holds it. Ids are minted per store, so a bare id can name
+    // a local engram AND an unrelated remote one; pinning local-first without a
+    // check could change the wrong engram silently.
     // `scope: "primary"` = the local row only; a url store's scope = that
     // store only; omitted = local first, refused when the id is ambiguous.
     const targetScope = options?.scope
@@ -936,17 +878,16 @@ async setPinned(id: string, pinned: boolean, options?: { scope?: string }): Prom
       throw new TypeError('plur.setPinned: scope must be a non-empty string')
     }
     if (targetScope) this.reloadConfigIfChanged()
-    // The resolver's entry over the stores a pin can write to (#1633 row 34):
-    // a readonly store never receives the PATCH, so it does not compete
-    // (#1532 re-audit R6), and a scope two WRITABLE servers claim is refused
-    // before either is asked.
+    // The resolver's entry over the stores a pin can write to: a readonly
+    // store never receives the PATCH, so it does not compete, and a scope two
+    // WRITABLE servers claim is refused before either is asked.
     const scopedEntry = targetScope && targetScope !== 'primary'
       ? this._pinTargetEntry(targetScope, `nothing was ${pinned ? 'pinned' : 'unpinned'}`)
       : undefined
     if (targetScope && targetScope !== 'primary' && !scopedEntry) {
       throw new Error(`Cannot pin in scope "${targetScope}": no writable url store is registered for it. Use scope "primary" for the local engram.`)
     }
-    // A namespaced id pins in the one store it names (0.21.1 audit, H1) —
+    // A namespaced id pins in the one store it names —
     // never through another writable store that shares its old prefix.
     if (!targetScope) id = await this._resolveNamespacedId(id, pinned ? 'pin' : 'unpin')
     if (!targetScope && this._hasUrlStore()) {
@@ -974,12 +915,12 @@ async setPinned(id: string, pinned: boolean, options?: { scope?: string }): Prom
     }
     // Local primary first (skipped when a remote scope was named).
     const localResult = scopedEntry ? null : await this._withStoreLock(this.paths.engrams, async () => {
-      // Targeted read (#827): resolving one engram by id.
+      // Targeted read: resolving one engram by id.
       const engrams = await this._loadTargeted([id])
       const idx = engrams.findIndex(e => e.id === id)
       if (idx === -1) return null
       const e = engrams[idx]
-      // #1138 review: pinning is a mutation, so it moves `updated_at`.
+      // Pinning is a mutation, so it moves `updated_at`.
       const updated: Engram = {
         ...e,
         pinned: pinned === true ? true : undefined,
@@ -997,7 +938,7 @@ async setPinned(id: string, pinned: boolean, options?: { scope?: string }): Prom
       // before unpin cleared it, or by another path) is a hard-tier write.
       await this._assertHardTierFits(updated)
       engrams[idx] = updated
-      // Incremental write (#740): only the (un)pinned engram row changed.
+      // Incremental write: only the (un)pinned engram row changed.
       await this._updateEngrams(engrams, [updated])
       await this._syncIndex()
       return updated
@@ -1010,49 +951,27 @@ async setPinned(id: string, pinned: boolean, options?: { scope?: string }): Prom
       /** Whether the engram was pinned BEFORE this call; null when unknown. */
       priorPinned: boolean | null
     } | null = null
-    // Remote routing (closes #86 pin remainder). Strip the namespace prefix
+    // Remote routing. Strip the namespace prefix
     // before sending the server the unprefixed ID it knows about. Same
     // refusal rule as `_updateEngramReturning`: a namespaced id names ONE
     // store, so its refusal is thrown; a bare id keeps walking and reports
     // null rather than a success that did not happen.
     for (const entry of (scopedEntry ? [scopedEntry] : (this.config.stores ?? []))) {
       if (!entry.url || entry.readonly === true) continue
-      // remote-only: a personal or non-team url store is out of reach (re-audit 3, R3-4).
+      // remote-only: a personal or non-team url store is out of reach.
       if (this._remoteOnly && !(scopedEntry ? this._isDeliverableTeamScope(entry.scope) : this._remoteOnlyWalkAllows(entry.scope))) continue
       const serverId = scopedEntry ? this._stripForScope(id, entry.scope) : this._stripRemotePrefix(id, entry.scope)
       const driver = this._getRemoteDriver({ url: entry.url, token: entry.token, scope: entry.scope })
       // The team store's host may also hold personal rows under the same token:
-      // act on a bare id only when its row there is in a team scope (R3-4).
+      // act on a bare id only when its row there is in a team scope.
       if (this._remoteOnly && !(await this._remoteRowOwnedByTeam(driver, this._stripRemotePrefix(id, entry.scope)))) continue
       try {
-        // Awaited, and the SERVER's engram is returned.
-        //
-        // This used to fire-and-forget the PATCH and return
-        // `{ id, pinned } as unknown as Engram` — an object that is not an
-        // Engram at all (no statement, scope, status or activation), so
-        // `(await plur.setPinned(id, true)).statement` was `undefined`. It also
-        // reported success before the write had happened, and a rejected
-        // floating promise could not be caught by the `catch` below.
-        //
-        // The justification was that `setPinned` had to keep a synchronous
-        // signature. It is `async` since the 0.16 flip, so that reason is gone
-        // and the honest version costs nothing.
-        // Send the BOOLEAN, including an explicit `false` (#1149).
-        //
-        // This read `pinned === true ? true : undefined`, mirroring the local
-        // branch above — but the two representations exist for opposite
-        // reasons. Locally the engram is rewritten WHOLE, so `undefined`
-        // drops the key and keeps unpinned rows out of the YAML. Here the
-        // object is a PARTIAL update, and `JSON.stringify` omits `undefined`,
-        // so the unpin left as `{}` — a server applying ordinary PATCH
-        // semantics changed nothing and returned the still-pinned row, which
-        // this method then reported as success.
-        //
-        // Measured on a loopback server against the real serializer: PATCH
-        // body `{}`, engram still pinned afterwards, no error raised. An
-        // unpin the user was told had worked had not happened on any other
-        // machine — and with the pinned set now quota-enforced at pin time,
-        // it also held budget nobody could reclaim.
+        // Awaited, and the SERVER's engram is returned, so the caller gets a real
+        // Engram and a refusal reaches the `catch` below.
+        // Send the BOOLEAN, including an explicit `false`. Locally the engram is
+        // rewritten WHOLE, so `undefined` drops the key; here the object is a
+        // PARTIAL update and `JSON.stringify` omits `undefined`, so an unpin sent
+        // as `undefined` would be an empty PATCH that changes nothing on the server.
         // Record the prior pin state BEFORE the PATCH, so a refused hard-tier
         // pin can be reverted to what it was rather than to a forced unpin —
         // and so re-pinning an engram that was already pinned (which cannot
@@ -1194,26 +1113,18 @@ async pinnedQuota(candidateId?: string, options?: { scope?: string }): Promise<{
     })
 
     // Ordered by COST, largest first — "what frees the most budget", which is
-    // arithmetic. Deliberately NOT an expendability ranking.
-    //
-    // The first version sorted by net feedback ascending, on the theory that
-    // an unendorsed engram is a safe cut. Run against a real store it proposed
-    // unpinning the demo-redaction rule, "never name enterprise customers",
-    // and "customer-named work runs in a dedicated session" — the three rules
-    // whose absence had caused a live disclosure that same day. The reason is
-    // structural: only 275 of 7,920 injections were ever rated, so ~96% of
-    // engrams sit at net_feedback 0 and the sort collapses into noise.
+    // arithmetic. Deliberately NOT an expendability ranking: most engrams are
+    // never rated, so a feedback-based sort collapses into noise and can propose
+    // unpinning important rules.
     //
     // `net_feedback` and `last_accessed` are still reported per entry, because
-    // they are real signals a human can weigh. They are just not a ranking,
-    // and presenting them as one puts the system's thumb on a decision it has
-    // no basis for.
+    // they are real signals a human can weigh. They are just not a ranking.
     entries.sort((a, b) => b.cost - a.cost)
 
     const used = entries.reduce((n, e) => n + e.cost, 0)
 
     let candidate: { id: string; cost: number; would_be: number; fits: boolean } | undefined
-    // #1633 row 34: setPinned refuses a scope two servers claim, so there is
+    // setPinned refuses a scope two servers claim, so there is
     // no pin to cost — and no server is asked for the row.
     const quotaScope = options?.scope
     const quotaTarget = quotaScope && quotaScope !== 'primary'
@@ -1223,14 +1134,14 @@ async pinnedQuota(candidateId?: string, options?: { scope?: string }): Promise<{
     // would pin it: a writable url store the resolver selects.
     const pinnable = !quotaTarget || (quotaTarget.kind === 'remote' && quotaTarget.writable)
     if (candidateId && pinnable) {
-      // #1532 review F6: cost the engram the pin will actually change. A bare
+      // Cost the engram the pin will actually change. A bare
       // id can name a local engram and an unrelated remote one; with a scope,
       // look where that scope says, as setPinned will.
       const scope = quotaScope
-      // The store the pin WRITES to (#1532 re-audit R6): setPinned takes the
-      // resolver's writable entry for the scope (#1633), so cost that one's row.
+      // The store the pin WRITES to: setPinned takes the
+      // resolver's writable entry for the scope, so cost that one's row.
       const entry = quotaTarget?.kind === 'remote' && quotaTarget.writable ? quotaTarget.entry : undefined
-      // remote-only: only a deliverable team scope's store is asked (Codex round 7 on #1663).
+      // remote-only: only a deliverable team scope's store is asked.
       const bound = this._activeBinding()
       const e = bound && entry && !this._isDeliverableTeamScope(entry.scope)
         ? null
@@ -1288,7 +1199,7 @@ async repairContentHashes(opts: { apply?: boolean } = {}): Promise<{
       }
       if (apply && changed.length > 0) {
         // `engrams` was loaded INSIDE this lock, so the fallback whole-corpus
-        // write is of a current snapshot — that is the whole point of the move.
+        // write is of a current snapshot.
         await this._updateEngrams(engrams, changed)
         await this._syncIndex()
       }

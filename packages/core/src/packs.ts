@@ -19,18 +19,22 @@ export { loadAllPacks } from './engrams.js'
 
 // --- URL download helpers ---
 
-/** Returns true if the source string looks like an http/https URL. */
 /**
  * Directory name a downloaded archive is extracted into. For a FLAT archive
  * (pack files at the archive root) this also becomes the source basename, which
- * is why installPack overrides it with the manifest name — otherwise every flat
- * archive would install to `packs/extracted` (#813).
+ * is why installPack overrides it with the manifest name; otherwise every flat
+ * archive would install to `packs/extracted`.
  */
 export const FLAT_ARCHIVE_DIRNAME = 'extracted'
 
+/** Returns true if the source string looks like an http/https URL. */
 export function isPackUrl(source: string): boolean {
   return source.startsWith('http://') || source.startsWith('https://')
 }
+
+export const MAX_PACK_DOWNLOAD_BYTES = 32 * 1024 * 1024
+export const MAX_PACK_ARCHIVE_BYTES = 64 * 1024 * 1024
+export const PACK_DOWNLOAD_TIMEOUT_MS = 30_000
 
 /**
  * Download a pack tar.gz from `url`, extract it to a temp directory, and
@@ -41,16 +45,12 @@ export function isPackUrl(source: string): boolean {
  *
  * The archive must be a gzipped tar whose top-level directory is the pack
  * (e.g. `my-pack/SKILL.md`, `my-pack/engrams.yaml`). A flat archive (files
- * at the root without a subdirectory) is also accepted — in that case the
+ * at the root without a subdirectory) is also accepted; in that case the
  * extraction root itself is returned as the pack directory.
  *
- * No auth headers are added: signed-URL delivery means the URL is the
- * credential and no Authorization header is needed.
+ * No auth headers are added: with signed-URL delivery the URL is the
+ * credential.
  */
-export const MAX_PACK_DOWNLOAD_BYTES = 32 * 1024 * 1024
-export const MAX_PACK_ARCHIVE_BYTES = 64 * 1024 * 1024
-export const PACK_DOWNLOAD_TIMEOUT_MS = 30_000
-
 export async function downloadAndExtractPack(url: string): Promise<{ packDir: string; tmpRoot: string }> {
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'plur-pack-dl-'))
   const controller = new AbortController()
@@ -148,7 +148,7 @@ export function cleanupDownloadedPack(tmpRoot: string): void {
   try {
     fs.rmSync(tmpRoot, { recursive: true, force: true })
   } catch {
-    // Best-effort cleanup — log but do not throw
+    // Best-effort cleanup: log but do not throw
     logger.warning(`cleanupDownloadedPack: could not remove temp dir ${tmpRoot}`)
   }
 }
@@ -159,9 +159,8 @@ export interface RegistryEntry {
   /** The pack's manifest name. NOT unique: two install directories may share it. */
   name: string
   /**
-   * The install directory under the packs directory — what identifies the row
-   * (formal verification run, persistence finding 11). Absent on rows written
-   * before it existed; those are matched by `name` (`findRegistryRow`).
+   * The install directory under the packs directory: what identifies the row.
+   * Absent on legacy rows; those are matched by `name` (`findRegistryRow`).
    */
   dir?: string
   installed_at: string
@@ -179,12 +178,12 @@ export interface RegistryEntry {
    */
   integrity_carried_from?: 'v1'
   /**
+  /**
    * Set on a legacy row (no `dir`) when a pack that could have owned it was
    * uninstalled while another installed directory with the same manifest name
    * could also own it. The row stays, because nothing records whose baseline it
-   * is, but the remaining directory is no longer the only candidate in any
-   * meaningful sense: verifying it against the row would compare it with what
-   * may be the uninstalled pack's hash and report a false `modified` (#1245).
+   * is, but verifying the remaining directory against it would compare it with
+   * what may be the uninstalled pack's hash and report a false `modified`.
    * A row carrying it is reported as ambiguous. A reinstall writes a fresh row
    * without it.
    */
@@ -192,14 +191,14 @@ export interface RegistryEntry {
 }
 
 // `isTransientPackDir` lives in engrams.ts so `loadAllPacks` can use it
-// without importing this module back (#1236); re-exported here.
+// without importing this module back; re-exported here.
 export { isTransientPackDir }
 
 /**
  * Is `p` a directory right now? `false` when it is not, or when it vanished
- * between the `readdir` that named it and this check — an install that
+ * between the `readdir` that named it and this check: an install that
  * finished mid-walk renames its staging directory away, and that must not
- * abort a listing or a migration (audit of #1229, finding 3).
+ * abort a listing or a migration.
  */
 function isDirNow(p: string): boolean {
   try {
@@ -215,14 +214,13 @@ function registryPath(packsDir: string): string {
 }
 
 /**
- * The pack registry exists but cannot be read as a registry (#805, audit F11).
+ * The pack registry exists but cannot be read as a registry.
  *
  * Mirrors `EngramStoreUnreadableError`, and for the same reason: the writer is
  * a whole-file replace, so treating an unreadable file as "no packs recorded"
  * means the next install rewrites it with a single entry and every other pack's
- * integrity baseline is gone. Unlike the engram store, what is destroyed is not
- * the data — the packs are still on disk — but the ability to tell whether that
- * data has been tampered with, which fails silent.
+ * integrity baseline is gone. The packs stay on disk, but the ability to tell
+ * whether they have been tampered with would be lost silently.
  */
 export class PackRegistryUnreadableError extends Error {
   constructor(readonly filePath: string, readonly detail: string) {
@@ -241,19 +239,16 @@ export class PackRegistryUnreadableError extends Error {
 }
 
 /**
- * Read the registry, refusing rather than guessing (#805, F11).
+ * Read the registry, refusing rather than guessing.
  *
- * The old body ended in `catch { return [] }`, with the same shape for a file
- * that parsed to something other than `{packs: [...]}`. Measured consequence
- * (probe p08b): truncate the registry, run ONE install, and the surviving entry
- * is that install alone — `integrity_ok` for a previously installed pack goes
- * `true` -> `undefined`, and tampering with its engrams then still reports
- * `undefined`, never `false`. The check that exists to catch a modified pack had
- * degraded to "unknown" without anything saying so.
+ * Returning `[]` for an unreadable or malformed file would let the next install
+ * rewrite the registry with only its own entry, after which every other pack's
+ * integrity check degrades from `modified` to "unknown" without anything
+ * saying so.
  */
 function loadRegistry(packsDir: string): RegistryEntry[] {
   const p = registryPath(packsDir)
-  if (!fs.existsSync(p)) return [] // never installed anything — genuinely empty
+  if (!fs.existsSync(p)) return [] // never installed anything: genuinely empty
   const raw = fs.readFileSync(p, 'utf8')
   if (raw.trim().length === 0) throw new PackRegistryUnreadableError(p, 'the file is empty')
   let parsed: unknown
@@ -280,27 +275,24 @@ function loadRegistry(packsDir: string): RegistryEntry[] {
 
 function saveRegistry(packsDir: string, entries: RegistryEntry[]): void {
   const content = yaml.dump({ packs: entries }, { lineWidth: 120, noRefs: true, quotingType: '"' })
-  // Atomic + fsynced (#805, F11). A plain writeFileSync truncates in place, so
-  // a crash or a full disk mid-write leaves a half-written registry — which the
-  // loader above now refuses, but refusing is only the second line of defence.
-  // `atomicWrite` writes to a unique temp file, fsyncs it, renames, then fsyncs
-  // the directory, so the registry is either the old one or the new one.
+  // Atomic + fsynced: a plain writeFileSync truncates in place, so a crash or a
+  // full disk mid-write would leave a half-written registry. `atomicWrite`
+  // writes to a unique temp file, fsyncs it, renames, then fsyncs the
+  // directory, so the registry is either the old one or the new one.
   atomicWrite(registryPath(packsDir), content)
 }
 
 /**
- * Serialize a registry read-modify-write (audit 2026-08-03, finding 3).
+ * Serialize a registry read-modify-write.
  *
- * Making `saveRegistry` atomic fixed torn files but not lost updates, and those
- * are the more likely failure: two processes installing different packs each
- * read the same registry, each add their own entry, and each rename a COMPLETE
- * but different snapshot. Both packs end up installed on disk, the last rename
- * wins, and the other pack's integrity baseline is simply gone — after which it
- * reports `unverified` and a tampered copy of it can no longer be detected.
- * That is finding F11's harm arriving by a different road.
+ * Atomic saves prevent torn files but not lost updates: two processes
+ * installing different packs each read the same registry, each add their own
+ * entry, and each rename a COMPLETE but different snapshot. The last rename
+ * wins and the other pack's integrity baseline is gone, after which a tampered
+ * copy of it can no longer be detected.
  *
- * Two MCP servers, or an MCP server and a CLI, is the ordinary case rather than
- * an exotic one, so atomicity alone was never enough.
+ * Two MCP servers, or an MCP server and a CLI, is the ordinary case, so
+ * atomicity alone is not enough.
  */
 function withRegistryLock<T>(packsDir: string, fn: () => T): T {
   // The lock file must live next to the registry, and the directory may not
@@ -312,18 +304,14 @@ function withRegistryLock<T>(packsDir: string, fn: () => T): T {
 /*
  * Which registry row belongs to which installed pack.
  *
- * Rows are keyed by install directory (`dir`). Install used to write
- * `registry[manifest.name]` while the pack lived at `packs/<basename>`, so two
- * directories whose manifests shared a name shared ONE row: the second install
- * overwrote the first's baseline (the untouched pack then reported `modified`),
- * and uninstalling either removed the row by manifest name, leaving the other
- * `unverified` — the loss of baseline the registry lock above exists to
- * prevent (formal verification run, persistence finding 11, Lean theorem
- * `Packs.registry_shared_row`).
+ * Rows are keyed by install directory (`dir`). Keying by manifest name would
+ * let two directories whose manifests share a name share ONE row: the second
+ * install would overwrite the first's baseline, and uninstalling either would
+ * remove the other's baseline.
  *
- * Rows written before `dir` existed carry only `name`. They still resolve, by
- * manifest name, and only rows WITHOUT `dir` are matched that way — a row that
- * names its directory never answers for another one.
+ * Legacy rows carry only `name`. They still resolve, by manifest name, and only
+ * rows WITHOUT `dir` are matched that way: a row that names its directory never
+ * answers for another one.
  */
 
 /** Index of the row for the pack installed at `dir` (manifest `name`), or -1. */
@@ -339,9 +327,9 @@ function findRegistryRowIndex(entries: RegistryEntry[], dir: string, name: strin
  * legacy row (no `dir`) with that name. A legacy row is claimed or removed on
  * behalf of `dir` only when this is empty.
  *
- * Two kinds of directory are NOT candidates (audit of #1230, finding 1):
+ * Two kinds of directory are NOT candidates:
  *   - one that already owns a `dir` row: its baseline is that row, so a legacy
- *     row cannot be its. Counting it made a legacy row next to a newer
+ *     row cannot be its. Counting it would make a legacy row next to a newer
  *     same-name install "ambiguous", so the legacy pack could never be
  *     reinstalled in place, migrated, or uninstalled cleanly.
  *   - a transient staging (`*.installing-*`) or displaced (`*.replacing-*`)
@@ -364,7 +352,8 @@ function otherDirsNamed(packsDir: string, dir: string, name: string, entries: Re
  * Is `row`, found for the pack at `dir`, a legacy row that cannot be told to be
  * that pack's baseline? Either another installed directory could equally own
  * it, or it was marked `ambiguous` when such a directory was uninstalled
- * (#1245). Used where a row is VERIFIED against; claiming or removing a row
+ * it, or it was marked `ambiguous` when such a directory was uninstalled.
+ * Used where a row is VERIFIED against; claiming or removing a row
  * goes by `ownedRegistryRowIndex`, which ignores the mark, so the last
  * candidate can still reinstall over the row or remove it.
  */
@@ -384,11 +373,11 @@ function ownedRegistryRowIndex(packsDir: string, entries: RegistryEntry[], dir: 
 /**
  * The name `name` has in the packs directory's own listing. On a
  * case-insensitive filesystem `PACK-ONE` opens `pack-one` (and on APFS a
- * composed `café` opens a decomposed one, #1246), but a row keyed by
- * `dir` must carry the name the directory actually has, or the row and the
- * directory part ways: uninstall removed the directory and kept its row, and a
- * reinstall from a case-variant source added a second row (audit of #1230,
- * finding 2). Returns `name` unchanged when nothing on disk answers to it.
+ * composed `café` opens a decomposed one), but a row keyed by `dir` must carry
+ * the name the directory actually has, or the row and the directory part ways:
+ * uninstall would remove the directory and keep its row, and a reinstall from a
+ * case-variant source would add a second row. Returns `name` unchanged when
+ * nothing on disk answers to it.
  */
 function onDiskEntryName(packsDir: string, name: string): string {
   if (!fs.existsSync(packsDir)) return name
@@ -397,8 +386,8 @@ function onDiskEntryName(packsDir: string, name: string): string {
   let target: fs.Stats
   try { target = fs.statSync(path.join(packsDir, name)) } catch { return name }
   // Case and Unicode normalization: APFS ignores both, so `café` spelled
-  // composed (NFC) opens the directory listed decomposed (NFD) (#1246). The
-  // inode comparison below is what decides; this only narrows the candidates.
+  // composed (NFC) opens the directory listed decomposed (NFD). The inode
+  // comparison below is what decides; this only narrows the candidates.
   const fold = (s: string) => s.normalize('NFC').toLowerCase()
   for (const e of listing) {
     if (fold(e) !== fold(name)) continue
@@ -421,7 +410,7 @@ function addToRegistry(packsDir: string, entry: RegistryEntry & { dir: string })
 }
 
 /**
- * Remove the row for the pack installed at `dir` — never another pack's row.
+ * Remove the row for the pack installed at `dir`, never another pack's row.
  * `name` is its manifest name when it could be read; a legacy row is removed
  * by it only when no other installed directory carries the same name.
  */
@@ -437,7 +426,7 @@ function removeFromRegistry(packsDir: string, dir: string, name: string | undefi
     // A legacy row this pack might own but cannot claim, because another
     // installed directory could too. It stays, but once this pack is gone the
     // other directory would look like its only owner and be verified against
-    // what may be this pack's hash (#1245). Mark it so it keeps being reported
+    // what may be this pack's hash. Mark it so it keeps being reported
     // as ambiguous.
     const legacy = findRegistryRowIndex(entries, dir, name)
     if (legacy >= 0 && entries[legacy].dir === undefined && entries[legacy].ambiguous !== true) {
@@ -447,7 +436,7 @@ function removeFromRegistry(packsDir: string, dir: string, name: string | undefi
   })
 }
 
-/** Rewrite one entry's `source` under the same lock — the URL-install path. */
+/** Rewrite one entry's `source` under the same lock (the URL-install path). */
 function setRegistrySource(packsDir: string, dir: string, source: string): void {
   withRegistryLock(packsDir, () => {
     const entries = loadRegistry(packsDir)
@@ -464,9 +453,9 @@ export interface PreviewResult {
   engrams: Array<{ id: string; type: string; statement: string; domain?: string; tags: string[] }>
   security: PrivacyScanResult
   warnings: string[]
-  /** What the pack says about where its engrams came from (#970 case 3). */
+  /** What the pack says about where its engrams came from. */
   provenance: PackProvenanceView
-  /** Whether the contents match the integrity value the pack shipped (#987). */
+  /** Whether the contents match the integrity value the pack shipped. */
   integrity: IntegrityCheck
 }
 
@@ -478,11 +467,11 @@ export interface PreviewResult {
  * anyone who wants it. Each level is optional and each is a step deeper.
  *
  * One rule governs the whole thing. **These are claims, not proof.** Nothing in
- * a pack is signed today — signing is reserved in the standard and unbuilt — so
- * anybody can write anything here. A reader is shown what the pack asserts and
- * is told, in those words, that nobody has checked it. A reassuring tick on an
- * unverified record is worse than showing nothing at all, because it converts a
- * claim into a belief without anybody deciding to.
+ * a pack is signed (signing is reserved in the standard), so anybody can write
+ * anything here. A reader is shown what the pack asserts and is told, in those
+ * words, that nobody has checked it. A reassuring tick on an unverified record
+ * is worse than showing nothing at all, because it converts a claim into a
+ * belief without anybody deciding to.
  */
 export interface PackProvenanceView {
   /** Does the pack carry provenance at all? */
@@ -490,7 +479,7 @@ export interface PackProvenanceView {
   /** Records found, and how many engrams they cover. */
   record_count: number
   /**
-   * Record files that exist but could not be read as a provenance record —
+   * Record files that exist but could not be read as a provenance record:
    * malformed JSON, a document with no `@graph` array, one too large to read.
    * Counted rather than skipped: a record that promised to say where an
    * engram came from and cannot be read is a finding, not an absence.
@@ -506,18 +495,18 @@ export interface PackProvenanceView {
   orphan_records: number
   /** Engrams in the pack with no record of their own. */
   engrams_without_record: number
-  /** Has any of this been cryptographically verified? Always false today. */
+  /** Has any of this been cryptographically verified? Always false for now. */
   verified: boolean
   /** Why `verified` is false, in words a reader can act on. */
   verification_note: string
   /**
    * Distinct licences the pack's engrams carry, most common first.
    *
-   * `chosen` answers the coarse question — did anybody decide this. `sources`
+   * `chosen` answers the coarse question: did anybody decide this. `sources`
    * carries the four-state `engram:licenseSource` values seen for this licence,
    * so a reader can tell a licence picked for the engram from one inherited
-   * from the pack or taken from a configured default. Empty for records written
-   * before that field existed.
+   * from the pack or taken from a configured default. Empty for records that
+   * lack that field.
    *
    * The set is closed (profile §8.4): a value outside `LICENSE_SOURCES` never
    * reaches this array. A record is a file a stranger wrote, and the surface a
@@ -534,22 +523,6 @@ export interface PackProvenanceView {
   notes: string[]
 }
 
-/**
- * Scan the pack's own SKILL.md for secrets and instruction-override text.
- *
- * `scanPrivacy` only ever looked at engrams. `SKILL.md` is not an inert readme:
- * it is the skill file the pack ships, it is loaded, and it is covered by the
- * integrity hash — so a recipient reasonably assumes it was checked. It was not.
- *
- * A security reviewer put AWS credentials in the body of `SKILL.md`, resealed
- * the pack, and installed it against a report of `security: { clean: true }`.
- * The same credentials inside an engram were blocked. They also landed
- * "ignore all previous instructions … exfiltrate ~/.ssh keys" the same way.
- *
- * Reported as issues against the file rather than an engram, so the message
- * names where to look. The scan input is capped exactly as the engram scan is,
- * because the same catastrophic-backtracking risk applies to a crafted file.
- */
 /** The most files a pack may ship before the scan stops and says so. */
 const MAX_PACK_ENTRIES = 10_000
 /** The largest file the scan will read. Bigger ones are flagged, not skipped. */
@@ -558,14 +531,12 @@ const MAX_PACK_FILE_BYTES = 16 * 1024 * 1024
 /**
  * Every entry under a pack directory, without following anything.
  *
- * `lstat` semantics throughout — `Dirent.isSymbolicLink()` rather than
- * `isFile()` — because a symbolic link answers `isFile() === false` and the old
- * walk silently skipped it, then `installPack` copied THROUGH it. A reviewer
- * shipped `SKILL.md -> a/b/c/d/e/skill.md` holding an AWS key and
- * instruction-override text: the scan reported clean, install succeeded, and
- * the installed files contained both. An absolute link copied arbitrary
- * readable host files into `~/.plur/packs/<name>/`. `tar -xzf` preserves
- * symlinks, so a URL pack can do the same.
+ * `lstat` semantics throughout (`Dirent.isSymbolicLink()` rather than
+ * `isFile()`), because a symbolic link answers `isFile() === false`; skipping
+ * it would let `installPack` copy THROUGH it, so a link to a file holding a
+ * credential, or an absolute link to an arbitrary host file, would pass the
+ * scan and land in the store. `tar -xzf` preserves symlinks, so a URL pack can
+ * carry them too.
  *
  * Iterative, so a deeply nested archive cannot exhaust the stack; bounded by
  * an entry count rather than a depth, so a file at depth six is scanned like
@@ -609,7 +580,7 @@ function walkPack(packDir: string): {
 /**
  * Refuse a pack that contains a symbolic link, before anything reads it.
  *
- * A link is not content — it is an instruction to read some OTHER file, and
+ * A link is not content: it is an instruction to read some OTHER file, and
  * every reader of a pack (`loadPack`, the integrity hash, the file scan,
  * `installPack`'s copy) would follow it. There is no legitimate reason for a
  * pack to ship one, and no safe way to preview a pack whose manifest may be a
@@ -631,14 +602,22 @@ function refuseSymlinks(packDir: string, op: string): void {
   )
 }
 
+/**
+ * Scan every text file the pack ships for secrets and instruction-override text.
+ *
+ * `SKILL.md` and other files are not inert: they are loaded and covered by the
+ * integrity hash, so a recipient reasonably assumes they were checked. Issues
+ * are reported against the file rather than an engram, so the message names
+ * where to look. The scan input is capped exactly as the engram scan is,
+ * because the same catastrophic-backtracking risk applies to a crafted file.
+ */
 function scanPackFiles(packDir: string): PrivacyIssue[] {
   const issues: PrivacyIssue[] = []
 
-  // EVERY text file the pack ships, not a chosen two. Scanning only SKILL.md
-  // and the engrams left a hole a reviewer walked straight through: a README.md
-  // holding a live AWS key and instruction-override text installed clean and
-  // was copied into the store unread. A pack is an archive from a stranger, and
-  // the recipient's assistant may read any of it.
+  // EVERY text file the pack ships, not a chosen few: a README.md holding a
+  // credential or instruction-override text would otherwise be copied into the
+  // store unread. A pack is an archive from a stranger, and the recipient's
+  // assistant may read any of it.
   //
   // engrams.yaml is skipped here because scanPrivacy already reads it as
   // structured data, which catches more than scanning its raw text would.
@@ -692,9 +671,9 @@ function scanPackFiles(packDir: string): PrivacyIssue[] {
     }
 
     // The FULL text goes to detectSensitive: it caps its own regex work and
-    // emits the fail-closed `scan_truncated` hit past 1 MiB (#386, #425), so a
-    // credential beyond the cap blocks rather than passing unseen. The
-    // injection detector has no cap of its own, so it gets the capped copy.
+    // emits the fail-closed `scan_truncated` hit past 1 MiB, so a credential
+    // beyond the cap blocks rather than passing unseen. The injection detector
+    // has no cap of its own, so it gets the capped copy.
     for (const hit of detectSensitive(text)) {
       issues.push({ engram_id: label, type: 'secret', detail: `in ${label} — ${hit.pattern}: ${hit.match}` })
     }
@@ -711,10 +690,10 @@ function scanPackFiles(packDir: string): PrivacyIssue[] {
  * `declared` is what the manifest claims in `metadata.provenance`. It is checked
  * against what is actually on disk rather than trusted: the flag is covered by
  * the pack's integrity hash, but the records it points at are not, so a pack can
- * declare provenance and ship none — through corruption, a broken build, or
- * somebody stripping the directory after the fact. Saying so is the whole value
- * of having the flag; silently reporting "no provenance" for a pack that
- * promised some would hide exactly the case worth seeing.
+ * declare provenance and ship none (corruption, a broken build, or somebody
+ * stripping the directory after the fact). Saying so is the whole value of
+ * having the flag; silently reporting "no provenance" for a pack that promised
+ * some would hide exactly the case worth seeing.
  */
 export function readPackProvenance(
   packDir: string,
@@ -757,16 +736,15 @@ export function readPackProvenance(
 
   // The identifier comes from a file a stranger wrote. The schema constrains it
   // to ^(ENG|ABS|META)-[A-Za-z0-9-]+$ and quarantines anything else before it
-  // gets here, so an id cannot climb out of this directory today. Sanitise
-  // anyway: this builds a filesystem path from untrusted input, and if that
-  // validation is ever loosened or another caller skips it, the cost of being
-  // wrong is an arbitrary file read.
+  // gets here, so an id cannot climb out of this directory. Sanitise anyway:
+  // this builds a filesystem path from untrusted input, and if that validation
+  // is ever loosened or another caller skips it, the cost of being wrong is an
+  // arbitrary file read.
   //
   // Every value read below comes from a stranger's file, so nothing about its
-  // SHAPE is assumed either. `{"@graph": {}}`, `{"@graph": "x"}` and
-  // `{"@graph": [null]}` each threw a TypeError out of preview and install; a
-  // record is a plain object with an array `@graph`, and anything else is
-  // counted as unreadable rather than crashing the pack it arrived in.
+  // SHAPE is assumed either: a record is a plain object with an array `@graph`,
+  // and anything else (`{"@graph": {}}`, `{"@graph": [null]}`) is counted as
+  // unreadable rather than crashing preview or install.
   const readJson = (name: string): 'absent' | 'unreadable' | Record<string, unknown> => {
     const safe = name.replace(/[^A-Za-z0-9._-]/g, '_')
     const file = path.join(dir, safe)
@@ -800,9 +778,8 @@ export function readPackProvenance(
   let unrecognisedSources = 0
 
   // Records that name an engram the pack does not ship (profile §5.4.2). The
-  // loop below opens a record per engram, so a record about anything else is
-  // never opened at all — which is how a tester's stray record installed with
-  // exit 0 and no output. Counted from the directory listing by NAME only: a
+  // loop below opens a record per engram, so a record about anything else would
+  // never be opened at all. Counted from the directory listing by NAME only: a
   // file called `<id>.jsonld` claims to be about `<id>`, and if `<id>` is not
   // in the pack, that claim is the finding. Its contents are not read.
   const shipped = new Set(engrams.map(e => `${e.id}.jsonld`))
@@ -810,9 +787,9 @@ export function readPackProvenance(
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
       if (!entry.isFile() || entry.name === 'pack.jsonld') continue
       // A name outside this class is not a record, so it is neither an orphan
-      // nor read — which makes it invisible in the report. That is only safe
-      // while the engram id grammar (§3.3) cannot produce such a name, so the
-      // day ids admit a character outside `[A-Za-z0-9._-]`, this line starts
+      // nor read, which makes it invisible in the report. That is only safe
+      // while the engram id grammar (§3.3) cannot produce such a name; if ids
+      // ever admit a character outside `[A-Za-z0-9._-]`, this line starts
       // hiding real records and must widen with it.
       if (!/^[A-Za-z0-9._-]+\.jsonld$/.test(entry.name)) continue
       if (!shipped.has(entry.name)) view.orphan_records++
@@ -820,12 +797,10 @@ export function readPackProvenance(
   } catch { /* an unlistable directory is reported below as one with no readable records */ }
 
   // By DISTINCT id, not per engram. A record is found by name (`<id>.jsonld`),
-  // so two engrams sharing an id name one file — and reading it once per engram
-  // counted the same file twice: `record_count` reached 2 for a single record,
-  // and `engrams_without_record` (computed as a subtraction below) could reach
-  // zero, or go negative, from a pack that ships fewer records than engrams.
-  // §5.6.5 asks how many records were present; a file is one record however
-  // many engrams point at it.
+  // so two engrams sharing an id name one file; reading it once per engram
+  // would count the same file twice and could drive `engrams_without_record`
+  // (a subtraction below) to zero or negative. §5.6.5 asks how many records
+  // were present; a file is one record however many engrams point at it.
   const distinctIds = [...new Set(engrams.map(e => e.id))]
   for (const engramId of distinctIds) {
     const engram = engrams.find(e => e.id === engramId)!
@@ -849,23 +824,15 @@ export function readPackProvenance(
         // `engram:licenseSource` says WHICH of four ways a licence was arrived
         // at: chosen on the engram, inherited from the pack, the author's
         // configured default, or the schema default nobody ever looked at. The
-        // profile replaced the boolean with it precisely because the last two
-        // are different facts — one is a decision made once in advance, the
-        // other is nobody's decision at all.
+        // last two are different facts: one is a decision made once in
+        // advance, the other is nobody's decision at all. Reading only
+        // `engram:licenseIsDefault` would collapse them at the one surface a
+        // recipient sees.
         //
-        // Reading only `engram:licenseIsDefault` collapsed them again at the
-        // one surface a recipient sees. A preview reporting "chosen" could mean
-        // the author picked this licence for this memory, or that they set a
-        // config default years ago and have not thought about it since.
+        // Falls back to the boolean for records without the four-state field.
         //
-        // Falls back to the boolean for records written before the four-state
-        // field existed.
-        //
-        // Guarded like `license` above. A record is a file a stranger wrote,
-        // and this module's stated job is packs built to mislead — an
-        // unguarded read puts whatever the file contained into
-        // `sources: string[]`, so one malformed record turns a typed array
-        // into a mixed one for every consumer downstream.
+        // Guarded: a record is a file a stranger wrote, and an unguarded read
+        // would put whatever the file contained into `sources: string[]`.
         const rawSource = subject['engram:licenseSource']
         // Closed set, not merely a string (profile §8.4). A string outside the
         // four values is a stranger's free text; it is counted, reported, and
@@ -926,11 +893,10 @@ export function readPackProvenance(
   // Against DISTINCT ids, for the same reason the loop above runs over them:
   // records are named by id, so a pack shipping two engrams under one id has
   // one id that either has a record or does not. Subtracting from
-  // `engrams.length` let this go negative, which is not a count of anything.
+  // `engrams.length` could go negative, which is not a count of anything.
   view.engrams_without_record = distinctIds.length - view.record_count
   // Said here, not above, because it depends on how many per-engram records
-  // turned up. Claiming "records for individual engrams but none for the pack"
-  // when there are no records of any kind is simply false.
+  // turned up.
   if (!packRecord) {
     view.notes.push(view.record_count > 0
       ? 'There are records for individual engrams but none for the pack as a whole.'
@@ -1019,7 +985,7 @@ function _previewPackDir(source: string): PreviewResult {
   // A private engram the producer DECLARED is not the same finding as one the
   // consumer's default assigned. `visibility` defaults to `private` (§4.4), so
   // a hand-written pack that says nothing about visibility loads as private
-  // here — that is this side's conservative assignment, and it means only that
+  // here: that is this side's conservative assignment, and it means only that
   // the engram will not be re-exported. `visibility: private` written INTO the
   // shipped file is the producer's own record that the engram was not cleared
   // to leave, shipped anyway; §5.6.1 step 2 refuses that, and the scan marks
@@ -1032,7 +998,7 @@ function _previewPackDir(source: string): PreviewResult {
       ? 'Engram declares visibility: private — a pack must not ship it (§5.4); install is refused'
       : 'Engram has no visibility field and defaults to private here — it will not be re-exported'
   }
-  // The pack ships more than engrams, and the rest was never scanned.
+  // The pack ships more than engrams; scan the other files too.
   const fileIssues = scanPackFiles(source)
   if (fileIssues.length) {
     security.issues.push(...fileIssues)
@@ -1049,8 +1015,8 @@ function _previewPackDir(source: string): PreviewResult {
   const integrity = verifyPackIntegrity(source)
 
   const warnings: string[] = []
-  // Flag pinned engrams — they bypass the relevance gate (always injected).
-  // install strips these, but the preview should be honest about intent (finding #2).
+  // Flag pinned engrams: they bypass the relevance gate (always injected).
+  // Install strips these, but the preview should be honest about intent.
   const pinnedCount = pack.engrams.filter(e => (e as any).pinned === true).length
   if (pinnedCount > 0) warnings.push(`${pinnedCount} engram(s) marked pinned — these bypass relevance filters; install will strip the flag`)
   // Same for a locked commitment: it resists dedup and correction, so it hands
@@ -1119,7 +1085,7 @@ export interface InstallResult {
   name: string
   /**
    * Directories of other copies of this same pack that this install removed:
-   * copies the earlier collision bug installed beside it (see
+   * stale copies installed beside it under a collision-suffixed name (see
    * `staleCollisionCopies`). Empty when there were none.
    */
   superseded: string[]
@@ -1127,9 +1093,9 @@ export interface InstallResult {
   security: PrivacyScanResult
   registry: RegistryEntry
   /**
-   * What checking the shipped integrity value found (#987). Reported even when
-   * it passed, so a caller can tell "matched" from "there was nothing to match
-   * against" — the distinction the old `integrity_ok: true` erased.
+   * What checking the shipped integrity value found. Reported even when it
+   * passed, so a caller can tell "matched" from "there was nothing to match
+   * against".
    */
   integrity_check: IntegrityCheck
   /**
@@ -1143,10 +1109,9 @@ export interface InstallResult {
    * §5.6.5, provenance profile §5.4.2).
    *
    * §5.6.5 puts the obligation on the *consumer*, and an install is the moment
-   * a recipient is looking. These four counts were computed by `previewPack`
-   * and then dropped here, so an installer who did not separately run a preview
-   * was told nothing — including about an orphan record, which is the signature
-   * of a pack assembled from a larger set than the one being handed over.
+   * a recipient is looking, so the counts are reported here and not only by
+   * `previewPack`. An orphan record is the signature of a pack assembled from a
+   * larger set than the one being handed over.
    *
    * Absent when the pack carries no `provenance/` directory at all: "there was
    * nothing to report" and "everything was zero" are different facts.
@@ -1244,13 +1209,13 @@ function detectConflicts(newEngrams: Engram[], existingEngrams: Engram[]): Confl
 export interface InstallOptions {
   /**
    * Override the prompt-injection block. Secrets and private-visibility engrams
-   * are ALWAYS blocked regardless — there is no option for those, by design
+   * are ALWAYS blocked regardless; there is no option for those, by design
    * (ENGRAM-STANDARD-v1 §5.6.1 step 2).
    */
   allowInjection?: boolean
   /**
    * Install even though the contents do not match the integrity value the pack
-   * shipped (#987). Off by default: a pack that changed after it was built is
+   * shipped. Off by default: a pack that changed after it was built is
    * exactly the case somebody should have to look at before proceeding.
    */
   allowModified?: boolean
@@ -1259,7 +1224,7 @@ export interface InstallOptions {
 /**
  * Serialize a parsed manifest back to SKILL.md content (frontmatter + body).
  * Used to auto-upgrade a deprecated `manifest.yaml` pack to the canonical
- * SKILL.md form on install (#325). 1:1 with PackManifestSchema, so it re-parses.
+ * SKILL.md form on install. 1:1 with PackManifestSchema, so it re-parses.
  */
 function manifestToSkillMd(m: PackManifest): string {
   const fm: Record<string, unknown> = { name: m.name, version: m.version }
@@ -1276,8 +1241,7 @@ function manifestToSkillMd(m: PackManifest): string {
   //
   // `Object.hasOwn`, not `k in fm`: `in` walks the prototype chain, so a
   // producer field literally named `constructor`, `toString`, `valueOf` or
-  // `hasOwnProperty` read as already-present and was dropped by the one path
-  // that rewrites a manifest — exactly the loss §10.3 rule 2 forbids.
+  // `hasOwnProperty` would read as already-present and be dropped.
   for (const [k, v] of Object.entries(m as Record<string, unknown>)) {
     if (!Object.hasOwn(fm, k) && !KNOWN_MANIFEST_KEYS.has(k)) fm[k] = v
   }
@@ -1288,12 +1252,12 @@ function manifestToSkillMd(m: PackManifest): string {
 const KNOWN_MANIFEST_KEYS = new Set(['name', 'version', 'description', 'creator', 'license', 'tags', 'metadata', 'x-datacore'])
 
 /**
- * fsync every file in a staged pack, then the directory itself (audit
- * 2026-08-03, finding 11).
+ * fsync every file in a staged pack, then the directory itself.
  *
  * Best-effort per entry, like `fsyncDir`: a filesystem that cannot fsync a
- * directory must not fail an otherwise good install. Packs are small — a
- * manifest and an engrams file — so this is a handful of syscalls, paid once
+ * directory must not fail an otherwise good install. Packs are small (a
+ * manifest and an engrams file), so this is a handful of syscalls, paid once
+ * manifest and an engrams file), so this is a handful of syscalls, paid once
  * per install, to stop a crash leaving a durable registry entry pointing at
  * content that never reached the disk.
  */
@@ -1306,14 +1270,14 @@ function fsyncTree(dir: string): void {
       if (fs.statSync(p).isDirectory()) { fsyncTree(p); continue }
       const fd = fs.openSync(p, 'r')
       try { fs.fsyncSync(fd) } finally { fs.closeSync(fd) }
-    } catch { /* unreadable or unsupported — skip */ }
+    } catch { /* unreadable or unsupported: skip */ }
   }
   try { fsyncDir(dir) } catch { /* not a syncable directory */ }
 }
 
 /**
  * The transformations install applies to a staged copy before hashing it: a
- * deprecated `manifest.yaml`-only pack is upgraded to `SKILL.md` (#325), and
+ * deprecated `manifest.yaml`-only pack is upgraded to `SKILL.md`, and
  * host-overriding engram fields are neutralized (§5.6.1 step 3). Mutates
  * `dir`. Shared by install and by `migratePackIntegrity`, which must reproduce
  * the installed form of a source byte for byte to re-verify against it.
@@ -1349,24 +1313,18 @@ function _installPackDir(
 ): InstallResult {
   if (!fs.existsSync(source)) throw new Error(`Pack source not found: ${source}`)
 
-  // Preflight the registry BEFORE doing any filesystem work (#805, F11). The
-  // registry is only WRITTEN at the end of this function, so without this check
-  // an unreadable registry aborts the install after the pack directory is
-  // already live — leaving it installed but unrecorded, which then reports
-  // `integrity_status: 'unverified'`. That is precisely the ambiguous state
-  // this finding is about, so failing early is part of the fix, not a nicety.
+  // Preflight the registry BEFORE doing any filesystem work. The registry is
+  // only WRITTEN at the end of this function, so an unreadable registry would
+  // otherwise abort the install after the pack directory is already live,
+  // leaving it installed but unrecorded (`integrity_status: 'unverified'`).
   loadRegistry(packsDir)
 
-  // Security scan BEFORE copying — always runs, not opt-out
+  // Security scan BEFORE copying: always runs, not opt-out
   const preview = _previewPackDir(source)
 
-  // Does the pack still match the integrity value its author shipped? This was
-  // never checked: install recomputed a hash, recorded it, and reported success,
-  // so a pack edited after it was built installed silently and `plur packs list`
-  // then called it `integrity_ok: true`.
-  //
+  // Does the pack still match the integrity value its author shipped?
   // Blocking is the right default. Unlike the injection scan, there is no
-  // legitimate reason for a pack to differ from its own recorded hash — either
+  // legitimate reason for a pack to differ from its own recorded hash: either
   // it was damaged in transit or somebody changed it, and both deserve a look.
   if (preview.integrity.status === 'modified' && !opts.allowModified) {
     throw new Error(
@@ -1379,19 +1337,17 @@ function _installPackDir(
   // No override for either of the next two, on purpose (ENGRAM-STANDARD-v1
   // §5.6.1 step 2). Both are things §5.4 forbids a producer to ship, so their
   // presence means the pack was built wrong or built to mislead, and the remedy
-  // is a corrected pack — not an installer who looks away. A false positive in
+  // is a corrected pack, not an installer who looks away. A false positive in
   // the secret scan is fixed by editing the pack; this consumer's scan surface
-  // is written down so a producer can predict it, in `docs/pack-scan-surface.md`
-  // (the patterns themselves are `detectSecrets` / `detectSensitive` in
-  // `secrets.ts`). §5.6.1 asks a consumer to document that surface, and until
-  // the document existed this comment was asserting a SHOULD nobody had met.
+  // is documented in `docs/pack-scan-surface.md` (the patterns themselves are
+  // `detectSecrets` / `detectSensitive` in `secrets.ts`), as §5.6.1 asks.
   const secretIssues = preview.security.issues.filter(i => i.type === 'secret')
   if (secretIssues.length > 0) {
     const details = secretIssues.map(i => `  ${i.engram_id}: ${i.detail}`).join('\n')
     throw new Error(`Pack contains secrets — install blocked:\n${details}`)
   }
   // A private engram is somebody's memory that was never cleared to leave their
-  // machine. Installing it makes the recipient hold it — and hold it under a
+  // machine. Installing it makes the recipient hold it, and hold it under a
   // visibility that then forbids passing it on, so the leak becomes permanent
   // on this side too. Visibility is a permission boundary, not a hint.
   const privateIssues = preview.security.issues.filter(i => i.type === 'private_visibility' && i.declared === true)
@@ -1403,18 +1359,15 @@ function _installPackDir(
     )
   }
   // A file the scan could not read is a file that cannot be installed: nothing
-  // may land in the store that was not checked. No override for this one —
+  // may land in the store that was not checked. No override for this one:
   // the remedy is to fix the pack, not to look away.
   //
   // With one carve-out, required by the provenance profile §5.4.2: a record in
   // `provenance/` that is merely too large or that the filesystem would not
-  // hand over is an UNREADABLE RECORD, and the profile says in terms that a
-  // record a consumer cannot read MUST NOT abort the preview or the install of
-  // the pack it arrived in — one crafted file counts as one unreadable record
-  // and nothing more. Before this, `readPackProvenance` counted such a file
-  // correctly and then `scanPackFiles` flagged the same bytes as unscannable,
-  // so a 17 MiB record refused the whole pack: the reference obeyed the letter
-  // of its own scan rule and broke the profile's MUST.
+  // hand over is an UNREADABLE RECORD, and the profile says a record a consumer
+  // cannot read MUST NOT abort the preview or the install of the pack it
+  // arrived in: one crafted file counts as one unreadable record and nothing
+  // more.
   //
   // The carve-out is narrow on purpose. It covers only `oversize` and
   // `read_error`, and only for a file under `provenance/` whose name has the
@@ -1438,7 +1391,7 @@ function _installPackDir(
     unscannable.filter(isUnreadableProvenanceRecord)
       .map(i => i.engram_id.split(path.sep).join('/').slice('provenance/'.length)),
   )
-  // Prompt-injection text is blocked unless explicitly overridden (finding #2).
+  // Prompt-injection text is blocked unless explicitly overridden.
   const injectionIssues = preview.security.issues.filter(i => i.type === 'prompt_injection')
   if (injectionIssues.length > 0 && !opts.allowInjection) {
     const details = injectionIssues.map(i => `  ${i.engram_id}: ${i.detail}`).join('\n')
@@ -1448,40 +1401,39 @@ function _installPackDir(
     )
   }
 
-  // Destination name is the source basename, EXCEPT for a flat URL archive
-  // (#813, audit finding 12). Those extract to a directory literally called
-  // `extracted`, so every flat archive installed to `packs/extracted` and
-  // silently overwrote the previous one. Only that generic name is overridden,
-  // and only with a manifest name safe to use as a directory — every other
-  // pack keeps the basename it has always had.
+  // Destination name is the source basename, EXCEPT for a flat URL archive.
+  // Those extract to a directory literally called `extracted`, so every flat
+  // archive would install to `packs/extracted` and overwrite the previous one.
+  // Only that generic name is overridden, and only with a manifest name safe
+  // to use as a directory.
   const rawName = path.basename(source)
   const manifestName = preview.manifest.name?.trim()
   const safeManifestName = manifestName && /^[A-Za-z0-9._-]+$/.test(manifestName) && !/^\.+$/.test(manifestName) ? manifestName : undefined
   const preferredName = rawName === FLAT_ARCHIVE_DIRNAME && safeManifestName ? safeManifestName : rawName
-  // Refuse a traversal name before any directory is inspected (#811).
+  // Refuse a traversal name before any directory is inspected.
   resolveInside(packsDir, preferredName, 'install')
   // Two DIFFERENT packs downloaded into same-named folders (`a/pack`, `b/pack`)
-  // used to share `packs/pack`, so installing the second deleted the first
-  // (#1188). The basename is kept while the directory is free or holds the
-  // same pack (same manifest name: a reinstall or upgrade). When it holds a
-  // different pack, the manifest name is tried, then `<name>-2`, `-3`, ...
+  // must not share `packs/pack`. The basename is kept while the directory is
+  // free or holds the same pack (same manifest name: a reinstall or upgrade).
+  // When it holds a different pack, the manifest name is tried, then
+  // `<name>-2`, `-3`, ...
   const sourceName = pickInstallDirName(packsDir, preferredName, safeManifestName, manifestName)
   // The name the directory already has, if a case-variant of it is installed
   // on a case-insensitive filesystem: the swap below then keeps that name and
-  // the registry row follows the directory (audit of #1230, finding 2).
+  // the registry row follows the directory.
   const destDir = resolveInside(packsDir, onDiskEntryName(packsDir, sourceName), 'install')
-  // Copies of this same pack that the earlier collision bug left beside the
-  // one being upgraded. Decided now, from the registry as it was before this
-  // install rewrites the target's row; removed only after the swap succeeds.
+  // Stale collision-suffixed copies of this same pack beside the one being
+  // upgraded. Decided now, from the registry as it was before this install
+  // rewrites the target's row; removed only after the swap succeeds.
   const obsoleteCopies = staleCollisionCopies(packsDir, path.basename(destDir), manifestName)
 
-  // STAGE the whole install, then swap it in (#813, audit finding 12).
+  // STAGE the whole install, then swap it in.
   //
-  // Copying file-by-file into the live destination meant a copy error, a crash,
-  // or a concurrent install left a HYBRID of the old and new pack — half of one
-  // version's engrams beside half of another's, with an integrity hash matching
-  // neither. Everything below builds the pack in a staging directory; the live
-  // directory is not touched until the content is complete and sanitized.
+  // Copying file-by-file into the live destination would let a copy error, a
+  // crash, or a concurrent install leave a HYBRID of the old and new pack, with
+  // an integrity hash matching neither. Everything below builds the pack in a
+  // staging directory; the live directory is not touched until the content is
+  // complete and sanitized.
   const staging = `${destDir}.installing-${process.pid}-${Date.now()}`
   fs.rmSync(staging, { recursive: true, force: true })
   fs.mkdirSync(staging, { recursive: true })
@@ -1489,7 +1441,7 @@ function _installPackDir(
   // Plain files only, and checked again HERE with `lstat`, not `stat`: the
   // preview above refuses links, but this copy is the last step before bytes
   // reach the store and must not trust that the check ran. `stat().isFile()`
-  // was true for a symlink to a file, so the copy followed it.
+  // is true for a symlink to a file, so a `stat`-based copy would follow it.
   const copyPlainFile = (srcPath: string, destPath: string, label: string) => {
     const st = fs.lstatSync(srcPath)
     if (st.isSymbolicLink()) {
@@ -1502,19 +1454,18 @@ function _installPackDir(
     copyPlainFile(path.join(source, file), path.join(staging, file), file)
   }
 
-  // The provenance records travel with the pack (#972). Install used to copy
-  // top-level files only, so `provenance/` never landed and a preview of the
-  // installed copy then called the pack damaged — "declares provenance and
-  // ships none". Only `*.jsonld` plain files, only one level deep, and only
-  // under the name the export gave them: the record for an engram is found by
-  // `<id>.jsonld`, so a name that does not fit that shape is not a record.
+  // The provenance records travel with the pack, so a preview of the installed
+  // copy does not call it damaged. Only `*.jsonld` plain files, only one level
+  // deep, and only under the name the export gave them: the record for an
+  // engram is found by `<id>.jsonld`, so a name that does not fit that shape is
+  // not a record.
   const provSrc = path.join(source, 'provenance')
   if (fs.existsSync(provSrc) && fs.lstatSync(provSrc).isDirectory()) {
     const provDest = path.join(staging, 'provenance')
     for (const file of fs.readdirSync(provSrc)) {
       if (!/^[A-Za-z0-9._-]+\.jsonld$/.test(file)) continue
       // A record the scan could not check does not travel. The install was
-      // allowed to proceed past it (profile §5.4.2 — an unreadable record must
+      // allowed to proceed past it (profile §5.4.2: an unreadable record must
       // not abort the pack), which is only defensible while the file itself
       // stays out of the installed copy: the rule that nothing unchecked lands
       // is not relaxed, only the rule that everything must be installable.
@@ -1526,7 +1477,7 @@ function _installPackDir(
   }
 
   // Auto-upgrade a deprecated manifest.yaml pack to SKILL.md in the installed
-  // copy (#325). manifest.yaml still LOADS (loadPack reads it with a deprecation
+  // copy. manifest.yaml still LOADS (loadPack reads it with a deprecation
   // warning), but the managed copy is normalized to the canonical SKILL.md so
   // the integrity value below covers the SKILL.md that is actually installed.
   // Done before computePackIntegrity so the recorded integrity reflects the upgrade.
@@ -1544,9 +1495,8 @@ function _installPackDir(
     )
   }
   if (sanitized.changed) {
-    // Each field on its own line (§5.6.5: "which field was changed"). The
-    // locked downgrade had no line at all, so a pack that shipped only locked
-    // commitments was altered in silence.
+    // Each field on its own line (§5.6.5: "which field was changed"), so no
+    // neutralization happens in silence.
     if (sanitized.pinnedStripped > 0) {
       logger.warning(`installPack: stripped 'pinned' from ${sanitized.pinnedStripped} engram(s) in pack '${preview.manifest.name}'`)
     }
@@ -1562,19 +1512,16 @@ function _installPackDir(
   // Detect conflicts with existing engrams
   const conflicts = existingEngrams ? detectConflicts(newEngrams, existingEngrams) : []
 
-  // Compute integrity over the STAGED, sanitized content — the bytes that are
+  // Compute integrity over the STAGED, sanitized content: the bytes that are
   // about to become the pack. Hashing the live directory before the swap would
   // record the hash of the previous install.
   const integrity = computePackIntegrity(staging)
 
-  // Make the staged content durable BEFORE it becomes the live pack (audit
-  // 2026-08-03, finding 11). Every file was copied with plain writes and the
-  // staging directory was never fsynced, while the registry entry written
-  // afterwards IS durable — so a power loss could leave a durable registry
-  // pointing at a pack that is missing, truncated or half-copied, with the
-  // previous version already deleted. Atomic-to-readers is not the same
-  // property as crash-durable, and the registry's durability made the gap worse
-  // rather than better.
+  // Make the staged content durable BEFORE it becomes the live pack. The
+  // registry entry written afterwards IS durable, so without this a power loss
+  // could leave a durable registry pointing at a pack that is missing,
+  // truncated or half-copied, with the previous version already deleted.
+  // Atomic-to-readers is not the same property as crash-durable.
   fsyncTree(staging)
 
   // Swap the staged pack in. Two renames, each atomic: the live directory is
@@ -1640,7 +1587,7 @@ function _installPackDir(
     integrity_check: preview.integrity,
     neutralized,
     // Carried from the preview this install already ran (§5.6.5). Only when the
-    // pack actually shipped a `provenance/` directory — see the field's note on
+    // pack actually shipped a `provenance/` directory; see the field's note on
     // why "nothing to report" is not the same as four zeros.
     provenance: preview.provenance.present
       ? {
@@ -1685,26 +1632,6 @@ export async function installPack(
   return _installPackDir(packsDir, source, existingEngrams, opts)
 }
 
-/**
- * Resolve `name` as a direct child of `packsDir`, or throw.
- *
- * A pack name is a caller-supplied string that reaches here from `plur packs
- * uninstall <name>` and from the `plur_packs_uninstall` MCP tool. It used to be
- * joined straight onto `packsDir`, which made `..` resolve to the PLUR ROOT —
- * and `uninstallPack` ends in `fs.rmSync(packDir, { recursive: true })`.
- *
- * Demonstrated before this guard: `uninstallPack(packsDir, '..')` deleted
- * engrams.yaml, config.yaml and the whole root, and returned `{removed: true}`.
- * `../..` reached the parent. The install path had the mirror flaw, since a
- * source ending in `/..` has basename `..`, so pack files were copied over a
- * live engrams.yaml before any write guard could see them (#811).
- *
- * Containment is checked on the RESOLVED path rather than by pattern-matching
- * the name: `a/../..`, an absolute path, and a name with embedded separators
- * all normalise away, and a denylist of shapes would have to enumerate them.
- * Resolution answers the only question that matters — does this end up inside
- * the packs directory.
- */
 function pickInstallDirName(
   packsDir: string,
   preferred: string,
@@ -1713,8 +1640,8 @@ function pickInstallDirName(
 ): string {
   // A directory may receive this pack when it is free, or when it already
   // holds a pack with the same manifest name. A directory whose manifest cannot
-  // be read keeps the old behaviour (it is replaced): reinstalling over a
-  // damaged copy is how it gets repaired.
+  // be read is replaced: reinstalling over a damaged copy is how it gets
+  // repaired.
   const accepts = (name: string): boolean => {
     const dir = path.join(packsDir, onDiskEntryName(packsDir, name))
     if (!fs.existsSync(dir)) return true
@@ -1725,8 +1652,8 @@ function pickInstallDirName(
   }
   // A pack already installed in one of the directories THIS install could be
   // given is replaced where it is. Choosing by which directory happened to be
-  // free first meant a pack once displaced into a fallback directory
-  // (`bob-tips`, `x-2`) was installed a second time into the preferred one as
+  // free first would let a pack once displaced into a fallback directory
+  // (`bob-tips`, `x-2`) be installed a second time into the preferred one as
   // soon as that came free, leaving the old version loadable beside the new.
   // Only this install's own candidates count (preferred, manifest name,
   // `<base>-N`): two folders that happen to ship the same manifest name under
@@ -1753,15 +1680,15 @@ function pickInstallDirName(
 }
 
 /**
- * Other installed copies of the pack being installed into `target` that the
- * earlier collision bug left behind, which this install supersedes.
+ * Other installed copies of the pack being installed into `target` that a
+ * collision left behind, which this install supersedes.
  *
- * The bug: a pack displaced by a collision (its source folder `pack` was taken
- * by another pack, so it went to `beta` or `pack-2`) was installed a SECOND
- * time into `pack` once that came free. Its fingerprint is in the registry: a
- * row whose directory is not the one its own source asked for, while that
- * asked-for directory holds the same pack. So a directory with the same
- * manifest name is obsolete when either
+ * Such a copy arises when a pack displaced by a collision (its source folder
+ * `pack` was taken by another pack, so it went to `beta` or `pack-2`) is later
+ * installed into `pack` once that comes free. Its fingerprint is in the
+ * registry: a row whose directory is not the one its own source asked for,
+ * while that asked-for directory holds the same pack. So a directory with the
+ * same manifest name is obsolete when either
  *   - its row says it was displaced from `target` (it wanted `target`), or
  *   - the target's row says the target was displaced from it.
  *
@@ -1769,9 +1696,9 @@ function pickInstallDirName(
  * row (nothing records where it came from); a copy installed from a URL (no
  * asked-for directory is recorded); and a copy that sits in the directory its
  * own source asked for, which is how two installations made on purpose from
- * differently named sources look. The current installer never creates the
+ * differently named sources look. The installer never creates the
  * displaced-plus-original pair itself (it upgrades an existing copy in place),
- * so the pair only comes from the old bug or from copying by hand.
+ * so the pair only comes from older installs or from copying by hand.
  */
 function staleCollisionCopies(packsDir: string, target: string, manifestName: string | undefined): string[] {
   if (!manifestName) return []
@@ -1803,6 +1730,22 @@ function installedDirsNamed(packsDir: string, manifestName: string | undefined):
   }).sort()
 }
 
+/**
+ * Resolve `name` as a direct child of `packsDir`, or throw.
+ *
+ * A pack name is a caller-supplied string that reaches here from `plur packs
+ * uninstall <name>` and from the `plur_packs_uninstall` MCP tool. Joined
+ * straight onto `packsDir`, `..` would resolve to the PLUR ROOT, and
+ * `uninstallPack` ends in `fs.rmSync(packDir, { recursive: true })`. On the
+ * install path, a source ending in `/..` has basename `..`, which would copy
+ * pack files over a live engrams.yaml.
+ *
+ * Containment is checked on the RESOLVED path rather than by pattern-matching
+ * the name: `a/../..`, an absolute path, and a name with embedded separators
+ * all normalise away, and a denylist of shapes would have to enumerate them.
+ * Resolution answers the only question that matters: does this end up inside
+ * the packs directory.
+ */
 function resolveInside(packsDir: string, name: string, op: string): string {
   const base = path.resolve(packsDir)
   const candidate = path.resolve(base, name)
@@ -1823,25 +1766,21 @@ function resolveInside(packsDir: string, name: string, op: string): string {
 export interface UninstallResult {
   name: string
   /**
-   * Always `true` — the literal type is the point (#545).
+   * Always `true`; the literal type is the point.
    *
-   * `boolean` implied `false` was reachable, and a caller wrote the branch it
-   * implies: `plur-mcp packs uninstall` had an `else` that printed "Pack not
-   * found" and exited 1, which could never run. `uninstallPack` THROWS when the
-   * pack is absent, so a returned result is already proof of removal.
-   *
-   * Kept as a field rather than deleted so existing readers keep compiling, but
-   * narrowed so a `removed === false` branch is now a type error instead of
-   * dead code that reads like handled behaviour.
+   * `uninstallPack` THROWS when the pack is absent, so a returned result is
+   * already proof of removal. A `boolean` would imply `false` is reachable and
+   * invite dead "not found" branches in callers; the literal type makes a
+   * `removed === false` branch a type error.
    */
   removed: true
   engram_count: number
 }
 
 export function uninstallPack(packsDir: string, name: string): UninstallResult {
-  // Find the pack — try exact name, then case-insensitive. Either way the
+  // Find the pack: try exact name, then case-insensitive. Either way the
   // directory is addressed by the name it has ON DISK, so the registry row
-  // keyed by it is found (audit of #1230, finding 2).
+  // keyed by it is found.
   resolveInside(packsDir, name, 'uninstall')
   let packDir = resolveInside(packsDir, onDiskEntryName(packsDir, name), 'uninstall')
   if (!fs.existsSync(packDir)) {
@@ -1859,19 +1798,19 @@ export function uninstallPack(packsDir: string, name: string): UninstallResult {
   const engramsPath = path.join(packDir, 'engrams.yaml')
   let count = 0
   // Legitimately best-effort: this number is only for the removal report, and a
-  // pack whose engrams.yaml is unreadable is still removable. `loadEngrams` now
-  // THROWS on an unreadable file rather than returning [] — deliberately, because
-  // the write path treats [] as "empty" and would then destroy the store — so
-  // this catch is the explicit opt-in to "unknown, and that is fine here".
+  // pack whose engrams.yaml is unreadable is still removable. `loadEngrams`
+  // THROWS on an unreadable file rather than returning [] (the write path
+  // treats [] as "empty" and would then destroy the store), so this catch is
+  // the explicit opt-in to "unknown, and that is fine here".
   try { count = loadEngrams(engramsPath).length } catch { count = 0 }
   let manifestName: string | undefined
   try { manifestName = loadPack(packDir).manifest.name } catch {}
 
-  // Remove THIS directory's row only (formal finding 11): by `dir`, or — for a
-  // row written before `dir` existed — by manifest name, and then only when no
-  // other installed directory carries the same name. The directory name stands
-  // in for the manifest name when the manifest cannot be read, as before.
-  // Removing by name alone erased the baseline of every other pack sharing it.
+  // Remove THIS directory's row only: by `dir`, or, for a legacy row, by
+  // manifest name, and then only when no other installed directory carries the
+  // same name. The directory name stands in for the manifest name when the
+  // manifest cannot be read. Removing by name alone would erase the baseline of
+  // every other pack sharing it.
   removeFromRegistry(packsDir, path.basename(packDir), manifestName ?? path.basename(packDir))
 
   // Remove recursively
@@ -1892,17 +1831,15 @@ export interface PackInfo {
   source?: string
   integrity_ok?: boolean
   /**
-   * Explicit integrity verdict (#805, F11) — the reason `integrity_ok` alone is
-   * not enough to act on.
+   * Explicit integrity verdict: the reason `integrity_ok` alone is not enough
+   * to act on.
    *
    *   'ok'          the pack hashes to what the registry recorded at install
-   *   'modified'    it does not — the contents changed after install
+   *   'modified'    it does not: the contents changed after install
    *   'unverified'  there is NO registry entry, so the question cannot be answered
    *
-   * `integrity_ok === undefined` carried the third case, and every consumer
-   * treated it as "nothing to report" — the CLI printed a warning only for an
-   * explicit `false`. So a pack whose baseline had been destroyed looked exactly
-   * like a pack that was fine. A verdict that cannot be reached must be as
+   * `integrity_ok === undefined` carries the third case, which consumers easily
+   * read as "nothing to report". A verdict that cannot be reached must be as
    * visible as a verdict that failed, because the two have the same cause more
    * often than not: something tampered with the pack directory.
    */
@@ -1919,17 +1856,16 @@ export interface PackInfo {
   baseline?: 'carried-from-v1'
   /**
    * `true` when the only registry row for this pack is a legacy row (no
-   * `dir`) that another installed directory with the same manifest name could
-   * equally own — the state the pre-`dir` registry left when two same-name
-   * packs were installed. `integrity_status` is then `'unverified'`: which pack
+   * equally own (two same-name packs installed before rows were keyed by
+   * directory). `integrity_status` is then `'unverified'`: which pack
    * the recorded value belongs to cannot be told. Reinstalling the pack gives
    * it a row of its own.
    */
   registry_ambiguous?: true
   /**
-   * Why this pack could not be read, when it could not (audit 2026-08-03,
-   * finding 13). A damaged pack is listed with what is known about it rather
-   * than aborting the listing or appearing as a healthy pack with 0 engrams.
+   * Why this pack could not be read, when it could not. A damaged pack is
+   * listed with what is known about it rather than aborting the listing or
+   * appearing as a healthy pack with 0 engrams.
    */
   load_error?: string
 }
@@ -1938,16 +1874,15 @@ export function listPacks(packsDir: string): PackInfo[] {
   if (!fs.existsSync(packsDir)) return []
 
   const registry = loadRegistry(packsDir)
-  // By directory first; a legacy row (no `dir`) by manifest name (finding 11).
+  // By directory first; a legacy row (no `dir`) by manifest name.
   const rowFor = (dir: string, name: string | undefined): RegistryEntry | undefined => {
     const idx = findRegistryRowIndex(registry, dir, name)
     return idx >= 0 ? registry[idx] : undefined
   }
   // A legacy row that another installed directory could equally own is not
   // this pack's baseline to verify against: comparing an untouched pack with
-  // its same-name neighbour's hash reported a false `modified`, while migrate
-  // called the same row ambiguous (audit of #1230, finding 3). Report it as
-  // unanswerable, the same verdict migration reaches.
+  // its same-name neighbour's hash would report a false `modified`. Report it
+  // as unanswerable, the same verdict migration reaches.
   const ambiguous = (dir: string, name: string, reg: RegistryEntry | undefined): boolean =>
     isAmbiguousLegacyRow(packsDir, dir, name, reg, registry)
 
@@ -1962,9 +1897,9 @@ export function listPacks(packsDir: string): PackInfo[] {
       const matched = rowFor(entry, pack.manifest.name)
       const registryAmbiguous = ambiguous(entry, pack.manifest.name, matched)
       const reg = registryAmbiguous ? undefined : matched
-      // Compared in the version the registry recorded: a v1 row from before
-      // `sha256:v2:` still verifies as it did (§5.5). The reported value is
-      // always v2, the current form.
+      // Compared in the version the registry recorded: a v1 row still
+      // verifies as it did (§5.5). The reported value is always v2, the
+      // current form.
       const integrityOk = reg ? packIntegrityMatches(reg.integrity, packDir) : undefined
       result.push({
         name: pack.manifest.name,
@@ -1985,11 +1920,9 @@ export function listPacks(packsDir: string): PackInfo[] {
       // Per-pack fallback: the manifest would not load, so report what can
       // still be established rather than dropping the pack from the listing.
       //
-      // `loadEngrams` THROWS on an unreadable corpus by design, and this call
-      // used to sit outside any try — so one pack with a corrupt engrams.yaml
-      // aborted the ENTIRE listing (audit 2026-08-03, finding 13). A fallback
-      // that is itself capable of throwing is not a fallback; the whole point
-      // of this branch is that this pack is already known to be damaged.
+      // `loadEngrams` THROWS on an unreadable corpus by design, so it is
+      // guarded here too: one pack with a corrupt engrams.yaml must not abort
+      // the ENTIRE listing. This branch already knows the pack is damaged.
       const engramsPath = path.join(packDir, 'engrams.yaml')
       let count = 0
       let loadError = (manifestErr as Error).message
@@ -2006,7 +1939,7 @@ export function listPacks(packsDir: string): PackInfo[] {
         installed_at: reg?.installed_at,
         source: reg?.source,
         // No manifest loaded means no hash was computed, so the integrity
-        // question cannot be answered — a state to report, not to omit (#805).
+        // question cannot be answered: a state to report, not to omit.
         integrity_status: 'unverified',
         load_error: loadError,
       })
@@ -2019,10 +1952,10 @@ export function listPacks(packsDir: string): PackInfo[] {
 
 export interface ExportOptions {
   /**
-   * Write provenance records alongside the pack (#972). **On by default.**
+   * Write provenance records alongside the pack. **On by default.**
    *
    * A pack is how engrams leave one machine and reach another, so this is the
-   * trust boundary — the one place a provenance record defends against anyone.
+   * trust boundary: the one place a provenance record defends against anyone.
    * It follows the practice every software supply chain settled on: a bill of
    * materials is produced as part of the build and travels inside the artifact,
    * rather than being something a publisher remembers to ask for.
@@ -2042,7 +1975,7 @@ export interface ExportOptions {
    * Export is where a licence stops being decoration. Inside one store nobody
    * needs it; the moment a pack reaches a stranger it is the first thing they
    * have to know, and it is the level where a right plausibly exists at all —
-   * a single engram is one short assertion, a pack is a curated collection.
+   * have to know, and it is the level where a right plausibly exists at all:
    *
    * So this is the one decision export will not make on the author's behalf.
    * Falling back to the schema's `cc-by-sa-4.0` would ship a copyleft grant
@@ -2068,7 +2001,7 @@ export interface PrivacyScanResult {
 export interface PrivacyIssue {
   engram_id: string
   type: 'secret' | 'private_visibility' | 'personal_path' | 'email' | 'ip_address' | 'prompt_injection'
-    /** A file the scan could not read as a plain file — a link, a special file, one past the size or count limit. Blocks install. */
+    /** A file the scan could not read as a plain file: a link, a special file, one past the size or count limit. Blocks install. */
     | 'unscannable'
   detail: string
   /**
@@ -2078,7 +2011,7 @@ export interface PrivacyIssue {
    * halves are not the same kind of finding. A link, a special file or a
    * truncated walk means the pack is shaped to hide something and install must
    * refuse. A plain file that is merely too large, or that the filesystem would
-   * not hand over, is just a file the consumer could not check — and for a
+   * not hand over, is just a file the consumer could not check, and for a
    * `provenance/` record the provenance profile §5.4.2 requires that this
    * cannot abort the install of the pack it arrived in. It is reported, and the
    * file is not copied, so nothing unchecked lands.
@@ -2095,15 +2028,13 @@ export interface PrivacyIssue {
 
 /**
  * Strip fields that let a third-party pack engram override the host's behavior:
- * `pinned` (bypasses the relevance gate — always injected) and a `locked`
+ * `pinned` (bypasses the relevance gate: always injected) and a `locked`
  * commitment (resists dedup/correction). Returns sanitized engrams plus a count
- * for EACH field changed. (Security audit 2026-06-10, finding #2.)
+ * for EACH field changed.
  *
  * Both counts exist because ENGRAM-STANDARD-v1 §5.6.1 step 3 and §5.6.5 require
  * a consumer to report how many engrams it neutralized AND which field it
- * changed. Only the pinned count was returned, so a pack whose only
- * host-overriding field was a locked commitment installed with no output at
- * all — the bundled `effective-memory` pack alone ships eleven of those.
+ * changed.
  */
 export function sanitizePackEngrams(engrams: Engram[]): {
   engrams: Engram[]
@@ -2122,10 +2053,9 @@ export function sanitizePackEngrams(engrams: Engram[]): {
     // inert while selection filters on `pinned === true`, but leaving a pack's
     // `pinned_tier: 'hard'` and `pinned_priority: 9999` in the store means the
     // next change that pins an engram for any other reason silently adopts a
-    // third party's claim on the hard tier — which is guaranteed injection and
-    // bypasses the per-pack and per-domain fairness caps. This function exists
-    // to clamp host-overriding fields; a field added beside `pinned` without
-    // being added here is the same enumerate-vs-serialize drift as #381/#389.
+    // third party's claim on the hard tier, which is guaranteed injection and
+    // bypasses the per-pack and per-domain fairness caps. Any host-overriding
+    // field added beside `pinned` must be added here too.
     if ('pinned_tier' in c) { delete c.pinned_tier; changed = true }
     if ('pinned_priority' in c) { delete c.pinned_priority; changed = true }
     if (c.commitment === 'locked') {
@@ -2142,17 +2072,17 @@ export function sanitizePackEngrams(engrams: Engram[]): {
 
 const PERSONAL_PATH_RE = /(?:\/Users\/\w+|\/home\/\w+|~\/|C:\\Users\\\w+)/
 // Bounded quantifiers ({1,64}/{1,255}/{2,24}, within RFC limits) so the domain
-// part can't backtrack catastrophically. Unbounded `+` made this quadratic on a
-// long dotted run after `@` (#389 review: 8-17s on a crafted engram); the cap in
-// scanPrivacy bounds the input length and these bounds bound the per-start work.
+// part can't backtrack catastrophically: an unbounded `+` is quadratic on a
+// long dotted run after `@`. The cap in scanPrivacy bounds the input length
+// and these bounds bound the per-start work.
 const EMAIL_RE = /[a-zA-Z0-9._%+-]{1,64}@[a-zA-Z0-9.-]{1,255}\.[a-zA-Z]{2,24}/
 const IP_RE = /\b(?:10|172\.(?:1[6-9]|2\d|3[01])|192\.168)\.\d{1,3}\.\d{1,3}\b/
 
 /**
  * Does the export privacy scan read this text as containing an email address?
- * Exposed so a surface can warn BEFORE a value is committed to — `plur identity
- * you@example.org` made every export empty (#999), and the place to say so is
- * the moment the identity is set, not the first empty pack.
+ * Exposed so a surface can warn BEFORE a value is committed to: an identity
+ * like `you@example.org` would make every export empty, and the place to say
+ * so is the moment the identity is set, not the first empty pack.
  */
 export function containsEmail(text: string): boolean {
   return EMAIL_RE.test(text)
@@ -2162,9 +2092,9 @@ export function containsEmail(text: string): boolean {
 // (relations/associations/knowledge_anchors never reach a pack), or they are
 // internal/numeric bookkeeping that can't carry a meaningful credential and
 // would only cause false rejections (local paths inside knowledge_anchors, the
-// activation numbers, the id). EVERY other field — including future additions —
+// activation numbers, the id). EVERY other field, including future additions,
 // is scanned, so the export gap can't silently reopen the way an enumerated
-// field list does (#381 root cause, #389 review).
+// field list would.
 const SECRET_SCAN_EXCLUDE = new Set<string>([
   'relations', 'associations', 'knowledge_anchors', 'activation',
   'embedding', 'id', 'created', 'updated', 'last_accessed',
@@ -2175,7 +2105,7 @@ const SECRET_SCAN_EXCLUDE = new Set<string>([
  * SERIALIZED payload (not a hand-maintained field list) so a future caller-
  * settable field (tags, structured_data, contraindications, …) can't silently
  * reopen the export leak. PLUR-internal `_`-prefixed structured_data keys
- * (_outbox/_demoted) are dropped — they carry system host topology, never user
+ * (_outbox/_demoted) are dropped: they carry system host topology, never user
  * content, and would false-trip the scan.
  */
 function serializeForSecretScan(e: Engram): string {
@@ -2183,8 +2113,8 @@ function serializeForSecretScan(e: Engram): string {
   for (const [k, v] of Object.entries(e as Record<string, unknown>)) {
     if (SECRET_SCAN_EXCLUDE.has(k)) continue
     // The same exemption the write guard applies, from the same list: PLUR's
-    // own bookkeeping keys and nothing else. A `_` prefix rule exempted any
-    // key a caller cared to name (#1002 review).
+    // own bookkeeping keys and nothing else, never any `_`-prefixed key a
+    // caller cares to name.
     scan[k] = k === 'structured_data' ? (userStructuredData(v) ?? {}) : v
   }
   return JSON.stringify(scan)
@@ -2194,11 +2124,11 @@ export function scanPrivacy(engrams: Engram[]): PrivacyScanResult {
   const issues: PrivacyIssue[] = []
 
   for (const e of engrams) {
-    // Check visibility — private engrams must never be exported, and a pack
+    // Check visibility: private engrams must never be exported, and a pack
     // that ships one is refused at install (§5.6.1 step 2). Record the flag but
     // DON'T skip the rest of the scan: the refusal names every finding at once,
     // and a pack must not be able to use visibility:private to keep secrets or
-    // injection text out of the report (finding #2).
+    // injection text out of the report.
     if (e.visibility === 'private') {
       issues.push({
         engram_id: e.id,
@@ -2207,34 +2137,28 @@ export function scanPrivacy(engrams: Engram[]): PrivacyScanResult {
       })
     }
 
-    // SECRET / PII scan covers the SERIALIZED engram payload — every caller-
-    // settable, exported field — not a hand-picked list. exportPack serializes
-    // the whole engram, so enumerating a subset here is the same enumerate-vs-
-    // serialize drift that caused #381, one level out (#389 review): `tags`,
-    // `structured_data`, `contraindications` are all exported verbatim. Scanning
-    // the serialized payload means a future field can't silently reopen the gap.
-    // Cap the scan input BEFORE any regex touches it. serializeForSecretScan
-    // returns the whole-engram JSON (unbounded — a long statement or
-    // structured_data value), and EMAIL_RE / IP_RE / PERSONAL_PATH_RE below run
-    // on secretText directly. Uncapped, EMAIL_RE backtracks quadratically on a
-    // crafted pack (#389 review measured 8-17s), hanging preview/install/export.
-    // detectSensitive re-applies the same cap internally; this also bounds the
-    // privacy regexes that don't go through it.
+    // SECRET / PII scan covers the SERIALIZED engram payload (every caller-
+    // settable, exported field), not a hand-picked list. exportPack serializes
+    // the whole engram, so `tags`, `structured_data`, `contraindications` are
+    // all exported verbatim, and a future field can't silently reopen the gap.
+    // Cap the scan input BEFORE any regex touches it: the serialized JSON is
+    // unbounded, and EMAIL_RE / IP_RE / PERSONAL_PATH_RE below run on
+    // secretText directly, so a crafted pack could otherwise hang
+    // preview/install/export on backtracking.
     const fullText = serializeForSecretScan(e)
     const secretText = truncateToScanLimit(fullText)
 
     // Secret AND infrastructure-sensitive patterns. detectSensitive is a superset
     // of detectSecrets that also catches public IPv4/IPv6, internal hosts,
-    // basic-auth URLs and host:port — the infra family detectSecrets missed and
-    // the exact class of the 2026-06 leak. Without it, an infra leak in
-    // summary/tags/source was exported clean.
+    // basic-auth URLs and host:port, so an infra leak in summary/tags/source is
+    // not exported clean.
     //
-    // #425: pass the FULL serialized text, NOT the pre-truncated `secretText`.
+    // Pass the FULL serialized text, NOT the pre-truncated `secretText`.
     // detectSensitive caps its own regex work internally (ReDoS-safe) AND emits
-    // the #386 `scan_truncated` fail-closed hit when the input exceeds 1 MiB.
-    // Pre-truncating here hid the over-cap from it, so a >1 MiB engram with
-    // sensitive content past byte 1 MiB exported/installed CLEAN. The raw PII
-    // regexes below still run on the bounded `secretText`.
+    // the `scan_truncated` fail-closed hit when the input exceeds 1 MiB.
+    // Pre-truncating would hide the over-cap, so a >1 MiB engram with sensitive
+    // content past byte 1 MiB would pass CLEAN. The raw PII regexes below still
+    // run on the bounded `secretText`.
     const secrets = detectSensitive(fullText)
     for (const s of secrets) {
       issues.push({
@@ -2340,9 +2264,8 @@ export interface ExportResult {
 /**
  * Reject a pack name that would escape the directory it is meant to go in.
  *
- * The name becomes a directory under the output path, so `../escape` walks out
- * of it. A tester ran `plur packs export "../plur-escape-test"` and wrote a
- * full pack straight into their home directory.
+ * The name becomes a directory under the output path, so `../escape` would
+ * walk out of it.
  *
  * The name also becomes part of the identifiers inside the provenance record
  * (`engram:pack/<name>@<version>`), where a slash or a space is not legal.
@@ -2378,7 +2301,7 @@ export function exportPack(
   /**
    * The licence configured as this user's default (`provenance.default_license`).
    *
-   * Satisfies the requirement below, because it IS a choice — made once, in
+   * Satisfies the requirement below, because it IS a choice, made once, in
    * advance, rather than not at all. The `Plur` wrapper supplies it; a direct
    * caller passes it or names a licence explicitly.
    */
@@ -2390,9 +2313,9 @@ export function exportPack(
   //
   // Every other unset field degrades to "not recorded", which a record can say
   // honestly. A licence cannot: the schema supplies `cc-by-sa-4.0` on parse, so
-  // silence does not produce silence — it produces a copyleft grant, over other
-  // people's memories, to whoever receives the pack, attributed to an author who
-  // never agreed to it. Failing here is the only way not to do that quietly.
+   // silence does not produce silence: it produces a copyleft grant, over other
+   // people's memories, to whoever receives the pack, attributed to an author who
+   // never agreed to it. Failing here is the only way not to do that quietly.
   const packLicense = manifest.license ?? configuredLicense
   if (!packLicense) {
     throw new Error(
@@ -2406,12 +2329,12 @@ export function exportPack(
     )
   }
 
-  // Privacy scan — filter out problematic engrams
+  // Privacy scan: filter out problematic engrams
   const allPrivacy = scanPrivacy(engrams)
 
-  // A pack is a SHARED artifact, so exclude EVERY engram scanPrivacy flagged —
+  // A pack is a SHARED artifact, so exclude EVERY engram scanPrivacy flagged:
   // not only secrets and private-tagged ones, but also PII (personal paths,
-  // emails, private IPs) and prompt-injection (#398). scanPrivacy only flags
+  // emails, private IPs) and prompt-injection. scanPrivacy only flags
   // content that has no place in a shared pack, so ANY issue is disqualifying.
   // The full scan is still returned in `privacy`, so the caller sees exactly
   // which engrams were held back and why.
@@ -2439,8 +2362,8 @@ export function exportPack(
     version: manifest.version,
     description: manifest.description,
     creator: manifest.creator,
-    // Always present now: export refuses to run without a chosen licence, so
-    // this can never be the schema default masquerading as a decision.
+    // Always present: export refuses to run without a chosen licence, so this
+    // can never be the schema default masquerading as a decision.
     license: packLicense,
     metadata: {
       injection_policy: 'on_match',
@@ -2463,7 +2386,7 @@ export function exportPack(
         ...cleaned.relations,
         conflicts: [],
         related: [],
-        // #240: supersedes edges are store-internal cross-refs too — a stale
+        // Supersedes edges are store-internal cross-refs too: a stale
         // edge in a foreign store could falsely suppress tension detection
         // between unrelated engrams on ID collision.
         supersedes: [],
@@ -2475,12 +2398,10 @@ export function exportPack(
       cleaned.associations = []
     }
     // The same rule for every other identifier only our store can resolve
-    // (profile §2.2: "No identifiers only our store can resolve"). The
-    // supersedes edges above were stripped and these were not, so a pack
-    // carried a `derived_from` id, a derivation `chain`, and a
-    // `provenance.origin` of `session:<episode>` — plus `episode_ids` and
-    // `sources[].session_id` — that a recipient cannot look up and that name
-    // our sessions to them.
+    // (profile §2.2: "No identifiers only our store can resolve"):
+    // `derived_from`, the derivation `chain`, a `provenance.origin` of
+    // `session:<episode>`, `episode_ids` and `sources[].session_id` cannot be
+    // looked up by a recipient and would name our sessions to them.
     cleaned.derived_from = null
     cleaned.episode_ids = []
     if (cleaned.sources?.length) {
@@ -2504,20 +2425,13 @@ export function exportPack(
     // infra detector flags, so scanning it would falsely demote every
     // remote-origin or auto-routed engram on update. But exempt from the scan
     // has to mean stripped from the export, or the one thing nothing checks is
-    // also the one thing that ships.
+    // also the one thing that ships. These keys hold internal hosts, internal
+    // scope names, and `_demoted.patterns`, which would tell a recipient WHICH
+    // CLASS OF SECRET was once in that engram.
     //
-    // It shipped. Measured on this branch before the fix, an exported pack
-    // carried `_outbox.target_url` (the remote store's internal host and port),
-    // `_routed.scope` and `_demoted.from`/`.to` (internal scope names),
-    // `_rescoped_from` (another one), and `_demoted.patterns` — the detector
-    // names that matched, which tells a recipient WHICH CLASS OF SECRET was
-    // once in that engram. The profile rule the strips above cite covers all of
-    // it: "No identifiers only our store can resolve."
-    //
-    // One set decides both halves now: a key in it is unscanned and removed, a
-    // key outside it is scanned and kept. User-set keys — including a
-    // `_`-prefixed one a caller named themselves — are content, are scanned,
-    // and stay.
+    // One set decides both halves: a key in it is unscanned and removed, a key
+    // outside it is scanned and kept. User-set keys (including a `_`-prefixed
+    // one a caller named themselves) are content, are scanned, and stay.
     const userSd = userStructuredData(cleaned.structured_data)
     if (userSd === undefined) delete (cleaned as { structured_data?: unknown }).structured_data
     else cleaned.structured_data = userSd as Record<string, unknown>
@@ -2537,9 +2451,9 @@ export function exportPack(
     if (cleaned.feedback_signals) {
       cleaned.feedback_signals = { positive: 0, negative: 0, neutral: 0 }
     }
-    // Strip host-overriding fields (finding #6): never export an always-load
-    // directive or a locked commitment into a shareable pack. Mirrors the
-    // clamp applied on install.
+    // Strip host-overriding fields: never export an always-load directive or a
+    // locked commitment into a shareable pack. Mirrors the clamp applied on
+    // install.
     const c = cleaned as Record<string, unknown>
     if ('pinned' in c) delete c.pinned
     if (c.commitment === 'locked') {
@@ -2558,7 +2472,7 @@ export function exportPack(
   const integrity = computePackIntegrity(outputDir)
   fs.writeFileSync(path.join(outputDir, 'INTEGRITY'), `${integrity}\n`)
 
-  // Provenance (#972), written after the integrity hash so the pack record can
+  // Provenance, written after the integrity hash so the pack record can
   // carry it.
   //
   // The hash covers the manifest and engrams.yaml only, per the standard, so these
@@ -2594,7 +2508,7 @@ export function exportPack(
       // Portable by default: a record that stands on its own, names no engram
       // outside the pack, and carries no session identifier.
       // A member with no licence of its own inherits the pack's, recorded as
-      // inheritance rather than as the engram's own choice — the assembler
+      // inheritance rather than as the engram's own choice: the assembler
       // granted it, and may not hold rights over every engram in the pack.
       const record = buildProvenanceRecord(engram, [], {
         mode: 'portable',
@@ -2622,7 +2536,7 @@ export function exportPack(
 
 /** What a pack's shipped integrity value says, checked against its contents. */
 export interface IntegrityCheck {
-  /** 'ok' — matched. 'modified' — did not match. 'absent' — the pack shipped none. */
+  /** 'ok': matched. 'modified': did not match. 'absent': the pack shipped none. */
   status: 'ok' | 'modified' | 'absent'
   /** The value the pack shipped, if it shipped one. */
   shipped?: string
@@ -2635,22 +2549,19 @@ export interface IntegrityCheck {
 /**
  * Compare the integrity value a pack SHIPPED against what its contents hash to.
  *
- * Export writes the hash into an `INTEGRITY` file. Install recomputed its own
- * hash, recorded that, and never once looked at the shipped value — so a pack
- * edited after it was built installed cleanly, and `plur packs list` then
- * reported `integrity_ok: true`. `integrity_ok` meant "we computed a hash", not
- * "the hash matched", which is the opposite of what anybody reads it as.
+ * Export writes the hash into an `INTEGRITY` file; recomputing a fresh hash at
+ * install and recording that would only show "we computed a hash", not "the
+ * hash matched".
  *
  * Hash the pack AS RECEIVED. Install later hashes the staged, sanitised copy,
  * which legitimately differs when the privacy scan drops an engram; comparing
  * against that would raise a mismatch on packs nobody touched.
  *
- * A pack that ships no `INTEGRITY` is 'absent', not 'ok'. Nothing was checked,
- * and saying otherwise is how the original defect read.
+ * A pack that ships no `INTEGRITY` is 'absent', not 'ok'. Nothing was checked.
  *
  * This detects accidental corruption and casual editing. It is NOT a defence
  * against a determined sender, who edits the contents and the `INTEGRITY` file
- * together — nothing here is signed. Say that plainly wherever this is shown.
+ * together: nothing here is signed. Say that plainly wherever this is shown.
  */
 export function verifyPackIntegrity(packDir: string): IntegrityCheck {
   const file = path.join(packDir, 'INTEGRITY')
@@ -2664,9 +2575,9 @@ export function verifyPackIntegrity(packDir: string): IntegrityCheck {
   }
 
   const shipped = fs.readFileSync(file, 'utf8').trim()
-  // Recompute in the version the pack shipped (§5.5): a v1 value from a pack
-  // built before `sha256:v2:` verifies exactly as it always did, and `computed`
-  // stays comparable with `shipped` when both are shown.
+  // Recompute in the version the pack shipped (§5.5): a legacy v1 value
+  // verifies exactly as it always did, and `computed` stays comparable with
+  // `shipped` when both are shown.
   const computed = computePackIntegrityLike(shipped, packDir)
   if (packIntegrityMatches(shipped, packDir)) {
     return {
@@ -2693,13 +2604,12 @@ export function verifyPackIntegrity(packDir: string): IntegrityCheck {
  *   H1 = SHA256( bytes(SKILL.md) || bytes(engrams.yaml) )
  * recorded as `sha256:<hex>`. Returns the bare hex.
  *
- * Kept so that every pack shipped and every registry row written before v2
- * still verifies (`packIntegrityMatches`). Do NOT use it for new values: the
- * concatenation is unframed, so it is not injective. Bytes moved across the
- * file boundary keep the hash, a missing SKILL.md hashes like an empty one, and
- * a deprecated `manifest.yaml` is not covered at all (formal verification run,
- * spec/formal/findings/persistence.md candidate 10). New values are v2 —
- * `computePackIntegrity`.
+ * Kept so that every pack and registry row carrying a v1 value still verifies
+ * (`packIntegrityMatches`). Do NOT use it for new values: the concatenation is
+ * unframed, so it is not injective. Bytes moved across the file boundary keep
+ * the hash, a missing SKILL.md hashes like an empty one, and a deprecated
+ * `manifest.yaml` is not covered at all. New values are v2
+ * (`computePackIntegrity`).
  */
 export function computePackHash(packDir: string): string {
   return packHashV1FromParts(readPackIntegrityParts(packDir, ['SKILL.md', 'engrams.yaml']))
@@ -2763,7 +2673,7 @@ function packIntegrityV2FromParts(parts: PackIntegrityParts): string {
  * differently from an empty one, so the input can be parsed back unambiguously:
  * two packs with the same value have byte-identical parts. That is what makes
  * it usable as a content-addressable identifier for a pack's hashed parts,
- * which v1 (`computePackHash`) was documented as and was not.
+ * which v1 (`computePackHash`) is not.
  *
  * `provenance/` and `INTEGRITY` are not covered, as in v1. Raw file bytes; never
  * re-serialize before hashing.
@@ -2776,7 +2686,7 @@ const INTEGRITY_V1_RE = /^sha256:[0-9a-f]{64}$/
 const INTEGRITY_V2_RE = /^sha256:v2:[0-9a-f]{64}$/
 
 /**
- * What `packDir` hashes to, in the same version as `recorded` — so a shipped or
+ * What `packDir` hashes to, in the same version as `recorded`, so a shipped or
  * recorded v1 value is compared against a v1 recomputation, and anything else
  * (v2, or a value in no known format) against v2.
  */
@@ -2808,12 +2718,12 @@ export type PackIntegrityMigrationAction =
    * Left as v1. `reason` says why: the pack no longer matches its v1 value
    * (`differs-from-v1`, it goes on reporting `modified`), or it matches v1 but
    * not what installing its recorded source produces (`differs-from-source`,
-   * an edit v1 cannot see — or a source that has moved on since install).
+   * an edit v1 cannot see, or a source that has moved on since install).
    */
   | 'skipped-modified'
   /** No registry row for this pack. No baseline is invented. */
   | 'skipped-no-entry'
-  /** A legacy row (no `dir`) that another installed directory's manifest also names, or one marked `ambiguous` when such a pack was uninstalled (#1245): it could be either pack's baseline, so it is left alone. */
+  /** A legacy row (no `dir`) that another installed directory's manifest also names, or one marked `ambiguous` when such a pack was uninstalled: it could be either pack's baseline, so it is left alone. */
   | 'skipped-ambiguous-legacy-row'
   /** The pack's manifest could not be read, so it cannot be matched to a row. */
   | 'skipped-unreadable'
@@ -2879,7 +2789,7 @@ function expectedInstalledIntegrity(source: string | undefined, packDir: string)
  *
  * A v1 match is NOT evidence that a pack is unchanged: v1 cannot see bytes
  * moved across the SKILL.md / engrams.yaml boundary, nor a `manifest.yaml`
- * added beside SKILL.md (audit of #1229, finding 1). So a row whose pack still
+ * added beside SKILL.md. So a row whose pack still
  * matches v1 is handled in one of two ways:
  *
  *   - its recorded `source` is still a local pack directory: the pack is
@@ -2921,7 +2831,7 @@ export function migratePackIntegrity(
       report.packs.push({ dir, action: 'skipped-unreadable' })
       continue
     }
-    // By directory first, a legacy row (no `dir`) by manifest name — the same
+    // By directory first, a legacy row (no `dir`) by manifest name: the same
     // rule listPacks verifies with, so a pack is migrated against its own row.
     // A legacy row that another directory's manifest also names could be
     // either pack's baseline: leave it alone rather than guess.
@@ -2939,7 +2849,7 @@ export function migratePackIntegrity(
     }
     // One read serves both the v1 check and the new v2 value. Reading twice
     // would let an edit made between the reads become the new baseline of a
-    // row carried forward from v1, unreported (#1234).
+    // row carried forward from v1, unreported.
     const parts = readPackIntegrityParts(packDir)
     if (`sha256:${packHashV1FromParts(parts)}` !== row.integrity) {
       report.packs.push({ dir, name, action: 'skipped-modified', reason: 'differs-from-v1', from: row.integrity })

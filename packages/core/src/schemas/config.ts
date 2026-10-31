@@ -5,11 +5,10 @@ import { ScopeSensitivitySchema } from './scope-metadata.js'
  * `.partial()` with the meaning these schemas were written for: an absent key
  * stays absent, even when the field declares a `.default()`.
  *
- * zod 3 never applied a default inside `.optional()`, so in a `.partial()`
- * object the defaults below only document the runtime fallbacks (which live
- * in the code that reads the config). zod 4 applies them, which would fill
- * every unset key on load and write them all back into config.yaml. Dropping
- * the default under the optional restores the zod 3 result exactly: a value
+ * In a `.partial()` object the defaults below only document the runtime
+ * fallbacks (which live in the code that reads the config). zod 4 would apply
+ * them, filling every unset key on load and writing them all back into
+ * config.yaml. Dropping the default under the optional keeps it so: a value
  * that is present is parsed by the same schema, an absent one stays absent.
  */
 function partialKeepAbsent<S extends z.ZodRawShape>(schema: z.ZodObject<S>) {
@@ -24,11 +23,11 @@ function partialKeepAbsent<S extends z.ZodRawShape>(schema: z.ZodObject<S>) {
 
 /**
  * A store can be either:
- *   - filesystem (path) — historical default; YAML or SQLite
+ *   - filesystem (path) — YAML or SQLite
  *   - remote (url + token) — speaks to a PLUR Enterprise server over HTTP
  * Exactly one of path/url must be present.
  *
- * A store entry may also carry self-describing scope metadata (#345) —
+ * A store entry may also carry self-describing scope metadata —
  * `description`, `covers`, `sensitivity` — so a registered scope declares
  * locally what it is for and its sensitivity policy. All metadata fields are
  * optional and non-breaking; absent metadata falls back to the default
@@ -39,7 +38,7 @@ export const StoreEntrySchema = z.object({
   url: z.string().url().optional(),
   token: z.string().optional(),       // Bearer for remote stores; ignored for path
   /**
-   * Name of an environment variable holding the Bearer token (#1561). The
+   * Name of an environment variable holding the Bearer token. The
    * token is read from it when config.yaml is loaded (when `token` is absent)
    * and is never written back to the file — `plur stores add --token-env VAR`
    * and `plur remote --token-env VAR` store only this reference.
@@ -49,8 +48,8 @@ export const StoreEntrySchema = z.object({
   shared: z.boolean().default(false),
   readonly: z.boolean().default(false),
   /**
-   * Per-store override for the server-authoritative recall dialing rule
-   * (#776). Optional and backward compatible — absent means the strict
+   * Per-store override for the server-authoritative recall dialing rule.
+   * Optional — absent means the strict
    * scope-relevance rule decides:
    *   - `always` — this store's host is dialed on every recall, and this
    *     store's scope is always in the dialed set, project context or not.
@@ -61,11 +60,9 @@ export const StoreEntrySchema = z.object({
   dial: z.enum(['always', 'never']).optional().catch(undefined),
   description: z.string().optional()
     .describe('Human-readable explanation of what this scope is for (#345). Surfaced in store/scope discovery.'),
-  // `covers` and `sensitivity` are shape-tolerant (R2-D #7): a malformed SHAPE
+  // `covers` and `sensitivity` are shape-tolerant: a malformed SHAPE
   // (e.g. `covers: 5`, `sensitivity: 'oops'`) must NOT fail the whole StoreEntry
-  // safeParse — otherwise loadConfig drops the entry incl. its url/token,
-  // reproducing the exact credential-loss bug PR-3 set out to close (PR-3 only
-  // rescued an unknown `forbid` CATEGORY, not a malformed enclosing shape).
+  // safeParse — otherwise loadConfig drops the entry incl. its url/token.
   // A non-array `covers` / non-object `sensitivity` coerces to `undefined` (the
   // field is dropped, not the entry). A malformed `sensitivity` OBJECT (e.g.
   // scalar `allow`/`forbid`) is handled field-by-field inside
@@ -78,8 +75,7 @@ export const StoreEntrySchema = z.object({
   )
     .describe("Per-scope sensitivity policy (#345) consumed by the write-time leak guard. When present, overrides the default shared-scope demote-everything behavior for this scope. A non-object shape coerces to undefined (not fatal) so it never drops the whole store entry."),
 })
-  // PR-3 (#353): preserve unknown/future TOP-LEVEL store fields on a successful
-  // parse, so a config written by a NEWER PLUR (extra top-level keys) is not
+  // Preserve unknown/future TOP-LEVEL store fields on a successful parse, so a config written by a NEWER PLUR (extra top-level keys) is not
   // silently stripped when an OLDER PLUR re-parses and writes it back. The
   // `.passthrough()` is placed BEFORE `.refine()` (refine yields a ZodEffects
   // with no `.passthrough`); the path-xor-url predicate only touches known
@@ -92,7 +88,7 @@ export const StoreEntrySchema = z.object({
 
 export type StoreEntry = z.infer<typeof StoreEntrySchema>
 
-// Shape-tolerance helpers for the server entry (#1220): a malformed or
+// Shape-tolerance helpers for the server entry: a malformed or
 // future-version VALUE drops that field, never the whole entry and its token.
 const plainObjectOr = <T>(fallback: T) => (val: unknown) =>
   (val != null && typeof val === 'object' && !Array.isArray(val) ? val : fallback)
@@ -109,7 +105,7 @@ export const ScopeSettingsSchema = z.object({
 
 export type ScopeSettings = z.infer<typeof ScopeSettingsSchema>
 
-// C6 `discovery` — cached answer from the last successful /api/v1/me call.
+// `discovery` — cached answer from the last successful /api/v1/me call.
 // Every field is `.catch(undefined)`: a value written by a newer client (a new
 // `status`, say) must not make an older client drop the company server.
 export const DiscoveryCacheSchema = z.object({
@@ -127,7 +123,7 @@ export const DiscoveryCacheSchema = z.object({
 
 export type DiscoveryCache = z.infer<typeof DiscoveryCacheSchema>
 
-// C6 `enterprise` block — company-server-specific metadata on a store entry.
+// `enterprise` block — company-server-specific metadata on a store entry.
 export const EnterpriseBlockSchema = z.object({
   hello_engram_id: z.string().optional().catch(undefined),
 }).passthrough()
@@ -135,24 +131,23 @@ export const EnterpriseBlockSchema = z.object({
 export type EnterpriseBlock = z.infer<typeof EnterpriseBlockSchema>
 
 /**
- * A multi-scope server store entry (C6, #1631).
+ * A multi-scope server store entry.
  *
  * One on-disk entry represents a company PLUR server and all the scopes it
  * grants. At load it is expanded into one in-memory `StoreEntry` per scope so
- * the ~270 existing code paths that work per-scope entry remain unchanged.
+ * code that works per scope entry needs no server-entry awareness.
  *
  * Detection: an entry is a server entry when it has both `url` and an own
- * `scopes` key (the `enterprise` block is NOT required, preserving the #1220
- * fixture which has no `enterprise` object).
+ * `scopes` key (the `enterprise` block is NOT required).
  *
- * Shape-tolerant (#1220): a non-array `scopes` becomes `[]`; non-string
+ * Shape-tolerant: a non-array `scopes` becomes `[]`; non-string
  * elements are dropped; a malformed `pinned_scopes`, `enterprise`,
  * `discovery` or per-scope `scope_settings` value drops that value, never the
  * entry. A scope string that fails the safe grammar (`/^[\w:./-]+$/`) is
  * dropped with a warning at expansion time.
  *
- * `scope` (singular) is the C6 compatibility field — older clients (≤0.21.5)
- * require it and would otherwise drop the entry on writeback.
+ * `scope` (singular) is a compatibility field — older clients require it and
+ * would otherwise drop the entry on writeback.
  */
 export const ServerStoreEntrySchema = z.object({
   url: z.string().url(),
@@ -192,7 +187,7 @@ export const DedupConfigSchema = partialKeepAbsent(z.object({
   enabled: z.boolean().default(true),
   /**
    * Similarity at or above which a near-duplicate is flagged in the write
-   * result. REPORTING ONLY — it does not suppress a write (#856). Kept in sync
+   * result. REPORTING ONLY — it does not suppress a write. Kept in sync
    * with the runtime default in learn-async.ts, which is the value that
    * actually applies when this key is absent (`.partial()` suppresses the Zod
    * default, so a mismatch here is invisible at runtime and misleads whoever
@@ -219,10 +214,10 @@ export const EmbeddingsConfigSchema = partialKeepAbsent(z.object({
 
 
 /**
- * Vector-column configuration for the PGLite/pgvector index (#223).
+ * Vector-column configuration for the PGLite/pgvector index.
  *
  * `precision` selects the pgvector storage type for the embedding column:
- *   - `float32` — pgvector `vector(N)`, 4 bytes/dim (the historical layout)
+ *   - `float32` — pgvector `vector(N)`, 4 bytes/dim
  *   - `halfvec` — pgvector `halfvec(N)`, 2 bytes/dim (~50% smaller,
  *     -0.2 to -0.5pp recall). Requires pgvector >= 0.7; PGLite 0.4.x bundles
  *     0.8.1, verified working in the WASM build. Note: in PGLite (WASM, no
@@ -236,10 +231,10 @@ export const EmbeddingsConfigSchema = partialKeepAbsent(z.object({
  * `plur sync --full` drops and rebuilds the derived index from YAML at the
  * configured precision per ADR-0001's rebuildability invariant.
  *
- * int8 scalar and binary quantization are deferred: pgvector has no int8
+ * int8 scalar and binary quantization are not offered: pgvector has no int8
  * vector column type (its types are vector/halfvec/sparsevec/bit), and
- * binary-quantized retrieval only makes sense paired with the #220
- * cross-encoder rerank pass.
+ * binary-quantized retrieval only makes sense paired with a cross-encoder
+ * rerank pass.
  */
 export const VectorConfigSchema = partialKeepAbsent(z.object({
   precision: z.enum(['float32', 'halfvec']),
@@ -276,7 +271,7 @@ export const PostgresConfigSchema = partialKeepAbsent(z.object({
 
 /**
  * Scope-routing tuning — optional overrides for the deterministic ranker that
- * auto-routes unscoped writes to a `covers`-matching scope (Stage 3b, #351/#362).
+ * auto-routes unscoped writes to a `covers`-matching scope.
  * Defaults match the module-level constants in scope-routing.ts.
  *
  * Enterprise installs with many narrow, covers-rich scopes may need to raise
@@ -284,7 +279,7 @@ export const PostgresConfigSchema = partialKeepAbsent(z.object({
  * tag-only signals relative to keyword evidence. WEIGHT_DOMAIN (1.5) is NOT
  * configurable: the lone-domain-clears-threshold invariant is load-bearing.
  */
-// Field-level tolerance (#670 review): these fields sit inside the top-level
+// Field-level tolerance: these fields sit inside the top-level
 // PlurConfigSchema.parse(), where a single out-of-range value (e.g.
 // `min_confidence: 1.5`, or `15` from a percent misread) would otherwise fail
 // the WHOLE config parse — loadConfig's catch falls back to full defaults,
@@ -298,7 +293,7 @@ export const ScopeRoutingConfigSchema = partialKeepAbsent(z.object({
   /** Per-tag weight in the ranker. Default: 0.5. */
   weight_tag: z.number().min(0).optional().catch(undefined),
   /**
-   * Floor for the SUGGESTION surface (#670): `suggestScope` drops candidates
+   * Floor for the SUGGESTION surface: `suggestScope` drops candidates
    * below this confidence, clipping lone-coincidental-keyword noise (≈0.12).
    * Independent of `match_threshold` (the auto-route gate). Default: 0 — no
    * floor at the core API; the MCP `plur_suggest_scope` tool falls back to
@@ -308,15 +303,12 @@ export const ScopeRoutingConfigSchema = partialKeepAbsent(z.object({
   min_confidence: z.number().min(0).max(1).optional().catch(undefined),
   /**
    * Opt in to auto-routing a genuinely-unscoped write into a SHARED scope
-   * (`group:`/`project:`/`space:`/`team:`/`org:`/`public`). Default FALSE
-   * (#1115).
+   * (`group:`/`project:`/`space:`/`team:`/`org:`/`public`). Default FALSE.
    *
-   * Auto-routing used to send an unscoped write wherever a scope's `covers`
-   * matched its domain prefix, shared scopes included — so a personal engram
-   * could land in a team store and be pushed to its remote, announced only by
-   * an `info` field in the response. Once there, local cleanup could not undo
-   * it. Routing among PERSONAL scopes is unaffected: a wrong guess there costs
-   * nothing a `plur_rescope` cannot fix.
+   * With it on, a personal engram whose domain matches a shared scope's
+   * `covers` can land in a team store and be pushed to its remote, which local
+   * cleanup cannot undo. Routing among PERSONAL scopes is unaffected: a wrong
+   * guess there costs nothing a `plur_rescope` cannot fix.
    *
    * Set true only if covers-driven team routing is something this install
    * actually wants. Even then, prefer raising `match_threshold` alongside it:
@@ -329,7 +321,7 @@ export const ScopeRoutingConfigSchema = partialKeepAbsent(z.object({
 export type ScopeRoutingConfig = z.infer<typeof ScopeRoutingConfigSchema>
 
 /**
- * Tension-scan configuration (#240) — temporal-aware contradiction detection.
+ * Tension-scan configuration — temporal-aware contradiction detection.
  *
  * `temporal_domains` (Layer 2) declares domains whose engrams are
  * point-in-time snapshots by default (e.g. war-analysis, markets). A
@@ -348,7 +340,7 @@ export const TensionsConfigSchema = partialKeepAbsent(z.object({
   snapshot_pairs: z.enum(['skip', 'floor']).default('skip'),
   /**
    * Same-origin measurement pairs whose `measured_under` configuration
-   * differs (#869): 'skip' (default) drops them before the judge and counts
+   * differs: 'skip' (default) drops them before the judge and counts
    * them in the scan result; 'floor' judges them with confidence capped.
    * Never applies across stores or packs.
    */
@@ -369,14 +361,9 @@ export const PlurConfigSchema = partialKeepAbsent(z.object({
     spread_budget: z.number().default(480),
     co_access: z.boolean().default(true),
     /**
-     * Share of `injection_budget` reserved for pinned engrams — and, since
-     * #1142, the QUOTA enforced when pinning rather than a cap applied
-     * silently at injection time.
-     *
-     * This key was previously read from config.yaml by nobody: the object
-     * strips unknown keys, so a user setting `injection.pinned_ratio` had it
-     * dropped and the hardcoded 0.5 used instead. Declared here so the knob
-     * actually works.
+     * Share of `injection_budget` reserved for pinned engrams — the QUOTA
+     * enforced when pinning rather than a cap applied silently at injection
+     * time. Must be declared here: the object strips unknown keys.
      */
     pinned_ratio: z.number().min(0).max(1).default(0.5),
     /**
@@ -390,7 +377,7 @@ export const PlurConfigSchema = partialKeepAbsent(z.object({
   }).prefault({}),
   dedup: DedupConfigSchema.prefault({}),
   /**
-   * When to write a provenance record (#966).
+   * When to write a provenance record.
    *
    * `never` is the default, for two reasons. A record per engram duplicates the
    * history log, which already holds the same events. And the trust boundary is
@@ -443,10 +430,10 @@ export const PlurConfigSchema = partialKeepAbsent(z.object({
      */
     identity: z.string().optional(),
   }).prefault({}),
-  /** Temporal-aware tension scan tuning (#240). See {@link TensionsConfigSchema}. */
+  /** Temporal-aware tension scan tuning. See {@link TensionsConfigSchema}. */
   tensions: TensionsConfigSchema.prefault({}),
   /**
-   * Cross-scope recurrence ladder policy (#176, #1268).
+   * Cross-scope recurrence ladder policy.
    *
    * `max_commitment` caps how high the ladder may escalate an engram's
    * commitment when the same statement recurs across scopes — team validation
@@ -454,13 +441,13 @@ export const PlurConfigSchema = partialKeepAbsent(z.object({
    * copy-on-promote included. `locked` (default) lets the ladder reach
    * `locked`; `decided` stops it one step below, so only an explicit human act
    * locks an engram. A config without this key behaves as `locked`. An
-   * unresolved tension still blocks the step into `locked` either way (#181).
+   * unresolved tension still blocks the step into `locked` either way.
    */
   recurrence: z.object({
     max_commitment: z.enum(['locked', 'decided']).default('locked'),
   }).prefault({}),
   /**
-   * Expiry handling at injection time (#347). `hard` (default) skips any
+   * Expiry handling at injection time. `hard` (default) skips any
    * engram whose `temporal.valid_until` is in the past. `soft` keeps
    * injecting a recently-expired engram for `grace_days` days after expiry,
    * rendered with a loud "⚠ EXPIRED <date> — verify before use" marker —
@@ -499,7 +486,7 @@ export const PlurConfigSchema = partialKeepAbsent(z.object({
   stores: z.array(StoreEntrySchema).default([]),
   /**
    * Shared scopes the user has explicitly dismissed from the "authorized but
-   * unregistered" offer (#647). Excluded from discoverRemoteScopes().unregistered
+   * unregistered" offer. Excluded from discoverRemoteScopes().unregistered
    * and from the session-start hint so they stop being re-surfaced every session.
    * `plur scopes --reoffer` clears this list.
    */
@@ -508,20 +495,17 @@ export const PlurConfigSchema = partialKeepAbsent(z.object({
   profile: ProfileConfigSchema.prefault({}),
   registry_url: z.string().url().optional(),
   /**
-   * Where a genuinely-unscoped write lands when nothing else decides its scope
-   * (Stage 3b, #351; reverted to `global` in 0.10.0, #353). Both `local` and
-   * `global` are PERSONAL, non-shared scopes — the enterprise "global" was
-   * renamed to `org` on 2026-05-11 — so this is an organizational default, NOT a
-   * leak-safety control (the sensitivity guard runs after this and still demotes
-   * an auto-routed SHARED scope carrying sensitive content).
+   * Where a genuinely-unscoped write lands when nothing else decides its scope.
+   * Both `local` and `global` are PERSONAL, non-shared scopes (the
+   * organization-wide scope is `org`), so this is an organizational default,
+   * NOT a leak-safety control (the sensitivity guard runs after this and still
+   * demotes an auto-routed SHARED scope carrying sensitive content).
    *
-   * Defaults to `global` (the historical pre-3b default): the cross-project
-   * personal namespace, read-visible under any scoped recall/inject. With the
-   * 0.10.0 read-side fix, personal-family scopes — `local`, `global`, `user:*`,
-   * `agent:*` — are ALL visible under a project-scope recall/inject, so setting
-   * this to `local` keeps unscoped writes machine-local WITHOUT making them
-   * invisible to scoped sessions. `local` is a fully supported option, not a
-   * silent regression.
+   * Defaults to `global`: the cross-project personal namespace, read-visible
+   * under any scoped recall/inject. Personal-family scopes — `local`,
+   * `global`, `user:*`, `agent:*` — are ALL visible under a project-scope
+   * recall/inject, so setting this to `local` keeps unscoped writes
+   * machine-local WITHOUT making them invisible to scoped sessions.
    */
   unscoped_default: z.enum(['local', 'global']).default('global'),
   /**
@@ -529,18 +513,18 @@ export const PlurConfigSchema = partialKeepAbsent(z.object({
    * session/`.plur.yaml` default) is run through the deterministic
    * {@link suggestScope} ranker; if the top candidate clears
    * SCOPE_MATCH_THRESHOLD the engram is auto-routed to that scope, otherwise it
-   * falls to `unscoped_default`. INERT until scopes declare `covers` (Stage 5):
+   * falls to `unscoped_default`. INERT until scopes declare `covers`:
    * with no `covers` the ranker returns nothing and everything falls to
    * `unscoped_default`. Set false to disable auto-routing entirely.
    */
   auto_route_scope: z.boolean().default(true),
   /**
-   * Scope-routing tuning — optional overrides for the deterministic ranker (#362).
+   * Scope-routing tuning — optional overrides for the deterministic ranker.
    * See {@link ScopeRoutingConfigSchema} for per-field semantics.
    */
   scope_routing: ScopeRoutingConfigSchema.prefault({}),
   /**
-   * Git-sync remote semantics (#640). `personal` (default) mirrors every
+   * Git-sync remote semantics. `personal` (default) mirrors every
    * non-`scope:local` engram to the remote — private included — which is
    * correct for a solo user syncing their own machines. `shared` pushes ONLY
    * engrams with a shared-family scope (`isSharedScope`) AND a non-private
@@ -552,12 +536,12 @@ export const PlurConfigSchema = partialKeepAbsent(z.object({
     remote_type: z.enum(['personal', 'shared']).optional(),
   })).prefault({}),
   /**
-   * Anchoring session manifests in write-once storage (#1657). `off` (the
+   * Anchoring session manifests in write-once storage. `off` (the
    * default) makes no network call of any kind. `swarm` uploads a session's
    * manifest — fingerprints only, never engram text, scope names, tags or
    * domains — through the provenance gateway's free tier. Core never uploads;
    * the CLI and MCP surfaces do, when this says so. Set `off` where an outside
-   * tool (the Datacore provenance module) already anchors the manifest, so
+   * tool already anchors the manifest, so
    * nothing is uploaded twice.
    */
   receipts: partialKeepAbsent(z.object({

@@ -1,5 +1,5 @@
 /**
- * `remote-only` folders (owner decisions 2026-10-01): what a Plur instance
+ * `remote-only` folders: what a Plur instance
  * bound to such a folder refuses, and how it says so.
  *
  * The folder's memory lives only on the team server, in one scope. A write
@@ -21,7 +21,7 @@ export interface RemoteOnlyBinding {
   /**
    * Set when the folder map could not be read (`reason: 'malformed-map'`):
    * why, naming the file. The instance then reads and writes nothing at all
-   * (audit of #1521, S3: fail safe, never fall back to `on`).
+   * (fail safe: never fall back to `on`).
    */
   blocked?: string
 }
@@ -74,8 +74,7 @@ export class RemoteOnlyWriteError extends Error {
 // Names in a message are data, never instructions: a folder or scope is
 // printed only as escapedPath() (a JSON string with every shell-, line- and
 // display-unsafe character escaped), and a command is printed only for a
-// folder the folder question could offer one for, quoted by the same rule
-// (review of #1521: the raw folder went into a double-quoted command).
+// folder the folder question could offer one for, quoted by the same rule.
 const name = (v: string): string => escapedPath(v)
 
 export function remoteOnlyRefusalMessage(

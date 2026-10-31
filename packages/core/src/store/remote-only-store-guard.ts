@@ -1,6 +1,5 @@
 /**
- * RemoteOnlyStoreGuard — the storage-layer backstop for remote-only folders
- * (re-audit of #1521, owner 2026-10-01).
+ * RemoteOnlyStoreGuard — the storage-layer backstop for remote-only folders.
  *
  * The method guards in `Plur` are the first layer: they refuse with a message
  * that names the folder and the operation. This wrapper is the second: while
@@ -48,8 +47,7 @@ export function isQueuedForFolder(e: unknown, folder: string): boolean {
 }
 
 /**
- * True when `e` is a well-formed queued save of `folder` (re-audit 2 of #1521,
- * R2-B2): marked for the folder, ACTIVE, and in the team scope its queue entry
+ * True when `e` is a well-formed queued save of `folder`: marked for the folder, ACTIVE, and in the team scope its queue entry
  * targets — the folder's scope or another shared scope. Anything else is not
  * a deliverable queued save, so the guard does not accept it.
  */
@@ -86,7 +84,7 @@ function heldState(e: Engram): Engram {
 }
 
 /**
- * The queue hold (re-audit 3 of #1521, owner 2026-10-02): why writing `next`
+ * The queue hold: why writing `next`
  * over `stored` would break a remote-only queued save, or null when it does
  * not. A row carrying the remote-only queue marker may be written back only
  * with the same scope, status `active` and the same marker (its delivery
@@ -100,7 +98,7 @@ export function queueHoldViolation(
   const was = marker(stored)
   const now = marker(next)
   // The shared predicate (either marker field), so a half-stripped marker is
-  // held too (Codex round 11 on #1663).
+  // held too.
   if (isRemoteOnlyQueued(stored)) {
     if (!isRemoteOnlyQueued(next) || !now || !was) return 'its queue entry would be removed'
     for (const k of ['remote_only_folder', 'target_scope', 'target_url']) {
@@ -132,8 +130,8 @@ export class QueueHoldStore implements PrimaryStore {
   // Optional members are DECLARED, not initialised: every non-write member of
   // the inner store (capabilities and the whole query-adapter surface, e.g.
   // role / searchBM25 / corpusStats) is forwarded generically below, so a
-  // member added to a store later is never silently dropped (the #830/#753
-  // lesson of ReadonlyStoreGuard). Only the three writes are wrapped.
+  // member added to a store later is never silently dropped. Only the three
+  // writes are wrapped.
   declare readonly loadByIds?: (ids: string[]) => Promise<Engram[]>
   declare readonly estimateCount?: () => number
   declare readonly append?: (engram: Engram) => Promise<void>
@@ -202,7 +200,7 @@ export class QueueHoldStore implements PrimaryStore {
    * The stored state of every remote-only queued row this store has read or
    * written, by id. Writers read a row before they write it (under the store
    * lock), so the write is checked against what that read returned — at no
-   * extra read: the #740/#827 write paths keep their exact load counts. A row
+   * extra read, so write paths keep their exact load counts. A row
    * that is NOT known here is read in a targeted way when the incoming row
    * itself carries the marker (a new queued save, or a retarget of a row this
    * instance never read), and when an unmarked row's id was never returned by
@@ -295,14 +293,14 @@ export class RemoteOnlyStoreGuard implements PrimaryStore {
   readonly findActiveByContentHash?: (hash: string, scope: string) => Promise<Engram | null>
   readonly nextEngramId?: (datePrefix: string) => Promise<string>
   /**
-   * Forwarded ONLY when the inner store has it (re-audit 2 of #1521, R2-B1).
-   * Implementing it unconditionally made `_withStoreLock` skip its own lock
-   * for a YAML store, and concurrent bound writes lost saves.
+   * Forwarded ONLY when the inner store has it. Implementing it
+   * unconditionally would make `_withStoreLock` skip its own lock for a YAML
+   * store, and concurrent bound writes would lose saves.
    */
   readonly withExclusiveAccess?: <T>(fn: () => Promise<T>) => Promise<T>
   /**
-   * Forwarded only when the inner store has it (gate review of #1663): a
-   * transactional store runs background work after its commit, never before.
+   * Forwarded only when the inner store has it: a transactional store runs
+   * background work after its commit, never before.
    */
   readonly afterCommit?: (callback: () => void) => void
 
@@ -349,8 +347,7 @@ export class RemoteOnlyStoreGuard implements PrimaryStore {
   }
 
   /**
-   * Only WELL-FORMED queued saves of this folder are visible (re-audit 3,
-   * R3-3): a malformed one (retired, moved off its target, or targeting a
+   * Only WELL-FORMED queued saves of this folder are visible: a malformed one (retired, moved off its target, or targeting a
    * scope no writable team store serves) is treated like a hidden row —
    * carried through unchanged — so it cannot block every save in the folder.
    * It is reported once; forgetting it by id removes it.
@@ -383,8 +380,7 @@ export class RemoteOnlyStoreGuard implements PrimaryStore {
 
   /**
    * A read whose failure crosses the remote-only boundary carries no excerpt of
-   * the personal store (Codex round 12 on #1663): a parser error can quote its
-   * text. The error's name and code are kept; the message names the file only.
+   * the personal store: a parser error can quote its text. The error's name and code are kept; the message names the file only.
    */
   private async _read(fn: () => Promise<Engram[]>): Promise<Engram[]> {
     try {

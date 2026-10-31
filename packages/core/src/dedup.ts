@@ -5,7 +5,7 @@ import type { DedupDecision } from './types.js'
  * What each decision means, shared by the single and the batch prompt.
  *
  * The decisions are defined by what the store does with them, which is what the
- * checker is really choosing (owner decision 2026-10-18): NOOP saves nothing,
+ * checker is really choosing: NOOP saves nothing,
  * UPDATE saves the new statement as its own memory that SUPERSEDES the old one
  * (the old one stops being given to the agent), ADD and MERGE save it as its
  * own memory beside the old one (MERGE also links the two). No decision ever

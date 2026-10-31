@@ -164,8 +164,8 @@ function cmpId(a: string, b: string): number {
  * Build a memory receipt from counted facts only.
  *
  * Deliberately contains no estimate, no counterfactual and no monetary value:
- * a retrieval's worth is not observable from this data (see the design spec
- * §2), and for subscription users marginal token cost is zero anyway.
+ * a retrieval's worth is not observable from this data, and for subscription
+ * users marginal token cost is zero anyway.
  *
  * "Retrieval" means PLUR selected engrams for a query — one co_injection event.
  * It is NOT the number of times that text was shown to the model; the CLI hook

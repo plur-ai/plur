@@ -22,36 +22,34 @@ export interface HybridSearchResult {
   /**
    * RRF fusion score of the top-ranked result, or null when no engrams
    * matched. Surfaced (not computed anew) so callers can apply a relevance
-   * threshold — e.g. the WS5 failed-recall miss-signal treats a low top
-   * score as a miss even when ≥1 engram came back. Exposing this value does
-   * NOT change the retrieval algorithm; it only stops discarding a number
-   * rrfMerge already produced.
+   * threshold — e.g. the failed-recall miss-signal treats a low top score as
+   * a miss even when ≥1 engram came back.
    *
    * NOTE: this is the **pre-rerank** RRF fusion score — the miss-signal reasons
-   * about fusion strength, not the cross-encoder's reordering. Reranking (#220)
+   * about fusion strength, not the cross-encoder's reordering. Reranking
    * reorders the returned engrams but does not change topScore.
    */
   topScore: number | null
   /**
-   * Number of candidates re-scored by the cross-encoder reranker (#220), or 0
+   * Number of candidates re-scored by the cross-encoder reranker, or 0
    * when the reranker was off (default), unavailable, or the candidate pool was
    * empty. Useful for benchmark + diagnostic reporting.
    */
   reranked?: number
-  /** What the remote (server) leg did on THIS call (#1586). Set by Plur's
+  /** What the remote (server) leg did on THIS call. Set by Plur's
    *  recall paths; absent from the bare local search functions. */
   remote?: RecallRemoteReport
   /** False when a leg that should have contributed did not: a dialed host
-   *  was not ok, or the local search was cut by the recall deadline (#1586). */
+   *  was not ok, or the local search was cut by the recall deadline. */
   results_complete?: boolean
   /** Present (false) only when the local search did not finish within the
-   *  recall deadline (#1586). */
+   *  recall deadline. */
   local_complete?: boolean
-  /** Why the semantic leg did not contribute, when it did not (#1586 round 4). */
+  /** Why the semantic leg did not contribute, when it did not. */
   degraded_reason?: import('./types.js').DegradedReason
 }
 
-/** Options for the optional cross-encoder rerank stage (#220). */
+/** Options for the optional cross-encoder rerank stage. */
 export interface RerankOptions {
   /** Adapter to use. When omitted or `isRerankerOff(adapter)` is true, skips. */
   reranker?: RerankerAdapter
@@ -164,7 +162,7 @@ function isAggregationQuery(query: string): boolean {
  * and switches to exhaustive mode — widens the internal candidate pool
  * (limit floored at 50 for the BM25/embedding legs and the rerank stage)
  * so relevant mentions are less likely to be crowded out of the ranking.
- * The returned list is always capped at `limit` (#770).
+ * The returned list is always capped at `limit`.
  */
 export async function hybridSearch(
   engrams: Engram[],
@@ -188,11 +186,11 @@ export async function hybridSearchWithMeta(
   limit: number,
   storagePath?: string,
   rerank?: RerankOptions,
-  /** `signal` (#1586 audit L3): the caller stopped waiting — the embedding
+  /** `signal`: the caller stopped waiting — the embedding
    *  leg stops and does not save its cache. */
   opts?: EmbeddingSearchOptions & {
     /** Called with the fused ranking before the optional rerank, so a caller
-     *  that stops waiting keeps it (#1586 round 3). */
+     *  that stops waiting keeps it. */
     onFused?: (r: HybridSearchResult) => void
   },
 ): Promise<HybridSearchResult> {
@@ -205,7 +203,7 @@ export async function hybridSearchWithMeta(
   const bm25Limit = Math.min(engrams.length, exhaustive ? effectiveLimit * 5 : effectiveLimit * 3)
   const embLimit = Math.min(engrams.length, exhaustive ? effectiveLimit * 3 : effectiveLimit * 2)
 
-  // #224 remainder: the LEXICAL leg gets the deterministically rewritten
+  // The LEXICAL leg gets the deterministically rewritten
   // query (interrogative scaffolding + relative-temporal anchors stripped).
   // The embedding leg and the reranker keep the original natural-language
   // query — those models are trained on questions; BM25 is not.
@@ -243,7 +241,7 @@ export async function hybridSearchWithMeta(
   // strength, not the cross-encoder's reordering.
   const topScore = ranked.length > 0 ? rrfScoreOf(ranked[0].engram.id, [bm25Results, embResults]) : null
   opts?.onFused?.({ engrams: ranked.slice(0, limit).map(s => s.engram), mode, embedderError, topScore, reranked: 0 })
-  // Optional cross-encoder rerank (#220): reorders the top-K by joint relevance.
+  // Optional cross-encoder rerank: reorders the top-K by joint relevance.
   // Off by default; on failure applyReranker logs + falls back to RRF order, so
   // recall always returns something.
   const reranked = await applyReranker(ranked.map(s => s.engram), query, rerank)
@@ -284,7 +282,7 @@ export async function applyReranker(
     const scores = await rerank.reranker.scoreBatch(query, docs)
     if (scores.length !== head.length) {
       const message = `returned ${scores.length} scores for ${head.length} candidates`
-      // #341: a mismatch is a non-engagement too — record it so doctor/recall
+      // A mismatch is a non-engagement too — record it so doctor/recall
       // can surface that results are RRF-only despite reranking being on.
       logRerankerFailure(rerank.reranker, message)
       return { engrams: candidates, count: 0 }
@@ -302,7 +300,7 @@ export async function applyReranker(
 }
 
 /**
- * Record a rerank failure and log it loud-once (#341): the first occurrence
+ * Record a rerank failure and log it loud-once: the first occurrence
  * of a message logs at warning with the classification + remediation pointer;
  * repeats of the same message are demoted to debug so a broken model doesn't
  * flood one warning per query. The runtime tracker keeps the state that

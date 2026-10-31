@@ -10,10 +10,9 @@ import { escapeLikePattern, type StorageFilter } from './storage-adapter.js'
 const require = createRequire(import.meta.url)
 
 /**
- * Schema-migration sentinel stored in SQLite's `PRAGMA user_version` (R2-D #13).
- * Bumped to 1 only AFTER the `personal`-column backfill completes successfully,
- * so a crash between the ADD COLUMN and the backfill self-heals on the next open
- * instead of being silently skipped by the old ALTER-success gate.
+ * Schema-migration sentinel stored in SQLite's `PRAGMA user_version`.
+ * Set to 1 only AFTER the `personal`-column backfill completes successfully,
+ * so a crash between the ADD COLUMN and the backfill self-heals on the next open.
  */
 const PERSONAL_BACKFILL_VERSION = 1
 
@@ -70,7 +69,7 @@ export class IndexedStorage {
         // Column already exists — expected on subsequent opens
       }
       this.db.exec('CREATE INDEX IF NOT EXISTS idx_source ON engrams(source)')
-      // Add `personal` column to pre-0.10.0 DBs (#353 read-side fix). The new
+      // Add the `personal` column to DBs that lack it. The
       // DEFAULT 0 leaves existing rows wrong until repopulated, so the ADD COLUMN
       // must be followed by a one-time backfill that rewrites every row's
       // `personal` flag from its scope.
@@ -82,26 +81,20 @@ export class IndexedStorage {
         // Column already exists — expected on subsequent opens / fresh DBs.
       }
       this.db.exec('CREATE INDEX IF NOT EXISTS idx_personal ON engrams(personal)')
-      // R2-D (#13): make the backfill atomic + self-healing. The ALTER is DDL
-      // that auto-commits immediately while syncFromYaml runs in its OWN
-      // transaction; a crash in the gap left the column present with EVERY row at
-      // DEFAULT 0, and the old `addedPersonalColumn` gate would NOT re-run the
-      // backfill on the next open (the ALTER now throws, so the flag stays
-      // false) — a silent, self-perpetuating read-side regression. We instead
-      // gate the backfill on a `PRAGMA user_version` sentinel set ONLY after a
-      // successful backfill: any open observing user_version < 1 (a fresh ADD, a
-      // crash-interrupted backfill, or a brand-new empty DB) re-runs it
-      // idempotently and stamps the sentinel, so the migration self-heals on the
-      // next open rather than only on the next write.
+      // The ALTER auto-commits while syncFromYaml runs in its own transaction,
+      // so a crash in between leaves the column present with every row at
+      // DEFAULT 0, and `addedPersonalColumn` alone would not re-run the
+      // backfill (the ALTER then throws). The backfill is therefore gated on a
+      // `PRAGMA user_version` sentinel set only after it succeeds: any open
+      // seeing user_version < 1 re-runs it idempotently and stamps the sentinel.
       const userVersion = this.db.pragma('user_version', { simple: true }) as number
       if (userVersion < PERSONAL_BACKFILL_VERSION) {
         // A successful ADD COLUMN means an old DB whose existing rows are all at
         // DEFAULT 0 and must be backfilled. Otherwise (column already present)
         // only backfill when rows actually exist — an empty/fresh DB has nothing
-        // to fix and reindex()/the next write will populate it. This keeps the
-        // common fresh-open path from doing a redundant full sync while still
-        // re-healing a crash-interrupted backfill (column present, rows present,
-        // sentinel not yet stamped).
+        // to fix and reindex()/the next write will populate it. This avoids a
+        // redundant full sync on a fresh open while still re-healing a
+        // crash-interrupted backfill.
         const rowCount = this.db.prepare('SELECT COUNT(*) AS n FROM engrams').get() as { n: number }
         if (addedPersonalColumn || rowCount.n > 0) {
           // syncFromYaml is a full upsert+prune from YAML, so it is idempotent —
@@ -142,7 +135,7 @@ export class IndexedStorage {
       params.push(filter.status)
     }
     if (filter.scopes !== undefined) {
-      // Permitted-scope allow-list pushdown (Phase 3) — the SQLite twin of
+      // Permitted-scope allow-list pushdown — the SQLite twin of
       // storage-pglite's `scope = ANY($n::text[])`. EXACT membership: no
       // hierarchy expansion and no `personal = 1` pass-through, because the
       // caller has already resolved identity to a complete permitted set and
@@ -165,14 +158,14 @@ export class IndexedStorage {
       }
     }
     if (filter.scope) {
-      // Read-side scope filter (#353). `personal = 1` passes ALL personal-family
+      // Read-side scope filter. `personal = 1` passes ALL personal-family
       // scopes (local, global, user:*, agent:*) — set at index time from
       // isPersonalScope — not just global, so a project-scope recall sees personal
-      // engrams. Segment-aware membership (#383): a descendant matches only on a
+      // engrams. Segment-aware membership: a descendant matches only on a
       // real delimiter (`:`/`/`), so a sibling string-prefix (project:application
       // under a project:app query) does NOT leak. Mirrors isScopeWithin.
       //
-      // Mounted-scope visibility grants (#775): each grant contributes the same
+      // Mounted-scope visibility grants: each grant contributes the same
       // segment-aware containment triple as `filter.scope`, so an engram in a
       // granted scope (or a true descendant of one) passes the visibility
       // filter like the personal family. The precomputed `personal` column is
@@ -220,8 +213,7 @@ export class IndexedStorage {
 
   /**
    * Rebuild the index once when it holds a store row under a prefix that is
-   * no longer that store's (0.21.1: the three-letter prefix became eleven
-   * letters, audit H1). Without this an index written by an earlier release
+   * no longer that store's. Without this an index written with an older prefix
    * keeps serving the old ids until some store file happens to change.
    * Reads only the store rows' ids; a no-op on an index that is current.
    */
@@ -250,11 +242,11 @@ export class IndexedStorage {
 
     const tx = db.transaction(() => {
       // Sync primary store
-      // A queued remote-only save is never mirrored here (gate review of #1663).
+      // A queued remote-only save is never mirrored here.
       const primaryEngrams = withoutRemoteOnlyQueued(loadEngrams(this.engramsPath))
       for (const e of primaryEngrams) {
         // `personal` mirrors isPersonalScope of the stored scope so loadFiltered
-        // can pass personal-family scopes under any project-scope filter (#353).
+        // can pass personal-family scopes under any project-scope filter.
         upsert.run(e.id, e.status, e.scope, e.domain ?? null, e.activation.last_accessed, JSON.stringify(e), 'primary', isPersonalScope(e.scope) ? 1 : 0)
         allSyncedIds.add(e.id)
       }
@@ -266,19 +258,18 @@ export class IndexedStorage {
       for (const store of this.stores) {
         if (!store.path) continue
         validSources.add(store.path)
-        // A queued remote-only save is never mirrored here (gate review of #1663).
+        // A queued remote-only save is never mirrored here.
         const storeEngrams = withoutRemoteOnlyQueued(loadEngrams(store.path))
         for (const e of storeEngrams) {
-          // Scope validation: skip mismatched scopes. Segment-aware (#383) so a
+          // Scope validation: skip mismatched scopes. Segment-aware so a
           // sibling string-prefix scope can't be indexed under this store.
           if (e.scope !== 'global' && !isScopeWithin(e.scope, store.scope)) {
             continue
           }
           // Same rule as every other loader (idempotent, upgrades an old-form id).
           const nsId = namespaceEngramId(e.id, store.scope)
-          // Cross-store narrowing (UNCHANGED, intentional): a global-scoped
-          // secondary-store engram is renamed to the store's scope on load (#353
-          // documents this as preserved behavior). `personal` reflects the FINAL
+          // Cross-store narrowing (intentional): a global-scoped secondary-store
+          // engram is renamed to the store's scope on load. `personal` reflects the FINAL
           // written scope — a global engram renamed to a shared store scope is
           // correctly indexed as non-personal.
           const scope = e.scope === 'global' ? store.scope : e.scope

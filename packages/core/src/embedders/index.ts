@@ -1,6 +1,5 @@
 /**
- * Embedder factory — Sprint 0 PR 4 (feat/embedder-bake-off) + PR 5
- * (feat/embedding-gemma-default).
+ * Embedder factory.
  *
  * One uniform interface (`EmbedderAdapter`) across the candidate models:
  *
@@ -21,11 +20,9 @@
  *   - storage-pglite.ts reads adapter.dim to size its vector(N) column
  *   - embeddings.ts routes through the active adapter
  *
- * Default embedder: bge-small. A PR-5 flip to embedding-gemma was REVERTED by
- * the iter-1 audit (the bake-off was only N=5/category — too small to justify
- * the switch), so embedding-gemma is opt-in pending a Phase C N=500 result. See
- * DEFAULT_EMBEDDER below for the full rationale — that constant is authoritative;
- * do not infer the default from this header.
+ * Default embedder: bge-small; embedding-gemma is opt-in. See DEFAULT_EMBEDDER
+ * below — that constant is authoritative; do not infer the default from this
+ * header.
  */
 import { logger } from '../logger.js'
 import { makeMiniLMAdapter } from './minilm.js'
@@ -50,18 +47,12 @@ export type EmbedderName = typeof EMBEDDER_NAMES[number]
 /**
  * Default embedder when PLUR_EMBEDDER is unset.
  *
- * Sprint 0 iter-1 audit (docs/audit/sprint-0/iter-1-gaps-consolidated.md, B-2)
- * reverted the default from `embedding-gemma` back to `bge-small`. The PR 4
- * bake-off ran on N=5/category (30 scenarios) — too small to justify the
- * decision rule "≥2pp R@5 at or below CPU cost." EmbeddingGemma tied BGE-small
- * on R@5, lost on R@1 (43.3% vs 46.7%), and costs 2.4x peak RSS plus 11x p99
- * latency. The default flip is deferred to Phase C (real LongMemEval-S, N=500
- * per category) — see docs/benchmarks/embedder-bake-off-2026-05.md for the
- * deferred decision. BGE-small remains the v0.9.x production default; this is
- * a zero-risk revert until Phase C produces evidence.
+ * BGE-small stays the default: in an embedder bake-off EmbeddingGemma tied
+ * it on R@5, lost on R@1, and cost 2.4x peak RSS plus 11x p99 latency, and the
+ * sample was too small to justify a switch.
  *
- * Flip to embedding-gemma via PLUR_EMBEDDER=embedding-gemma; the adapter is
- * still bundled and tested.
+ * Opt in to embedding-gemma via PLUR_EMBEDDER=embedding-gemma; the adapter is
+ * bundled and tested.
  */
 export const DEFAULT_EMBEDDER: EmbedderName = 'bge-small'
 
@@ -104,7 +95,7 @@ function build(name: EmbedderName): EmbedderAdapter {
 
 /**
  * Resolve which embedder to use based on PLUR_EMBEDDER. Returns the default
- * (embedding-gemma) when unset; logs a single warning and falls back to
+ * ({@link DEFAULT_EMBEDDER}) when unset; logs a single warning and falls back to
  * default on unknown values rather than throwing — the active embedder is
  * determined at process start and we don't want a typo in an env var to
  * brick the engine.

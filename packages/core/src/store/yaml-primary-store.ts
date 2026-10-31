@@ -1,17 +1,14 @@
 /**
- * YamlPrimaryStore — the default `PrimaryStore` (ADR-0001: YAML as truth).
+ * YamlPrimaryStore: the default `PrimaryStore` (ADR-0001: YAML as truth).
  *
- * This is a behaviour-preserving extraction of what the `Plur` class used to do
- * inline: `loadEngrams()` for authoritative reads, an mtime-keyed snapshot cache
- * for hot reads, `saveEngrams()` (atomic write) for persistence, and explicit
- * cache invalidation on every write.
+ * Provides `loadEngrams()` for authoritative reads, an mtime-keyed snapshot
+ * cache for hot reads, `saveEngrams()` (atomic write) for persistence, and
+ * explicit cache invalidation on every write.
  *
- * The cache and the invalidate-on-write rule are load-bearing, not an
- * optimisation — see issue #25: on CI tmpfs, mtime resolution can be coarse
- * enough that a stat() before and after a write returns the same value, so a
- * purely mtime-driven cache serves a pre-write snapshot and `getById` misses an
- * engram `learn()` just created. Writing through this class is what keeps the
- * filesystem from being a source of cache freshness.
+ * The invalidate-on-write rule is required for correctness: on filesystems with
+ * coarse mtime resolution (e.g. tmpfs), a stat() before and after a write can
+ * return the same value, so a purely mtime-driven cache would serve a pre-write
+ * snapshot and `getById` would miss an engram `learn()` just created.
  */
 import * as fs from 'fs'
 import { loadEngrams, saveEngrams } from '../engrams.js'
@@ -19,15 +16,14 @@ import type { Engram } from '../schemas/engram.js'
 import type { AsyncPrimaryStore, PrimaryStoreKind, SaveOptions } from './primary-store.js'
 
 /**
+/**
  * Mean serialized size of one engram in `engrams.yaml`, in bytes.
  *
- * Measured 2026-07-26 on a real long-lived personal store: 9,595,797 bytes /
- * 4,009 engrams = 2,394 B. Rounded to 2,400. Used ONLY to turn a `stat()` into
- * an order-of-magnitude engram count for backend selection — never to report a
- * count to a user. Being off by 2x moves the tier boundary by 2x, which is
- * within the tolerance the thresholds were chosen with (see
- * `backend-selection.ts`); parsing a 9 MB YAML file just to decide whether to
- * build an index is exactly the cost the estimate exists to avoid.
+ * Measured on a large real store (~2,394 B), rounded. Used ONLY to turn a
+ * `stat()` into an order-of-magnitude engram count for backend selection, never
+ * to report a count to a user. Being off by 2x is within the tolerance of the
+ * thresholds in `backend-selection.ts`, and it avoids parsing a multi-MB YAML
+ * file just to decide whether to build an index.
  */
 export const AVG_YAML_BYTES_PER_ENGRAM = 2400
 
@@ -81,7 +77,7 @@ export class YamlPrimaryStore implements AsyncPrimaryStore {
   /**
    * Order-of-magnitude engram count, without parsing the file.
    *
-   * Exact when a snapshot is already cached (free — we have the array). Else
+   * Exact when a snapshot is already cached. Else
    * `size / AVG_YAML_BYTES_PER_ENGRAM`. A missing or unreadable file is 0, not
    * an error: "no store yet" is the smallest possible store.
    */

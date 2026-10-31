@@ -28,9 +28,8 @@ _primaryStoreRow(): Promise<StoreSummary>
 /**
    * @deprecated Use {@link listStoresAsync} for accurate remote engram counts.
    * The sync variant reads only the remote drivers' in-memory peek cache,
-   * which no longer self-populates (#776 removed the background refresh): a
-   * remote store's engram_count stays 0 on EVERY call — not just the first
-   * (issue #184) — until something explicitly warms the cache
+   * which does not self-populate: a remote store's engram_count stays 0 on
+   * EVERY call until something explicitly warms the cache
    * (`warmRemoteCaches()`, e.g. via session_start). Retained for callers
    * that cannot await.
    */
@@ -39,7 +38,7 @@ listStores(): Promise<Array<StoreSummary>>
 /**
    * List all configured stores with accurate remote engram counts. Awaits
    * remote driver loads with a 5s per-store timeout so a single slow or
-   * unreachable remote can never hang the entire call (issue #184).
+   * unreachable remote can never hang the entire call.
    *
    * Use for `plur_stores_list` and CLI diagnostics where freshness matters
    * more than latency.
@@ -48,11 +47,11 @@ listStoresAsync(): Promise<Array<StoreSummary>>
 
 /**
    * Pre-load all remote store caches so subsequent sync reads see data.
-   * Call once before injection to avoid the cold-start race (#235).
+   * Call once before injection to avoid the cold-start race.
    *
    * Each remote load races against a 5-second timeout — a single hung or
    * slow remote must not block session_start indefinitely. Same pattern as
-   * listStoresAsync (#184). clearTimeout on the success path prevents
+   * listStoresAsync. clearTimeout on the success path prevents
    * accumulating dangling timers in the long-lived MCP server process.
    */
 warmRemoteCaches(): Promise<void>
@@ -65,31 +64,30 @@ getWritableRemoteScopes(): Array<{ scope: string; url: string }>
    * with the token to query it. Tokens should be identical across a URL's
    * entries (same user, same instance); the first is used.
    *
-   * "Distinct" is keyed on {@link normalizeEndpointUrl} (scope-audit
-   * 2026-07-24): `https://x.com`, `https://x.com/` and `https://x.com/sse` are
-   * ONE endpoint, not three — an exact-string key probed the same server once
-   * per spelling and split its registered-scope view across the copies. The
-   * FIRST configured spelling is what gets reported/queried; stored values are
-   * never rewritten.
+   * "Distinct" is keyed on {@link normalizeEndpointUrl}: `https://x.com`,
+   * `https://x.com/` and `https://x.com/sse` are ONE endpoint, not three — an
+   * exact-string key would probe the same server once per spelling and split
+   * its registered-scope view across the copies. The FIRST configured
+   * spelling is what gets reported/queried; stored values are never rewritten.
    *
-   * Public since #776 (was private) so the remote-recall leg's callers and
-   * tests can enumerate endpoint identity — but note recall dialing groups by
-   * (url, token) via `_remoteRecallHosts`, NOT by url alone: this method's
-   * first-token-wins collapse is only safe for probes (`/me`, health) where
-   * any of the tokens answers the identity question.
+   * Public so the remote-recall leg's callers and tests can enumerate
+   * endpoint identity — but note recall dialing groups by (url, token) via
+   * `_remoteRecallHosts`, NOT by url alone: this method's first-token-wins
+   * collapse is only safe for probes (`/me`, health) where any of the tokens
+   * answers the identity question.
    */
 _distinctRemoteEndpoints(): Array<{ url: string; token?: string }>
 
 /** All store entries registered against `url` under ANY spelling of that
-   *  endpoint (scope-audit 2026-07-24) — the identity-normalized counterpart of
-   *  `stores.filter(s => s.url === url)`. Public since #776 (was private) for
-   *  the remote-recall leg's callers and tests. */
+   *  endpoint — the identity-normalized counterpart of
+   *  `stores.filter(s => s.url === url)`. Public for the remote-recall leg's
+   *  callers and tests. */
 _storesForEndpoint(url: string): StoreEntry[]
 
 /**
-   * Distinct (url, token) groups among the configured remote stores (#587) —
+   * Distinct (url, token) groups among the configured remote stores —
    * the AUTH-identity counterpart of {@link _distinctRemoteEndpoints}. Same
-   * `::` composite key as `_remoteRecallHosts` (#776): two entries on one URL
+   * `::` composite key as `_remoteRecallHosts`: two entries on one URL
    * with DIFFERENT tokens are two distinct credentials with independent
    * validity, so token-status surfaces must report them separately rather
    * than letting first-token-wins mask a dead second token. URL identity is
@@ -100,7 +98,7 @@ remoteEndpointTokenGroups(): Array<{ url: string; token?: string; scopes: string
 
 /**
    * Discover which scopes each configured remote token is authorized for, via
-   * `GET /api/v1/me` (#292). For each distinct remote URL, reports the
+   * `GET /api/v1/me`. For each distinct remote URL, reports the
    * server-authorized scope set and which of those are not yet registered
    * locally — the gap that lets a user authorized for N teams see only the
    * one(s) they happened to register.
@@ -123,7 +121,7 @@ _probeMe(url: string, token: string | undefined, timeoutMs: number, scope?: stri
 
 /**
    * Discover each server entry's scopes from `GET /api/v1/me` and write the
-   * discovery cache into config.yaml (#1631).
+   * discovery cache into config.yaml.
    *
    * Only server entries are touched: a store entry with a `scopes` list and an
    * `enterprise` block. Per-scope entries are left alone; with none, this
@@ -137,7 +135,7 @@ _probeMe(url: string, token: string | undefined, timeoutMs: number, scope?: stri
    * accepted personal `user:<org>:<username>` scope, when there is one) and a
    * fresh `discovery` block. It never writes `enterprise` or `pinned_scopes`;
    * `scope_settings` changes only through {@link persistScopeMetadata}, and
-   * only when the server says its metadata is `ok` (#1173, #648).
+   * only when the server says its metadata is `ok`.
    *
    * An answer that changes nothing but the timestamps writes nothing: the
    * timestamp it would set (`discovered_at` for an accepted answer,
@@ -152,11 +150,11 @@ _probeMe(url: string, token: string | undefined, timeoutMs: number, scope?: stri
 /**
    * The endpoints {@link refreshServerScopes} probes, keyed by normalized url:
    * the server entries in config.yaml that carry a `scopes` list and an
-   * `enterprise` block (C6), each with its configured url and the cached
+   * `enterprise` block, each with its configured url and the cached
    * `discovery.status` and `discovery.checked_at` of its first entry. Reads the file, never the network.
    * The MCP server uses it so an endpoint is either refreshed in the
    * background or probed by the legacy session-start path, never neither, and
-   * so a server with an empty scope cache still has a status (#1631).
+   * so a server with an empty scope cache still has a status.
    */
 _serverDiscoveryEndpoints(): Map<string, { url: string; status?: string; checked_at?: string }>
 
@@ -182,7 +180,7 @@ checkServerStores(opts?: { timeoutMs?: number }): Promise<ServerStoreCheck[]>
 _enterpriseRecoveryEndpoint(url: string): boolean
 
 /**
-   * Local-only read of each configured remote token's JWT expiry (#295). No
+   * Local-only read of each configured remote token's JWT expiry. No
    * network. Returns one entry per distinct remote URL; `expiresInDays`/`expired`
    * are null/false for opaque (non-JWT) keys. Used by session_start to warn
    * about imminent/past expiry without a round-trip.
@@ -190,18 +188,18 @@ _enterpriseRecoveryEndpoint(url: string): boolean
 remoteTokenExpiries(now?: number): Array<{ url: string; scopes: string[]; enterprise?: boolean; expiresAt: string | null; expiresInDays: number | null; expired: boolean }>
 
 /**
-   * Probe each configured remote credential's auth/reachability (#295) by
+   * Probe each configured remote credential's auth/reachability by
    * calling `GET /api/v1/me` (raced against a timeout), combined with a local
    * JWT-expiry read. Distinguishes 'auth_expired' (token rejected or JWT exp
    * passed → reauth) from 'unreachable' (network/timeout/5xx). Read-only; one
    * bad endpoint never affects the others. Powers `plur_doctor`'s remote check
-   * and `plur login --status` (#587), so neither reports "healthy" when the
+   * and `plur login --status`, so neither reports "healthy" when the
    * remote auth is dead.
    *
    * Probes per distinct (url, token) group ({@link remoteEndpointTokenGroups}),
-   * not per URL (#587): each token's validity is independent, and the old
-   * first-token-wins collapse reported a URL as ok while its second configured
-   * token was expired. Also surfaces display-only JWT claims (`tokenSubject`,
+   * not per URL: each token's validity is independent, and a first-token-wins
+   * collapse would report a URL as ok while its second configured token was
+   * expired. Also surfaces display-only JWT claims (`tokenSubject`,
    * `tokenOrg` — unverified) and, on a successful probe, the server-confirmed
    * `username`/`orgId`/`grantedScopes` from `/me`.
    */
@@ -209,11 +207,11 @@ checkRemoteHealth(opts?: { timeoutMs?: number }): Promise<RemoteHealth[]>
 
 /**
    * Register every authorized-but-unregistered scope discovered for the
-   * configured remote URL(s) (#292). One token → all the user's team scopes in
-   * a single action. Relies on URL+scope dedup (#291) so multiple scopes coexist
-   * under one URL. Scopes the user has dismissed (#647) are respected — the
-   * batch path skips them (scope-audit 2026-07-24); only the per-scope
-   * {@link registerScope} overrides a dismissal.
+   * configured remote URL(s). One token → all the user's team scopes in
+   * a single action. Relies on URL+scope dedup so multiple scopes coexist
+   * under one URL. Scopes the user has dismissed are respected — the
+   * batch path skips them; only the per-scope {@link registerScope}
+   * overrides a dismissal.
    *
    * Returns per-URL what was newly `added` vs `already_registered`. A URL whose
    * `/me` failed yields `ok:false` and registers nothing.
@@ -222,19 +220,19 @@ registerDiscoveredScopes(opts?: { url?: string; timeoutMs?: number }): Promise<R
 
 /**
    * The single source of truth for the "authorized but unregistered" OFFER
-   * (#647), shared by the `plur scopes` CLI and the session-start hint. Returns
+   * offer, shared by the `plur scopes` CLI and the session-start hint. Returns
    * the shared-family scopes the token is authorized for that are neither
    * registered nor dismissed, deduped across remotes, each with its
-   * self-describing metadata description (#345) when the server serves it.
+   * self-describing metadata description when the server serves it.
    *
    * Personal-family scopes are excluded here (they can't be registered from
-   * discovery — see {@link registerScope} / #382), so the offer only ever shows
+   * discovery — see {@link registerScope}), so the offer only ever shows
    * scopes the user can actually act on.
    *
    * Also returns any `failures` (remotes whose /me could not be reached / whose
    * token was rejected) so the caller can distinguish "genuinely nothing to
    * offer" from "couldn't reach the server" — the CLI must not report an empty
-   * offer when it simply failed to talk to the remote (#656 self-review).
+   * offer when it simply failed to talk to the remote.
    */
 offerableScopes(opts?: { url?: string; timeoutMs?: number }): Promise<{
     scopes: Array<{ scope: string; url: string; description?: string }>
@@ -242,12 +240,12 @@ offerableScopes(opts?: { url?: string; timeoutMs?: number }): Promise<{
   }>
 
 /**
-   * Register a SINGLE authorized-but-unregistered shared scope (#647) — the
+   * Register a SINGLE authorized-but-unregistered shared scope — the
    * per-scope counterpart to {@link registerDiscoveredScopes} (all-or-nothing).
    * Discovers which configured remote authorizes `scope`, then adds one store
    * entry via the same url+scope-idempotent {@link addStore} path.
    *
-   * Rejects personal-family scopes (`user:*`/`global`/…) — same #382 guard as
+   * Rejects personal-family scopes (`user:*`/`global`/…) — same guard as
    * the batch path: a `/me`-advertised personal scope must never become a
    * routing target for the user's default/unscoped writes. Throws if no
    * configured remote authorizes the scope.
@@ -255,22 +253,22 @@ offerableScopes(opts?: { url?: string; timeoutMs?: number }): Promise<{
 registerScope(scope: string, opts?: { url?: string; timeoutMs?: number }): Promise<{ url: string; status: 'added' | 'already_registered' | 'overwritten' | 'token_rotated' }>
 
 /**
-   * Dismiss a scope from the "authorized but unregistered" offer (#647). It is
+   * Dismiss a scope from the "authorized but unregistered" offer. It is
    * remembered in config (`dismissed_scopes`) and excluded from
    * discoverRemoteScopes().unregistered + the session-start hint until
    * {@link reofferScopes}. No-op if already dismissed.
    */
 dismissScope(scope: string): void
 
-/** Lowercased `dismissed_scopes` for case-insensitive membership tests
-   *  (scope-audit 2026-07-24). The stored values keep their original case. */
+/** Lowercased `dismissed_scopes` for case-insensitive membership tests.
+   *  The stored values keep their original case. */
 /** @internal */
 _dismissedScopeKeys(): Set<string>
 
-/** Clear all dismissals (#647) — previously dismissed scopes are offered again. */
+/** Clear all dismissals — dismissed scopes are offered again. */
 reofferScopes(): void
 
-/** The scopes currently dismissed from the offer (#647). */
+/** The scopes currently dismissed from the offer. */
 getDismissedScopes(): string[]
 
 /**
@@ -278,25 +276,24 @@ getDismissedScopes(): string[]
    * key, then refresh the in-memory config + mtime. Mirrors {@link persistStores}:
    * a transient read error on an EXISTING config aborts rather than truncating,
    * and the read-modify-write runs under {@link withLock} so a concurrent
-   * config persist path can't be last-writer-wins'd away (scope-audit
-   * 2026-07-24). Dedup is case-insensitive (first spelling wins) so case
-   * variants of one scope never accumulate.
+   * config persist path can't be last-writer-wins'd away. Dedup is
+   * case-insensitive (first spelling wins) so case variants of one scope
+   * never accumulate.
    */
 /** @internal */
 persistDismissedScopes(list: string[]): void
 
 /**
    * Sync server-authoritative scope metadata (covers/description/sensitivity)
-   * from /me discoveries into the matching local config store entries (#668).
+   * from /me discoveries into the matching local config store entries.
    *
-   * discoverRemoteScopes() fetches scope_metadata from /me but never persisted
-   * covers into local config, so listScopeMetadata() returned empty covers and
-   * suggestScope() was inert for remote scopes. Called after any /me pull
-   * (session_start, registerDiscoveredScopes, registerScope) to close that gap.
+   * Without it listScopeMetadata() would return empty covers and
+   * suggestScope() would be inert for remote scopes. Called after any /me pull
+   * (session_start, registerDiscoveredScopes, registerScope).
    * Personal-family scopes are skipped — they are never routing targets.
    * No-op when nothing changed (avoids spurious config writes).
    *
-   * TRUST RULE for `sensitivity` (scope-audit 2026-07-24): remote-served
+   * TRUST RULE for `sensitivity`: remote-served
    * sensitivity may only TIGHTEN the write-time leak guard, never loosen it.
    * The guard checks `allow` BEFORE `forbid` and `allow` admits arbitrary
    * strings, so persisting a remote `allow:['secrets','infra']` verbatim would
@@ -323,7 +320,7 @@ persistScopeMetadata(discoveries: RemoteScopeDiscovery[], onConfigWrite?: (befor
    * Set a session-level default scope — the fallback in learn/learnRouted when
    * no explicit scope is provided.
    *
-   * Omit `session` and this sets the process-wide slot, exactly as before: one
+   * Omit `session` and this sets the process-wide slot: one
    * session per instance, one scope. That is right for the CLI and for an MCP
    * server handling one session at a time.
    *
@@ -338,7 +335,7 @@ persistScopeMetadata(discoveries: RemoteScopeDiscovery[], onConfigWrite?: (befor
 setSessionScope(scope: string | null, opts?: { session?: string }): void
 
 /**
-   * Adjust the session default scope MID-session (#243) — `setSessionScope`
+   * Adjust the session default scope MID-session — `setSessionScope`
    * plus observability: appends a `session_scope_changed` history event so the
    * scope active at any point in a session can be reconstructed retrospectively
    * (which scope routed a given engram, whether an agent oscillates scopes).
@@ -382,7 +379,7 @@ async _primaryStoreRow(): Promise<StoreSummary> {
   },
 
 async listStores(): Promise<Array<StoreSummary>> {
-    this.reloadConfigIfChanged()  // pick up out-of-process config edits (#307)
+    this.reloadConfigIfChanged()  // pick up out-of-process config edits
     const stores = this.config.stores ?? []
     const additional = stores.map(async s => {
       let count = 0
@@ -398,7 +395,7 @@ async listStores(): Promise<Array<StoreSummary>> {
         shared:   s.shared,
         readonly: s.readonly,
         engram_count: count,
-        // #345: surface self-describing metadata in discovery when present.
+        // Surface self-describing metadata in discovery when present.
         ...(s.description !== undefined ? { description: s.description } : {}),
         ...(s.covers !== undefined ? { covers: s.covers } : {}),
       }
@@ -407,12 +404,12 @@ async listStores(): Promise<Array<StoreSummary>> {
   },
 
 async listStoresAsync(): Promise<Array<StoreSummary>> {
-    this.reloadConfigIfChanged()  // pick up out-of-process config edits (#307)
+    this.reloadConfigIfChanged()  // pick up out-of-process config edits
     const stores = this.config.stores ?? []
     const REMOTE_LOAD_TIMEOUT_MS = 5000
 
     // remote-only: only the folder's own team store is loaded; the others are
-    // listed from config.yaml alone, with no count (Codex round 3).
+    // listed from config.yaml alone, with no count.
     const ro = this._activeBinding()
     const additional = await Promise.all(stores.map(async s => {
       let count = 0
@@ -448,7 +445,7 @@ async listStoresAsync(): Promise<Array<StoreSummary>> {
         shared:   s.shared,
         readonly: s.readonly,
         engram_count: count,
-        // #345: surface self-describing metadata in discovery when present.
+        // Surface self-describing metadata in discovery when present.
         ...(s.description !== undefined ? { description: s.description } : {}),
         ...(s.covers !== undefined ? { covers: s.covers } : {}),
       }
@@ -458,7 +455,7 @@ async listStoresAsync(): Promise<Array<StoreSummary>> {
 
 async warmRemoteCaches(): Promise<void> {
     const stores = this.config.stores ?? []
-    // remote-only (gate review of #1663): only the folder's own team store.
+    // remote-only: only the folder's own team store.
     const ro = this._activeBinding()
     const remoteStores = stores.filter(s => s.url && (!ro || (!ro.blocked && !!ro.scope && s.scope === ro.scope && this._isDeliverableTeamScope(s.scope))))
     const REMOTE_LOAD_TIMEOUT_MS = 5000
@@ -515,7 +512,7 @@ remoteEndpointTokenGroups(): Array<{ url: string; token?: string; scopes: string
 
 async discoverRemoteScopes(opts?: { url?: string; timeoutMs?: number }): Promise<RemoteScopeDiscovery[]> {
     const timeoutMs = opts?.timeoutMs ?? 5000
-    // Endpoint identity is normalized (scope-audit 2026-07-24) so a caller
+    // Endpoint identity is normalized so a caller
     // restricting by one spelling still matches an entry configured under
     // another, and `registered` sees every spelling's entries.
     const endpoints = this._distinctRemoteEndpoints()
@@ -527,13 +524,12 @@ async discoverRemoteScopes(opts?: { url?: string; timeoutMs?: number }): Promise
         const me = await this._probeMe(url, token, timeoutMs, registered[0] ?? '')
         this._noteMeIdentity(url, token, me)
         const registeredSet = new Set(registered)
-        // #647: scopes the user has dismissed from the offer are not "actionable"
-        // — drop them from `unregistered` so the session-start hint and CLI stop
+        // Scopes the user has dismissed from the offer are not "actionable" —
+        // drop them from `unregistered` so the session-start hint and CLI stop
         // re-surfacing them every session. `plur scopes --reoffer` clears these.
-        // Membership is CASE-INSENSITIVE (scope-audit 2026-07-24): the /me scope
-        // grammar admits uppercase, so a case-variant re-advertisement of a
-        // dismissed scope must not resurrect the offer. Stored values keep
-        // their original case.
+        // Membership is CASE-INSENSITIVE: the /me scope grammar admits
+        // uppercase, so a case-variant re-advertisement of a dismissed scope
+        // must not resurrect the offer. Stored values keep their original case.
         const dismissedSet = this._dismissedScopeKeys()
         return {
           url,
@@ -544,8 +540,8 @@ async discoverRemoteScopes(opts?: { url?: string; timeoutMs?: number }): Promise
           authorized: me.scopes,
           registered,
           unregistered: me.scopes.filter(s => !registeredSet.has(s) && !dismissedSet.has(s.toLowerCase())),
-          // #345 D2: server-authoritative metadata for the authorized scopes,
-          // already validated in RemoteStore.me(). Empty for older servers.
+          // Server-authoritative metadata for the authorized scopes, already
+          // validated in RemoteStore.me(). Empty for older servers.
           metadata: me.scope_metadata ?? [],
         }
       } catch (err) {
@@ -611,7 +607,7 @@ async refreshServerScopes(opts?: { url?: string; timeoutMs?: number; onConfigWri
       } catch (err) {
         this._noteMeIdentity(url, token, null)
         // A server or proxy can echo the key back in its error body: every
-        // encoding of it is removed before the message is kept (finding 4).
+        // encoding of it is removed before the message is kept.
         const message = redactToken(err instanceof Error ? err.message : String(err), token)
         return { url, revision, me: null, error: { status: err instanceof RemoteHttpError ? err.status : undefined, message } }
       }
@@ -632,9 +628,8 @@ async refreshServerScopes(opts?: { url?: string; timeoutMs?: number; onConfigWri
         if (matches.length > 1) {
           // Two server entries on one url (another key each): which one this
           // answer belongs to cannot be told here, so neither is written — the
-          // same refusal as key rotation and owner decision 17. Applying it to
-          // the first one put another key's scopes on it (formal
-          // RoutingDiscovery D4).
+          // same refusal as key rotation. Applying it to the first one would
+          // put another key's scopes on it (formal RoutingDiscovery D4).
           outcomes.push({ url, status: 'failed', applied: false, scopes: [], rejected: [], pinned_unlisted: [],
             error: `more than one server entry in config.yaml has the url ${safeOrigin(url)}; nothing was changed. Keep one of them.` })
           continue
@@ -644,7 +639,7 @@ async refreshServerScopes(opts?: { url?: string; timeoutMs?: number; onConfigWri
         if (serverCredential(entry).revision !== revision) {
           // The entry's key was replaced (or its token_env now resolves to
           // another key) while /me was in flight: this answer describes the
-          // old key, so it is not written to the new one (finding 1).
+          // old key, so it is not written to the new one.
           outcomes.push({ url, status: 'failed', applied: false, scopes: stringList(entry.scopes), rejected: [], pinned_unlisted: [],
             error: `entry changed during refresh: the key for ${safeOrigin(url)} changed while its scopes were requested; nothing was changed. Run the refresh again.` })
           continue
@@ -660,7 +655,7 @@ async refreshServerScopes(opts?: { url?: string; timeoutMs?: number; onConfigWri
           const unknownDiscovery = Object.fromEntries(Object.entries(oldDiscovery)
             .filter(([k]) => !(DISCOVERY_SNAPSHOT_KEYS as readonly string[]).includes(k)))
           // A changed compat scope takes the old one's top-level metadata
-          // into scope_settings[old] first (Codex round 4, finding 2).
+          // into scope_settings[old] first.
           next = {
             ...(personal ? withCompatScope(entry, personal) : entry),
             scopes: decision.scopes,
@@ -705,7 +700,7 @@ async refreshServerScopes(opts?: { url?: string; timeoutMs?: number; onConfigWri
     }, opts?.onConfigWrite)
 
     // Server metadata lands in scope_settings through the existing sync, once
-    // the new scopes are expanded in memory (#1173, #648).
+    // the new scopes are expanded in memory.
     const metadata: RemoteScopeDiscovery[] = []
     for (const { url, me } of answers) {
       const o = outcomes.find(x => x.url === url)
@@ -875,13 +870,13 @@ remoteTokenExpiries(now: number = Date.now()): Array<{ url: string; scopes: stri
 
 async checkRemoteHealth(opts?: { timeoutMs?: number }): Promise<RemoteHealth[]> {
     const timeoutMs = opts?.timeoutMs ?? 5000
-    // Decode the token that is on DISK now, not the one read at construction
-    // (#307/#864). Reporting "expires in 4d" from a 13-day-old in-memory copy
-    // of a credential the user rotated hours ago sends them to fix the server.
+    // Decode the token that is on DISK now, not the one read at construction:
+    // reporting an expiry from a stale in-memory copy of a credential the
+    // user has since rotated would send them to fix the server.
     this.reloadConfigIfChanged()
     const groups = this.remoteEndpointTokenGroups()
     return Promise.all(groups.map(async ({ url, token, scopes, tokenEnv }) => {
-      // #1564 review M2: the token's variable is unset — say so, send nothing.
+      // The token's variable is unset — say so, send nothing.
       if (!token && tokenEnv) {
         return { url, scopes, status: 'auth_expired' as const, ok: false, tokenEnvUnset: tokenEnv,
           reason: tokenEnvUnsetMessage(tokenEnv, scopes[0] ?? url) }
@@ -906,7 +901,7 @@ async checkRemoteHealth(opts?: { timeoutMs?: number }): Promise<RemoteHealth[]> 
       try {
         const me = await this._probeMe(url, token, timeoutMs, scopes[0] ?? '')
         // A host that just answered /me is not unreachable — retire any cached
-        // network-class recall failure for it rather than reporting both (#864).
+        // network-class recall failure for it rather than reporting both.
         this.noteRemoteHostReachable(url)
         this._noteMeIdentity(url, token, me)
         return { url, scopes, status: 'ok' as const, ok: true,
@@ -928,7 +923,7 @@ async registerDiscoveredScopes(opts?: { url?: string; timeoutMs?: number }): Pro
     const discoveries = await this.discoverRemoteScopes(opts)
     const results = discoveries.map(d => {
       if (!d.ok) return { url: d.url, ok: false, added: [], already_registered: [], skipped: [], error: d.error }
-      // The sibling's token_env travels with its token (#1561), or the new
+      // The sibling's token_env travels with its token, or the new
       // entry would store the value the reference was resolved to.
       const sibling = this._storesForEndpoint(d.url)[0]
       const token = sibling?.token
@@ -936,19 +931,16 @@ async registerDiscoveredScopes(opts?: { url?: string; timeoutMs?: number }): Pro
       const added: string[] = []
       const already: string[] = []
       const skipped: string[] = []
-      // Dismissals gate the batch path (scope-audit 2026-07-24): iterating the
-      // raw `d.authorized` set used to register scopes the user had explicitly
-      // dismissed (#647) — `unregistered` filters them out, but this loop never
-      // consulted it, so `plur_scopes_discover register:true` silently overrode
-      // the recorded opt-out and left the stale `dismissed_scopes` entry behind.
-      // The per-scope {@link registerScope} remains the deliberate override
-      // (it registers AND clears the dismissal). Case-insensitive, matching
-      // the discover-time filter.
+      // Dismissals gate the batch path: `plur_scopes_discover register:true`
+      // must not override a recorded opt-out by registering a scope the user
+      // explicitly dismissed. The per-scope {@link registerScope} remains the
+      // deliberate override (it registers AND clears the dismissal).
+      // Case-insensitive, matching the discover-time filter.
       const dismissed = this._dismissedScopeKeys()
       // Attempt every non-dismissed authorized scope (not just the pre-computed
-      // unregistered set) and let addStore's url+scope idempotency (#291)
-      // classify each — so the result is accurate even if config changed
-      // between discover and now.
+      // unregistered set) and let addStore's url+scope idempotency classify
+      // each — so the result is accurate even if config changed between
+      // discover and now.
       for (const scope of d.authorized) {
         if (dismissed.has(scope.toLowerCase()) && !d.registered.includes(scope)) {
           // Dismissed and not currently registered → the batch path must not
@@ -958,7 +950,7 @@ async registerDiscoveredScopes(opts?: { url?: string; timeoutMs?: number }): Pro
           logger.info(`[plur] skipping dismissed scope "${scope}" from ${safeOrigin(d.url)} — batch register respects dismissals; use \`plur scopes register ${scope}\` to override (it also clears the dismissal)`)
           continue
         }
-        // SECURITY (#382): never auto-register a PERSONAL-family scope returned
+        // SECURITY: never auto-register a PERSONAL-family scope returned
         // by `/me` as a writable remote store. A compromised/MITM'd endpoint can
         // claim `scopes:['global','user:<victim>','local']`; registering those
         // makes the hostile server the routing target for the user's default and
@@ -979,7 +971,7 @@ async registerDiscoveredScopes(opts?: { url?: string; timeoutMs?: number }): Pro
           if (status === 'added') added.push(scope)
           else already.push(scope)
         } catch (err) {
-          // #397: a single bad/conflicting scope (e.g. one already bound to a
+          // A single bad/conflicting scope (e.g. one already bound to a
           // DIFFERENT endpoint → addStore throws) must NOT abort the whole batch
           // and leave a partial registration. Record it as skipped and continue
           // with the remaining authorized scopes.
@@ -989,7 +981,7 @@ async registerDiscoveredScopes(opts?: { url?: string; timeoutMs?: number }): Pro
       }
       return { url: d.url, ok: true, added, already_registered: already, skipped }
     })
-    // Persist covers/description/sensitivity for all registered scopes (#668)
+    // Persist covers/description/sensitivity for all registered scopes
     this.persistScopeMetadata(discoveries)
     return results
   },
@@ -1030,27 +1022,21 @@ async registerScope(scope: string, opts?: { url?: string; timeoutMs?: number }):
     const sibling = this._storesForEndpoint(match.url)[0]
     const token = sibling?.token
     const { status } = this.addStore('', scope, { url: match.url, token, ...(sibling?.token_env ? { tokenEnv: sibling.token_env } : {}) })
-    // Persist covers/description/sensitivity so suggestScope activates (#668).
+    // Persist covers/description/sensitivity so suggestScope activates.
     this.persistScopeMetadata(discoveries)
-    // Registering a scope also clears any prior dismissal of it (#647) —
-    // case-insensitively (scope-audit 2026-07-24), so a case-variant dismissal
-    // can't linger and re-suppress the scope from future offers.
+    // Registering a scope also clears any prior dismissal of it —
+    // case-insensitively, so a case-variant dismissal can't linger and
+    // re-suppress the scope from future offers.
     if ((this.config.dismissed_scopes ?? []).some(s => s.toLowerCase() === scope.toLowerCase())) {
       this.persistDismissedScopes((this.config.dismissed_scopes ?? []).filter(s => s.toLowerCase() !== scope.toLowerCase()))
     }
     return { url: match.url, status }
   },
 
-// Synchronous. An automated add-awaits pass made this `async` during the
-// Phase 2 flip even though it does no async work — every call in its body
-// is synchronous. Reverted: 0.16.0 is unreleased, so this method was never
-// actually breaking, and leaving it async would have been a breaking
-// signature change that bought nothing. Shrinking the migration surface is
-// worth more than uniformity.
 dismissScope(scope: string): void {
     const current = this.config.dismissed_scopes ?? []
-    // Case-insensitive membership (scope-audit 2026-07-24): dismissing `Group:x`
-    // when `group:x` is already recorded must stay a no-op, not a duplicate.
+    // Case-insensitive membership: dismissing `Group:x` when `group:x` is
+    // already recorded must stay a no-op, not a duplicate.
     if (current.some(s => s.toLowerCase() === scope.toLowerCase())) return
     this.persistDismissedScopes([...current, scope])
   },
@@ -1059,12 +1045,6 @@ _dismissedScopeKeys(): Set<string> {
     return new Set((this.config.dismissed_scopes ?? []).map(s => s.toLowerCase()))
   },
 
-// Synchronous. An automated add-awaits pass made this `async` during the
-// Phase 2 flip even though it does no async work — every call in its body
-// is synchronous. Reverted: 0.16.0 is unreleased, so this method was never
-// actually breaking, and leaving it async would have been a breaking
-// signature change that bought nothing. Shrinking the migration surface is
-// worth more than uniformity.
 reofferScopes(): void {
     this.persistDismissedScopes([])
   },
@@ -1091,11 +1071,11 @@ persistDismissedScopes(list: string[]): void {
         if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') throw err
       }
       configData.dismissed_scopes = deduped.sort()
-      // Atomic + fsynced (#813, audit finding 16). A plain writeFileSync
-      // truncates in place, and loadConfig turns a parse failure into DEFAULT
-      // config — so a crash mid-write silently erases store registrations and
-      // routes later writes to the local default store. atomicWrite is
-      // tmp + fsync + rename, so a crash leaves the previous complete config.
+      // Atomic + fsynced. A plain writeFileSync truncates in place, and
+      // loadConfig turns a parse failure into DEFAULT config — so a crash
+      // mid-write would silently erase store registrations and route later
+      // writes to the local default store. atomicWrite is tmp + fsync +
+      // rename, so a crash leaves the previous complete config.
       writeConfigFile(this.paths.config, yaml.dump(configData, { lineWidth: 120, noRefs: true }))
     })
     this.config = this._loadConfig()
@@ -1104,7 +1084,7 @@ persistDismissedScopes(list: string[]): void {
 
 persistScopeMetadata(discoveries: RemoteScopeDiscovery[], onConfigWrite?: (before: string | null, after: string) => void): void {
     // Raw config, not this.config: the in-memory list drops ignored duplicate
-    // local entries (#1319), and writing it back would delete them from disk.
+    // local entries, and writing it back would delete them from disk.
     const stores = loadConfig(this.paths.config).stores ?? []
     if (!stores.length) return
 
@@ -1113,8 +1093,8 @@ persistScopeMetadata(discoveries: RemoteScopeDiscovery[], onConfigWrite?: (befor
     const updated = stores.map(entry => {
       if (!entry.url) return entry                  // local store — no server metadata
       if (!isSharedScope(entry.scope)) return entry // never write covers to personal scopes
-      // Endpoint identity is normalized (scope-audit 2026-07-24): a discovery
-      // for https://x.com must match an entry configured as https://x.com/sse.
+      // Endpoint identity is normalized: a discovery for https://x.com must
+      // match an entry configured as https://x.com/sse.
       const discovery = discoveries.find(d => d.ok && normalizeEndpointUrl(d.url) === normalizeEndpointUrl(entry.url!))
       if (!discovery?.metadata.length) return entry
       const meta = discovery.metadata.find(m => m.scope === entry.scope)
@@ -1131,18 +1111,18 @@ persistScopeMetadata(discoveries: RemoteScopeDiscovery[], onConfigWrite?: (befor
       const nextDescription = meta.description !== undefined ? meta.description : entry.description
 
       // Only write when the PERSISTED value would differ — comparing the raw
-      // server payload instead (as pre-audit code did) never converges once a
-      // field (e.g. `allow`) is deliberately not persisted. stableJson keeps
-      // the compare key-order-insensitive across spread/re-parse round-trips.
+      // server payload instead never converges once a field (e.g. `allow`) is
+      // deliberately not persisted. stableJson keeps the compare
+      // key-order-insensitive across spread/re-parse round-trips.
       const coversMatch = stableJson(nextCovers) === stableJson(entry.covers)
       const descMatch = nextDescription === entry.description
       const sensMatch = stableJson(nextSensitivity) === stableJson(entry.sensitivity)
       if (coversMatch && descMatch && sensMatch) return entry
 
       // Server-authoritative overwrite is by design — but overwriting a
-      // DIFFERENT non-empty local value must be visible, not silent (F5,
-      // scope-audit 2026-07-24): a hand-set covers/description vanishing with
-      // no trace looks like data loss.
+      // DIFFERENT non-empty local value must be visible, not silent: a
+      // hand-set covers/description vanishing with no trace looks like data
+      // loss.
       const clobbered: string[] = []
       if (!coversMatch && (entry.covers?.length ?? 0) > 0) clobbered.push('covers')
       if (!descMatch && entry.description !== undefined && entry.description !== '') clobbered.push('description')

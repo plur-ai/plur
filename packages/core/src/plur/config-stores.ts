@@ -28,10 +28,7 @@ export interface ConfigStoresMethods {
    *     pass any string for the first arg (it goes into a slot we
    *     never read), set `options.url` + `options.token`.
    *
-   * Backwards compatible: existing call sites that pass a filesystem
-   * path keep working.
-   *
-   * Dedup semantics (#291):
+   * Dedup semantics:
    *   - REMOTE stores dedup by **url + scope**: a single enterprise URL
    *     legitimately hosts many scopes — the server filters reads per entry
    *     (`?scope=`), so multi-team users need one entry per authorized scope.
@@ -51,17 +48,16 @@ statConfigMtime(): number
 
 /**
    * Load config.yaml for in-memory use, dropping a LOCAL store entry only when
-   * it would load engrams that are already loaded (#1319), compared by
-   * canonical path:
+   * it would load engrams that are already loaded, compared by canonical path:
    *
    *  - its file is the primary store: every primary engram would load a
    *    second time under namespaced ids and be injected twice; or
    *  - its file AND scope repeat an earlier entry: the same engrams again.
    *
-   * One file registered under two DIFFERENT scopes keeps loading under both,
-   * as it always has: each scope admits different engrams, so dropping one
-   * would make that scope's engrams vanish from recall. It gets an
-   * informational warning instead.
+   * One file registered under two DIFFERENT scopes keeps loading under both:
+   * each scope admits different engrams, so dropping one would make that
+   * scope's engrams vanish from recall. It gets an informational warning
+   * instead.
    *
    * A dropped entry is only ignored here: config.yaml is not rewritten, and
    * writebacks start from the raw file (addStore / persistScopeMetadata), so
@@ -71,12 +67,12 @@ statConfigMtime(): number
 _loadConfig(): PlurConfig
 
 /** Local store entries in config.yaml that are ignored because they name the
-   *  primary file, or repeat an earlier entry's file and scope (#1319). */
+   *  primary file, or repeat an earlier entry's file and scope. */
 ignoredDuplicateStores(): StoreEntry[]
 
 /**
    * Remove the config.yaml store entries that name the primary engrams file
-   * (`plur stores prune`, #1356). They are already ignored at load; this stops
+   * (`plur stores prune`). They are already ignored at load; this stops
    * the warning for good. Only those entries are removed and the rest of
    * config.yaml is kept byte for byte — see {@link removePrimaryStoreEntries}.
    * Returns the removed entries.
@@ -84,7 +80,7 @@ ignoredDuplicateStores(): StoreEntry[]
 removeDuplicatePrimaryStores(): StoreEntry[]
 
 /**
-   * Reload this.config from disk if config.yaml changed since the last load (#307).
+   * Reload this.config from disk if config.yaml changed since the last load.
    *
    * The MCP server holds ONE long-lived Plur instance, so a store added by
    * editing ~/.plur/config.yaml directly (or by another process) stays invisible
@@ -102,17 +98,17 @@ reloadConfigIfChanged(): boolean
    *  token-rotation paths, and by persistScopeMetadata (which passes
    *  `serverSensitivityScopes` — see {@link mergeStoresForWriteback}).
    *
-   *  The read-modify-write runs under {@link withLock} on config.yaml
-   *  (scope-audit 2026-07-24): two concurrent persist paths (e.g. an MCP
-   *  session_start metadata sync racing a CLI `plur stores add`) could each
-   *  re-read the file and last-writer-wins away the other's change. Same
-   *  lock discipline engrams.yaml has always had. Lock scope is kept tight —
-   *  read + merge + write only; the in-memory refresh happens after release. */
+   *  The read-modify-write runs under {@link withLock} on config.yaml: two
+   *  concurrent persist paths (e.g. an MCP session_start metadata sync racing
+   *  a CLI `plur stores add`) could otherwise each re-read the file and
+   *  last-writer-wins away the other's change. Same lock discipline as
+   *  engrams.yaml. Lock scope is kept tight — read + merge + write only; the
+   *  in-memory refresh happens after release. */
 /** @internal */
 persistStores(stores: StoreEntry[], opts?: {
     serverSensitivityScopes?: Set<string>
     onConfigWrite?: (before: string | null, after: string) => void
-    /** A new key for a server entry (#1631): written in place onto the one
+    /** A new key for a server entry: written in place onto the one
      *  on-disk server entry `entry` was expanded from, found by identity on
      *  the fresh read under the lock. No match, or more than one, is refused
      *  and nothing is written. The collapse step never writes a token. */
@@ -121,8 +117,8 @@ persistStores(stores: StoreEntry[], opts?: {
 
 /**
    * MERGE the typed `stores` array onto the RAW (freshly-read YAML) entries so a
-   * writeback never strips fields the typed schema doesn't know about (PR-3,
-   * #353 HIGH-17/18). `stores` is `StoreEntry[]` — the typed parse output —
+   * writeback never strips fields the typed schema doesn't know about.
+   * `stores` is `StoreEntry[]` — the typed parse output —
    * which (without this) would clobber `configData.stores` and lose:
    *   - unknown/future TOP-LEVEL keys (recovered here; also kept by
    *     StoreEntrySchema.passthrough so the typed value already carries them)
@@ -131,35 +127,35 @@ persistStores(stores: StoreEntry[], opts?: {
    *     wholesale and lose them even with ScopeSensitivitySchema.passthrough)
    * Parsed deltas (e.g. a corrected `forbid`) land ON TOP of the raw values.
    *
-   * `serverSensitivityScopes` (scope-audit 2026-07-24): the scopes whose typed
-   * `sensitivity.forbid` is SERVER-AUTHORITATIVE for this writeback — i.e.
-   * persistScopeMetadata just synced them from `/me` — so the raw-forbid
-   * restore below must NOT undo the update for those entries. Every other
-   * caller omits it and keeps the historical restore-raw behavior.
+   * `serverSensitivityScopes`: the scopes whose typed `sensitivity.forbid` is
+   * SERVER-AUTHORITATIVE for this writeback — i.e. persistScopeMetadata just
+   * synced them from `/me` — so the raw-forbid restore below must NOT undo the
+   * update for those entries. Every other caller omits it and keeps the
+   * restore-raw behavior.
    */
 /** @internal */
 mergeStoresForWriteback(rawStores: unknown, stores: StoreEntry[], serverSensitivityScopes?: Set<string>): StoreEntry[]
 
 addStore(storePath: string, scope: string, options?: {
       shared?: boolean; readonly?: boolean; url?: string; token?: string; overwriteScope?: boolean
-      /** The environment variable `token` was read from (#1561). The entry then
+      /** The environment variable `token` was read from. The entry then
        *  stores `token_env: <name>` and never the token itself. */
       tokenEnv?: string
     }): {
     status: 'added' | 'already_registered' | 'overwritten' | 'token_rotated'; scope: string
-    /** On `token_rotated` for a scope of a server entry (#1631): every scope
+    /** On `token_rotated` for a scope of a server entry: every scope
      *  the new token now serves. The key is shared by all of them. */
     token_scopes?: string[]
   }
 
 /**
    * Register a company server as one store entry and fold the per-scope
-   * entries that hold the same key into it (#1631, plan B Task 5).
+   * entries that hold the same key into it.
    *
    * Creates or updates the one server entry for the url's canonical endpoint
    * identity ({@link normalizeEndpointUrl}). A new entry gets its compat
    * `scope` here, from `personalScope` — the `user:<org>:<username>` scope of
-   * the /me answer the caller already holds (owner decision O6) — so an entry
+   * the /me answer the caller already holds — so an entry
    * is never without one. A new key for the same server replaces the key in
    * that same entry (`updated`) and keeps its `scope`, `scopes`,
    * `pinned_scopes`, `scope_settings`, `discovery` and `enterprise`; no other
@@ -171,7 +167,7 @@ addStore(storePath: string, scope: string, options?: {
    * the personal scope's writes from another entry is refused with a
    * {@link PersonalScopeTakenError} that names those entries; with
    * `removeStale` they are removed in the same write and listed in `removed`
-   * (#1638: `plur login --remove-stale`).
+   * (`plur login --remove-stale`).
    *
    * No network call: the caller runs `refreshServerScopes({ url })` next. The
    * read-modify-write runs under the config lock on the file as it is then and
@@ -195,8 +191,8 @@ registerEnterpriseServer(url: string, opts: {
   }): Promise<{ status: 'added' | 'updated' | 'unchanged'; fold: FoldReport; removed: ScopeHolder[]; migratedLegacy?: boolean }>
 
 /**
-   * Register a remote (url) store only after the server has vouched for it
-   * (#1265). {@link addStore} is synchronous and never checks the token, so an
+   * Register a remote (url) store only after the server has vouched for it.
+   * {@link addStore} is synchronous and never checks the token, so an
    * installer script using it could write a dead token, or a scope the token
    * cannot reach, and learn so only at the first failed recall.
    *
@@ -217,7 +213,7 @@ registerEnterpriseServer(url: string, opts: {
    */
 addRemoteStore(opts: {
     url: string; token: string; scope: string
-    /** The environment variable `token` was read from: only its name is stored (#1561). */
+    /** The environment variable `token` was read from: only its name is stored. */
     tokenEnv?: string
     shared?: boolean; readonly?: boolean; timeoutMs?: number
     /** Replace an entry that already holds `scope` for a DIFFERENT store.
@@ -227,7 +223,7 @@ addRemoteStore(opts: {
   }): Promise<{ status: 'added' | 'already_registered' | 'token_rotated' | 'overwritten'; scope: string; username?: string; authorised: string[]; token_scopes?: string[] }>
 
 /**
-   * Every check {@link addRemoteStore} makes, and no write (#1413): the URL,
+   * Every check {@link addRemoteStore} makes, and no write: the URL,
    * the token against `/me`, `scope` among the authorised scopes, and no
    * other store already holding `scope` (unless `overwriteScope`). Throws the
    * same {@link AddRemoteStoreError}s. `plur remote --scopes a,b` runs it for
@@ -245,7 +241,7 @@ verifyRemoteStore(opts: {
    * reachable from the constructor via `autoDiscoverStores`, so this takes
    * the SAME lock file via the sync `withLock` rather than the async
    * `_withStoreLock`. Parent dirs are created up front — the lock file lives
-   * next to the store file (this used to be atomicWrite's job).
+   * next to the store file.
    */
 /** @internal */
 _materializeLocalStore(storePath: string): void
@@ -259,8 +255,8 @@ statConfigMtime(): number {
 _loadConfig(): PlurConfig {
     const config = loadConfig(this.paths.config)
     const stores = config.stores ?? []
-    // Two different scopes behind one id prefix (review of #1576): said once
-    // at load, and every action by a namespaced id for them is refused.
+    // Two different scopes behind one id prefix: said once at load, and every
+    // action by a namespaced id for them is refused.
     {
       const byPrefix = new Map<string, Set<string>>()
       for (const s of stores) {
@@ -321,13 +317,11 @@ reloadConfigIfChanged(): boolean {
     if (mtime === 0 || mtime === this.configMtimeMs) return false
     this.config = this._loadConfig()
     this.configMtimeMs = mtime
-    // Same `.partial()`-neutralised-default rule as the constructor
-    // (evaluator audit M4): `config.index` is `undefined` on a default
-    // install, and with SQLite now the size-selected tier, a bare truthy
-    // check here means the refresh this method exists for (#307 — a store
-    // added by editing config.yaml out of process) never reaches
-    // indexedStorage on exactly the default installs that have one. Refresh
-    // whenever an index is actually active, or config asks for one.
+    // `config.index` is `undefined` on a default install (the `.partial()`
+    // schema neutralises its default, as in the constructor), so a bare truthy
+    // check would skip the refresh this method exists for (a store added by
+    // editing config.yaml out of process) on default installs that do have an
+    // index. Refresh whenever an index is actually active, or config asks for one.
     if (this.indexedStorage !== null || this.config.index) {
       this.indexedStorage = new IndexedStorage(this.paths.engrams, this.paths.db, this.config.stores)
     }
@@ -338,7 +332,7 @@ reloadConfigIfChanged(): boolean {
 persistStores(stores: StoreEntry[], opts?: {
     serverSensitivityScopes?: Set<string>
     onConfigWrite?: (before: string | null, after: string) => void
-    /** A new key for a server entry (#1631): written in place onto the one
+    /** A new key for a server entry: written in place onto the one
      *  on-disk server entry `entry` was expanded from, found by identity on
      *  the fresh read under the lock. No match, or more than one, is refused
      *  and nothing is written. The collapse step never writes a token. */
@@ -362,9 +356,9 @@ persistStores(stores: StoreEntry[], opts?: {
         if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') throw err
       }
       // A `token_env` entry keeps its reference and never the token it was
-      // resolved to at load (#1561): the typed entries carry that value.
+      // resolved to at load: the typed entries carry that value.
       //
-      // Collapse expanded per-scope entries back into their server entry (#1631):
+      // Collapse expanded per-scope entries back into their server entry:
       // N in-memory entries with one EXPANDED_FROM identity → the one entry on
       // disk with that identity, wherever it sits now. Positions are never
       // trusted: another process may have inserted or reordered entries since
@@ -421,11 +415,11 @@ persistStores(stores: StoreEntry[], opts?: {
       })
       configData.stores = (out as StoreEntry[])
         .map(e => storeEntryForDisk(e as unknown as Record<string, unknown>) as unknown as StoreEntry)
-      // Atomic + fsynced (#813, audit finding 16). A plain writeFileSync
-      // truncates in place, and loadConfig turns a parse failure into DEFAULT
-      // config — so a crash mid-write silently erases store registrations and
-      // routes later writes to the local default store. atomicWrite is
-      // tmp + fsync + rename, so a crash leaves the previous complete config.
+      // Atomic + fsynced. A plain writeFileSync truncates in place, and
+      // loadConfig turns a parse failure into DEFAULT config — so a crash
+      // mid-write would silently erase store registrations and route later
+      // writes to the local default store. atomicWrite is tmp + fsync +
+      // rename, so a crash leaves the previous complete config.
       const after = yaml.dump(configData, { lineWidth: 120, noRefs: true })
       writeConfigFile(this.paths.config, after)
       opts?.onConfigWrite?.(before, after)
@@ -467,23 +461,21 @@ mergeStoresForWriteback(rawStores: unknown, stores: StoreEntry[], serverSensitiv
       // the typed entry carries a proper object. mergeSensitivityForWriteback only
       // treats raw sensitivity as mergeable when it actually IS a plain object.
       //
-      // R2-D (#14): `forbid` is a KNOWN field whose value is NORMALIZED at read
-      // time (loadConfig's preprocess rewrites a forward-compat `forbid:['pii']`
+      // `forbid` is a KNOWN field whose value is NORMALIZED at read time
+      // (loadConfig's preprocess rewrites a forward-compat `forbid:['pii']`
       // to the safe default). A shallow `...typed.sensitivity` would then write
       // the normalized value over the raw one, ERASING the forward-compat
       // declaration on the first writeback. So when raw carried a `forbid` we
       // restore it verbatim — mirroring the nested-unknown preservation below.
-      // This is the same version-skew writeback-strip class PR-3 closed for
-      // nested unknowns.
       //
-      // ONE deliberate exception (scope-audit 2026-07-24): persistScopeMetadata
-      // DOES intentionally mutate `forbid` — it syncs the server-authoritative
-      // policy from `/me` — and names the affected scopes in
-      // `serverSensitivityScopes`. For those entries the typed (sanitized)
-      // `forbid` must win, or the server's policy change is silently discarded
-      // on every writeback and the metadata change-detector can never converge
-      // (config.yaml rewritten on every session_start).
-      // The same rule applies inside a server entry's scope_settings (#1631):
+      // ONE deliberate exception: persistScopeMetadata DOES intentionally
+      // mutate `forbid` — it syncs the server-authoritative policy from `/me`
+      // — and names the affected scopes in `serverSensitivityScopes`. For
+      // those entries the typed (sanitized) `forbid` must win, or the server's
+      // policy change is silently discarded on every writeback and the
+      // metadata change-detector can never converge (config.yaml rewritten on
+      // every session_start).
+      // The same rule applies inside a server entry's scope_settings:
       // collapseExpandedStores calls the same function.
       const mergedSensitivity = mergeSensitivityForWriteback(
         (raw as { sensitivity?: unknown }).sensitivity,
@@ -505,18 +497,18 @@ mergeStoresForWriteback(rawStores: unknown, stores: StoreEntry[], serverSensitiv
 
 addStore(storePath: string, scope: string, options?: {
       shared?: boolean; readonly?: boolean; url?: string; token?: string; overwriteScope?: boolean
-      /** The environment variable `token` was read from (#1561). The entry then
+      /** The environment variable `token` was read from. The entry then
        *  stores `token_env: <name>` and never the token itself. */
       tokenEnv?: string
     }): {
     status: 'added' | 'already_registered' | 'overwritten' | 'token_rotated'; scope: string
-    /** On `token_rotated` for a scope of a server entry (#1631): every scope
+    /** On `token_rotated` for a scope of a server entry: every scope
      *  the new token now serves. The key is shared by all of them. */
     token_scopes?: string[]
   } {
     const isRemote = Boolean(options?.url)
 
-    // Validation gate (#93): catch malformed URLs and duplicate scopes at
+    // Validation gate: catch malformed URLs and duplicate scopes at
     // registration time instead of silently failing on first use.
     if (isRemote) {
       const url = options!.url!
@@ -539,29 +531,27 @@ addStore(storePath: string, scope: string, options?: {
       throw new Error(`addStore: scope must be a non-empty string, got ${typeof scope}`)
     }
 
-    // Pick up any out-of-process config edit before we dedup/write (#307).
+    // Pick up any out-of-process config edit before we dedup/write.
     this.reloadConfigIfChanged()
     const config = loadConfig(this.paths.config)
 
-    // Dedup (#291): for REMOTE stores the URL alone is NOT the identity — a
-    // single enterprise URL hosts many scopes (server filters reads per entry
-    // via ?scope=), so only an exact url+scope match is "already registered".
-    // Keying on URL alone used to drop every scope after the first while
-    // still returning success.
+    // Dedup: for REMOTE stores the URL alone is NOT the identity — a single
+    // enterprise URL hosts many scopes (server filters reads per entry via
+    // ?scope=), so only an exact url+scope match is "already registered".
     //
     // LOCAL stores keep path-only identity: one engrams.yaml is one store.
     // The loader clones global-scoped engrams into each entry's scope, so a
     // second scope on the same file would double-load those engrams.
     //
-    // URL identity is NORMALIZED (scope-audit 2026-07-24): `https://x.com`,
-    // `https://x.com/` and `https://x.com/sse` all name the same server
-    // (RemoteStore.apiBase folds them at HTTP time), so an exact-string compare
-    // here would happily register the same url+scope twice under two spellings.
-    // Comparison-time only — the stored spelling is never rewritten.
-    // Local identity is the CANONICAL path (#1319): the same file spelled two
-    // ways (a symlinked home, /var vs /private/var) is one store, and the
-    // primary engrams.yaml is never a secondary store under any spelling —
-    // registering it loads every primary engram twice.
+    // URL identity is NORMALIZED: `https://x.com`, `https://x.com/` and
+    // `https://x.com/sse` all name the same server (RemoteStore.apiBase folds
+    // them at HTTP time), so an exact-string compare here would register the
+    // same url+scope twice under two spellings. Comparison-time only — the
+    // stored spelling is never rewritten.
+    // Local identity is the CANONICAL path: the same file spelled two ways (a
+    // symlinked home, /var vs /private/var) is one store, and the primary
+    // engrams.yaml is never a secondary store under any spelling — registering
+    // it loads every primary engram twice.
     const canonicalStorePath = isRemote ? '' : canonicalize(storePath)
     if (!isRemote && canonicalStorePath === canonicalize(this.paths.engrams)) {
       const ignoredHere = this._ignoredDuplicates
@@ -584,17 +574,15 @@ addStore(storePath: string, scope: string, options?: {
       ? config.stores?.find(s => s.url !== undefined && normalizeEndpointUrl(s.url) === normalizeEndpointUrl(options!.url!) && s.scope === scope)
       : (localMatches.find(s => s.scope === scope) ?? localMatches[0])
     if (sameEntry) {
-      // Token rotation (#305): a matched remote endpoint with a NEW token means
-      // the server-side token was rotated/expired and the caller is re-supplying
-      // it. The old short-circuit returned 'already_registered' and silently kept
-      // the stale token — the only workaround was hand-editing config.yaml. Update
-      // the token in place instead.
-      // #1561: the same token now read from a variable (or no longer) is a
-      // change of what config.yaml holds, so it is written like a rotation.
+      // Token rotation: a matched remote endpoint with a NEW token means the
+      // server-side token was rotated/expired and the caller is re-supplying
+      // it, so update the token in place rather than keep the stale one.
+      // The same token now read from a variable (or no longer) is a change of
+      // what config.yaml holds, so it is written like a rotation.
       const tokenEnv = options?.tokenEnv || undefined
       const refChanged = isRemote && options?.token !== undefined && tokenEnv !== (sameEntry.token_env || undefined)
       if (isRemote && options?.token !== undefined && (options.token !== sameEntry.token || refChanged)) {
-        // A scope of a server entry (#1631): the key is one per server, so the
+        // A scope of a server entry: the key is one per server, so the
         // new token goes onto that entry and serves every scope it lists.
         // Only that one entry: another server entry on the same url may hold
         // a different key for other scopes. A scope two server entries on this
@@ -620,24 +608,23 @@ addStore(storePath: string, scope: string, options?: {
         logger.info(`[plur:addStore] rotated token for ${safeOrigin(options.url ?? "")} (scope "${sameEntry.scope}")`)
         return { status: 'token_rotated', scope: sameEntry.scope }
       }
-      // #766 heal: a local store registered BEFORE the materialization fix can
-      // sit in exactly the broken state this fix closes — config entry exists,
-      // file absent — and re-running stores_add with the same path is the
-      // natural post-upgrade repair. Run the same init block on the idempotent
-      // re-add so it actually heals (and the MCP "Store initialized" note is
-      // truthful on this path too). Idempotent and cheap when the file exists.
+      // A local store can have a config entry while its file is absent;
+      // re-running stores_add with the same path is the natural repair, so the
+      // idempotent re-add runs the same init (and the MCP "Store initialized"
+      // note is truthful on this path too). Idempotent and cheap when the file
+      // exists.
       if (!isRemote) this._materializeLocalStore(storePath)
       return { status: 'already_registered', scope: sameEntry.scope }
     }
 
-    // Different endpoint, same scope (#93): forbid by default to prevent
+    // Different endpoint, same scope: forbid by default to prevent
     // silent ambiguity ("which store does scope X belong to?"). Override
     // with options.overwriteScope=true to replace the existing entry.
     const scopeConflict = config.stores?.find(s => s.scope === scope)
     if (scopeConflict) {
-      // One scope of a server entry cannot be replaced or removed on its own
-      // (#1631): the entry lists its scopes together, and dropping the
-      // expanded entry would leave it on disk while reporting success.
+      // One scope of a server entry cannot be replaced or removed on its own:
+      // the entry lists its scopes together, and dropping the expanded entry
+      // would leave it on disk while reporting success.
       if (isFromServerEntry(scopeConflict)) throw new Error(`addStore: ${serverEntryScopeRefusal(scope, scopeConflict.url!)}`)
       if (options?.overwriteScope !== true) {
         const existingId = scopeConflict.url ?? scopeConflict.path
@@ -668,7 +655,7 @@ addStore(storePath: string, scope: string, options?: {
     // Filesystem stores: initialize the file now so the path materializes
     // immediately. Fail loudly if the path is unwritable — better than
     // silently landing writes in the primary store when the file never
-    // exists (#766).
+    // exists.
     if (!isRemote) this._materializeLocalStore(storePath)
 
     const stores = scopeConflict
@@ -728,7 +715,7 @@ async registerEnterpriseServer(url: string, opts: {
           }
         } catch (err) {
           if (err instanceof SignInHeldError) throw new SignInHeldError(`registerEnterpriseServer: ${err.message}`)
-          // The refusal keeps its type and the entries it names (#1638), so
+          // The refusal keeps its type and the entries it names, so
           // `plur login` can name them and offer to remove them.
           if (err instanceof PersonalScopeTakenError) {
             throw new PersonalScopeTakenError(`registerEnterpriseServer: ${err.message}`, err.personalScope, err.holders, err.removable)
@@ -743,14 +730,14 @@ async registerEnterpriseServer(url: string, opts: {
         }
         // The key is written by _updateRawStores through writeConfigFile, under
         // this lock: owner-only on POSIX (tightened before the write) and on
-        // Windows (a verified access list, or the write is refused) (#1631).
+        // Windows (a verified access list, or the write is refused).
         rawStores.splice(0, rawStores.length, ...result.stores)
         return true
       }, opts.onConfigWrite)
     } catch (err) {
       const e = err as { message?: unknown; name?: unknown; mark?: { line?: unknown }; code?: unknown }
       if (typeof e?.message === 'string' && e.message.startsWith('registerEnterpriseServer: ')) throw err
-      // A refused credential write (owner-only protection, #1631) keeps its cause and the
+      // A refused credential write (owner-only protection) keeps its cause and the
       // opt-out; its text is fixed wording plus icacls details, never the key.
       if (typeof e?.message === 'string' && e.message.startsWith(REFUSED_CREDENTIAL_WRITE)) {
         throw new Error(`registerEnterpriseServer: ${e.message.slice('atomicWrite: '.length)}`)
@@ -780,7 +767,7 @@ async registerEnterpriseServer(url: string, opts: {
 
 async addRemoteStore(opts: {
     url: string; token: string; scope: string
-    /** The environment variable `token` was read from: only its name is stored (#1561). */
+    /** The environment variable `token` was read from: only its name is stored. */
     tokenEnv?: string
     shared?: boolean; readonly?: boolean; timeoutMs?: number
     /** Replace an entry that already holds `scope` for a DIFFERENT store.
@@ -803,7 +790,7 @@ async verifyRemoteStore(opts: {
   }): Promise<{ scope: string; username?: string; authorised: string[] }> {
     const { url, token, scope } = opts
     const timeoutMs = opts.timeoutMs ?? 5000
-    // Every encoding of the token, not only the exact string (audit of #1272).
+    // Every encoding of the token, not only the exact string.
     const scrub = (msg: string) => redactToken(msg, token)
     let parsed: URL | undefined
     try { parsed = new URL(url) } catch { /* handled below */ }
@@ -835,7 +822,7 @@ async verifyRemoteStore(opts: {
     // The /me answer is the server's, not ours: re-apply the strict scope
     // grammar and drop any scope that carries the token in any encoding, so a
     // buggy or hostile server cannot get the token printed through the
-    // `authorised` list or the username (audit of #1272).
+    // `authorised` list or the username.
     const authorised = me.scopes.filter(s =>
       typeof s === 'string' && s.length <= 256 && /^[\w:./-]+$/.test(s) && !containsToken(s, token))
     const withheld = me.scopes.length - authorised.length
@@ -858,7 +845,7 @@ async verifyRemoteStore(opts: {
       const same = stores.some(s => s.url !== undefined && s.scope === scope &&
         normalizeEndpointUrl(s.url) === normalizeEndpointUrl(url))
       const other = same ? undefined : stores.find(s => s.scope === scope)
-      // overwriteScope never reaches a scope of a server entry (#1631).
+      // overwriteScope never reaches a scope of a server entry.
       if (other && isFromServerEntry(other)) {
         throw new AddRemoteStoreError('scope_conflict', serverEntryScopeRefusal(scope, other.url!), authorised)
       }

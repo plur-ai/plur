@@ -1,34 +1,23 @@
 /**
- * Heuristic, READ-ONLY detector for engrams the negation-inversion bug class
- * in `learner.ts` (`CORRECTION_PATTERNS` / `PREFERENCE_PATTERNS`, fixed
- * 2026-09, E1 of the opencode-plugin audit follow-up) may have already
- * written into a store before the fix landed.
+ * Heuristic, READ-ONLY detector for engrams whose statement may have lost its
+ * negation during extraction (`CORRECTION_PATTERNS` / `PREFERENCE_PATTERNS` in
+ * `learner.ts`). Such an engram is a confident standing instruction meaning
+ * the OPPOSITE of what was said ("never commit the API key" stored as "commit
+ * the API key"). Stores synced from other machines can carry them too.
+ * Neither `plur tensions` (contradictions between TWO engrams) nor the
+ * secret/sensitivity scanners look for this shape.
  *
- * The shipped extractor produced these for as long as it existed, so a real
- * user's store — including a remote/team store synced from a machine that
- * never got the fix — can carry confident standing instructions that mean
- * the OPPOSITE of what was actually said ("never commit the API key" stored
- * as "commit the API key", or "is not allowed" stored as "is"). Neither
- * `plur tensions` (contradiction detection between TWO engrams) nor the
- * secret/sensitivity scanners (unrelated content classes) look for this
- * shape at all.
+ * This module only REPORTS suspects. It never rewrites an engram: a truncated
+ * fragment cannot be reliably reconstructed (which word was dropped? was there
+ * ever a negation?), and guessing wrong would corrupt the memory a second
+ * time. A human reviews each suspect: fix it by hand, retire it, or confirm a
+ * false positive (clean statements can end in a preposition or start with a
+ * bare verb).
  *
- * This module only REPORTS suspects. It never rewrites an engram: a
- * truncated fragment cannot be reliably reconstructed into its original
- * meaning — which word was dropped ("never"? "don't"? was there ever a
- * negation?), and guessing wrong would corrupt the memory a second time,
- * silently. A human reviews each suspect and decides: fix the statement by
- * hand, retire it, or confirm it was a false positive (plenty of clean
- * statements legitimately end in a preposition or start with a bare verb).
- *
- * HEURISTIC, NOT PROOF. Every check here pattern-matches the SURVIVING
- * text — the very thing the bug already mangled — so it will both miss real
- * inversions (a short one-word tail can read as a complete thought, e.g.
- * "use pnpm, not npm" truncated to "use pnpm") and flag some statements
- * that are simply written in an unusual shape. Every finding is a
- * suggestion to look, never a verdict. See `docs/` note in the CLI's
- * `plur audit --source engrams` help text, which repeats this caveat where
- * a user actually sees it.
+ * HEURISTIC, NOT PROOF. Every check matches the SURVIVING text, so it both
+ * misses real inversions ("use pnpm, not npm" truncated to "use pnpm" reads
+ * as complete) and flags statements written in an unusual shape. The CLI's
+ * `plur audit --source engrams` help text repeats this caveat for users.
  */
 
 export interface InversionSuspect {
@@ -41,28 +30,24 @@ export interface InversionSuspect {
    *
    * - `truncated-tail`: the statement ends on a word that cannot end a
    *   complete standing instruction (a copula, modal, preposition,
-   *   conjunction, article, or a dangling "not") — the exact shape
-   *   `CORRECTION_PATTERNS[1]`'s pre-fix `/(.+?),?\s+not\s+(.+)/i` left
-   *   behind when it captured only the text before "not".
+   *   conjunction, article, or a dangling "not") — the shape
+   *   `/(.+?),?\s+not\s+(.+)/i` leaves when only the text before "not" is
+   *   captured.
    * - `bare-imperative`: the statement opens with a common action verb and
    *   no leading subject, hedge, or polarity word (no "never", "don't",
-   *   "you should", …) — consistent with either half of the two other
-   *   pre-fix bugs: `PREFERENCE_PATTERNS`' old `(?:always|never)\s+(.+)` /
-   *   `(?:you should|you must|don't|do not)\s+(.+)` (captured only the
-   *   tail, dropping the directive word), or the SURVIVING half of an
-   *   "X, not Y" contrast whose second half was dropped ("use pnpm" from
-   *   "use pnpm, not npm").
+   *   "you should", …) — consistent with a pattern such as
+   *   `(?:always|never)\s+(.+)` capturing only the tail and dropping the
+   *   directive word, or with the SURVIVING half of an "X, not Y" contrast
+   *   whose second half was dropped ("use pnpm" from "use pnpm, not npm").
    */
   shapes: Array<'truncated-tail' | 'bare-imperative'>
   reason: string
 }
 
-// The exact tail shape `/(.+?),?\s+not\s+(.+)/i` (matched[1] only) produces
-// from "X is/was/should/must/does/… not Y", plus the connective/article
-// shape left over when a sentence was cut at a comma rather than at "not".
-// Deliberately closed and small: only words that cannot legitimately end a
-// COMPLETE standing instruction. Common false-positive-prone words (nouns,
-// most verbs) are never in here.
+// Tail words left by `/(.+?),?\s+not\s+(.+)/i` (matched[1] only) on
+// "X is/was/should/must/does/… not Y", plus connectives/articles left when a
+// sentence is cut at a comma. Deliberately closed and small: only words that
+// cannot legitimately end a COMPLETE standing instruction.
 const TAIL_FUNCTION_WORDS = new Set([
   'is', 'are', 'was', 'were', 'be', 'been', 'being',
   'do', 'does', 'did',
@@ -75,11 +60,9 @@ const TAIL_FUNCTION_WORDS = new Set([
   'not',
 ])
 
-// Narrow, explicitly a guess (see module docstring's HEURISTIC note): common
-// verbs that show up in engineering directives, chosen because they read as
-// a complete, dangerous-or-notable-sounding action on their own — the shape
-// a directive word ("never"/"don't") or a contrast half ("not X") most
-// plausibly used to precede.
+// Narrow, explicitly a guess: common verbs in engineering directives that read
+// as a complete, notable action on their own — the words a dropped "never" /
+// "don't" or a dropped "not X" most plausibly preceded.
 const COMMON_ACTION_VERBS = new Set([
   'commit', 'push', 'delete', 'drop', 'deploy', 'merge', 'force', 'expose',
   'hardcode', 'share', 'disable', 'skip', 'ignore', 'bypass', 'install',
@@ -88,8 +71,8 @@ const COMMON_ACTION_VERBS = new Set([
 ])
 
 // A statement that already opens with its directive/hedge word has nothing
-// missing — this is what a CORRECTLY extracted (post-fix) statement looks
-// like, and must never be flagged.
+// missing — a correctly extracted statement looks like this and must never be
+// flagged.
 const LEADING_DIRECTIVE_RE =
   /^(?:never|always|don'?t|do(?:es)?\s+not|doesn'?t|you\s+should(?:n'?t)?|you\s+must(?:n'?t)?|remember\s+that|i\s+prefer|i\s+like|we\s+decided|the\s+(?:rule|convention|pattern|standard)\s+is)\b/i
 
@@ -108,7 +91,7 @@ function firstWord(statement: string): string {
  * Scan a set of statements for the two known inversion-truncation shapes.
  * Takes the minimal `{id, statement}` shape (not the full `Engram` type) so
  * it stays trivially testable and reusable from any caller that already has
- * ids and statement text (CLI, MCP, a future batch job).
+ * ids and statement text.
  *
  * Read-only: does not touch the store, does not resolve or write anything.
  */

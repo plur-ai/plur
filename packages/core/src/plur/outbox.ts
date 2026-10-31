@@ -26,18 +26,12 @@ export interface OutboxMethods {
 remoteHealthStatePath(): string
 
 /**
-   * Where local→server id mappings survive between outbox flushes (#863
-   * follow-up, 2026-08-13 panel).
+   * Where local→server id mappings survive between outbox flushes.
    *
-   * `flushOutbox` builds a `localToServer` map as it goes so a correction
-   * queued alongside the engram it supersedes can point at the server id. That
-   * map was per-flush, and the local row is SPLICED OUT on a successful push —
-   * so once the target left in flush N, a correction that missed that flush
-   * could never resolve its edge again. It failed identically on every
-   * subsequent flush, printing "flush again once X has been pushed" when X had
-   * already been pushed and no future flush could change that. The panel
-   * measured three consecutive flushes producing the same unfollowable
-   * warning.
+   * `flushOutbox` builds a `localToServer` map so a correction queued
+   * alongside the engram it supersedes can point at the server id. The local
+   * row is SPLICED OUT on a successful push, so without persisting the map a
+   * correction that missed the target's flush could never resolve its edge.
    *
    * Derived state, not truth: losing this file costs a supersedes edge on a
    * pathological ordering, never an engram. Every read and write is
@@ -46,13 +40,13 @@ remoteHealthStatePath(): string
 outboxIdMapPath(): string
 
 /**
-   * Per-entry push claims — the one duplicate-push guard (decision C3). A
+   * Per-entry push claims: the one duplicate-push guard. A
    * claim is a small file created with O_EXCL, so two writers — two flushes,
    * or a flush and learn()'s background push, in one process or several —
    * cannot both push an entry at once. It is released once the push's outcome
    * is recorded (or the flush ends); a claim left by a process that died is
    * taken over (see `_claimOutboxEntry`), and the write is simply retried with
-   * the key already on its outbox row (decision C4). A claim guards the row,
+   * the key already on its outbox row. A claim guards the row,
    * not a snapshot: whoever takes it re-reads the row before pushing.
    */
 outboxClaimsDir(): string
@@ -65,9 +59,8 @@ _outboxClaimPath(id: string): string
    * it. A lapsed claim (its process is gone, or its lease expired) is taken
    * over. `keyFor` supplies the key recorded in the claim.
    *
-   * Every decision is made by O_EXCL, never by reading and comparing (decision
-   * C3; the review of #1277 measured more than one winner in 79 of 80 rounds
-   * of 6 processes racing the read-compare-rename takeover this replaces):
+   * Every decision is made by O_EXCL, never by reading and comparing (a
+   * read-compare-rename takeover lets several racers win):
    *
    * - **A free entry**: the claim is published with `link(2)`, which fails
    *   with EEXIST when the path exists. Its content is written first, so no
@@ -85,15 +78,15 @@ _outboxClaimPath(id: string): string
    *   O_EXCL. A dead marker is removed only once the stale claim it guards
    *   has changed hands, so two racers can never win at two levels at once.
    *
-   * Never throws, and fails CLOSED (B1, 0.21.1 Windows pre-release check):
-   * if the claim cannot be recorded — a takeover rename refused with
+   * Never throws, and fails CLOSED: if the claim cannot be recorded (a
+   * takeover rename refused with
    * EPERM/EBUSY because another process has the claim open, a full or
-   * read-only cache folder, any error — the answer is `busy` with the error,
+   * read-only cache folder, any error), the answer is `busy` with the error,
    * never an unrecorded `claimed`. Another process may own the entry; it
    * stays queued with the key already on its row, and a later flush tries
    * again (the flush writes the error to the row's `last_error`, so
-   * `plur outbox` and doctor say why). An unrecorded claim let two processes
-   * push the same engram. Cleanup after the claim is decided (temp files,
+   * `plur outbox` and doctor say why). An unrecorded claim would let two
+   * processes push the same engram. Cleanup after the claim is decided (temp files,
    * takeover markers) is best effort and never changes the answer.
    */
 /** @internal */
@@ -118,7 +111,7 @@ _outboxClaimHeld(held: { pid?: number; host?: string; until?: number; at?: numbe
 
 /**
    * When the live claim on `id` lapses, as an ISO time; undefined when there is
-   * no live claim. Read from the claim file alone (decision C3) and judged by
+   * no live claim. Read from the claim file alone and judged by
    * the same rule as `_claimOutboxEntry`. Advisory: nothing is held back by it.
    */
 /** @internal */
@@ -171,18 +164,15 @@ syncStatus(): SyncStatus
 /** Count engrams pending remote sync (outbox entries). Must mirror
    *  flushOutbox()'s filter exactly: a retired engram still carrying `_outbox`
    *  (direct YAML edit, older client) is skipped by the flush forever, so
-   *  counting it would report a permanent phantom "pending" (#766). */
+   *  counting it would report a permanent phantom "pending". */
 outboxCount(): Promise<number>
 
 /**
-   * The outbox, as inspectable entries (#667).
+   * The outbox, as inspectable entries.
    *
-   * The outbox works and is effectively invisible: it is not a file or a
-   * queue directory, it is `structured_data._outbox` nested inside ordinary
-   * engrams in `engrams.yaml`. So a user whose team store was unreachable has
-   * queued writes with no supported way to see them — diagnosing meant
-   * reverse-engineering the storage model, and the only prose describing the
-   * pattern lived inside an engram.
+   * The outbox is not a file or a queue directory: it is
+   * `structured_data._outbox` nested inside ordinary engrams in
+   * `engrams.yaml`. This is the supported way to see queued writes.
    *
    * `target_url` is DELIBERATELY not returned. It is the one field here that
    * identifies a credentialed endpoint, the entry is rendered into agent
@@ -194,18 +184,18 @@ listOutbox(): Promise<Array<{
     id: string
     /** `push`: a write waiting to reach its store (`_outbox`). `retire`: a
      *  queued DELETE of a copy the remote accepted after a forget/rescope
-     *  cancelled its delivery (decision D1, `_retireRemote`) — listed so a
+     *  cancelled its delivery (`_retireRemote`), listed so a
      *  stuck retirement is visible, not reported as an empty outbox. */
     kind: 'push' | 'retire'
     target_scope: string
     queued_at: string
     attempt_count: number
     last_error?: string
-    /** HTTP status of the last failed push, when the remote gave one (#1299). */
+    /** HTTP status of the last failed push, when the remote gave one. */
     last_status?: number
     age_days: number
     /**
-     * #1299: `retrying` — the next flush may succeed; `needs_action` — it
+     * `retrying` — the next flush may succeed; `needs_action` — it
      * cannot (401/403/404/422, a write refusal, no writable store).
      */
     state: OutboxState
@@ -215,7 +205,7 @@ listOutbox(): Promise<Array<{
     next_step?: string
     /** `needs_action` only: the earliest time an automatic flush retries it. */
     next_retry_at?: string
-    /** Advisory (decision C3): set while a writer holds the entry's live
+    /** Advisory: set while a writer holds the entry's live
      *  per-entry claim — any process's, THIS instance's own in-progress flush
      *  or learn() push included: the row is not stuck, it is being delivered,
      *  until this time. Read from the claim file alone. Only the expiry is
@@ -224,14 +214,14 @@ listOutbox(): Promise<Array<{
   }>>
 
 /**
-   * Why the push-claims folder cannot be written, or undefined when it can
-   * (#1581 audit L1). A claim that cannot be recorded holds every queued
+   * Why the push-claims folder cannot be written, or undefined when it can.
+   * A claim that cannot be recorded holds every queued
    * write on this machine, so doctor reports it. Creates the folder when
    * missing (it is PLUR's own cache), and writes nothing else.
    */
 outboxClaimsProblem(): string | undefined
 
-/** Counts by state plus one line per needs_action scope (#1299). */
+/** Counts by state plus one line per needs_action scope . */
 outboxSummary(): Promise<OutboxSummary>
 
 /** A url store accepting writes for exactly this scope — the flush's own lookup. */
@@ -239,7 +229,7 @@ outboxSummary(): Promise<OutboxSummary>
 _hasWritableStoreFor(scope: string): boolean
 
 /**
-   * When an automatic flush may next dial a `needs_action` entry (#1299):
+   * When an automatic flush may next dial a `needs_action` entry:
    * one attempt per NEEDS_ACTION_RETRY_MS, counted from the last attempt.
    * An entry with no readable last attempt is due now.
    */
@@ -254,7 +244,7 @@ _needsActionRetryAt(ob: { last_attempt?: string }): number | undefined
    * On failure: updates attempt metadata for next retry.
    * After 7 days: includes warning in expired_warnings.
    *
-   * `timeoutMs` (#1269) bounds the NETWORK part of the flush, for callers that
+   * `timeoutMs` bounds the NETWORK part of the flush, for callers that
    * run under a harness timeout (editor session-end and stop hooks). The clock
    * starts after the local store load, so a large store does not spend the
    * budget on disk. When it runs out, the in-flight push is cut and nothing
@@ -263,7 +253,7 @@ _needsActionRetryAt(ob: { last_attempt?: string }): number | undefined
    * OUR time says nothing about THEIRS. The merge-back after is not covered:
    * it must run to completion or a delivered entry would be pushed again.
    *
-   * Decision C4: a push that was cut, timed out or threw is simply retried
+   * A push that was cut, timed out or threw is simply retried
    * on the next flush — there is no "maybe delivered" state and no lookup
    * before a re-post. What makes the retry safe is the idempotency key: a
    * random UUID minted when the write is queued, persisted on the outbox row
@@ -272,7 +262,7 @@ _needsActionRetryAt(ob: { last_attempt?: string }): number | undefined
    * key-honouring server collapses the retry; a key-ignoring one may see at
    * most one duplicate per write (docs/remote-store-contract.md).
    *
-   * Decision C3: each entry is claimed before it is pushed, so two writers —
+   * Each entry is claimed before it is pushed, so two writers —
    * two flushes, or a flush and learn()'s background push — never push it at
    * once. Claims are released when the flush ends, also when it throws; the
    * key is on the row, so nothing about the next retry depends on them.
@@ -280,7 +270,7 @@ _needsActionRetryAt(ob: { last_attempt?: string }): number | undefined
    * `skipped` counts entries not attempted because their host's circuit
    * breaker is open; the reason is in `expired_warnings`.
    *
-   * #1299: an entry whose last failure retrying cannot fix (`needs_action`:
+   * An entry whose last failure retrying cannot fix (`needs_action`:
    * 401/403/404/422 or a write refusal) is re-dialled at most once per
    * NEEDS_ACTION_RETRY_MS by this automatic path. Those skipped are counted in
    * `held` and left exactly as they were. `force: true` — the explicit
@@ -314,8 +304,8 @@ _engramsFileStamp(): string | undefined
    * `seen` is the newest read this flush has made and the file stamp taken
    * just before it. While the YAML file's stamp is unchanged nothing has been
    * written since, so that read is current and the store is not loaded again:
-   * a large store is not re-parsed per entry inside the network budget
-   * (#1269). A store supplied by the embedder has no file to stamp and is
+   * a large store is not re-parsed per entry inside the network budget.
+   * A store supplied by the embedder has no file to stamp and is
    * read every time.
    */
 /** @internal */
@@ -324,7 +314,7 @@ _outboxRowStillQueued(id: string, key: string, seen: { stamp: string | undefined
 /**
    * Mint and persist an idempotency key for every pending outbox row that has
    * none (rows queued by clients that predate keys), BEFORE any is posted
-   * (decision C4). Under the store lock; a row another writer keyed in the
+   * Under the store lock; a row another writer keyed in the
    * meantime keeps that key. Updates `pending` in place. Never throws: a row
    * whose key could not be saved stays keyless and is not posted this flush.
    */
@@ -357,7 +347,7 @@ _claimOutboxEntry(id: string, keyFor: () => string): { status: 'busy'; error?: s
         throw err
       }
     }
-    /** Cleanup after the outcome is decided: it never changes the outcome (#1581 audit M1). */
+    /** Cleanup after the outcome is decided: it never changes the outcome. */
     const removeQuietly = (at: string): void => {
       try { fs.rmSync(at, { force: true }) } catch (err) {
         logger.warning(`[plur:outbox] could not remove ${at}: ${(err as Error).message}`)
@@ -366,7 +356,7 @@ _claimOutboxEntry(id: string, keyFor: () => string): { status: 'busy'; error?: s
     const heldBy = (raw: string, file: string): boolean => {
       let held: { pid?: number; host?: string; until?: number; at?: number }
       try { held = JSON.parse(raw) } catch {
-        // Empty or half-written (#1581 audit L3): without hard links a claim
+        // Empty or half-written: without hard links a claim
         // is created and then written, two steps, so a racer can read it in
         // between. Unreadable counts as live while it is younger than the
         // lease, and as lapsed after (its writer died mid-write).
@@ -379,7 +369,7 @@ _claimOutboxEntry(id: string, keyFor: () => string): { status: 'busy'; error?: s
       const tmp = `${target}.${process.pid}.${randomUUID()}.tmp`
       try {
         // Inside the try: a temp file written part-way (disk full) is
-        // removed too (#1581 audit L2).
+        // removed too.
         fs.writeFileSync(tmp, body)
         fs.linkSync(tmp, target)
         return true
@@ -413,7 +403,7 @@ _claimOutboxEntry(id: string, keyFor: () => string): { status: 'busy'; error?: s
         return { status: 'claimed', key }
       }
 
-      // Takeover (C3): win the marker for this exact stale claim.
+      // Takeover: win the marker for this exact stale claim.
       const passed: string[] = []
       let marker = `${path}.takeover-${outboxClaimTag(stale)}`
       let won = false
@@ -443,7 +433,7 @@ _claimOutboxEntry(id: string, keyFor: () => string): { status: 'busy'; error?: s
         this._outboxClaimTokens.set(id, token)
         return { status: 'claimed', key }
       } finally {
-        // Best effort (#1581 audit M1): the claim is already decided. A marker
+        // Best effort: the claim is already decided. A marker
         // that cannot be removed now is dead once we exit, and is judged and
         // replaced by the same liveness rule as any dead marker.
         removeQuietly(marker)
@@ -533,12 +523,12 @@ _writeOutboxIdMap(entries: Record<string, { server_id: string; url: string; at: 
 
 async sync(remote?: string, options?: { full?: boolean; remoteType?: SyncRemoteType }): Promise<SyncResult> {
     this._remoteOnlyRefuseLocalStore('Syncing the store (run it outside the remote-only folder)')
-    // #640: explicit option > config.sync.remote_type > 'personal' (historical
-    // mirror-everything default — `shared` is an explicit opt-in that filters
-    // the push set to shared-scope, non-private engrams).
+    // Explicit option > config.sync.remote_type > 'personal' (mirror
+    // everything; `shared` is an explicit opt-in that filters the push set to
+    // shared-scope, non-private engrams).
     const remoteType = options?.remoteType ?? this.config.sync?.remote_type ?? 'personal'
     // Git sync REPLACES engrams.yaml on the pull/rebase path, so it has to
-    // serialize against the write path or it races it (#811 audit, finding 2):
+    // serialize against the write path or it races it:
     //
     //   1. writer A takes the store lock and reads corpus N
     //   2. sync B, holding nothing, pulls remote engram R -> the file is N+R
@@ -548,8 +538,7 @@ async sync(remote?: string, options?: { full?: boolean; remoteType?: SyncRemoteT
     //
     // Both operations report success and R is gone. The count-based guard
     // cannot catch this by construction — one row arrived while one row was
-    // added — which is why the fix has to be mutual exclusion rather than
-    // another validity check.
+    // added, so only mutual exclusion prevents it.
     //
     // `gitSync` takes no lock of its own (nothing in sync.ts calls withLock),
     // so this cannot self-deadlock against a non-reentrant lock. Held across
@@ -557,22 +546,19 @@ async sync(remote?: string, options?: { full?: boolean; remoteType?: SyncRemoteT
     // fetch is a delay, while a lost engram is permanent. Liveness keeps this
     // lock from being stolen while we hold it, however long the fetch takes.
     //
-    // CALLER CONTRACT: `sync()` now acquires the store lock, so it must NOT be
+    // CALLER CONTRACT: `sync()` acquires the store lock, so it must NOT be
     // called from inside `_withStoreLock`. The in-process queue is FIFO with no
     // timeout — unlike the file lock, which has `acquireTimeout` — so nesting
-    // hangs the process rather than erroring. Today's only callers are the
-    // `plur_sync` MCP tool and the `plur sync` CLI command, both top-level.
-    // (Found by writing this fix's first regression test as a nested call and
-    // watching it hang; see async-lock's "NOT REENTRANT" header.)
+    // hangs the process rather than erroring (see async-lock's "NOT REENTRANT"
+    // header). Callers are the `plur_sync` MCP tool and the `plur sync` CLI
+    // command, both top-level.
     const result = await this._withStoreLock(this.paths.engrams, async () => {
       return gitSync(this.paths.root, remote, { remoteType })
     })
     // `git pull --rebase` may have REPLACED engrams.yaml underneath us, so any
     // cached snapshot the store is holding now describes a file that no longer
-    // exists in that form. `invalidate()` exists precisely for this and had no
-    // caller anywhere in the repo — a cache-invalidation hook that nothing
-    // invalidates is a stale read waiting to happen, and this is the one place
-    // in the codebase where the bytes change without going through `save()`.
+    // exists in that form. This is the one place where the bytes change
+    // without going through `save()`, so the cache must be invalidated here.
     this._primaryStore.invalidate()
     for (const store of this._secondaryStores.values()) store.invalidate()
     // After git pull, YAML may have changed — refresh the index.
@@ -591,8 +577,8 @@ syncStatus(): SyncStatus {
   },
 
 async outboxCount(): Promise<number> {
-    // Same entries as `listOutbox()` (pushes AND queued remote retirements,
-    // decision D1), so the count and the list cannot disagree.
+    // Same entries as `listOutbox()` (pushes AND queued remote retirements),
+    // so the count and the list cannot disagree.
     return (await this.listOutbox()).length
   },
 
@@ -600,18 +586,18 @@ async listOutbox(): Promise<Array<{
     id: string
     /** `push`: a write waiting to reach its store (`_outbox`). `retire`: a
      *  queued DELETE of a copy the remote accepted after a forget/rescope
-     *  cancelled its delivery (decision D1, `_retireRemote`) — listed so a
+     *  cancelled its delivery (`_retireRemote`), listed so a
      *  stuck retirement is visible, not reported as an empty outbox. */
     kind: 'push' | 'retire'
     target_scope: string
     queued_at: string
     attempt_count: number
     last_error?: string
-    /** HTTP status of the last failed push, when the remote gave one (#1299). */
+    /** HTTP status of the last failed push, when the remote gave one. */
     last_status?: number
     age_days: number
     /**
-     * #1299: `retrying` — the next flush may succeed; `needs_action` — it
+     * `retrying` — the next flush may succeed; `needs_action` — it
      * cannot (401/403/404/422, a write refusal, no writable store).
      */
     state: OutboxState
@@ -621,7 +607,7 @@ async listOutbox(): Promise<Array<{
     next_step?: string
     /** `needs_action` only: the earliest time an automatic flush retries it. */
     next_retry_at?: string
-    /** Advisory (decision C3): set while a writer holds the entry's live
+    /** Advisory: set while a writer holds the entry's live
      *  per-entry claim — any process's, THIS instance's own in-progress flush
      *  or learn() push included: the row is not stuck, it is being delivered,
      *  until this time. Read from the claim file alone. Only the expiry is
@@ -667,8 +653,8 @@ async listOutbox(): Promise<Array<{
     }
     for (const e of engrams) {
       const sd = (e as any).structured_data as { _outbox?: Entry; _retireRemote?: Entry } | undefined
-      // Decision C3: advisory only, read from the entry's claim file alone.
-      // A live claim (#1277) — any holder's, this instance's own included —
+      // Advisory only, read from the entry's claim file alone.
+      // A live claim (any holder's, this instance's own included —
       // says the entry is being pushed now.
       const claimUntil = sd ? this._outboxClaimUntil(e.id, now) : undefined
       const leased = claimUntil ? { leased_until: claimUntil } : {}
@@ -708,8 +694,8 @@ async flushOutbox(options: { timeoutMs?: number; force?: boolean } = {}): Promis
 
 async _runOutboxFlush(options: { timeoutMs?: number; force?: boolean }, upload?: { ids: Set<string>; results: Map<string, UploadLocalResult> }): Promise<{ flushed: number; failed: number; deferred: number; held: number; skipped: number; expired_warnings: string[] }> {
     this._assertWritable()
-    // #1269: the network budget. Started by the flush itself once the local
-    // load is done (review of #1277), so a large store does not spend it on disk.
+    // The network budget. Started by the flush itself once the local load is
+    // done, so a large store does not spend it on disk.
     const budget = new AbortController()
     let budgetTimer: NodeJS.Timeout | undefined
     const startBudget = () => {
@@ -719,14 +705,14 @@ async _runOutboxFlush(options: { timeoutMs?: number; force?: boolean }, upload?:
     }
     // Ids this flush marks in `_outboxInFlight`, released however it ends.
     const claimed = new Set<string>()
-    // #1277 per-entry claims this flush takes; released however it ends (C4).
+    // Per-entry claims this flush takes; released however it ends.
     const entryClaims = new Set<string>()
     try {
       return await this._flushOutboxClaimed(claimed, budget.signal, options.force === true, startBudget, entryClaims, upload)
     } finally {
       if (budgetTimer) clearTimeout(budgetTimer)
-      // Decision C4: the per-entry claims are released however the flush
-      // ended — a thrown merge-back included. The idempotency key lives on the
+      // The per-entry claims are released however the flush ended, a thrown
+      // merge-back included. The idempotency key lives on the
       // outbox row, so the retry does not need the claim to remember anything.
       for (const id of entryClaims) this._releaseOutboxClaim(id)
       for (const id of claimed) this._outboxInFlight.delete(id)
@@ -734,9 +720,9 @@ async _runOutboxFlush(options: { timeoutMs?: number; force?: boolean }, upload?:
   },
 
 async _flushOutboxClaimed(claimed: Set<string>, budget: AbortSignal, force: boolean, startBudget: () => void, entryClaims: Set<string>, upload?: { ids: Set<string>; results: Map<string, UploadLocalResult> }): Promise<{ flushed: number; failed: number; deferred: number; held: number; skipped: number; expired_warnings: string[] }> {
-    // The re-guard below promises the target scope's CURRENT policy (R2-D #12);
-    // without this a long-running process flushed against the config it
-    // started with (core-index#9, round 2).
+    // The re-guard below promises the target scope's CURRENT policy; without
+    // this a long-running process would flush against the config it started
+    // with.
     this.reloadConfigIfChanged()
     let flushed = 0
     let failed = 0
@@ -745,7 +731,7 @@ async _flushOutboxClaimed(claimed: Set<string>, budget: AbortSignal, force: bool
     let skipped = 0
     /** Outbox metadata changed without a delivery or a failure (a cut). */
     let metadataDirty = false
-    /** Warn once per host, not once per queued engram (#785). */
+    /** Warn once per host, not once per queued engram. */
     const cooldownSkippedHosts = new Set<string>()
     const expired_warnings: string[] = []
     const TTL_MS = 7 * 24 * 60 * 60 * 1000
@@ -753,14 +739,14 @@ async _flushOutboxClaimed(claimed: Set<string>, budget: AbortSignal, force: bool
     type OutboxEntry = {
       target_url: string; target_scope: string; queued_at: string
       last_attempt: string; attempt_count: number; last_error: string
-      /** HTTP status of the last failed push (#1299). */
+      /** HTTP status of the last failed push . */
       last_status?: number
       last_token_fp?: string
-      /** Unique per logical write, stable across its retries (C4). */
+      /** Unique per logical write, stable across its retries. */
       idempotency_key?: string
     }
     /**
-     * #1299: back off an entry the store has already refused in a way a retry
+     * Back off an entry the store has already refused in a way a retry
      * cannot fix. Nothing about it changes; it is only not dialled. `force` —
      * the explicit flush — dials it.
      */
@@ -786,23 +772,22 @@ async _flushOutboxClaimed(claimed: Set<string>, budget: AbortSignal, force: bool
     }
     /**
      * Will this queued row be POSTed now, and to which store? A row that will
-     * not — held back, no store, host in cooldown — needs no network call, so
-     * it is not claimed (audit of #1231, finding 3: a flush
-     * that attempted nothing still rewrote the whole store twice). Consulted at
+     * not (held back, no store, host in cooldown) needs no network call, so
+     * it is not claimed, and a flush that attempts nothing writes nothing.
+     * Consulted at
      * selection AND again right before the push, since this flush's own
      * failures can open a host's breaker mid-batch.
      */
     const routeFor = (engram: Engram, outbox: OutboxEntry):
       { storeEntry: StoreEntry } | { skip: 'failed' | 'skipped'; warning?: string } => {
-      // Invariant `_outbox ⇒ scope === _outbox.target_scope` (formal WritePath,
-      // candidate 2). Every in-process writer now keeps it: rescope() cancels
-      // or retargets (#848), updateEngram() does the same (decision D4), and
-      // cross-scope recurrence never widens a queued row (decision D3). Kept as
-      // DEFENCE, because it is still reachable: a hand-edited engrams.yaml, an
-      // older client sharing the store, or an update that keeps the scope but
-      // supplies its own `_outbox`. Pushing such a row delivered it, carrying its
-      // scope, to another store. Held back, loudly and non-destructively: the
-      // entry stays queued, so rescoping the engram decides where it goes.
+      // Invariant `_outbox ⇒ scope === _outbox.target_scope`. Every in-process
+      // writer keeps it (rescope() and updateEngram() cancel or retarget, and
+      // cross-scope recurrence never widens a queued row). Kept as DEFENCE: a
+      // hand-edited engrams.yaml, an older client sharing the store, or an
+      // update that supplies its own `_outbox` can still break it, and pushing
+      // such a row would deliver it, carrying its scope, to another store. Held
+      // back, loudly and non-destructively: the entry stays queued, so
+      // rescoping the engram decides where it goes.
       if (engram.scope !== outbox.target_scope) {
         return {
           skip: 'failed',
@@ -812,7 +797,7 @@ async _flushOutboxClaimed(claimed: Set<string>, budget: AbortSignal, force: bool
         }
       }
       // A scope two servers now claim is held, never pushed to whichever is
-      // listed first (#1631): the same refusal as learn, non-destructively —
+      // listed first: the same refusal as learn, non-destructively —
       // the row stays queued until one of the entries is removed.
       const target = resolveScopeTarget(outbox.target_scope, this.config.stores ?? [])
       if (target.kind === 'local' && target.entry?.path) {
@@ -825,37 +810,28 @@ async _flushOutboxClaimed(claimed: Set<string>, budget: AbortSignal, force: bool
             + `(${target.servers.join(', ')}). Remove it from one of them in config.yaml; the save stays queued.`,
         }
       }
-      // Resolve remote driver from current config (don't store tokens in outbox)
+      // Resolve the remote driver from current config (tokens are never stored in the outbox).
       const storeEntry = (this.config.stores ?? []).find(
         s => s.url && s.scope === outbox.target_scope && !s.readonly
       )
       if (!storeEntry) {
         return { skip: 'failed', warning: `${engram.id}: no matching remote store for scope ${outbox.target_scope}` }
       }
-      // #785: consult the per-host breaker the RECALL leg maintains before
-      // spending a full fetch timeout on a host already known to be down.
-      //
-      // Without this, N queued engrams for an unreachable host cost N
-      // sequential timeouts on EVERY session start — and those failures never
-      // fed back, so the recall leg learned nothing from them either. Two legs,
-      // one host, two independent opinions about whether it is reachable.
+      // Consult the per-host breaker the RECALL leg maintains before spending
+      // a full fetch timeout on a host already known to be down: otherwise N
+      // queued engrams for an unreachable host cost N sequential timeouts on
+      // every session start.
       //
       // Skipping leaves the engrams queued: the outbox already retries on the
       // next flush, and the breaker's own cooldown is what decides when that
       // becomes worth attempting.
-      // `remoteHealthStatePath()`, explicitly — NOT the default (2026-08-13
-      // panel). The default is `remoteHealthPath()`, which resolves from
-      // PLUR_PATH; the recall leg passes `this.remoteHealthStatePath()`, which
-      // resolves from `paths.root`. For `new Plur({ path })`, `plur --path`,
-      // and every embedded consumer those are DIFFERENT FILES, so the two legs
-      // kept two independent opinions about whether a host is reachable —
-      // which is exactly the split #785 exists to close, reintroduced one
-      // level down. Measured: recall wrote plur-store-…/cache/remote-health.json
-      // while the write leg wrote plur-env-…/cache/remote-health.json. #785's
-      // test set PLUR_PATH and `path` to the same directory, the one
-      // configuration in which the bug is invisible.
+      // `remoteHealthStatePath()`, explicitly, NOT the default
+      // `remoteHealthPath()`: the default resolves from PLUR_PATH, while the
+      // recall leg resolves from `paths.root`. For `new Plur({ path })`,
+      // `plur --path` and embedded consumers those are different files, and
+      // both legs must share one opinion about whether a host is reachable.
       const healthPath = this.remoteHealthStatePath()
-      // Per credential (R2-CoreB core-policy#3): a 429 on another token for
+      // Per credential: a 429 on another token for
       // this url does not park this one.
       const cooldown = isHostInCooldown(storeEntry.url!, Date.now(), healthPath, storeEntry.token)
       if (cooldown.inCooldown) {
@@ -880,13 +856,12 @@ async _flushOutboxClaimed(claimed: Set<string>, budget: AbortSignal, force: bool
       s => s.url && s.scope === entry.target_scope && normalizeEndpointUrl(s.url) === normalizeEndpointUrl(entry.target_url),
     )
 
-    // Decision C3 (2026-09-29): #1277's per-entry claims are the one
-    // duplicate-push guard (spec/formal/findings/outbox.md: leases alone
+    // Per-entry claims are the one duplicate-push guard (leases alone
     // duplicate after a crash; claims alone suffice). There are no row leases,
     // so selection needs no store lock — the merge-back below still merges
     // into a fresh read under it.
-    // Stamped BEFORE the load, so the rows are at least as new as the stamp
-    // (review of #1277): the re-read after claiming trusts this read while
+    // Stamped BEFORE the load, so the rows are at least as new as the stamp:
+    // the re-read after claiming trusts this read while
     // the store file is unchanged.
     const rowsSeen = { stamp: this._engramsFileStamp(), keys: new Map<string, string | undefined>() }
     let engrams: Engram[] = await this._primaryStore.load()
@@ -896,10 +871,10 @@ async _flushOutboxClaimed(claimed: Set<string>, budget: AbortSignal, force: bool
     // immediate push, a concurrent flush) is not ours to push; another
     // process's push is kept off by the claim taken in the push loop.
     const free = (e: Engram) => !this._outboxInFlight.has(e.id)
-    // #766: skip retired engrams — a retired engram must not be pushed to the
+    // Skip retired engrams: a retired engram must not be pushed to the
     // remote and resurrected. The cancel-outbox path in forget() strips _outbox
-    // on retirement; this guard is belt-and-suspenders for any path that retires
-    // without explicitly cancelling (e.g. direct YAML edits, older client versions).
+    // on retirement; this guard covers any path that retires without
+    // explicitly cancelling (e.g. direct YAML edits, older client versions).
     const pending: Engram[] = engrams.filter(e => {
       if (upload && !upload.ids.has(e.id)) return false
       if (!Plur._stillQueued(e) || !free(e)) return false
@@ -912,16 +887,16 @@ async _flushOutboxClaimed(claimed: Set<string>, budget: AbortSignal, force: bool
         held++
         return false
       }
-      // Finding 3: not attempted now — reported, and nothing is written.
+      // Not attempted now: reported, and nothing is written.
       warnIfOld(e, outbox)
       holdBack(route)
       return false
     })
     for (const e of pending) { this._outboxInFlight.add(e.id); claimed.add(e.id) }
-    // Decision D1: queued "retire on remote" entries — retired or rescoped
+    // Queued "retire on remote" entries — retired or rescoped
     // rows whose remote copy was accepted after the delivery was cancelled.
-    // A row can carry both (audit of #1228, finding 1: retargeted to another
-    // store while the push to the old one was in flight) — it is claimed by
+    // A row can carry both (retargeted to another store while the push to the
+    // old one was in flight); it is claimed by
     // THIS flush through `pending`, so it is not skipped as in flight: the
     // old copy is retired here, before the push to the new store below. Two
     // concurrent retirers are harmless: `removeIdempotent` treats 404/410 as done.
@@ -931,7 +906,7 @@ async _flushOutboxClaimed(claimed: Set<string>, budget: AbortSignal, force: bool
       const entry = (e as any).structured_data?._retireRemote as RetireEntry | undefined
       if (!entry || !(pendingClaimed.has(e.id) || free(e))) return false
       if (retireStoreFor(entry)) return true
-      // Finding 3: no store to send the DELETE to — reported, nothing written.
+      // No store to send the DELETE to: reported, nothing written.
       expired_warnings.push(
         `${e.id}: remote copy ${entry.server_id} is queued for retirement on "${entry.target_scope}", `
         + `but no store with that url and scope is configured — still queued.`,
@@ -940,37 +915,29 @@ async _flushOutboxClaimed(claimed: Set<string>, budget: AbortSignal, force: bool
       return false
     })
     for (const e of retiring) { this._outboxInFlight.add(e.id); claimed.add(e.id) }
-    // #1269: the network budget starts NOW, after the local load.
+    // The network budget starts NOW, after the local load.
     startBudget()
-    // Finding 3: nothing to attempt — no merge-back, no write.
+    // Nothing to attempt: no merge-back, no write.
     if (pending.length === 0 && retiring.length === 0) {
       return { flushed, failed, deferred, held, skipped, expired_warnings }
     }
 
-    // Decision C4: every entry's idempotency key is ON ITS ROW before its first
+    // Every entry's idempotency key is ON ITS ROW before its first
     // POST. Rows queued by clients that predate keys get one minted and
     // persisted here, under the store lock, before anything is posted — so a
     // merge-back that later throws cannot cost the retry its key.
     await this._persistMissingOutboxKeys(pending)
 
-    // #863: push supersedes TARGETS before the engrams that supersede them.
+    // Push supersedes TARGETS before the engrams that supersede them.
     //
     // The server assigns its own id on flush, so a `supersedes` pointing at a
-    // LOCAL id means nothing there and was silently dropped — a correction and
-    // the thing it corrected both landed as independent, equally-authoritative
-    // records. Worse than a broken link: per the tool contract,
-    // supersedes-linked pairs are SKIPPED by tension scans, so dropping the
-    // edge both keeps the stale statement live at equal weight AND makes the
-    // pair look like a genuine contradiction to the scanner.
+    // LOCAL id means nothing there. Without the edge, a correction and the
+    // thing it corrected land as independent, equally authoritative records.
+    // When both are queued together, the mapping is available within this
+    // flush, provided the target goes first.
     //
-    // Both engrams in the reported case were written in one session and queued
-    // together, so the mapping is available within this flush — provided the
-    // target goes first.
-    //
-    // A TOPOLOGICAL SORT, not a comparator — see `orderBySupersedes`, which
-    // exists as its own module because the defect it replaces was a property
-    // of the ALGORITHM (`sort` with a non-transitive comparator) rather than
-    // of any store state, and so has to be testable as one.
+    // A TOPOLOGICAL SORT, not a comparator (`sort` with a non-transitive
+    // comparator is wrong); see `orderBySupersedes`.
     const pendingIds = new Set(pending.map(e => e.id))
     const supersedesTargets = (e: Engram): string[] => {
       const rel = (e as any).relations?.supersedes
@@ -1009,13 +976,13 @@ async _flushOutboxClaimed(claimed: Set<string>, budget: AbortSignal, force: bool
      */
     const leftToOthers = new Set<string>()
 
-    // Decision D1: retire accepted-after-cancel remote copies. A DELETE by the
+    // Retire accepted-after-cancel remote copies. A DELETE by the
     // server id the remote assigned; 404/410 means already gone (done). The
     // outcome is merged below: `undefined` = done (entry removed), otherwise
     // the entry with its attempt bookkeeping bumped.
     const retireOutcome = new Map<string, { serverId: string; next: RetireEntry | undefined }>()
     for (const row of retiring) {
-      // #1269: out of budget — leave it queued, untouched, for next time.
+      // Out of budget: leave it queued, untouched, for next time.
       if (budget.aborted) { deferred++; continue }
       const entry = (row as any).structured_data._retireRemote as RetireEntry
       const storeEntry = retireStoreFor(entry)
@@ -1047,7 +1014,7 @@ async _flushOutboxClaimed(claimed: Set<string>, budget: AbortSignal, force: bool
         logger.warning(`[plur:outbox] retiring remote copy ${entry.server_id} of ${row.id} failed: ${(err as Error).message}`)
       }
     }
-    /** Where each pushed id went — for queuing a retire if it was cancelled meanwhile (D1). */
+    /** Where each pushed id went, for queuing a retire if it was cancelled meanwhile. */
     const pushedTo = new Map<string, { url: string; scope: string }>()
     // A configuration-only server replacement changes the endpoint, not the
     // queued write. Keep its admitted identity separate from the actual
@@ -1055,11 +1022,11 @@ async _flushOutboxClaimed(claimed: Set<string>, budget: AbortSignal, force: bool
     const admittedWrites = new Map<string, { url: string; scope: string; key: string }>()
 
     for (const engram of pending) {
-      // #1269: out of budget — leave the rest queued, untouched, for next time.
+      // Out of budget: leave the rest queued, untouched, for next time.
       if (budget.aborted) { deferred++; continue }
       const outbox = (engram as any).structured_data._outbox as OutboxEntry
 
-      // C4: never post without the key already on the row. Only a failed
+      // Never post without the key already on the row. Only a failed
       // key write above leaves one keyless; it waits for the next flush.
       if (!outbox.idempotency_key) {
         expired_warnings.push(`${engram.id}: its idempotency key could not be saved — left for the next flush`)
@@ -1067,12 +1034,12 @@ async _flushOutboxClaimed(claimed: Set<string>, budget: AbortSignal, force: bool
         continue
       }
 
-      // C3: claim the entry before touching the network — one pusher at a
+      // Claim the entry before touching the network — one pusher at a
       // time (another flush in any process, or learn()'s own background push).
       const claim = this._claimOutboxEntry(engram.id, () => outbox.idempotency_key!)
       if (claim.status === 'busy') {
         if (claim.error) {
-          // #1581 audit L1: say on the row why it is held, so `plur outbox`,
+          // Say on the row why it is held, so `plur outbox`,
           // doctor and status show it. Not a push attempt: attempt_count and
           // last_attempt are untouched. Written back by the merge below.
           outbox.last_error = `${OUTBOX_CLAIM_ERROR_PREFIX}${claim.error}`
@@ -1086,8 +1053,7 @@ async _flushOutboxClaimed(claimed: Set<string>, budget: AbortSignal, force: bool
       }
       entryClaims.add(engram.id)
 
-      // The claim guards the ROW, not this flush's snapshot of it (review of
-      // #1277). The snapshot was loaded before any network round-trip; since
+      // The claim guards the ROW, not this flush's snapshot of it. The snapshot was loaded before any network round-trip; since
       // then another writer may have pushed this entry, removed its row and
       // released its claim. Both removal paths delete the row BEFORE they
       // release, so reading it now, under our claim, sees that. Gone, or
@@ -1097,7 +1063,7 @@ async _flushOutboxClaimed(claimed: Set<string>, budget: AbortSignal, force: bool
         continue
       }
 
-      // Audit of #1228, finding 1: a row still owing a retire of an older
+      // A row still owing a retire of an older
       // remote copy is delivered only once that retire is done. Pushing first
       // and then losing the row on hand-off would drop the retire entry with it.
       const owedRetire = (engram as any).structured_data._retireRemote as { server_id?: string } | undefined
@@ -1125,7 +1091,7 @@ async _flushOutboxClaimed(claimed: Set<string>, budget: AbortSignal, force: bool
 
       const driver = this._getRemoteDriver({ url: storeEntry.url!, token: storeEntry.token, scope: storeEntry.scope })
 
-      // Build clean copy without outbox metadata for the remote
+      // Clean copy without outbox metadata for the remote.
       const cleanEngram = { ...engram } as any
       const sd = { ...(cleanEngram.structured_data ?? {}) }
       delete sd._outbox
@@ -1135,23 +1101,19 @@ async _flushOutboxClaimed(claimed: Set<string>, budget: AbortSignal, force: bool
         cleanEngram.structured_data = sd
       }
 
-      // R2-D (#12): re-run the leak guard against the TARGET scope's CURRENT
-      // policy before re-pushing. The _outbox marker is only stamped after the
-      // write-time guard ran at queue-time, but that verdict can go stale: if a
-      // user tightens the scope's `sensitivity.forbid` between queue-time and
-      // flush-time (up to the 7-day TTL later), a now-offending engram would
-      // otherwise be pushed to the shared store unguarded. Re-scan and, if it
-      // now offends, demote in place (scope→local/private, drop _outbox) and
-      // skip the push — honoring the current policy, matching the "single source
-      // of truth on every write" guarantee the other egress paths uphold.
+      // Re-run the leak guard against the TARGET scope's CURRENT policy before
+      // pushing. The queue-time verdict can go stale: a user may tighten the
+      // scope's `sensitivity.forbid` before the flush (up to the 7-day TTL
+      // later). If it now offends, demote in place (scope→local/private, drop
+      // _outbox) and skip the push, like every other egress path.
       const scanText = (() => {
         const fields = this._engramContextFields(cleanEngram as Engram)
         return fields ? `${cleanEngram.statement}\n${JSON.stringify(fields)}` : cleanEngram.statement
       })()
       const offending = this._offendingHitsForScope(scanText, outbox.target_scope)
       if (isRemoteOnlyQueued(engram) && !this._isDeliverableTeamScope(outbox.target_scope)) {
-        // A remote-only save goes only to a deliverable team scope (re-audit 3
-        // of #1521): held, never sent elsewhere and never demoted.
+        // A remote-only save goes only to a deliverable team scope: held, never
+        // sent elsewhere and never demoted.
         outbox.last_attempt = now.toISOString()
         outbox.last_error = `held: "${outbox.target_scope}" is not a team scope served by a writable team store; ` +
           'a save from a remote-only folder is never sent elsewhere or kept locally — forget it, or add the team store'
@@ -1162,7 +1124,7 @@ async _flushOutboxClaimed(claimed: Set<string>, budget: AbortSignal, force: bool
       }
       if (offending.length > 0 && isRemoteOnlyQueued(engram)) {
         // A save from a remote-only folder is never demoted to a local row
-        // (audit of #1521, B2): it stays queued, not pushed, and says why.
+        // it stays queued, not pushed, and says why.
         const patterns = [...new Set(offending.map(h => h.pattern))].join(', ')
         outbox.last_attempt = now.toISOString()
         outbox.last_error = `held: sensitive content (${patterns}) is now forbidden by scope ${outbox.target_scope}'s policy; ` +
@@ -1195,16 +1157,15 @@ async _flushOutboxClaimed(claimed: Set<string>, budget: AbortSignal, force: bool
         continue
       }
 
-      // #863: rewrite supersedes to the DESTINATION's ids before pushing.
+      // Rewrite supersedes to the DESTINATION's ids before pushing.
       //
       // Three cases, and they are not the same:
       //   - target already flushed in THIS run -> remap to its server id.
       //   - target is a live LOCAL engram that was never destined for this
       //     remote -> the edge is inherently unrepresentable there. Strip it and
       //     say so, rather than blocking a legitimate write forever.
-      //   - target is neither -> refuse. Pushing a half-record is what produced
-      //     two live contradictory statements in the first place, and the issue
-      //     asks for a loud failure over a silent drop.
+      //   - target is neither -> refuse. A half-record leaves two live
+      //     contradictory statements; a loud failure beats a silent drop.
       const targets = supersedesTargets(cleanEngram as Engram)
       if (targets.length > 0) {
         const remapped: string[] = []
@@ -1243,26 +1204,26 @@ async _flushOutboxClaimed(claimed: Set<string>, budget: AbortSignal, force: bool
       }
 
       try {
-        // C4: the same key on every retry of this write.
+        // The same key on every retry of this write.
         admittedWrites.set(engram.id, {
           url: outbox.target_url, scope: outbox.target_scope, key: outbox.idempotency_key,
         })
         const pushed = await driver.appendAndGetServerId(cleanEngram, { signal: budget, idempotencyKey: outbox.idempotency_key })
         upload?.results.set(engram.id, { id: engram.id, outcome: pushed.review_required ? 'held_for_review' : pushed.deduplicated ? 'already_on_server' : 'sent', new_id: pushed.id })
-        // #863: remember the mapping so a later engram in this same flush can
+        // Remember the mapping so a later engram in this same flush can
         // point at the server id rather than the local one.
         pushedTo.set(engram.id, { url: storeEntry.url!, scope: outbox.target_scope })
         if (pushed?.id) {
           localToServer.set(engram.id, pushed.id)
           persistedIdMap[engram.id] = { server_id: pushed.id, url: storeEntry.url!, at: Date.now() }
-          // Also in the seen-on-server record (#1532 re-audit R2): the id map
+          // Also in the seen-on-server record: the id map
           // is capped and lives under cache/, so it can drop this evidence.
           this._noteSeenOnServer([{ id: pushed.id, scope: outbox.target_scope }])
           idMapDirty = true
         }
-        // #785: a write success clears the host's failure count for BOTH legs.
+        // A write success clears the host's failure count for BOTH legs.
         recordWriteOutcome(storeEntry.url!, true, Date.now(), this.remoteHealthStatePath())
-        // Success: remove from local store
+        // Success: remove from the local store.
         const idx = engrams.findIndex(e => e.id === engram.id)
         if (idx !== -1) engrams.splice(idx, 1)
         flushed++
@@ -1274,9 +1235,9 @@ async _flushOutboxClaimed(claimed: Set<string>, budget: AbortSignal, force: bool
         })
         this._maybeWriteProvenance(engram.id, engram)
       } catch (err) {
-        // #1269: cut at the caller's budget. Not a failure of the remote, so
+        // Cut at the caller's budget. Not a failure of the remote, so
         // the breaker is not fed. Recorded as an attempt so `plur outbox`
-        // shows it, and retried on the next flush with the same key (C4).
+        // shows it, and retried on the next flush with the same key.
         // A remote timeout or any other error takes the ordinary failure
         // path below and is retried the same way.
         if (err instanceof RemoteAbortedError) {
@@ -1284,7 +1245,7 @@ async _flushOutboxClaimed(claimed: Set<string>, budget: AbortSignal, force: bool
           outbox.last_attempt = now.toISOString()
           outbox.attempt_count += 1
           outbox.last_error = 'cut at the flush time budget before the remote answered — retried on the next flush'
-          // #1299: this attempt got no status; an older 403 must not keep
+          // This attempt got no status; an older 403 must not keep
           // classifying the entry as needs_action.
           delete outbox.last_status
           metadataDirty = true
@@ -1296,15 +1257,15 @@ async _flushOutboxClaimed(claimed: Set<string>, budget: AbortSignal, force: bool
         outbox.attempt_count += 1
         outbox.last_error = (err as Error).message
         outbox.last_token_fp = attemptedTokenFp
-        // #1299: the status when the remote gave one; cleared when it did not,
+        // The status when the remote gave one; cleared when it did not,
         // so a stale 403 cannot outlive a later network failure.
         if (err instanceof RemoteHttpError) outbox.last_status = err.status
         else delete outbox.last_status
-        // #785: and a write failure counts toward the same breaker, so a host
-        // that only ever fails on writes still opens one.
+        // A write failure counts toward the same breaker, so a host that only
+        // ever fails on writes still opens one.
         //
-        // #1308: except a refusal (401/403/404/422). The host answered; it
-        // said the REQUEST was wrong. Counting it let a few refused writes to
+        // Except a refusal (401/403/404/422): the host answered that the
+        // REQUEST was wrong, and counting it would let a few refused writes to
         // one scope open the breaker for every scope on the host. It neither
         // counts nor resets. Network errors, timeouts and 5xx still count.
         const refused = err instanceof RemoteHttpError && NEEDS_ACTION_STATUSES.has(err.status)
@@ -1327,9 +1288,8 @@ async _flushOutboxClaimed(claimed: Set<string>, budget: AbortSignal, force: bool
     // the set this method considered, so anything outside it is carried through
     // from the fresh read untouched.
     //
-    // And within those, only the FIELDS this flush changed are applied — the
-    // survivor row is not swapped in wholesale (2026-08-13 data-loss audit,
-    // F4). The survivor is a snapshot taken before the network round-trips, so
+    // And within those, only the FIELDS this flush changed are applied; the
+    // survivor row is not swapped in wholesale. The survivor is a snapshot taken before the network round-trips, so
     // replacing the fresh row with it reverts anything that happened to that
     // engram meanwhile: a feedback counter, an activation bump from a recall,
     // a pin, a local rescope. The flush only ever mutates outbox metadata, the
@@ -1348,7 +1308,7 @@ async _flushOutboxClaimed(claimed: Set<string>, budget: AbortSignal, force: bool
           // — but only while the fresh row is STILL queued. A forget() or local
           // rescope that landed during the push cancelled the delivery; the
           // remote accepted it anyway (the POST was already on the wire), so
-          // keep the local record and report the stray remote copy (#766).
+          // keep the local record and report the stray remote copy.
           .filter(e => {
             if (!(consideredIds.has(e.id) && !survivorsById.has(e.id))) return true
             const dest = pushedTo.get(e.id)
@@ -1361,7 +1321,7 @@ async _flushOutboxClaimed(claimed: Set<string>, budget: AbortSignal, force: bool
               && (e as any).structured_data._outbox.idempotency_key === admitted.key) return false
             const retargeted = Plur._stillQueued(e)
             const serverId = localToServer.get(e.id)
-            // Decision D1: queue the accepted copy for retirement on the remote
+            // Queue the accepted copy for retirement on the remote
             // (durable, on this kept row); the next flush DELETEs it.
             const queuedRetire = !!(serverId && dest)
               && Plur._queueRetireRemote(e, { target_url: dest!.url, target_scope: dest!.scope, server_id: serverId! }, retiredAt)
@@ -1378,13 +1338,12 @@ async _flushOutboxClaimed(claimed: Set<string>, budget: AbortSignal, force: bool
           .map(e => {
             const survivor = survivorsById.get(e.id)
             if (!survivor) return e
-            // #848: the delivery was cancelled while this flush ran (forget
+            // The delivery was cancelled while this flush ran (forget
             // stripped `_outbox`, a local rescope dropped it). Copying the
             // snapshot's `_outbox` back would re-queue it; leave the row alone.
             if (!Plur._stillQueued(e)) return e
             const sSd = (survivor as any).structured_data as Record<string, unknown> | undefined
-            // Audit of #1228, finding 1: retargeted meanwhile (D4 update /
-            // rescope to another store). The snapshot's `_outbox` names the OLD
+            // Retargeted meanwhile (update or rescope to another store). The snapshot's `_outbox` names the OLD
             // store; copying it back would re-point the row there.
             const sOb = sSd?._outbox as { target_url?: string; target_scope?: string; idempotency_key?: string } | undefined
             if (sOb?.target_url && !Plur._stillQueuedFor(e, { url: sOb.target_url, scope: sOb.target_scope ?? '' })) return e
@@ -1408,7 +1367,7 @@ async _flushOutboxClaimed(claimed: Set<string>, budget: AbortSignal, force: bool
               structured_data: Object.keys(fSd).length > 0 ? fSd : undefined,
             } as Engram
           })
-          // Decision D1: apply the retire outcomes — only to a row whose entry
+          // Apply the retire outcomes — only to a row whose entry
           // is still the one this flush worked on (same server id).
           .map(e => {
             const r = retireOutcome.get(e.id)
@@ -1420,7 +1379,7 @@ async _flushOutboxClaimed(claimed: Set<string>, budget: AbortSignal, force: bool
             return { ...e, structured_data: Object.keys(fSd).length > 0 ? fSd : undefined } as Engram
           })
         // The dropped engrams are the ones the remote accepted — a deliberate
-        // handoff, not a loss (audit #794 shrink guard).
+        // handoff, not a loss (for the shrink guard).
         await this._writeEngrams(this.paths.engrams, merged, { allowShrink: true })
       })
       await this._syncIndex()

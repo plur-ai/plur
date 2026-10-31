@@ -1,4 +1,3 @@
-// packages/core/src/meta/structural-analysis.ts
 import type { Engram } from '../schemas/engram.js'
 import type { LlmFunction } from '../types.js'
 import { classifyPolarity } from '../polarity.js'

@@ -1,12 +1,10 @@
 /**
- * Per-store reranker eval gate — #451 (final task).
+ * Per-store reranker eval gate.
  *
  * Cross-encoder rerankers are trained on web/QA corpora; on an out-of-domain
- * engram store they can be net-negative (one 2026 study measured bge-reranker
- * degrading dense retrieval 34%). The #451 measurements show the lift lives
- * in hard categories on the fixture corpus — but nothing guarantees that
- * transfers to YOUR store. So before anyone flips reranking on by default,
- * each store gets a quick self-check:
+ * engram store they can be net-negative. A lift measured on a fixture corpus
+ * does not necessarily transfer to a given store, so each store gets a quick
+ * self-check:
  *
  *   1. Sample the store's own engrams (deterministic, seeded).
  *   2. Synthesize a probe query from each sampled engram's statement —
@@ -57,7 +55,7 @@ const DEFAULT_SAMPLE = 20
 /** Candidate pool per probe — mirrors the shipping hybrid top-10 window. */
 const DEFAULT_TOP_K = 10
 
-/** Default PRNG seed — same as the benchmark harness for familiarity. */
+/** Default PRNG seed — same as the benchmark harness. */
 const DEFAULT_SEED = 1337
 
 /** Probe queries draw up to this many content words from the statement. */
@@ -362,7 +360,7 @@ export function isRerankerEvalStale(
  * Build the advisory message for a store+reranker pair, or null when there
  * is nothing to warn about (no cached eval, or verdict is not harmful).
  *
- * ADVISORY by design (#451): the reranker stays enabled; this only makes the
+ * ADVISORY by design: the reranker stays enabled; this only makes the
  * measured harm visible so a human can decide to unset PLUR_RERANKER.
  */
 export function rerankerEvalAdvisory(

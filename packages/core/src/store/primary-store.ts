@@ -1,38 +1,20 @@
 /**
- * PrimaryStore — the source-of-truth persistence seam (convergence Phase 1).
+ * PrimaryStore — the source-of-truth persistence seam.
  *
- * Until now the `Plur` class called `loadEngrams()` / `saveEngrams()` directly,
- * which hard-wired "the source of truth is a YAML file at `paths.engrams`" into
- * ~40 call sites. `StorageAdapter` could not take that role: it is an *index*
- * interface (`loadFiltered` / `searchBM25` / `searchVector` / `syncFromYaml` /
- * `reindex`) with no write operations at all, so no capability flag could turn
- * it into a store. `PrimaryStore` is that missing half.
- *
- * The split is therefore:
+ * `StorageAdapter` cannot take this role: it is an *index* interface
+ * (`loadFiltered` / `searchBM25` / `searchVector` / `syncFromYaml` /
+ * `reindex`) with no write operations at all. The split is:
  *
  *   PrimaryStore    — persistence. Owns the bytes. Read and write.
  *   StorageAdapter  — query. Either derived from a PrimaryStore (`role: 'index'`)
  *                     or backed by the same engine as one (`role: 'primary'`).
  *
- * YAML stays the default (`YamlPrimaryStore`), so single-user behaviour is
- * byte-for-byte unchanged. ADR-0001 (YAML as source of truth) is not repealed —
- * it is now a *choice of implementation* rather than an assumption baked into
+ * YAML is the default (`YamlPrimaryStore`). ADR-0001 (YAML as source of truth)
+ * is a *choice of implementation* here rather than an assumption baked into
  * the caller.
  *
- * ### Why asynchronous (convergence Phase 2, landed)
- *
- * This interface was synchronous when Phase 1 introduced it — deliberately and
- * temporarily. Every `Plur` write path was synchronous (`withLock` +
- * `readFileSync`), so a sync contract was a faithful description of the caller.
- * It was also a hard ceiling: there is no synchronous Postgres client for Node,
- * so no network-backed store could ever satisfy it, and manufacturing one
- * (block-on-promise, a sync subprocess) would have traded a documented
- * limitation for an undocumented hazard.
- *
- * Phase 2 flipped the write path, so the ceiling is gone and the two interfaces
- * this file used to carry have collapsed into one, exactly as planned:
- * `PrimaryStore` IS the async contract, and {@link AsyncPrimaryStore} is now an
- * alias kept only so existing imports keep resolving.
+ * The contract is asynchronous so a network-backed store (there is no
+ * synchronous Postgres client for Node) can satisfy it.
  *
  * `invalidate()` stays synchronous. It drops a local cache; it does not touch
  * the backing medium, and making it async would add an interleaving point that
@@ -50,7 +32,7 @@ export interface SaveOptions {
    *
    * Only the deliberate removers set it: compact, forget, retire, outbox
    * merge-back, pack uninstall. Everything else leaves it unset so that an
-   * unexpectedly short corpus is refused rather than persisted (audit #794).
+   * unexpectedly short corpus is refused rather than persisted.
    */
   allowShrink?: boolean
 }
@@ -58,21 +40,19 @@ export interface SaveOptions {
 /**
  * ## Implementer contract: what the engine cannot protect you from
  *
- * The engine guards the write path in three places (audit #794): the YAML
- * loader refuses an unreadable file, `saveEngrams` refuses an undeclared
- * shrink, and `_writeEngrams` refuses an undeclared *empty* corpus on any
- * backend. All three rest on the same assumption — that SOMETHING the store
- * says can be trusted.
+ * The engine guards the write path in three places: the YAML loader refuses
+ * an unreadable file, `saveEngrams` refuses an undeclared shrink, and
+ * `_writeEngrams` refuses an undeclared *empty* corpus on any backend. All
+ * three rest on the same assumption — that SOMETHING the store says can be
+ * trusted.
  *
  * An implementation whose `load()` under-reports (returns `[]`, or a partial
  * set, for a store that is not actually empty) and which implements neither
  * `append`/`updateMany` nor a truthful count defeats every one of them by
  * construction: read-modify-write is the only shape available, the engine has
  * no second opinion to check the read against, and the resulting `save()`
- * legitimately looks like "the corpus is now this small". Probe
- * `probe/p10-seam-capability.ts` demonstrates exactly this with a deliberately
- * lying store, and it still loses rows — not because a guard is missing, but
- * because there is nothing left to guard with.
+ * legitimately looks like "the corpus is now this small". There is nothing
+ * left to guard with.
  *
  * So an implementation MUST do at least one of:
  *
@@ -156,7 +136,7 @@ export interface PrimaryStore {
    *
    * File-backed implementations refuse a write that would shrink the corpus by
    * more than a tolerance unless `opts.allowShrink` is set — see the guard on
-   * `saveEngrams` (audit #794). Row stores have no equivalent exposure and may
+   * `saveEngrams`. Row stores have no equivalent exposure and may
    * ignore the option.
    */
   save(engrams: Engram[], opts?: SaveOptions): Promise<void>
@@ -172,22 +152,15 @@ export interface PrimaryStore {
    * ## Why this is on the store
    *
    * `Plur`'s write methods are read-modify-write: load the corpus, change one
-   * engram, save the corpus. That is only safe under mutual exclusion, and
-   * until now `Plur` provided it with `withAsyncLock(this.paths.engrams, …)` —
-   * an in-process mutex plus an `O_EXCL` lock file on the LOCAL filesystem.
-   *
-   * That is a YAML assumption compiled into the engine. It is correct for
-   * `YamlPrimaryStore`, where the path being locked IS the data. It protects
-   * nothing when the data lives in a shared database: two containers share
-   * neither the mutex nor the lock file, so both load, both mutate, and both
-   * save — and because `save()` replaces the whole corpus, the loser does not
-   * merely lose its own update, it DELETES rows the winner committed.
-   *
-   * Measured, not theorised: with two `Plur` instances over one Postgres
-   * schema, a concurrent `feedback` + `learn` reverted the feedback increment
-   * in 5 runs out of 5, and a concurrent *read-only* `recall()` + `learn`
-   * permanently deleted the learned engram in 2 out of 5 — because `recall()`
-   * updates activation, which is itself a whole-corpus write.
+   * engram, save the corpus. That is only safe under mutual exclusion. A
+   * path-based lock (an in-process mutex plus an `O_EXCL` lock file on the
+   * LOCAL filesystem) is correct for `YamlPrimaryStore`, where the path being
+   * locked IS the data. It protects nothing when the data lives in a shared
+   * database: two containers share neither the mutex nor the lock file, so
+   * both load, both mutate, and both save — and because `save()` replaces the
+   * whole corpus, the loser does not merely lose its own update, it DELETES
+   * rows the winner committed. Even a *read-only* `recall()` is exposed,
+   * because it updates activation, which is itself a write.
    *
    * So the lock has to be the store's business. A store that spans processes
    * implements this with something those processes actually share — a Postgres
@@ -209,11 +182,10 @@ export interface PrimaryStore {
    * and the wrong one for "these three engrams changed".
    *
    * It matters most on the read path. `recall()` updates activation on the
-   * engrams it returned, which under `save()` meant rewriting the ENTIRE corpus
-   * on every read, while holding the global write lock: measured at 252ms for
-   * 2,000 engrams, extrapolating to ~6.3s at 50,000 — the corpus size at which
-   * this tier is selected in the first place. Every writer queues behind every
-   * reader.
+   * engrams it returned; under `save()` that rewrites the ENTIRE corpus on
+   * every read while holding the global write lock (hundreds of ms at a few
+   * thousand engrams, seconds at the sizes where a row store is selected), so
+   * every writer queues behind every reader.
    *
    * Implementations MUST NOT delete rows absent from `engrams`, and MUST be
    * safe to call inside `withExclusiveAccess`.
@@ -225,7 +197,7 @@ export interface PrimaryStore {
    * Optional; when absent the caller falls back to a whole-corpus `save()` of
    * the corpus it already holds — never a fresh load-and-reparse.
    *
-   * The companion to {@link updateMany} for the write path (#740): `learn()`
+   * The companion to {@link updateMany} for the write path: `learn()`
    * constructs a brand-new engram, and on a row store that should be a
    * single-row INSERT, not a corpus replace. It is deliberately NOT expressed
    * as `updateMany([engram])`: `updateMany` is an upsert, so a duplicate id
@@ -237,7 +209,7 @@ export interface PrimaryStore {
    * store rewrites the whole file either way, and every in-engine caller
    * already holds a freshly loaded corpus under the store lock — the fallback
    * reuses that corpus, so implementing `append` here would only add a second
-   * full parse of a file the caller just parsed (the #745 regression).
+   * full parse of a file the caller just parsed.
    *
    * Implementations with a read cache MUST invalidate it after writing, and
    * MUST be safe to call inside `withExclusiveAccess`.
@@ -261,9 +233,9 @@ export interface PrimaryStore {
    * back to scanning the loaded corpus.
    *
    * The status filter is the predicate, not a nicety: re-learning a RETIRED
-   * statement must create a fresh engram rather than resurrect the retired one
-   * (#107), and the local half of a completed rescope is retired precisely so
-   * its hash cannot pull the statement back (#676). An implementation that
+   * statement must create a fresh engram rather than resurrect the retired one,
+   * and the local half of a completed rescope is retired precisely so its hash
+   * cannot pull the statement back. An implementation that
    * matches retired rows undoes both.
    *
    * `learn()` asks one question before it writes anything: "do we already have
@@ -271,8 +243,7 @@ export interface PrimaryStore {
    * scanning the parsed corpus is free — the file was parsed either way. On a
    * row store it is a full table scan standing in for an index lookup on
    * `(content_hash, scope)`, paid on every learn, at the corpus size where a row
-   * store gets selected in the first place (see {@link updateMany}: 252ms at
-   * 2,000 engrams, ~6.3s at 50,000).
+   * store gets selected in the first place (see {@link updateMany}).
    *
    * ### Scope-bound, deliberately
    *
@@ -281,7 +252,7 @@ export interface PrimaryStore {
    * not a prefix, not a parent, not "any scope this caller could read".
    *
    * That has a consequence worth stating plainly rather than discovering:
-   * `learn()`'s CROSS-scope recurrence check (#176 — the same statement
+   * `learn()`'s CROSS-scope recurrence check (the same statement
    * re-learned under a different scope graduates the existing engram toward
    * `global` + `locked` instead of creating a second row) asks the opposite
    * question, and this seam is defined so it cannot answer it. So when a store
@@ -359,16 +330,7 @@ export interface PrimaryStore {
 }
 
 /**
- * @deprecated Use {@link PrimaryStore}. This is now an alias for it.
- *
- * Phase 1 shipped two structurally identical interfaces — a synchronous
- * `PrimaryStore` describing what `Plur` could actually call, and this async
- * successor that only `PostgresAdapter` could satisfy — with the explicit plan
- * that Phase 2 would collapse them. Phase 2 has landed, so it has: there is one
- * contract, and the distinction the two names drew no longer exists.
- *
- * The alias stays because the name is used across `packages/core/src` and by
- * out-of-tree consumers; removing it would be a breaking change that buys
- * nothing. Prefer `PrimaryStore` in new code.
+ * @deprecated Use {@link PrimaryStore}. This is an alias for it, kept because
+ * the name is used across `packages/core/src` and by out-of-tree consumers.
  */
 export type AsyncPrimaryStore = PrimaryStore

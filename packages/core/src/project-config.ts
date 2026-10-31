@@ -3,7 +3,7 @@ import { basename, dirname, join, resolve } from 'path'
 import { homedir } from 'os'
 
 /**
- * Same #521 canonicalization as the CLI's `isPlurConfigured` guard:
+ * Same canonicalization as the CLI's `isPlurConfigured` guard:
  * `process.cwd()` is kernel-canonical (getcwd resolves symlinks) while
  * `homedir()` returns `$HOME` verbatim, so the same directory can spell two
  * ways when a path component is a symlink (macOS `/var` → `/private/var`).
@@ -11,21 +11,20 @@ import { homedir } from 'os'
  * misses on spelling silently fails OPEN, and a stray `~/.plur.yaml` then
  * intercepts every project (with `remote_url` set, that routes prompt text
  * off-box). Canonicalize before comparing; returned paths keep the caller's
- * spelling. (#778 — this mismatch also let the hook test's HOME==cwd setup
- * pass on macOS while failing on Linux CI, where /tmp has no symlink.)
+ * spelling.
  */
 export function canonicalize(p: string): string {
   // `realpathSync.native` returns the ON-DISK letter case, so on a
   // case-insensitive filesystem (macOS APFS/HFS+, Windows NTFS) two spellings
-  // that differ only in case, or in the Windows drive-letter case, fold to one
-  // (#1357). The JavaScript `realpathSync` keeps the caller's case.
+  // that differ only in case, or in the Windows drive-letter case, fold to one.
+  // The JavaScript `realpathSync` keeps the caller's case.
   return canonicalizeWith(p, realpathSync.native)
 }
 
 /**
  * Every canonical spelling of `p` a check that must fail CLOSED should accept:
  * the case-folded form above, plus the case-preserving form the JavaScript
- * `realpathSync` gives (what `canonicalize` returned before #1357). A match
+ * `realpathSync` gives. A match
  * against either one is a match, so folding case can only make such a check
  * match MORE paths, never fewer. Used for the folder map's `off` entries.
  */
@@ -40,7 +39,7 @@ function canonicalizeWith(p: string, real: (p: string) => string): string {
   // A path that does not exist yet (a fresh install's engrams.yaml, a
   // not-yet-created project dir) cannot be realpath'd, but its ancestors can:
   // resolve the deepest EXISTING ancestor and re-append the missing tail, so
-  // `/var/…/missing` and `/private/var/…/missing` compare equal (#1319). The
+  // `/var/…/missing` and `/private/var/…/missing` compare equal. The
   // missing tail keeps the caller's case: there is no on-disk name to fold to.
   const tail: string[] = []
   let cur = abs
@@ -58,20 +57,17 @@ function canonicalizeWith(p: string, real: (p: string) => string): string {
  * (CLI) and `plur_session_start` (MCP) so engrams from this project route
  * to the right scope/store automatically.
  *
- * Originally lived in `packages/cli/src/commands/hook-inject.ts` — moved to
- * core in #177 fix so the MCP session_start handler can apply project scope
- * automatically (the original bug: agents called session_start, project
- * config was ignored, everything got tagged `global`, context bled across
- * projects).
+ * Without it, project engrams would be tagged `global` and context would
+ * bleed across projects.
  */
 export interface ProjectConfig {
   domain?: string
   scope?: string
-  // Remote-Enterprise opt-in (per-project).
-  // When set, hook-inject queries the remote /api/v1/inject before falling
-  // back to local PLUR. Without these fields, the hook is local-only and
-  // Enterprise never sees a query — personal/non-project prompts stay
-  // private to the local engram store.
+  // Remote-Enterprise opt-in (per-project). When set, hook-inject queries the
+  // remote /api/v1/inject before falling back to local PLUR. Without these
+  // fields the hook is local-only, so personal/non-project prompts stay
+  // private to the local engram store. Adopted only from a trusted directory
+  // (see project-remote.ts).
   remote_url?: string
   remote_token?: string
   remote_scopes?: string[]
@@ -82,11 +78,9 @@ export interface ProjectConfig {
  * project boundary (`.git` directory) so we don't pick up an unrelated
  * config from a parent directory or from the user's HOME.
  *
- * Why the `.git` boundary: the original "walk to homedir" semantics meant
- * that a single `.plur.yaml` placed in HOME would silently route EVERY
- * project's prompts to whatever Enterprise URL it contained. That's a
- * privacy leak masquerading as ergonomics. The right boundary is the
- * project itself — defined by `.git`.
+ * Why the `.git` boundary: walking up to HOME would let a single `.plur.yaml`
+ * in HOME silently route EVERY project's prompts to whatever Enterprise URL it
+ * contained. The right boundary is the project itself — defined by `.git`.
  *
  * Termination guarantees:
  *   - Stop at the first `.plur.yaml` we hit (success).
@@ -95,13 +89,13 @@ export interface ProjectConfig {
  *   - Refuse to consider a `.plur.yaml` that sits IN HOME itself.
  *
  * Inside a repository the walk follows the REAL path (symlinks resolved) up
- * to the real repository root (#1589 audit rounds 1 and 2), the same path the
+ * to the real repository root, the same path the
  * marker walk (`findPlurMarker`) takes: a symlinked sub-folder then finds the
  * same `.plur.yaml` its real path does, and never one above the repository.
  * The result is returned in the caller's spelling when an ancestor of the
  * path as typed names the same folder (`/var/...` vs `/private/var/...`), so
  * existing callers see the path they gave. Outside any repository the walk
- * follows the path as typed (`path.resolve`), as before.
+ * follows the path as typed (`path.resolve`).
  */
 export function findProjectConfigPath(startDir: string = process.cwd()): string | null {
   const home = canonicalize(homedir())
@@ -168,16 +162,11 @@ function unquoteYamlValue(v: string): string {
  * Read `.plur.yaml` from an already-resolved path. `null` (not found) short-
  * circuits to `{}` without touching the filesystem again.
  *
- * E5 (2026-09 audit) split this out of `readProjectConfig` so a caller that
- * also needs the path for something else (opencode's `resolveTrustedScope`
- * check, which trusts against the directory the file lives in) can resolve
- * it ONCE with `findProjectConfigPath` and pass the same path to both — two
- * independent `find...` walks were a TOCTOU: the file `readProjectConfig()`
- * read and the path a second, separate `findProjectConfigPath()` call
- * returned could, in principle, resolve to different files if the
- * filesystem changed between the two walks (a symlink swapped, a `.plur.yaml`
- * created/removed), silently breaking the assumption that trust was being
- * checked against the file that was actually read.
+ * A caller that also needs the path (e.g. to check trust against the directory
+ * the file lives in) should resolve it ONCE with `findProjectConfigPath` and
+ * pass it here. Two independent walks are a TOCTOU: if the filesystem changes
+ * between them (a symlink swapped, a `.plur.yaml` created/removed), trust
+ * could be checked against a different file from the one that was read.
  */
 export function readProjectConfigFromPath(configPath: string | null): ProjectConfig {
   if (!configPath) return {}
@@ -211,7 +200,6 @@ export function readProjectConfigFromPath(configPath: string | null): ProjectCon
         listAcc.push(unquoteYamlValue(trimmed.slice(1).trim()))
         continue
       }
-      // Any non-dash line ends the previous list
       if (inListKey) finishList()
 
       const colonIdx = trimmed.indexOf(':')
@@ -232,7 +220,6 @@ export function readProjectConfigFromPath(configPath: string | null): ProjectCon
             inListKey = 'remote_scopes'
             listAcc = []
           } else {
-            // Inline comma-separated form
             config.remote_scopes = value.split(',').map(s => unquoteYamlValue(s.trim())).filter(Boolean)
           }
           break
@@ -258,12 +245,9 @@ export function readProjectConfigFromPath(configPath: string | null): ProjectCon
  * which lives in core and gets the dir from `process.cwd()`) can override
  * the walk root.
  *
- * A thin wrapper: resolves the path once (`findProjectConfigPath`) and reads
- * it (`readProjectConfigFromPath`). A caller that ALSO needs the path (to
- * check trust against the directory the file lives in, say) should call
- * those two directly instead of this — see `readProjectConfigFromPath`'s
- * docstring (E5, 2026-09 audit) for why calling `readProjectConfig` and
- * `findProjectConfigPath` separately is a TOCTOU.
+ * A thin wrapper over `findProjectConfigPath` + `readProjectConfigFromPath`.
+ * A caller that ALSO needs the path should call those two directly; see
+ * `readProjectConfigFromPath` for why separate walks are a TOCTOU.
  */
 export function readProjectConfig(startDir: string = process.cwd()): ProjectConfig {
   return readProjectConfigFromPath(findProjectConfigPath(startDir))

@@ -42,8 +42,8 @@ reindex(): Promise<void>
 reindexAsync(): Promise<void>
 
 /**
-   * Embed any active engrams missing a row in engram_embeddings and upsert them
-   * (#226 B-1). Runs after every syncFromYaml/reindex so learn()/learnAsync()/
+   * Embed any active engrams missing a row in engram_embeddings and upsert them.
+   * Runs after every syncFromYaml/reindex so learn()/learnAsync()/
    * sync() keep the PGLite vector index in step with YAML. Skips silently when
    * the embedder is unavailable (recall on those engrams degrades to the JSON
    * path until the next cycle) or when the active embedder dim differs from the
@@ -53,8 +53,8 @@ reindexAsync(): Promise<void>
 _autoEmbedNewEngrams(adapter: PGLiteAdapter): Promise<void>
 
 /**
-   * Kick (or coalesce into) the background primary-store auto-embed pass
-   * (#762). Fire-and-track: callers never await it — a write must not pay
+   * Kick (or coalesce into) the background primary-store auto-embed pass.
+   * Fire-and-track: callers never await it — a write must not pay
    * embedding latency, and a semantic recall must not block on a backfill.
    * The pass is tracked on `_pgliteInitPromise` so `waitForIndex()` covers it
    * exactly like the PGLite background chains.
@@ -64,11 +64,11 @@ _kickPrimaryAutoEmbed(adapter: StorageAdapter): void
 
 /**
    * Embed active engrams missing a row in the primary store's embedding table
-   * (#762) — the Postgres-primary counterpart of `_autoEmbedNewEngrams`.
+   * — the Postgres-primary counterpart of `_autoEmbedNewEngrams`.
    *
    * Deliberately NOT that method: `_autoEmbedNewEngrams` loads the whole
    * corpus and probes `hasEmbedding` per id, which is fine for a local PGLite
-   * index and a serious per-write regression at the corpus size that selects
+   * index and too costly per write at the corpus size that selects
    * a server tier. This pass asks the store the set-based question instead —
    * `listEngramsMissingEmbeddings` is one anti-join per batch — so its cost
    * scales with the GAP, not with the corpus.
@@ -87,13 +87,13 @@ _kickPrimaryAutoEmbed(adapter: StorageAdapter): void
 /** @internal */
 _autoEmbedPrimaryStore(adapter: StorageAdapter): Promise<void>
 
-/** Record a background index failure for later surfacing (#272). */
+/** Record a background index failure for later surfacing. */
 /** @internal */
 _recordIndexError(op: IndexSyncError['op'], err: unknown): void
 
 /**
    * Last background index failure, or null when the most recent pass
-   * succeeded (#272). The background chains (initial sync, syncFromYaml,
+   * succeeded. The background chains (initial sync, syncFromYaml,
    * reindex, auto-embed) swallow rejections so waitForIndex() never throws;
    * this is the state-based surface for CLI/MCP callers. Also included in
    * status().index_error.
@@ -117,7 +117,7 @@ waitForIndex(): Promise<void>
 /**
    * @param unreachedStores stores the caller's remote walk could not probe, so
    *   the terminal "not found" can say so rather than claiming a search that
-   *   did not run (#907).
+   *   did not run.
    */
 /** @internal */
 _feedbackPack(id: string, signal: 'positive' | 'negative' | 'neutral', unreachedStores?: string[], applyOpts?: { source?: FeedbackSource }): Promise<void>
@@ -172,17 +172,16 @@ async compact(): Promise<{ removed: number; remaining: number }> {
     this._remoteOnlyRefuseLocalStore('Compacting the store (run it outside the remote-only folder)')
     return await this._withStoreLock(this.paths.engrams, async () => {
       const engrams = await this._primaryStore.load()
-      // Decision D1: a retired row still carrying a queued "retire on remote"
+      // A retired row still carrying a queued "retire on remote"
       // entry is kept until the flush has retired the remote copy — removing
       // it would lose the only durable record of that pending DELETE.
       const active = engrams.filter(e => e.status !== 'retired' || !!(e as any).structured_data?._retireRemote)
       const removed = engrams.length - active.length
       if (removed > 0) {
-        // Removing retired engrams IS this method (audit #794 shrink guard).
+        // Removing retired engrams IS this method, so the shrink guard is lifted.
         await this._writeEngrams(this.paths.engrams, active, { allowShrink: true })
-        // Recorded like every other store change PLUR makes (code review of
-        // 0.23, R2), so `plur verify` can tell it from an edit behind PLUR's
-        // back. Ids only.
+        // Recorded like every other store change PLUR makes, so `plur verify`
+        // can tell it from an edit behind PLUR's back. Ids only.
         // Every removed row, by identity — a retired row can share its id with
         // a kept one, and it must still be named.
         const kept = new Set(active)
@@ -200,19 +199,14 @@ async compact(): Promise<{ removed: number; remaining: number }> {
     })
   },
 
-// batchDecay() was removed 2026-07-14. Decay is a pure function of
+// There is deliberately no batch decay. Decay is a pure function of
 // last_accessed and is computed at READ time (see inject.ts — decayedStrength
 // on every candidate); reinforcement re-anchors last_accessed on access
-// (_reactivateResults). A scheduled batch that MATERIALIZED decay back into
-// the store was redundant with that model AND wrong: it lowered stored
-// strength without advancing last_accessed, so read-time decay then
-// double-counted — an untouched engram decayed by (elapsed × how many times
-// the cron fired), not by elapsed time. It also rewrote the whole YAML store
-// on a schedule, which (a) produced the whole-store-overwrite data-loss bug,
-// (b) turned every sync into churn on values that are a pure function of the
-// data, and (c) buried real provenance in git history. PLUR does not need a
-// decay cron. Physical archival of long-cold engrams, if ever wanted, should
-// be an explicit, reversible, logged maintenance op — not this.
+// (_reactivateResults). Materializing decay back into the store would lower
+// stored strength without advancing last_accessed, so read-time decay would
+// double-count it, and it would rewrite the whole YAML store on a schedule.
+// Archival of long-cold engrams, if wanted, should be an explicit,
+// reversible, logged maintenance op.
 async reindex(): Promise<void> {
     this._remoteOnlyRefuseLocalStore('Reindexing the store (run it outside the remote-only folder)')
     if (this.pgliteAdapter) {
@@ -260,15 +254,14 @@ async _autoEmbedNewEngrams(adapter: PGLiteAdapter): Promise<void> {
         logger.debug(`[plur] auto-embed skip: active embedder dim differs from indexed column (${indexedDim}). Run 'plur sync --reembed --full' to migrate.`)
         return
       }
-      // A queued remote-only save is never embedded (gate review of #1663).
+      // A queued remote-only save is never embedded.
       const active = (await this._loadAllEngrams()).filter(e => e.status === 'active' && !(e as any)._originalId && !(e as any)._pack && !isRemoteOnlyQueued(e))
       if (active.length === 0) return
       const { engramSearchText, embeddingContentHash } = await import('../fts.js')
       for (const engram of active) {
-        // #812: skip on "already embedded FROM THIS TEXT", not on "already has
-        // some vector". The latter is what `hasEmbedding` answered, which meant
-        // a dedup UPDATE/MERGE could rewrite an engram and its vector would
-        // never be recomputed — semantic recall kept ranking it by the old text.
+        // Skip on "already embedded FROM THIS TEXT", not on "already has some
+        // vector": a dedup UPDATE/MERGE can rewrite an engram, and its vector
+        // must then be recomputed or semantic recall ranks it by the old text.
         const hash = embeddingContentHash(engram)
         if (await adapter.embeddingIsCurrent(engram.id, hash)) continue
         const vec = await embed(engramSearchText(engram))
@@ -316,7 +309,7 @@ async _autoEmbedPrimaryStore(adapter: StorageAdapter): Promise<void> {
         }
         return
       }
-      // #335 dim guard, mirroring _autoEmbedNewEngrams: an embedder/column
+      // Dim guard, mirroring _autoEmbedNewEngrams: an embedder/column
       // mismatch must skip, not persist wrong-shape vectors.
       const withDim = adapter as Partial<{ getVectorColumnDim(): Promise<number | null> }>
       const indexedDim = typeof withDim.getVectorColumnDim === 'function'
@@ -330,20 +323,19 @@ async _autoEmbedPrimaryStore(adapter: StorageAdapter): Promise<void> {
         return
       }
       const { engramSearchText, embeddingContentHash } = await import('../fts.js')
-      // #812: the loop's exit condition is "the store stops returning rows",
-      // and the store's predicate now includes a hash comparison. If the hash
-      // this side writes ever stopped matching the one the store's SQL derives,
-      // every batch would return the same rows and the pass would spin forever
-      // — a background task pinning a core. The two agree by construction (see
-      // `embeddingContentHash`), and this set makes that a warning instead of a
-      // hang if they ever stop agreeing.
+      // The loop's exit condition is "the store stops returning rows", and the
+      // store's predicate includes a hash comparison. If the hash this side
+      // writes ever stopped matching the one the store's SQL derives, every
+      // batch would return the same rows and the pass would spin forever. The
+      // two agree by construction (see `embeddingContentHash`), and this set
+      // makes that a warning instead of a hang if they ever stop agreeing.
       const embeddedThisPass = new Set<string>()
-      // A queued remote-only save is never embedded (gate review of #1663): it
-      // stays "missing", so it is set aside, and a batch of only those ends the pass.
+      // A queued remote-only save is never embedded: it stays "missing", so it
+      // is set aside, and a batch of only those ends the pass.
       const skippedRemoteOnly = new Set<string>()
       for (;;) {
         // Asked for the set-aside rows on top of a batch, so a run of queued
-        // saves never hides the rows behind them (Codex round 10 on #1663).
+        // saves never hides the rows behind them.
         const want = PRIMARY_AUTO_EMBED_BATCH + skippedRemoteOnly.size
         const batch = await adapter.listEngramsMissingEmbeddings(want, { includeStale: true })
         if (batch.length === 0) return
@@ -382,8 +374,7 @@ async _autoEmbedPrimaryStore(adapter: StorageAdapter): Promise<void> {
     } catch (err) {
       // A store torn down mid-pass (close()/dropSchema() in a short-lived
       // process) is a cancellation, not a failure — stay quiet and do NOT
-      // record it, or the stray warning outlives the process's real output
-      // (the release smoke's last-line gate caught exactly that).
+      // record it, or the stray warning outlives the process's real output.
       if (isStoreTeardownError(err)) {
         logger.debug('[plur] primary-store auto-embed stopped: the store was closed or dropped mid-pass.')
         return
@@ -416,7 +407,7 @@ async _syncIndex(): Promise<void> {
       // auto-embed any new engrams so they're vector-searchable.
       const adapter = this.pgliteAdapter
       this._lastIndexError = null // new pass — stale failures cleared on success
-      // remote-only: no embedding pass started from a bound operation (Codex round 4 on #1663).
+      // remote-only: no embedding pass started from a bound operation.
       const bound = !!this._activeBinding()
       this._pgliteInitPromise = adapter.syncFromYaml()
         .then(() => bound ? undefined : this._autoEmbedNewEngrams(adapter))
@@ -426,7 +417,7 @@ async _syncIndex(): Promise<void> {
         })
       return
     }
-    // Primary query store (#762): the write already landed in the engine that
+    // Primary query store: the write already landed in the engine that
     // answers queries — no index delta — but its EMBEDDING has not. Kick the
     // background auto-embed pass so `engram_embeddings` tracks the corpus and
     // semantic recall gets to use the vector index instead of falling back to
@@ -434,7 +425,7 @@ async _syncIndex(): Promise<void> {
     const primary = this._primaryQueryAdapter()
     if (primary && typeof primary.listEngramsMissingEmbeddings === 'function') {
       this._lastIndexError = null // new pass — stale failures cleared on success
-      // remote-only: no embedding pass started from a bound operation (Codex round 4 on #1663).
+      // remote-only: no embedding pass started from a bound operation.
       if (!this._activeBinding()) this._afterStoreCommit(() => this._kickPrimaryAutoEmbed(primary))
       return
     }
@@ -452,7 +443,7 @@ async waitForIndex(): Promise<void> {
 async _feedbackPack(id: string, signal: 'positive' | 'negative' | 'neutral', unreachedStores: string[] = [], applyOpts: { source?: FeedbackSource } = {}): Promise<void> {
     if (!fs.existsSync(this.paths.packs)) throw new Error(`Engram not found: ${id}`)
 
-    // A pack id of the earlier form (a receipt from before the pack-id digest)
+    // A pack id of the older form (from before the pack-id digest)
     // is rated as the one pack row it names; ambiguous, it names none.
     {
       const rows = this._loadInstalledPacks().flatMap(p => p.engrams.map(row => ({ row, pack: p.manifest.name })))
@@ -466,13 +457,10 @@ async _feedbackPack(id: string, signal: 'positive' | 'negative' | 'neutral', unr
       const engramsPath = `${packDir}/engrams.yaml`
       if (!fs.existsSync(engramsPath)) continue
 
-      // Under the PACK file's own lock, load included.
-      //
-      // The last unlocked read-modify-write of this shape. `save()` replaces
-      // the whole pack file, so two processes rating different engrams in one
-      // installed pack did not merely lose an increment — whichever wrote
-      // second dropped the other's. Packs are shared by every agent on the
-      // machine, which is exactly the concurrency this misses.
+      // Under the PACK file's own lock, load included. `save()` replaces the
+      // whole pack file, and packs are shared by every agent on the machine,
+      // so an unlocked read-modify-write would let two processes rating
+      // different engrams in one pack drop each other's changes.
       //
       // Keyed on the pack's own path, so it cannot collide with the primary
       // store's lock; the caller holds none.
@@ -481,7 +469,7 @@ async _feedbackPack(id: string, signal: 'positive' | 'negative' | 'neutral', unr
         const engrams = await packStore.load()
         // A pack row answers to its pack id ({@link packEngramId}), the id
         // every read path hands out. Its bare id still finds it: the caller
-        // reaches here only after no store of mine held `id` (PCK-4).
+        // reaches here only after no store of mine held `id`.
         let packName: string | undefined
         try { packName = loadPack(packDir).manifest.name } catch { packName = undefined }
         const engram = engrams.find(e => packName !== undefined && packEngramId(e.id, packName) === id)
@@ -496,7 +484,7 @@ async _feedbackPack(id: string, signal: 'positive' | 'negative' | 'neutral', unr
       if (handled) return
     }
 
-    // "Not found" must not mean "did not look" (#907). If a store could not be
+    // "Not found" must not mean "did not look". If a store could not be
     // reached, say which — the caller can retry or pass an explicit scope, and
     // neither is actionable if the message claims a search that did not run.
     throw new Error(
@@ -509,8 +497,8 @@ async _feedbackPack(id: string, signal: 'positive' | 'negative' | 'neutral', unr
   },
 
 capture(summary: string, context?: CaptureContext): Episode {
-    // Owner decision on #1521: the timeline lives on this machine and can hold
-    // session content, so a remote-only folder captures none.
+    // The timeline lives on this machine and can hold session content, so a
+    // remote-only folder captures none.
     if (this._remoteOnly) throw this._remoteOnlyError('timeline')
     return captureEpisode(this.paths.episodes, summary, context)
   },
@@ -552,7 +540,7 @@ async ingest(content: string, options?: IngestOptions): Promise<IngestCandidate[
         await this.learn(candidate.statement, {
           type: candidate.type,
           // remote-only: no explicit scope, so it goes to the folder's team
-          // scope (re-audit 2 of #1521, R2-S4); elsewhere `global`, as before.
+          // scope; elsewhere `global`.
           scope: options?.scope ?? (this._remoteOnly ? undefined : 'global'),
           domain: options?.domain,
           source: candidate.source,
@@ -567,10 +555,8 @@ previewPack(source: string): ReturnType<typeof previewPack> {
     return previewPack(source)
   },
 
-// `allowModified` was declared on `InstallOptions` and then narrowed away
-// here, so no caller outside this module could ever pass it. That made the
-// standard's own remedy for a false-positive scan — correct the pack and
-// install it — unreachable, since correcting a pack moves the hash it shipped.
+// `allowModified` lets a corrected pack be installed after a false-positive
+// scan: correcting a pack moves the hash it shipped.
 async installPack(source: string, opts?: { allowInjection?: boolean; allowModified?: boolean }): Promise<ReturnType<typeof installPack>> {
     const existing = await this._loadAllEngrams()
     return installPack(this.paths.packs, source, existing, opts)
@@ -583,7 +569,7 @@ uninstallPack(name: string): ReturnType<typeof uninstallPack> {
 exportPack(engrams: Engram[], outputDir: string, manifest: ExportOptions): ReturnType<typeof exportPack> {
     this._remoteOnlyRefuseLocalStore('Exporting a pack')
     // A pack is a permanent copy: never of a queued remote-only save, bound or
-    // not (Codex round 11 on #1663).
+    // not.
     const queuedRow = engrams.find(isRemoteOnlyQueued)
     if (queuedRow) throw this._queuedStaysRemote(queuedRow)
     const configured = (this.config as any)?.provenance?.default_license as string | undefined
@@ -598,8 +584,6 @@ migratePackIntegrity(opts: { dryRun?: boolean } = {}): ReturnType<typeof migrate
     return migratePackIntegrity(this.paths.packs, opts)
   },
 
-// SP5 methods (deferred — vault-export, registry not yet merged)
-// exportToVault, discoverPacks, getRegistryUrl will be added when SP5 merges
 getStorageRoot(): string {
     return this.paths.root
   },

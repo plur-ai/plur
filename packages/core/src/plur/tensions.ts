@@ -15,20 +15,19 @@ export interface TensionsMethods {
 listTensions(filter?: { status?: TensionStatus[] }): TensionRecord[]
 
 /**
-   * Canonical pair keys of every recorded tension — the scan exclusion set
-   * (#181). Any recorded pair is excluded from future scans regardless of
+   * Canonical pair keys of every recorded tension — the scan exclusion set.
+   * Any recorded pair is excluded from future scans regardless of
    * status: dismissed/resolved pairs are suppressed, detected/confirmed
    * pairs are already adjudicated and must not re-pay the LLM judge.
    */
 suppressedTensionPairKeys(): string[]
 
 /**
-   * Persist fresh scan detections as tension records (#181). Pairs already
+   * Persist fresh scan detections as tension records. Pairs already
    * recorded (any status) are returned as-is and counted in existing_count —
    * a scan can never duplicate or resurrect a record. New records get a
    * T-YYYY-MMDD-NNN id, a v1 category (categorizeTension), status
-   * 'detected', and emit the `contradiction_detected` history event (the
-   * event type existed since SP2 with zero emitters — audit #213 C5).
+   * 'detected', and emit the `contradiction_detected` history event.
    */
 recordTensions(pairs: TensionPair[]): Promise<{ records: TensionRecord[]; new_count: number; existing_count: number }>
 
@@ -42,17 +41,17 @@ confirmTension(id: string): TensionRecord
 /**
    * Dismiss a tension as a false positive (detected|confirmed → dismissed).
    * The pair stays in the scan exclusion set, so it is never re-flagged.
-   * Neither memory changes: a draft in the pair (LRN-9's held-back proposal)
+   * Neither memory changes: a draft in the pair (a held-back proposal)
    * stays a draft — stored and searchable, never injected.
    */
 dismissTension(id: string): TensionRecord
 
 /**
    * Resolve a tension by picking the winning engram: the loser is retired
-   * outright (decisive — NOT reference-count-decremented like forget(), see
-   * audit #213 §2), the record becomes status 'resolved' with resolved_by /
-   * resolved_at set. A winner that is a draft (LRN-9: a statement proposed
-   * onto a locked memory waits as a draft) becomes a normal memory with
+   * outright (decisive — NOT reference-count-decremented like forget()), the
+   * record becomes status 'resolved' with resolved_by / resolved_at set. A
+   * winner that is a draft (a statement proposed onto a locked memory waits
+   * as a draft) becomes a normal memory with
    * commitment 'decided', so it is given to the agent from then on.
    */
 resolveTension(id: string, winnerId: string): Promise<{ record: TensionRecord; retired_id: string }>
@@ -60,23 +59,21 @@ resolveTension(id: string, winnerId: string): Promise<{ record: TensionRecord; r
 /**
    * Unconditional retirement for tension resolution. Unlike forget(), does
    * NOT decrement write_count — the user explicitly adjudicated this
-   * engram as the losing side, so a multiply-learned loser must still die
-   * (audit #213 §2: "a user who resolved a tension by forgetting the loser
-   * may find it still active").
+   * engram as the losing side, so a multiply-learned loser must still be
+   * retired.
    */
 /** @internal */
 _retireEngramForResolution(id: string, reason: string): Promise<boolean>
 
 /**
    * True when the engram participates in an unresolved (detected|confirmed)
-   * persisted tension. Gates commitment escalation into 'locked' (#181,
-   * audit #213 item 3): contradicted knowledge must not lock.
+   * persisted tension. Gates commitment escalation into 'locked':
+   * contradicted knowledge must not lock.
    */
 hasUnresolvedTension(engramId: string): boolean
 
 /**
-   * Injection warnings for persisted tensions (#181, audit #213 item 4 —
-   * surface, don't adjudicate):
+   * Injection warnings for persisted tensions (surface, don't adjudicate):
    * - confirmed tension: warn when EITHER side injects (the user vouched
    *   for the conflict being real; relying on one side blind is a hazard);
    * - detected tension: warn only when BOTH sides inject together.
@@ -85,7 +82,7 @@ hasUnresolvedTension(engramId: string): boolean
 _tensionWarningsFor(injectedIds: string[]): string[]
 
 /**
-   * Resolved tension-scan defaults from config (#240). Consumers (MCP
+   * Resolved tension-scan defaults from config. Consumers (MCP
    * plur_tensions, CLI) merge explicit args over these.
    */
 getTensionsConfig(): { temporal_domains: string[]; snapshot_pairs: 'skip' | 'floor'; measured_under_pairs: 'skip' | 'floor'; temporal_discount: boolean }
@@ -93,22 +90,22 @@ getTensionsConfig(): { temporal_domains: string[]; snapshot_pairs: 'skip' | 'flo
 /**
    * Write the reverse `relations.superseded_by` edge on each supersede
    * target present in the (already-loaded, lock-held) local engram list
-   * (#240). Unknown targets are skipped silently — the forward edge on the
-   * new engram still records the intent. Mutates in place and RETURNS the
-   * targets it actually changed: on the incremental write path (#740) the
+   * Unknown targets are skipped silently — the forward edge on the new
+   * engram still records the intent. Mutates in place and RETURNS the
+   * targets it actually changed: on the incremental write path the
    * new engram is appended on its own, so the caller must persist these
    * mutated rows explicitly via `_updateEngrams` — a whole-corpus fallback
    * save carries them implicitly, a targeted `append` does not.
    */
 /**
-   * Audit 5 F4: write the reverse `superseded_by` edge on supersede targets
-   * that live in a writable SECONDARY store, in that store, under its own lock
-   * — the primary-only `_writeSupersededByEdges` never reached them, so the
-   * old memory kept being injected beside its replacement.
+   * Write the reverse `superseded_by` edge on supersede targets that live in
+   * a writable SECONDARY store, in that store, under its own lock (the
+   * primary-only `_writeSupersededByEdges` does not reach them). Without it
+   * the old memory keeps being injected beside its replacement.
    *
    * Called right before the new row is written, with the new row in hand and
    * not yet persisted, so anything decided here lands in the same write:
-   *  - target locked meanwhile (LRN-9): the forward edge is dropped and the new
+   *  - target locked meanwhile: the forward edge is dropped and the new
    *    row becomes a draft;
    *  - target gone or retired meanwhile: the forward edge becomes a link.
    * Returns an undo that removes the edges it wrote, for when the new row then
@@ -118,8 +115,7 @@ getTensionsConfig(): { temporal_domains: string[]; snapshot_pairs: 'skip' | 'flo
 _landSecondarySupersedes(engram: Engram, targets: SecondarySupersede[]): Promise<() => Promise<void>>
 
 /**
-   * How a row of THIS primary store is named from inside another store
-   * (audit 6 N2): its id namespaced under a scope derived from this primary's
+   * How a row of THIS primary store is named from inside another store: its id namespaced under a scope derived from this primary's
    * location. Another store reads it as foreign (no row of its own, and no
    * configured store, answers to that prefix), so it can never name an
    * unrelated row there; this install resolves it back in `getById`.
@@ -135,14 +131,14 @@ _writeSupersededByEdges(engrams: Engram[], targetIds: string[], newId: string): 
 
 /**
    * Remove all conflict relations from every local engram.
-   * Used after tension-detection redesign to clear accumulated false positives.
+   * Clears accumulated false positives from older conflict detection.
    */
 purgeTensions(): Promise<{ purged_count: number; engrams_modified: number; stores_cleaned: number }>
 }
 
 export const tensionsMethods: TensionsMethods & ThisType<Plur> = {
 // ------------------------------------------------------------------
-// Tension lifecycle (#181) — persistence, confirm/dismiss/resolve.
+// Tension lifecycle — persistence, confirm/dismiss/resolve.
 // ------------------------------------------------------------------
 listTensions(filter?: { status?: TensionStatus[] }): TensionRecord[] {
     // remote-only: tension records carry personal statements.
@@ -162,7 +158,7 @@ async recordTensions(pairs: TensionPair[]): Promise<{ records: TensionRecord[]; 
     this._remoteOnlyRefuseLocalStore('Recording tensions')
     if (pairs.length === 0) return { records: [], new_count: 0, existing_count: 0 }
     // A pair with a queued remote-only save is never recorded: the record would
-    // keep its statement here (gate review of #1663).
+    // keep its statement here.
     {
       const queuedIds = new Set((await this._basePrimaryStore.loadCached()).filter(isRemoteOnlyQueued).map(e => e.id))
       if (queuedIds.size > 0) pairs = pairs.filter(p => !queuedIds.has(p.id_a) && !queuedIds.has(p.id_b))
@@ -170,12 +166,9 @@ async recordTensions(pairs: TensionPair[]): Promise<{ records: TensionRecord[]; 
     }
     const engramById = new Map((await this._loadAllEngrams()).map(e => [e.id, e]))
     return withLock(this.paths.tensions, () => {
-      // Quarantined records ride along (audit 2026-08-03, finding 4).
-      // `loadTensions` withholds schema-invalid entries by design, and this
-      // function rewrites the WHOLE file — so loading valid-only and saving
-      // that back permanently deleted them on an unrelated scan. Exactly the F2
-      // shape, and exactly the bug `_mutateTension` was fixed for; this call
-      // site was missed because the regression test only covered that one.
+      // Quarantined records ride along: `loadTensions` withholds schema-invalid
+      // entries, and this function rewrites the WHOLE file, so saving only the
+      // valid ones would permanently delete them on an unrelated scan.
       const { valid: all, quarantined } = loadTensionsWithQuarantine(this.paths.tensions)
       const byKey = new Map(all.map(r => [tensionPairKey(r.engram_a, r.engram_b), r]))
       const out: TensionRecord[] = []
@@ -235,8 +228,7 @@ _mutateTension(id: string, mutate: (r: TensionRecord) => void): TensionRecord {
     return withLock(this.paths.tensions, () => {
       // Quarantined records ride along — loadTensions withholds schema-invalid
       // entries, so saving without them would delete them on an unrelated
-      // mutation. That is the F2 shape, and this call site is how it would
-      // have reappeared after tension-store gained quarantine.
+      // mutation.
       const { valid, quarantined } = loadTensionsWithQuarantine(this.paths.tensions)
       const record = valid.find(r => r.id === id)
       if (!record) throw new Error(`Tension ${id} not found`)
@@ -266,22 +258,15 @@ dismissTension(id: string): TensionRecord {
   },
 
 async resolveTension(id: string, winnerId: string): Promise<{ record: TensionRecord; retired_id: string }> {
-    // Readonly (#731): refuse BEFORE the claim below writes tensions.yaml.
+    // Readonly: refuse BEFORE the claim below writes tensions.yaml.
     this._assertWritable()
     this._remoteOnlyRefuseLocalStore('Resolving a tension')
-    // CLAIM the resolution atomically before retiring anything (#813, audit
-    // finding 5). The validation used to be a PRE-LOCK read via listTensions(),
-    // and the retire and the tension update were separate critical sections
-    // with no revalidation. Two concurrent calls picking OPPOSITE winners both
-    // read "unresolved", one retired B and the other retired A, both then wrote
-    // a resolved record — and the last write merely chose which of the two
-    // RETIRED engrams was labelled the winner.
-    //
-    // Reproduced before this fix: calls-succeeded=2, active-engrams=0, and the
-    // recorded winner was itself retired.
+    // CLAIM the resolution atomically before retiring anything. Without it, two
+    // concurrent calls picking OPPOSITE winners could both read "unresolved"
+    // and each retire the other's winner, leaving both engrams retired.
     //
     // Marking the record resolved inside the lock is what makes the claim
-    // exclusive: the loser of the race now sees status 'resolved' and throws
+    // exclusive: the loser of the race sees status 'resolved' and throws
     // before touching an engram. Deliberately NOT nested inside the engram
     // lock — claim, then act, then roll back on failure — so this introduces no
     // lock-ordering dependency between the tension and engram locks.
@@ -294,7 +279,7 @@ async resolveTension(id: string, winnerId: string): Promise<{ record: TensionRec
       if (r.status === 'resolved') throw new Error(`Tension ${id} is already resolved`)
       if (r.status === 'dismissed') throw new Error(`Tension ${id} is dismissed`)
       // The winner may be named by its current id while the tension was
-      // recorded under the 0.21.0 form (#1576 review).
+      // recorded under the older id form.
       const winnerForms = this._idWithOldForms(winnerId)
       if (!winnerForms.has(r.engram_a) && !winnerForms.has(r.engram_b)) {
         throw new Error(`Winner ${winnerId} is not part of tension ${id} (${r.engram_a} vs ${r.engram_b})`)
@@ -308,8 +293,8 @@ async resolveTension(id: string, winnerId: string): Promise<{ record: TensionRec
       return { ...r }
     })
 
-    // A winner still waiting as a draft (LRN-9: a statement proposed onto a
-    // locked memory is held back as a draft until the user decides) is what
+    // A winner still waiting as a draft (a statement proposed onto a locked
+    // memory is held back as a draft until the user decides) is what
     // the user just chose, so it becomes a normal memory that is given to the
     // agent. Promoted before the loser is retired so the user is never left
     // with neither memory given; undone below if the retirement fails.
@@ -363,7 +348,7 @@ async _retireEngramForResolution(id: string, reason: string): Promise<boolean> {
       const engram = engrams.find(e => e.id === id)
       if (!engram) return false
       // A save queued from a remote-only folder is delivered or forgotten,
-      // never retired into a permanent local row (re-audit 2 of #1521, R2-B2).
+      // never retired into a permanent local row.
       if (Plur._isRemoteOnlyQueued(engram)) throw this._queuedStaysRemote(engram)
       stamp(engram)
       await this._writeEngrams(this.paths.engrams, engrams)
@@ -409,16 +394,16 @@ async _retireEngramForResolution(id: string, reason: string): Promise<boolean> {
 
 hasUnresolvedTension(engramId: string): boolean {
     try {
-      // A tension recorded under the engram's 0.21.0 id still counts (#1576 review).
+      // A tension recorded under the engram's older-form id still counts.
       const ids = this._idWithOldForms(engramId)
       return loadTensions(this.paths.tensions).some(r =>
         (r.status === 'detected' || r.status === 'confirmed')
         && (ids.has(r.engram_a) || ids.has(r.engram_b)))
     } catch (err) {
-      // Fail CLOSED (formal WritePath, candidate 5). `loadTensions` throws on
-      // an unreadable file precisely so it is never read as empty (#794 F1);
-      // answering "no tension" here undid that and let contradicted knowledge
-      // escalate into 'locked' — the one outcome this gate exists to stop.
+      // Fail CLOSED. `loadTensions` throws on an unreadable file precisely so
+      // it is never read as empty; answering "no tension" here would let
+      // contradicted knowledge escalate into 'locked' — the one outcome this
+      // gate exists to stop.
       // Capping at 'decided' while the file is unreadable is recoverable; a
       // wrong lock is not. (A MISSING file still reads as no tensions.)
       logger.warning(
@@ -435,15 +420,15 @@ _tensionWarningsFor(injectedIds: string[]): string[] {
       const unresolved = loadTensions(this.paths.tensions)
         .filter(r => r.status === 'detected' || r.status === 'confirmed')
       if (unresolved.length === 0) return []
-      // Each injected id with its 0.21.0 spelling, so a tension recorded
-      // under the old form still warns (#1576 review).
+      // Each injected id with its older-form spelling, so a tension recorded
+      // under the old form still warns.
       const injected = new Set(injectedIds.flatMap(i => [...this._idWithOldForms(i)]))
       const clip = (t: string) => (t.length > 80 ? `${t.slice(0, 77)}...` : t)
       const warnings: string[] = []
       for (const r of unresolved) {
         const aIn = injected.has(r.engram_a)
         const bIn = injected.has(r.engram_b)
-        // remote-only (audit of #1521, S5): only when BOTH sides are in this
+        // remote-only: only when BOTH sides are in this
         // injection, so the warning never carries a statement the session
         // could not see — a personal one above all.
         const fires = r.status === 'confirmed' && !this._remoteOnly ? (aIn || bIn) : (aIn && bIn)
@@ -470,7 +455,7 @@ getTensionsConfig(): { temporal_domains: string[]; snapshot_pairs: 'skip' | 'flo
 
 async _landSecondarySupersedes(engram: Engram, targets: SecondarySupersede[]): Promise<() => Promise<void>> {
     const written: SecondarySupersede[] = []
-    // Audit 6 N2: the edge names the replacement by a primary-qualified id,
+    // The edge names the replacement by a primary-qualified id,
     // never by its bare id — that one is only unique in THIS primary, and the
     // same day it is the id of an unrelated row in the target store.
     const edgeId = this._primaryQualifiedId(engram.id)
@@ -553,14 +538,10 @@ async purgeTensions(): Promise<{ purged_count: number; engrams_modified: number;
       try {
         // Check WITHOUT the lock, then do the work under it.
         //
-        // This was an unlocked read-modify-write over a CACHED snapshot that
-        // rewrites the entire store — the shape `PrimaryStore` documents as
-        // wrong: `load()` is the authoritative read "used inside write
-        // transactions where a stale snapshot would lose data", `loadCached()`
-        // is not. Being synchronous made it accidentally atomic before the
-        // async flip; afterwards it has real suspension points between the read
-        // and the write, and it is started un-awaited from the constructor, so
-        // it can overlap the caller's very first learn and overwrite it.
+        // The write rewrites the entire store, so it must use the authoritative
+        // `load()` under the lock, never a cached snapshot: this is started
+        // un-awaited from the constructor and can overlap the caller's first
+        // learn, which a stale read-modify-write would overwrite.
         //
         // The unlocked pre-check matters: this runs on EVERY `Plur`
         // construction and almost always finds nothing to purge. Taking the

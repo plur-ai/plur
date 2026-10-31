@@ -9,25 +9,24 @@ import { backupPath } from './instruction-section.js'
 /**
  * Register the `plur` MCP server for Claude Code at user scope, in
  * `~/.claude.json` — the file `claude mcp add --scope user` writes and the
- * only user-level place Claude Code reads MCP servers (#1561). Shared by
- * `plur init` and `plur-mcp init` so both follow one set of rules (#1564
- * review):
+ * only user-level place Claude Code reads MCP servers. Shared by
+ * `plur init` and `plur-mcp init` so both follow one set of rules:
  *
  * - Every other key in the file (Claude Code's own state, other servers,
  *   per-folder settings) is kept. A byte-order mark is accepted and dropped,
  *   as Claude Code itself does when it saves.
  * - A file that is not a JSON object, or whose `mcpServers` is not an object,
- *   is refused and left untouched, with no backup (L5).
- * - A symlink to a missing file is refused and named as such (L4).
+ *   is refused and left untouched, with no backup.
+ * - A symlink to a missing file is refused and named as such.
  * - The edit is applied to what was read; immediately before the atomic
  *   rename the file is read again and its content, size, mtime and inode are
  *   compared. If anything changed (Claude Code saving meanwhile), the edit is
  *   re-applied to the fresh content once; if it changed again, PLUR refuses
- *   and says Claude Code is writing the file (L1, #1564 re-review R1). This
+ *   and says Claude Code is writing the file. This
  *   NARROWS the lost-update window to the time between that last check and
  *   the rename; it cannot close it, because Claude Code takes no lock PLUR
  *   could share. Retrying more often would complete more PLUR writes and so
- *   lose more of the other writer's updates (measured), so it does not.
+ *   lose more of the other writer's updates, so it does not.
  * - Before a change, the current bytes are saved beside the file as
  *   `<name>.plur-backup-<stamp>` (mode 0600: the file holds Claude Code's
  *   private state); only the newest `maxBackups` PLUR backups are kept.

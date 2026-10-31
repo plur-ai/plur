@@ -1,4 +1,4 @@
-// Daily flush + POST /v1/heartbeat (slice D-2b of #51).
+// Daily flush + POST /v1/heartbeat.
 //
 // Imports the gate (`isTelemetryEnabled`) and the counter snapshot
 // (`getCounters` / `resetCounters`) from sibling modules. Owns the network.
@@ -8,7 +8,7 @@
 //   2. Telemetry-on but no counter file → zero network calls.
 //
 // Trigger semantics: flush drains the pending-flush directory written by
-// `recordEvent` on day-rollover (#128). Two call sites:
+// `recordEvent` on day-rollover. Two call sites:
 //   - rollover: `recordEvent` returns `true` from its rollover branch; callers
 //     fire `flushIfNeeded` async
 //   - exit: `registerFlushOnExit` registered from cli startup (best-effort)
@@ -138,7 +138,7 @@ export async function flushIfNeeded(opts: FlushOpts = {}): Promise<void> {
   // Claims left by a flusher that died mid-POST go back into pending first.
   recoverOrphanClaims(opts)
 
-  // Migrate any stale counters.json (e.g. upgrade from pre-#128, or beforeExit
+  // Migrate any stale counters.json (e.g. older on-disk layout, or beforeExit
   // firing after midnight on a process that never re-recorded). Adds an entry
   // to pending-dir; the drain loop below ships it.
   migrateStaleCounters(opts)
@@ -149,7 +149,7 @@ export async function flushIfNeeded(opts: FlushOpts = {}): Promise<void> {
   if (!baseSnapshot) return
 
   for (const date of listPendingDates(opts)) {
-    // Claim before sending (core-retrieval#7): a concurrent flush cannot send
+    // Claim before sending: a concurrent flush cannot send
     // the same day again, and counts merged into <date> during the POST land in
     // a new pending file instead of being deleted with this one.
     const claim = claimPending(date, opts)

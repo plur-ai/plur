@@ -19,14 +19,13 @@
  * or NO_UPDATE_NOTIFIER=1 (the convention npm's own update notifier uses).
  *
  * When that one update check cannot connect, the process is offline from then
- * on (owner decision 2026-10-19, TEAM-5): the state is kept here, not in the
- * update checker, so every network call PLUR starts on its own (the update
- * check, the model download) stops, as if the environment had said "offline".
- * A model already on disk is still used. Every automatic model download
- * (the embedders and the transformers cross-encoder rerankers) goes through
- * one guard, refuseMissingModelOffline in embedders/transformers-base.ts,
- * which reads offlineNow() (audit 6, N4). Services the user configured (team
- * stores, remote embedders, pack URLs, telemetry) do not read it.
+ * on. The state is kept here, not in the update checker, so every network call
+ * PLUR starts on its own (the update check, the model download) stops, as if
+ * the environment had said "offline". A model already on disk is still used.
+ * Every automatic model download (the embedders and the transformers
+ * cross-encoder rerankers) goes through one guard, refuseMissingModelOffline in
+ * embedders/transformers-base.ts, which reads offlineNow(). Services the user
+ * configured (team stores, remote embedders, pack URLs, telemetry) do not read it.
  */
 
 const truthy = (v: string | undefined): boolean =>

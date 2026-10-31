@@ -15,10 +15,7 @@ import {
   serializeCapsulePreamble,
 } from './schemas/capsule.js'
 
-// .plur capsule v1 — envelope writer/reader.
-// Spec: plur-ai/plur#61 §1–§5 (slice 2 of 4-slice plan).
-// Slice 1 shipped the schema + preamble (PR #66 / e06fb08).
-// This slice adds writeCapsule / readCapsule around tar.gz payloads.
+// .plur capsule v1 — envelope writer/reader around tar.gz payloads.
 //
 // Layout (LE throughout):
 //   MAGIC(4) | FormatVersion(2) | Flags(2) | HeaderLen(4)
@@ -123,12 +120,11 @@ export function readCapsule(buf: Buffer): ReadCapsuleResult {
   const header = CapsuleHeaderSchema.parse(parsedHeader)
 
   const isSigned = hasFlag(preamble.flags, CAPSULE_FLAGS.SIGNED)
-  // The reader mirrors the writer's §6.8 step 4 refusal: SIGNED with no signer,
-  // or a signer with SIGNED clear, is an envelope whose trailer nobody can
+  // The reader mirrors the writer's refusal: SIGNED with no signer, or a
+  // signer with SIGNED clear, is an envelope whose trailer nobody can
   // interpret. Checked BEFORE the payload region is computed, because the
-  // flag decides where the payload ends — a capsule that lies about its
-  // signature otherwise fails as a size mismatch and the real defect is never
-  // named (spec vectors, #1022).
+  // flag decides where the payload ends — otherwise a capsule that lies about
+  // its signature fails as a size mismatch and the real defect is never named.
   const signerPresent = header.signer !== null
   if (isSigned !== signerPresent) {
     throw new Error(
@@ -173,10 +169,9 @@ export function readCapsule(buf: Buffer): ReadCapsuleResult {
  * agrees with `header.payload.compression`, and the payload's size and SHA-256
  * equal the values the header states.
  *
- * What it does NOT check (formal R2, core-retrieval#11):
+ * What it does NOT check:
  * - **The signature.** When SIGNED is set, any 64-byte trailer passes — the
- *   Ed25519 signature is carried, never verified (verification is deferred,
- *   spec plur-ai/plur#61).
+ *   Ed25519 signature is carried, never verified.
  * - **The header.** Nothing covers the header bytes: its SHA-256 describes the
  *   payload only. Whoever can rewrite the file can change the header (name,
  *   creator, producer, signer) and payload together and recompute the hash.

@@ -1,5 +1,5 @@
 /**
- * Migration importers (issue #441): `plur import --from <source> --path <file>`.
+ * Migration importers: `plur import --from <source> --path <file>`.
  *
  * Registry of import sources + the file → parse → learn pipeline. See
  * engine.ts for the dedup/conflict semantics and each adapter for its
@@ -58,9 +58,8 @@ export const IMPORT_SOURCES: ImportSource[] = [
   lettaSource,
 ]
 
-// Synchronous — the entire body returns a frozen module-level constant. An
-// automated pass made it async during the Phase 2 flip; there is nothing to
-// await. See the note in index.ts on suggestScope.
+// Synchronous — the entire body returns a frozen module-level constant;
+// there is nothing to await.
 export function listImportSources(): ImportSource[] {
   return IMPORT_SOURCES
 }

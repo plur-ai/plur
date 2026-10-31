@@ -50,7 +50,7 @@ autoDiscoveryEnabled(): boolean
 
 /**
    * True when `dir` (or an ancestor of it) has been explicitly trusted via
-   * `trustDirectory` / `plur trust` (D2, 2026-09 audit).
+   * `trustDirectory` / `plur trust`.
    *
    * This is the gate an ADAPTER (opencode, claw, ...) should check before
    * adopting behaviour-changing configuration it finds on disk — a
@@ -66,13 +66,13 @@ isDirectoryTrusted(dir: string): boolean
 
 /**
    * Grant trust to `dir` (`plur trust`). Returns the canonicalized path
-   * recorded. A `nonce` must be one issued for `dir` and `{ trusted: true }` (#1378).
+   * recorded. A `nonce` must be one issued for `dir` and `{ trusted: true }`.
    */
 trustDirectory(dir: string, options?: { nonce?: string; session?: string }): string
 
 /**
    * Revoke trust from `dir` (`plur untrust`). Returns whether an entry was
-   * removed. Needs no nonce: a revocation only removes trust (#1477 review).
+   * removed. Needs no nonce: a revocation only removes trust.
    */
 untrustDirectory(dir: string): boolean
 
@@ -82,7 +82,7 @@ listTrustedDirectories(): string[]
 /**
    * Find the trusted entry — `dir` itself or a covering ancestor — that
    * makes `isDirectoryTrusted(dir)` true. `null` when nothing covers it.
-   * See trust.ts's `coveringTrustedAncestor` (E3, 2026-09 audit): this is
+   * See trust.ts's `coveringTrustedAncestor`: this is
    * what `plur untrust` uses to avoid claiming a directory is untrusted
    * when an ancestor's grant still covers it.
    */
@@ -90,7 +90,7 @@ coveringTrustedAncestor(dir: string): string | null
 
 /**
    * What PLUR does in `dir` according to the folder map, `.plur.yaml` and
-   * project MCP configs (#1347, design r2). Keyed on this instance's root.
+   * project MCP configs. Keyed on this instance's root.
    */
 resolveFolderPolicy(dir: string, options?: { home?: string; readOnly?: boolean }): FolderPolicy
 
@@ -110,15 +110,14 @@ bindFolder(dir: string, options?: { home?: string }): FolderPolicy
 
 /**
    * Bind this instance to an already-resolved folder policy. A `remote-only`
-   * policy puts the instance in remote-only mode (owner decisions
-   * 2026-10-01); any other mode clears it, so a long-lived process (the MCP
+   * policy puts the instance in remote-only mode; any other mode clears it, so a long-lived process (the MCP
    * server) follows the map as it changes.
    */
 bindFolderPolicy(dir: string, policy: FolderPolicy): void
 
 /**
    * Bind to a folder whose decision could not be resolved at all: fail CLOSED
-   * (audit of #1521, S2) — nothing is read or written until a later bind
+   * — nothing is read or written until a later bind
    * succeeds.
    */
 bindFolderUnresolved(dir: string, why: string): void
@@ -126,7 +125,7 @@ bindFolderUnresolved(dir: string, why: string): void
 /** @internal */
 _remoteOnlyError(refusal: RemoteOnlyRefusal, requested?: string, detail?: string): RemoteOnlyWriteError
 
-/** remote-only: refuse `op` on a row this machine's primary store holds (audit of #1521, B2). */
+/** remote-only: refuse `op` on a row this machine's primary store holds. */
 /** @internal */
 _remoteOnlyRefuseLocalRow(id: string, op: string, scope?: string): Promise<void>
 
@@ -144,7 +143,7 @@ _queuedStaysRemote(e: Engram): RemoteOnlyWriteError
 /** The remote-only folder this instance is bound to, or null. */
 remoteOnlyFolder(): RemoteOnlyBinding | null
 
-/** The folder map entries, in file order (#1347). */
+/** The folder map entries, in file order. */
 listFolders(): FolderEntry[]
 
 /**
@@ -159,7 +158,7 @@ removeFolder(folder: string, options?: { nonce?: string; session?: string }): bo
 
 /**
    * Issue a single-use nonce for the ask flow of `sessionId` that authorises
-   * exactly `answer` on exactly `folder` (#1378). The ask flow issues one per
+   * exactly `answer` on exactly `folder`. The ask flow issues one per
    * answer it offers; see folders.ts issueFolderNonce.
    */
 issueFolderNonce(sessionId: string, folder: string, answer: FolderAnswer, options?: { home?: string; literal?: boolean; bindSession?: boolean }): string
@@ -168,7 +167,7 @@ issueFolderNonce(sessionId: string, folder: string, answer: FolderAnswer, option
 endFolderNonceSession(sessionId: string): void
 
 /**
-   * The MCP folder question's "not now" (`plur folders set --not-now`, #1525):
+   * The MCP folder question's "not now" (`plur folders set --not-now`):
    * consume the nonce issued for that answer on `folder`; nothing is written
    * to the folder map. See folders.ts answerFolderNotNow.
    */
@@ -176,7 +175,7 @@ notNowFolder(folder: string, options: { nonce: string; session?: string }): void
 
 /**
    * Whether discovery is skipped because the PLUR root is a temp folder (a
-   * test-safety guard, unchanged for users by #1588/#1589): the root as given
+   * test-safety guard): the root as given
    * (not resolved, so a user's symlink is not followed) starts with the OS
    * temp folder or with `/tmp/`. `PLUR_TEST_DISCOVER_IN_TMP=1` is a TEST-ONLY
    * switch that turns the skip off, so tests that build their tree under the
@@ -188,7 +187,7 @@ _discoverySkippedForTempRoot(): boolean
 /**
    * The `.plur/engrams.yaml` stores discovery looks at from `startDir`
    * upward, with the same bounds as {@link autoDiscoverStores}: never the
-   * home folder or above it (#1588), stopping at the repository root (`.git`)
+   * home folder or above it, stopping at the repository root (`.git`)
    * or the filesystem root; never the active store or `~/.plur`; never a
    * store config.yaml already lists. Read-only.
    */
@@ -197,7 +196,7 @@ _discoveryCandidates(startDir: string): Array<{ dir: string; typed: string | nul
 
 /**
    * True when the start folder is off by either its path as typed or its real
-   * path (#1589 audit round 4): then discovery adopts nothing and lists
+   * path: then discovery adopts nothing and lists
    * nothing, whatever the folders above it say. Through a link into a
    * repository's sub-folder, the per-candidate spellings cannot see the
    * alias that the user turned off.
@@ -209,7 +208,7 @@ autoDiscoverStores(cwd?: string): Array<{ path: string; scope: string }>
 
 /**
    * Project stores discovery found from `cwd` but did not add because their
-   * folder has no decision of its own (#1588/#1589 audit L3): the folder is on
+   * folder has no decision of its own: the folder is on
    * only through a parent, or not decided yet. A folder turned off is not
    * listed. Read-only; `plur doctor` and `plur stores list` show these with
    * the command that adds them (`plur folders set <folder> --on`).
@@ -321,7 +320,7 @@ async serverSessionLines(dir: string, admittedPolicy?: FolderPolicy): Promise<st
   },
 
 bindFolder(dir: string, options?: { home?: string }): FolderPolicy {
-    // Binding only looks: it never imports a legacy trust.yaml (#1589 audit round 2).
+    // Binding only looks: it never imports a legacy trust.yaml.
     const policy = this.resolveFolderPolicy(dir, { ...options, readOnly: true })
     this.bindFolderPolicy(dir, policy)
     return policy
@@ -330,7 +329,7 @@ bindFolder(dir: string, options?: { home?: string }): FolderPolicy {
 bindFolderPolicy(dir: string, policy: FolderPolicy): void {
     this._boundGit = policy.mode === 'on' ? policy.git : undefined
     if (policy.reason === 'malformed-map' || policy.reason === 'resolver-error') {
-      // Fail safe (audit of #1521, S3; audit F4 of #1517): the map may hold an
+      // Fail safe: the map may hold an
       // `off` or a remote-only decision we cannot see, so read and write nothing.
       const where = policy.mapError
       const why = policy.reason === 'resolver-error'
@@ -359,15 +358,15 @@ async _remoteOnlyRefuseLocalRow(id: string, op: string, scope?: string): Promise
     if (!this._remoteOnly) return
     if (this._remoteOnly.blocked) throw this._remoteOnlyError('local-row')
     // An explicit url-store scope routes to that store, not to a local row
-    // that happens to share the id (re-audit of #1521, S-2 regression).
+    // that happens to share the id.
     if (scope && this._isRemoteBackedScope(scope)) {
       // Only the folder's team scope or another TEAM scope; a personal url
-      // store (`user:`…) is out of reach here (re-audit 2 of #1521, R2-S2).
+      // store (`user:`…) is out of reach here.
       if (!this._isDeliverableTeamScope(scope)) {
         throw this._remoteOnlyError(isSharedScope(scope) ? 'local-only-scope' : 'personal-scope', scope)
       }
       // The team store's host can also hold personal rows under the same
-      // token (gate review of #1663): the row the id names there must be in
+      // token: the row the id names there must be in
       // that team scope. A lookup that fails refuses; an absent row is left
       // to the operation, which then finds nothing.
       const target = resolveScopeTarget(scope, this.config.stores ?? [])
@@ -375,7 +374,7 @@ async _remoteOnlyRefuseLocalRow(id: string, op: string, scope?: string): Promise
       if (entry?.url) {
         const driver = this._getRemoteDriver({ url: entry.url, token: entry.token, scope: entry.scope })
         const serverId = this._stripForScope(id, entry.scope)
-        // Tri-state (Codex round 3): `getById` reads a 503 as null, so the
+        // Tri-state: `getById` reads a 503 as null, so the
         // probe decides first. Unknown refuses; absent is left to the
         // operation, which then finds nothing; held must be a team row.
         let ownership: 'owned' | 'absent' | 'unknown' | 'assumed' = 'unknown'
@@ -399,7 +398,7 @@ async _remoteOnlyRefuseLocalRow(id: string, op: string, scope?: string): Promise
     const primary = await this._basePrimaryStore.loadCached()
     const hit = primary.find(e => e.id === id)
     if (hit && !isQueuedForFolder(hit, folder)) throw this._remoteOnlyError('local-row', undefined, op)
-    // Local secondary file stores are personal too (S-2): their rows answer to
+    // Local secondary file stores are personal too: their rows answer to
     // the bare id and to the store-namespaced id.
     for (const st of this.config.stores ?? []) {
       if (st.url || !st.path) continue
@@ -417,7 +416,7 @@ _remoteOnlyRefuseLocalStore(op: string): void {
 
 async _remoteOnlyVisible(): Promise<Engram[]> {
     if (this._remoteOnly?.blocked) return []
-    // The guarded primary store shows only THIS folder's queued saves (N-2).
+    // The guarded primary store shows only THIS folder's queued saves.
     const queued = await this._loadCached(this.paths.engrams)
     return [...queued, ...(await this._readCorpus())]
   },
@@ -440,10 +439,10 @@ setFolder(folder: string, change: FolderChange, options?: { nonce?: string; sess
     const stores = this.config.stores ?? []
     const configuredScopes = stores.map(s => s.scope)
     // A remote-only entry's scope must be served by a writable url store.
-    // A personal url store (`user:`) never qualifies (gate review of #1663).
+    // A personal url store (`user:`) never qualifies.
     const remoteScopes = stores.filter(s => !!s.url && s.readonly !== true && this._isDeliverableTeamScope(s.scope)).map(s => s.scope)
     // The stores reach the check so a project scope is judged like write
-    // routing judges it (#1633): one a server serves needs it configured, one
+    // routing judges it: one a server serves needs it configured, one
     // a company server withholds is refused naming the server.
     return _setFolderEntry(this.paths.root, folder, change, { configuredScopes, remoteScopes, stores, ...options })
   },
@@ -472,22 +471,20 @@ _discoverySkippedForTempRoot(): boolean {
 _discoveryCandidates(startDir: string): Array<{ dir: string; typed: string | null; candidate: string; key: string }> {
     const out: Array<{ dir: string; typed: string | null; candidate: string; key: string }> = []
     if (this._discoverySkippedForTempRoot()) return out
-    // Canonical paths (#1319): the walk sees kernel-canonical cwd spellings
-    // while PLUR_PATH / $HOME are taken verbatim, so a raw string compare
-    // missed the primary under a symlinked home and registered it as
-    // `project:<home>`. Compare canonical forms; the primary is excluded here
+    // Canonical paths: the walk sees kernel-canonical cwd spellings while
+    // PLUR_PATH / $HOME are taken verbatim, so a raw string compare would miss
+    // the primary under a symlinked home. Compare canonical forms; the primary is excluded here
     // and again in addStore.
     const knownPaths = new Set(
       (this.config.stores ?? []).filter(s => s.path !== undefined && !s.url).map(s => canonicalize(s.path!)),
     )
     const primaryStore = canonicalize(this.paths.engrams)
     // The user's main store is never a project store either, whichever store
-    // is active (#1588): PLUR_PATH may point elsewhere while ~/.plur exists.
+    // is active: PLUR_PATH may point elsewhere while ~/.plur exists.
     const home = canonicalize(homedir())
     const mainStore = canonicalize(join(homedir(), '.plur', 'engrams.yaml'))
 
-    // The spelling the caller typed for each real folder (#1589 audit round
-    // 3): an `off` entry may name the alias the user is in, and must still
+    // The spelling the caller typed for each real folder: an `off` entry may name the alias the user is in, and must still
     // stop discovery there. First typed ancestor wins.
     const typedFor = new Map<string, string>()
     for (let t = resolve(startDir); ; ) {
@@ -498,14 +495,14 @@ _discoveryCandidates(startDir: string): Array<{ dir: string; typed: string | nul
       t = parent
     }
 
-    // The REAL path (#1589 audit round 2): through a symlink into a
+    // The REAL path: through a symlink into a
     // repository's sub-folder, the typed parents are outside the repository.
     let dir = canonicalize(startDir)
     const visited = new Set<string>()
     while (dir && !visited.has(dir)) {
       visited.add(dir)
       const dirKey = dir
-      // Never enter the home folder or anything above it (#1588): a store
+      // Never enter the home folder or anything above it: a store
       // there is the user's own or no project's, whatever decided the folder.
       if (dirKey === home || isUnder(home, dirKey)) break
       const candidate = join(dir, '.plur', 'engrams.yaml')
@@ -539,25 +536,25 @@ autoDiscoverStores(cwd?: string): Array<{ path: string; scope: string }> {
     if (candidates.length === 0 || this._startFolderOff(startDir)) return discovered
     for (const { dir, typed, candidate, key } of candidates) {
       if (seen.has(key)) continue
-      // An `off` for either spelling wins (#1589 audit round 3, R3-L1).
+      // An `off` for either spelling wins.
       if (typed !== null && _resolveFolderPolicy(typed, { root: this.paths.root, readOnly: true }).mode === 'off') continue
-      // A store is registered only for a folder the USER decided on itself
-      // (#1588; owner decision 2026-10-05): an exact folder-map entry. On only
+      // A store is registered only for a folder the USER decided on itself:
+      // an exact folder-map entry. On only
       // through a parent, or through a marker the repository ships, is not
       // enough — the repository's store would otherwise become a shared,
       // writable store read in every folder.
       // readOnly: discovery reads the folder map but never performs the
-      // one-time trust.yaml import (#1589 audit round 2); that stays with the
-      // folder commands and the hooks, as before this gate existed.
+      // one-time trust.yaml import; that stays with the folder commands and
+      // the hooks.
       if (!_hasOwnFolderDecision(dir, { root: this.paths.root, readOnly: true })) continue
 
       // The scope a `.plur.yaml` names is used only for a folder the user
-      // trusted (#1589 audit M1); an untrusted file does not choose where a
+      // trusted; an untrusted file does not choose where a
       // store's memories are filed.
       let scope = `project:${basename(dir)}`
       try {
         const plurYaml = join(dir, '.plur.yaml')
-        // Read-only trust lookup (#1589 audit round 3, R3-L2): discovery never
+        // Read-only trust lookup: discovery never
         // performs the one-time trust.yaml import; a legacy grant still counts.
         if (fs.existsSync(plurYaml) && _isTrustedInMap(_loadFolderMap(this.paths.root, true).folders, dir)) {
           const raw = yaml.load(fs.readFileSync(plurYaml, 'utf8')) as any
@@ -575,7 +572,7 @@ autoDiscoverStores(cwd?: string): Array<{ path: string; scope: string }> {
 
 skippedProjectStores(cwd?: string): Array<{ path: string; folder: string }> {
     const out: Array<{ path: string; folder: string }> = []
-    // Looking writes nothing (#1589 audit round 2): readOnly keeps a legacy
+    // Looking writes nothing: readOnly keeps a legacy
     // trust.yaml in memory instead of importing it into folders.yaml.
     const opts = { root: this.paths.root, readOnly: true }
     const startDir = cwd || process.cwd()

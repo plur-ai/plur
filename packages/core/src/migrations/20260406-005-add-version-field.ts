@@ -3,7 +3,6 @@ import type { Engram } from '../schemas/engram.js'
 
 /**
  * Migration: Add engram_version: 1 and episode_ids: [] to all engrams.
- * SP2 Idea 8 (version lineage) + Idea 24 (episodic anchoring).
  */
 export const migration: Migration = {
   id: '20260406-005-add-version-field',

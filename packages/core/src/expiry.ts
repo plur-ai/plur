@@ -1,12 +1,8 @@
 /**
- * Explicit-expiry extraction for the write path (#347).
+ * Explicit-expiry extraction for the write path.
  *
- * The deterministic expiry machinery (inject/recall skip engrams whose
- * `temporal.valid_until` is in the past) existed long before anything
- * populated the field — time-bound facts were stored with the date only in
- * free text and kept injecting at full strength after going stale.
- *
- * This module lifts EXPLICIT expiry phrases ("valid until 31 May 2026",
+ * Inject/recall skip engrams whose `temporal.valid_until` is in the past, but
+ * time-bound facts often carry their date only in free text. This module lifts EXPLICIT expiry phrases ("valid until 31 May 2026",
  * "expires 2026-12-01") out of the statement into the structured field.
  * It is conservative by design — NEVER silently guess:
  *   - only fires when an expiry keyword is immediately followed by a date
@@ -76,7 +72,7 @@ export function normalizeIsoDate(input: string): string | null {
   return `${y}-${mo}-${d}`
 }
 
-/** Resolved validity window for a learn() write (#347). */
+/** Resolved validity window for a learn() write. */
 export interface ResolvedValidity {
   valid_from?: string
   valid_until?: string

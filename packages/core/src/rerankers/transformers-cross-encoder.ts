@@ -14,10 +14,8 @@
  * per model id, so repeated PLUR sessions in the same process share the
  * weight memory.
  *
- * The two factories used to be two ~120-line files that differed only in the
- * model id and the adapter name (2026-09 audit). Keeping them as one module
- * means a fix to the tokenization or logit handling cannot land in one model
- * and miss the other.
+ * Both models share this one module so tokenization and logit handling stay
+ * identical across them.
  *
  * ## bge-reranker-v2-m3
  * BAAI/bge-reranker-v2-m3. Multilingual (100+ languages), state-of-the-art on
@@ -25,18 +23,17 @@
  * land around 280-310 MB on disk. Seconds per query on CPU — offline/batch
  * quality tier, not the agent hot path.
  *
- * We pin to the onnx-community mirror — the Xenova mirror returns 401 as of
- * 2026-05 (gated behind a Hugging Face login). onnx-community publishes the
+ * Pinned to the onnx-community mirror because the Xenova mirror is gated
+ * behind a Hugging Face login. onnx-community publishes the
  * same q8-quantized weights under the Apache-2.0 license with the documented
  * `xenova/transformers.js` ONNX layout.
  *
  * ## ms-marco-minilm-l6
  * cross-encoder/ms-marco-MiniLM-L-6-v2 (Xenova ONNX conversion). The tiny-tier
- * reranker (#451, #220): ~22.7M params, 25x smaller than bge-reranker-v2-m3,
+ * reranker: ~22.7M params, 25x smaller than bge-reranker-v2-m3,
  * English-only, trained on MS MARCO passage ranking, Apache-2.0, ~23 MB on
  * disk. Reranks 10-50 candidates in tens of milliseconds on CPU while keeping
- * most of the quality lift over plain RRF fusion; benchmarked head-to-head in
- * issue #451.
+ * most of the quality lift over plain RRF fusion.
  */
 import type { RerankerAdapter } from './types.js'
 import {
@@ -80,8 +77,7 @@ async function loadPipeline(modelId: string, dtype: Dtype): Promise<LoadedPipeli
         AutoTokenizer: { from_pretrained: (id: string, o?: object) => Promise<unknown> }
         AutoModelForSequenceClassification: { from_pretrained: (id: string, o?: object) => Promise<unknown> }
       }
-      // The same cache and the same download guard as the embedders (audit 6,
-      // N4): once PLUR is offline (declared, or inferred from a failed
+      // The same cache and the same download guard as the embedders: once PLUR is offline (declared, or inferred from a failed
       // connection), a reranker model missing from disk is refused before the
       // library is asked, and one on disk is loaded from disk only.
       const weights = weightsFileFor(dtype)
@@ -106,7 +102,7 @@ async function loadPipeline(modelId: string, dtype: Dtype): Promise<LoadedPipeli
 
 /**
  * Drop every cached pipeline so the next score call retries the model load
- * from scratch (e.g. after purging a corrupt HF cache, #341).
+ * from scratch (e.g. after purging a corrupt HF cache).
  */
 export function _resetCrossEncoderCaches(): void {
   pending.clear()

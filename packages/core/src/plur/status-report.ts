@@ -20,28 +20,28 @@ import { StatusResult } from './types.js'
 
 export interface StatusReportMethods {
 /**
-   * Promote an episode to an episodic engram (SP2 Idea 3).
+   * Promote an episode to an episodic engram.
    * Creates a new engram with memory_class='episodic' from an episode's summary.
    */
 episodeToEngram(episodeId: string, context?: Omit<LearnContext, 'memory_class'>): Promise<Engram>
 
 /**
-   * Get history events for a specific engram (SP2 Idea 7).
+   * Get history events for a specific engram.
    * Returns all events across all months for the given engram ID.
    */
 getEngramHistory(engramId: string): import('../history.js').HistoryEvent[]
 
 /**
-   * An id plus the 0.21.0 spelling(s) of the same engram: for a current-form
-   * store id, the old three-letter form records written before 0.21.1 carry.
+   * An id plus the legacy spelling(s) of the same engram: for a current-form
+   * store id, the old three-letter form that older records carry.
    * Records keyed by id (history, tensions) match on this set. Not the
-   * reverse — an old-form id was shared by every team store of an org (H1).
+   * reverse — an old-form id was shared by every team store of an org.
    */
 /** @internal */
 _idWithOldForms(engramId: string): Set<string>
 
 /**
-   * Report a failure for a procedural engram (SP2 Idea 18).
+   * Report a failure for a procedural engram.
    * If LLM is provided, generates an improved procedure and updates the engram.
    * Without LLM, logs the failure without rewriting.
    * Returns the updated engram and the failure episode.
@@ -92,10 +92,10 @@ async episodeToEngram(episodeId: string, context?: Omit<LearnContext, 'memory_cl
 getEngramHistory(engramId: string): import('../history.js').HistoryEvent[] {
     // remote-only: history is personal-store bookkeeping.
     if (this._remoteOnly) return []
-    // A team engram's events written before 0.21.1 are keyed by its old
-    // three-letter id form; a lookup by its current id returns them too. Not
-    // the reverse: an old-form id was shared by every team store of an org,
-    // so it cannot say which store's new-form events are its own (H1).
+    // A team engram's older events are keyed by its legacy three-letter id
+    // form; a lookup by its current id returns them too. Not the reverse: an
+    // old-form id was shared by every team store of an org, so it cannot say
+    // which store's new-form events are its own.
     return readHistoryForEngram(this.paths.root, this._idWithOldForms(engramId))
   },
 
@@ -112,7 +112,7 @@ _idWithOldForms(engramId: string): Set<string> {
 
 async reportFailure(engramId: string, failureContext: string, llm?: LlmFunction): Promise<{ engram: Engram; episode: Episode; evolved: boolean; blocked?: boolean }> {
     this._assertWritable()
-    // A namespaced id evolves the engram in the one store it names (0.21.1 audit, H1).
+    // A namespaced id evolves the engram in the one store it names.
     engramId = await this._resolveNamespacedId(engramId, 'evolve')
     const engram = await this.getById(engramId)
     if (!engram) throw new Error(`Engram not found: ${engramId}`)
@@ -172,7 +172,7 @@ Generate an improved version of the procedure that prevents this failure. Return
 
             const raw = engrams[idx] as any
             // A save queued from a remote-only folder is not evolved: it is
-            // delivered or forgotten as it was saved (re-audit 3 of #1521).
+            // delivered or forgotten as it was saved.
             if (Plur._isRemoteOnlyQueued(raw)) {
               logger.warning(`[plur] ${engramId} is a save queued from a remote-only folder; procedure evolution skips it until it is delivered.`)
               return { engram: engrams[idx], episode, evolved: false }
@@ -181,20 +181,13 @@ Generate an improved version of the procedure that prevents this failure. Return
             const oldVersion = raw.engram_version ?? 1
 
             raw.statement = improved.trim()
-            // #852: the hash MUST follow the statement.
-            //
-            // This was the one statement-mutation path that did not recompute
-            // it — learn-async's UPDATE and MERGE both do. A stale hash is not
-            // cosmetic: `_hashDedup` matches on `content_hash`, so an engram
-            // whose hash still describes its PRE-evolution text becomes an
-            // attractor. A later write matching that old text hash-matches this
-            // engram, which now says something else, and `_recordDuplicate`
-            // absorbs the write into it — silently, since the engram is
-            // returned as if it were the write's own. Measured on a real store:
-            // 38 engrams carrying a hash that no longer matched their
-            // statement, and one pair of distinct engrams sharing a hash.
+            // The hash MUST follow the statement. `_hashDedup` matches on
+            // `content_hash`, so an engram whose hash still describes its
+            // PRE-evolution text becomes an attractor: a later write matching
+            // that old text hash-matches this engram, which now says something
+            // else, and `_recordDuplicate` silently absorbs the write into it.
             raw.content_hash = computeContentHash(raw.statement)
-            // Leak guard (#353): the LLM-improved statement can introduce
+            // Leak guard: the LLM-improved statement can introduce
             // sensitive content. This is a local write, so demotion is coherent:
             // hold it back from the shared scope by demoting to local/private.
             const localOffending = this._offendingHitsForScope(raw.statement, raw.scope ?? 'global')
@@ -236,14 +229,14 @@ Generate an improved version of the procedure that prevents this failure. Return
           })
           if (localResult) return localResult
 
-          // Remote routing (#86 reportFailure remainder): the engram lives
-          // on a remote store. PATCH the new statement; history stays local.
+          // Remote routing: the engram lives on a remote store. PATCH the new
+          // statement; history stays local.
           let blockedRemote = false
           for (const entry of (this.config.stores ?? [])) {
             if (!entry.url || entry.readonly === true) continue
-            // remote-only: a personal or non-team url store is out of reach (re-audit 3, R3-4).
+            // remote-only: a personal or non-team url store is out of reach.
             if (this._remoteOnly && !this._remoteOnlyWalkAllows(entry.scope)) continue
-            // Leak guard (#353): this is an AUTONOMOUS push to a shared/remote
+            // Leak guard: this is an AUTONOMOUS push to a shared/remote
             // store — there is no coherent demotion (we can't silently re-scope
             // someone else's remote engram). If the improved statement carries
             // content this scope forbids, SKIP the push entirely and warn. Never
@@ -261,7 +254,7 @@ Generate an improved version of the procedure that prevents this failure. Return
             const serverId = this._stripRemotePrefix(engramId, entry.scope)
             const driver = this._getRemoteDriver({ url: entry.url, token: entry.token, scope: entry.scope })
             // The team store's host may also hold personal rows under the same token:
-            // act on a bare id only when its row there is in a team scope (R3-4).
+            // act on a bare id only when its row there is in a team scope.
             if (this._remoteOnly && !(await this._remoteRowOwnedByTeam(driver, this._stripRemotePrefix(engramId, entry.scope)))) continue
             const patched = await driver.patch(serverId, { statement: improved.trim() })
             if (patched) {
@@ -284,7 +277,7 @@ Generate an improved version of the procedure that prevents this failure. Return
               return { engram: patched, episode, evolved }
             }
           }
-          // Leak guard (#353): every candidate remote was skipped because the
+          // Leak guard: every candidate remote was skipped because the
           // improved statement was sensitive for its scope. The remote engram is
           // intentionally left unchanged — report a not-evolved/blocked outcome
           // (the failure episode is still linked below) instead of throwing.
@@ -308,13 +301,12 @@ Generate an improved version of the procedure that prevents this failure. Return
         }
       } catch (err) {
         // The `try` above spans the LLM call AND the local/remote writes that
-        // follow it, so a bare `catch` here reclassifies a genuine store
-        // failure as "the LLM was unavailable" — swallowed, unlogged, and
-        // reported to the caller as a successful not-evolved outcome. A write
-        // that failed must not look like a model that declined.
+        // follow it, so a genuine store failure lands here too. Log it rather
+        // than swallow it: a write that failed must not look like a model that
+        // declined.
         //
         // Not rethrown: this path's contract is best-effort evolution, and the
-        // fallback below still links the failure episode. But it says so.
+        // fallback below still links the failure episode.
         logger.warning(
           `[plur] reportFailure: could not evolve ${engramId} — ${(err as Error).message}. `
           + `Falling back to linking the failure episode without rewriting.`,
@@ -341,10 +333,9 @@ Generate an improved version of the procedure that prevents this failure. Return
 
 async status(options?: { created_after?: string; domain?: string }): Promise<StatusResult> {
     // Every artifact this diagnostic reads is behind a refuse-on-corrupt loader,
-    // and a diagnostic must REPORT a broken artifact rather than die on it
-    // (audit 2026-08-03, finding 6). Each is isolated so one bad file cannot
-    // suppress the rest of the report — which is the information an operator
-    // needs precisely when one file IS bad.
+    // and a diagnostic must REPORT a broken artifact rather than die on it.
+    // Each is isolated so one bad file cannot suppress the rest of the report —
+    // which is the information an operator needs precisely when one file IS bad.
     const storeErrors: Record<string, string> = {}
     const readOr = <T>(name: string, read: () => T, fallback: T): T => {
       try {
@@ -373,15 +364,13 @@ async status(options?: { created_after?: string; domain?: string }): Promise<Sta
       active = active.filter(e => e.domain?.startsWith(options.domain!))
     }
     if (options?.created_after) {
-      // Validated, not trusted (#547). The comparison below is LEXICOGRAPHIC
-      // against a `YYYY-MM-DD` stamp, which is exactly right for a well-formed
-      // date and silently wrong for anything else: "last week" sorts after
-      // every real date and returns 0, "2026-13-99" sorts after December and
-      // does the same. A caller typo produced a confident, quietly wrong count
-      // — the one failure a diagnostic must not have.
+      // Validated, not trusted. The comparison below is LEXICOGRAPHIC against
+      // a `YYYY-MM-DD` stamp, which is right for a well-formed date and
+      // silently wrong for anything else ("last week" or "2026-13-99" sort
+      // after every real date and return 0).
       //
       // Reuses `normalizeIsoDate` rather than adding a second date rule: it
-      // already rejects both malformed shapes and impossible calendar dates
+      // rejects both malformed shapes and impossible calendar dates
       // (2026-02-30), and one definition means the two cannot disagree.
       const cutoff = normalizeIsoDate(options.created_after)
       if (!cutoff) {
@@ -393,17 +382,16 @@ async status(options?: { created_after?: string; domain?: string }): Promise<Sta
       active = active.filter(e => { const d = engramDate(e); return d !== undefined && d >= cutoff })
     }
     const lockedCount = active.filter(e => (e as any).commitment === 'locked').length
-    // #181 (audit #213 C2): tension_count counts UNRESOLVED persisted
-    // tension records — the LLM-validated detector's output — instead of
-    // relations.conflicts, which post-#138 holds only unvalidated importer
-    // heuristics (or nothing, post-purge).
+    // tension_count counts UNRESOLVED persisted tension records — the
+    // LLM-validated detector's output — not relations.conflicts, which holds
+    // only unvalidated importer heuristics.
     const unresolvedTensions = readOr(
       'tensions',
       () => this.listTensions({ status: ['detected', 'confirmed'] }).length,
       0,
     )
 
-    // Count engrams with version > 1 (SP2 Idea 8)
+    // Count engrams with version > 1
     const versionedCount = engrams.filter(e => {
       const raw = e as any
       return (raw.engram_version ?? 1) > 1
@@ -432,7 +420,7 @@ async status(options?: { created_after?: string; domain?: string }): Promise<Sta
       history_events: readOr('history', () => countInjectionEvents(this.paths.root), undefined as any),
       ...(this._lastIndexError ? { index_error: this._lastIndexError } : {}),
       ...(Object.keys(storeErrors).length > 0 ? { store_errors: storeErrors } : {}),
-      // Back-compat alias for the field this replaced.
+      // Back-compat alias: the older name of `store_errors.packs`.
       ...(storeErrors.packs ? { pack_registry_error: storeErrors.packs } : {}),
       ...(this._spreadDrops.dropped_unresolvable > 0 || this._spreadDrops.dropped_retired > 0
         ? { spread_drops: { ...this._spreadDrops } }
@@ -470,7 +458,7 @@ async receipt(options?: { days?: number; now?: Date }): Promise<Receipt> {
     // so they read as external, not as retired.
     const externalPrefixes: string[] = []
     for (const store of this.config.stores ?? []) {
-      // Both prefix forms: receipts recorded before 0.21.1 carry the old one.
+      // Both prefix forms: older receipts carry the legacy one.
       for (const p of [storePrefix(store.scope), legacyStorePrefix(store.scope)]) {
         externalPrefixes.push(`ENG-${p}-`, `ABS-${p}-`, `META-${p}-`)
       }

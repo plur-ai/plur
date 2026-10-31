@@ -105,7 +105,6 @@ export function parseGitRemoteUrl(url: string): ParsedRemote | null {
     return parseSchemeUrl(url)
   }
 
-  // Try scp-like
   return parseScpUrl(url)
 }
 
@@ -176,7 +175,7 @@ export function readGitOrigin(dir: string, run?: GitRunner): OriginRead {
   return { kind: 'url', url }
 }
 
-// ── gitDefaultScope (#1632) ────────────────────────────────────────────────
+// ── gitDefaultScope ─────────────────────────────────────────────────────
 //
 // Model: spec/formal/PlurSpec/GitScope.lean (theorems and the counterexamples
 // for the host, listing, path and freshness rules).
@@ -313,7 +312,7 @@ function httpEndpoint(url: string): string | null {
 
 /**
  * The git scope sources in `<plurRoot>/config.yaml`: one per company server
- * entry (C6: a string `url` and an `enterprise` object — the entries discovery
+ * entry (a string `url` and an `enterprise` object — the entries discovery
  * writes). Reads the file only; no network, never throws. Fields come from the
  * entry's `discovery` cache; a field of the wrong shape is dropped (a
  * `gitlab_host` outside the host grammar becomes null, an unknown status

@@ -7,7 +7,7 @@ import { writeConfigFile } from './config-file.js'
 import type { StoreEntry } from './schemas/config.js'
 
 /**
- * Duplicate local store entries in config.yaml (#1319, #1356).
+ * Duplicate local store entries in config.yaml.
  *
  * A local store entry is ignored at load when it would load engrams that are
  * already loaded: its file is the primary store, or its file AND scope repeat
@@ -57,7 +57,7 @@ export function classifyStoreDuplicates(stores: StoreEntry[], primaryEngramsPath
 
 /**
  * Remove every local store entry in config.yaml whose file is the primary
- * engrams file (`plur stores prune`, #1356). Returns the removed entries; an
+ * engrams file (`plur stores prune`). Returns the removed entries; an
  * empty list means nothing matched and the file was not touched.
  *
  * Only those entries are removed, and every other byte of config.yaml is kept:

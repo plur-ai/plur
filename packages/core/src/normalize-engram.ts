@@ -1,24 +1,18 @@
 /**
- * The ONE place field-compatibility rules live (#877).
+ * The one place field-compatibility rules live.
  *
  * Three code paths turn stored data into an `Engram` — the YAML primary store
  * (`parseEngramFile`), Postgres/PGLite rows (`parseRow`), and rows reshaped
- * from an enterprise server (`RemoteStore.reshape`) — and each used to
- * normalise independently. Any per-field rule therefore had to be written three
- * times, with nothing enforcing that it was, and a miss is SILENT: Zod fills the
- * schema default and the result is indistinguishable from a real value.
- *
- * That is not hypothetical. `parseRow`'s own history records a row lacking
- * `associations` crashing `recall()`, and #875's `reference_count` → `write_count`
- * rename landed the backfill in the YAML loader only — so on the Postgres tier a
- * legacy row loaded as `write_count: 1` while `reference_count: 5` sat unread
- * under passthrough. `write_count` gates retirement, so a single `forget()`
- * would have retired an engram with five corroborating writes.
+ * from an enterprise server (`RemoteStore.reshape`). A per-field rule missed by
+ * one of them fails silently: Zod fills the schema default and the result is
+ * indistinguishable from a real value. For example, a legacy row carrying only
+ * `reference_count` would load as `write_count: 1`, and since `write_count`
+ * gates retirement, one `forget()` could retire a well-corroborated engram.
  *
  * ## Invariants
  *
  * 1. **Normalise BEFORE parse, never after.** Once Zod has filled a default,
- *    "absent" is unrecoverable — that is exactly the trap above.
+ *    "absent" is unrecoverable.
  * 2. **Idempotent.** A store already migrated, or written by a newer PLUR, must
  *    be untouched. Every rule guards on the new key being absent.
  * 3. **Never applied to quarantined entries.** A rejected engram is written back
@@ -33,7 +27,7 @@
 
 /** One field-compatibility rule. `apply` receives and returns a plain object. */
 export interface NormalizeRule {
-  /** Issue that introduced the rule — shows up in test names and failures. */
+  /** Stable rule identifier — shows up in test names and failures. */
   readonly id: string
   /** What it does, in one line. */
   readonly description: string

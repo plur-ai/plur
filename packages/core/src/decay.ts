@@ -8,11 +8,10 @@ const MS_PER_DAY = 86_400_000
  * Core decay formula — exponential decay toward FLOOR (0.05), from above only.
  *
  * A strength above the floor decays toward it and never below it. A strength
- * AT or BELOW the floor is returned unchanged: decay never raises a strength
- * (owner decision I6, formal run 2026-09-26). Feedback can floor a strength at
- * 0.0, below this floor; the formula `FLOOR + (r − FLOOR)·e^{−λd}` used to lift
- * such an engram back toward 0.05 with time (0 → 0.039 after 30 days), so an
- * engram voted down to zero regained strength by being left alone.
+ * AT or BELOW the floor is returned unchanged: decay never raises a strength.
+ * Feedback can push a strength to 0.0, below this floor, and applying the
+ * formula there would let an engram voted down to zero regain strength by
+ * being left alone.
  */
 export function decayedStrength(
   retrievalStrength: number,
@@ -26,11 +25,9 @@ export function decayedStrength(
 /**
  * Calculate days since last access from ISO date string.
  *
- * An unparseable date counts as 0 days — "no known elapsed time" (formal run
- * 2026-09-23). It used to return NaN (`Math.max(0, NaN)` is NaN), which made
- * `decayedStrength` NaN, the engram's injection score NaN, and `raw > 0`
- * false — so an engram with a malformed timestamp (the schema accepts any
- * string) was silently never injected.
+ * An unparseable date counts as 0 days — "no known elapsed time". Returning
+ * NaN would make the injection score NaN, so an engram with a malformed
+ * timestamp (the schema accepts any string) would silently never be injected.
  */
 export function daysSince(lastAccessed: string, now?: Date): number {
   const last = new Date(lastAccessed)
@@ -41,42 +38,28 @@ export function daysSince(lastAccessed: string, now?: Date): number {
 }
 
 /**
- * How much a passive retrieval used to add to `retrieval_strength`.
- *
- * Exported as a named constant because it was never one, and that was half the
- * problem (#846): `POSITIVE_STRENGTH_DELTA` and `NEGATIVE_STRENGTH_DELTA` are
- * public values precisely so consumers do not re-type them, while the one
- * constant a downstream consumer needed in order to reason about what a
- * feedback delta is WORTH was an unnamed literal inside this function. PLUR
- * Enterprise hand-copied it and guarded the copy by measuring core empirically.
+ * The amount a passive retrieval would add to `retrieval_strength` under the
+ * legacy reactivation rule.
  *
  * @deprecated Retrieval no longer moves `retrieval_strength` — see
- * {@link reactivate}. Kept exported so a consumer that hand-copied the old
- * value can find this note.
+ * {@link reactivate}. Kept exported for consumers that still reference the
+ * legacy value.
  */
 export const LEGACY_REACTIVATION_STRENGTH_DELTA = 0.1
 
 /**
  * Reactivation on access.
  *
- * Returns the strength UNCHANGED (#846). Retrieval used to add +0.10 here while
- * a deliberate ★ added +0.05 and a ✗ subtracted 0.10 — so a rating was worth
- * half of being incidentally fetched, and a "this is wrong" was EXACTLY
- * cancelled by the next recall that happened to return the engram.
+ * Returns the strength UNCHANGED. `retrieval_strength` means "how
+ * well-regarded is this": it is what `min_strength` filters on, what
+ * `scoreEngram` multiplies into injection ranking, and what admin surfaces
+ * present. If retrieval raised it, incidental fetches would outvote deliberate
+ * feedback and the value would saturate.
  *
- * That mattered because `retrieval_strength` reads as "how well-regarded is
- * this": it is what `min_strength` filters on, what `scoreEngram` multiplies
- * into injection ranking, and what admin surfaces present. It actually encoded
- * "how often has this been fetched" — a self-reinforcing loop in which the
- * quality term was structurally unable to outvote the traffic term, and which
- * saturated at 1.0 after three recalls, after which no feedback in either
- * direction was visible in the value at all.
- *
- * The fix is separation, not a new ratio: traffic already has a home in
- * `activation.frequency`, which counts retrieval events, works, and shows 62
- * distinct values across a real store. `retrieval_strength` now moves ONLY on
- * deliberate feedback, so the two signals stop fighting over one field and a
- * ranker can weigh them explicitly.
+ * Traffic is tracked separately in `activation.frequency`, which counts
+ * retrieval events. `retrieval_strength` moves ONLY on deliberate feedback, so
+ * the two signals do not compete for one field and a ranker can weigh them
+ * explicitly.
  *
  * Recency is unaffected: `_reactivateResults` still refreshes `last_accessed`
  * on every recall, and decay is driven by that — so a frequently-recalled
@@ -97,7 +80,7 @@ export function decayedCoAccessStrength(
 }
 
 /**
- * Idea 21 (SP1): Confidence decay for engrams without recent positive feedback.
+ * Confidence decay for engrams without recent positive feedback.
  * If no positive feedback in 90 days AND not locked: apply 0.95x/month multiplier.
  * Floor at 0.1. Locked engrams exempt.
  */
@@ -124,9 +107,8 @@ export function confidenceDecay(
   } else {
     return retrievalStrength
   }
-  // An unparseable reference is no reference (formal run 2026-09-23): it used
-  // to yield NaN, and `Math.max(FLOOR, NaN)` is NaN — breaking the documented
-  // "Floor at 0.1" and poisoning the injection score downstream.
+  // An unparseable reference is no reference: NaN would pass through
+  // `Math.max(FLOOR, NaN)`, break the 0.1 floor and poison the injection score.
   if (!Number.isFinite(referenceDate.getTime()) || !Number.isFinite(current.getTime())) return retrievalStrength
 
   const daysSinceRef = Math.max(0, Math.floor((current.getTime() - referenceDate.getTime()) / MS_PER_DAY))

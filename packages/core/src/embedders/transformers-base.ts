@@ -81,7 +81,7 @@ async function defaultCacheDir(): Promise<string | null> {
   return libraryDefaultCacheDir ?? null
 }
 
-/** Downloads are off by environment (#1586 rounds 4-6): the offline switch
+/** Downloads are off by environment: the offline switch
  *  (PLUR_OFFLINE, HF_HUB_OFFLINE, TRANSFORMERS_OFFLINE; see offline.ts) or
  *  PLUR_MODEL_DOWNLOAD=off. `allowRemoteModels =
  *  false` is enforced by transformers.js itself. */
@@ -90,15 +90,14 @@ export function downloadsOffByEnv(): boolean {
 }
 
 /** Downloads are off for this process: off by environment, or the process
- *  inferred it is offline after a failed connection (TEAM-5, offline.ts). A
+ *  inferred it is offline after a failed connection (see offline.ts). A
  *  model already on disk is still loaded, from disk only. */
 export function downloadsOff(): boolean {
   return offlineNow() || downloadsOffByEnv()
 }
 
 /**
- * The one guard every automatic model download goes through (TEAM-5; audit 6,
- * N4): the embedders (the shared pipeline loader below and EmbeddingGemma) and
+ * The one guard every automatic model download goes through: the embedders (the shared pipeline loader below and EmbeddingGemma) and
  * the transformers cross-encoder rerankers. With downloads off, a model that
  * is not on disk is refused HERE, before transformers.js is asked for it.
  * Telling the library `local_files_only` is not enough: some of its discovery
@@ -120,8 +119,7 @@ export function localOnlyOptions(): { local_files_only?: true } {
 }
 
 /**
- * Every file a load of `modelId` reads, relative to the model folder (#1586
- * rounds 5-6): the weights, the tokenizer and config files, and the
+ * Every file a load of `modelId` reads, relative to the model folder: the weights, the tokenizer and config files, and the
  * external-data chunks the model's config declares
  * (`transformers.js_config.use_external_data_format`, resolved the way
  * transformers.js resolves it).
@@ -129,8 +127,7 @@ export function localOnlyOptions(): { local_files_only?: true } {
 function requiredFiles(weights: string, config: unknown): string[] {
   const files = [join('onnx', weights), 'tokenizer.json', 'tokenizer_config.json', 'config.json']
   // transformers.js merges `device_config[<device>]` over the top-level
-  // settings (models/session.js); in Node the device is the CPU (#1586 round
-  // 7, D-4).
+  // settings (models/session.js); in Node the device is the CPU.
   const tjs = (config as { 'transformers.js_config'?: { use_external_data_format?: unknown; device_config?: Record<string, { use_external_data_format?: unknown }> } } | null)?.['transformers.js_config']
   const cpu = tjs?.device_config?.cpu
   const ext = cpu && Object.prototype.hasOwnProperty.call(cpu, 'use_external_data_format')
@@ -158,7 +155,7 @@ function readJson(path: string): unknown {
  * Are all of a model's files on disk, for a load from `cacheRoot` (the model
  * folder in a cache) with `localRoot` (the model folder under
  * `localModelPath`)? Matches the loader: each file is taken from the cache,
- * else from `localModelPath` (#1586 round 6, L3), so a split layout counts.
+ * else from `localModelPath`, so a split layout counts.
  */
 function completeIn(cacheRoot: string | null, localRoot: string | null, weights: string): boolean {
   const roots = [cacheRoot, localRoot].filter((r): r is string => !!r)
@@ -166,7 +163,7 @@ function completeIn(cacheRoot: string | null, localRoot: string | null, weights:
   const configPath = roots.map(r => join(r, 'config.json')).find(p => existsSync(p))
   const config = configPath ? readJson(configPath) : null
   // A config.json that does not parse cannot be loaded: that location does
-  // not hold a usable model (#1586 round 7, D-4), so the fallback can apply.
+  // not hold a usable model, so the fallback can apply.
   if (configPath && config === null) return false
   const files = requiredFiles(weights, config)
   return files.every(f => roots.some(r => existsSync(join(r, f))))
@@ -184,8 +181,8 @@ async function localRootFor(modelId: string): Promise<string | null> {
 }
 
 /**
- * The cache directory a load of `modelId` should use (#1586 round 6, G1).
- * `PLUR_MODEL_CACHE_DIR` / `HF_HOME` (#845) when the model is complete there;
+ * The cache directory a load of `modelId` should use.
+ * `PLUR_MODEL_CACHE_DIR` / `HF_HOME` when the model is complete there;
  * else the library's default cache when it is complete THERE — a model a user
  * already downloaded before setting the override is not lost; else the
  * override (where a download would go), else the default.
@@ -213,37 +210,30 @@ async function loadPipeline(modelId: string, dtype: TransformersAdapterConfig['d
   let pending = pipelineCache.get(key)
   if (!pending) {
     pending = (async () => {
-      // Force the classic HF download path: the Xet transfer protocol truncates
-      // ONNX model files in this stack (@huggingface/transformers 3.8.1),
-      // producing corrupt models ("Protobuf parsing failed") that silently
-      // degrade recall to fallback. Never use Xet. (#340)
+      // Force the classic HF download path: the Xet transfer protocol can
+      // truncate ONNX model files, producing corrupt models ("Protobuf parsing
+      // failed") that silently degrade recall to fallback. Never use Xet.
       process.env.HF_HUB_DISABLE_XET ??= '1'
       const transformers = await importTransformers()
 
-      // Let the caller place the model cache (#845).
+      // Let the caller place the model cache.
       //
-      // transformers.js v3 derives its cache directory from the PACKAGE
-      // LOCATION (`<package>/.cache`) and reads no environment variable —
-      // HF_HOME and TRANSFORMERS_CACHE are both ignored (see its src/env.js).
-      // The only lever is `env.cacheDir`, set before the first pipeline() call,
-      // and that call site is HERE, in core. So for any consumer installing
-      // from npm the model lives inside node_modules, and every `npm ci`
-      // destroys it: a server running from a git checkout re-downloaded ~128MB
-      // per deploy, and an air-gapped host could not work at all.
+      // transformers.js derives its cache directory from the PACKAGE LOCATION
+      // (`<package>/.cache`) and reads no environment variable — HF_HOME and
+      // TRANSFORMERS_CACHE are both ignored (see its src/env.js). The only
+      // lever is `env.cacheDir`, set before the first pipeline() call, which
+      // happens here. Without it, a model installed from npm lives inside
+      // node_modules and every `npm ci` deletes it (re-download per deploy;
+      // air-gapped hosts cannot work at all).
       //
-      // That failure is quiet, which is what made it expensive. embed()
-      // returning null is a DELIBERATE degradation — hybrid recall drops to
-      // BM25-only and new records are written without vectors, with nothing
-      // raised. enterprise#662 reached production that way: every "hybrid"
-      // recall on a containerised deployment had been BM25-only since the
-      // feature shipped, and not one engram had ever been embedded.
+      // That failure is quiet: embed() returning null is a deliberate
+      // degradation — hybrid recall drops to BM25-only and new records are
+      // written without vectors, with nothing raised.
       //
       // Precedence: explicit PLUR var, then the HF convention (honoured here
       // even though the library ignores it, because operators reasonably expect
-      // it to work), then the library default.
-      //
-      // #1586 round 6 (G1): a model already complete in the library default
-      // cache is used from there when the override has none.
+      // it to work), then the library default. A model already complete in the
+      // library default cache is used from there when the override has none.
       const weights = weightsFileFor(dtype)
       const cacheDir = await resolveLoadCacheDir(modelId, weights)
       const env = envOf(transformers)
@@ -256,7 +246,7 @@ async function loadPipeline(modelId: string, dtype: TransformersAdapterConfig['d
       // is not enough for a model missing from disk: transformers.js v4's
       // pipeline() resolves the model's file list (get_pipeline_files) before
       // it reads local_files_only, and that step fetches config.json. So a
-      // missing model is refused here, before the library is asked (TEAM-5).
+      // missing model is refused here, before the library is asked.
       await refuseMissingModelOffline(modelId, weights, 'embedding model')
       const opts = { ...(dtype ? { dtype } : {}), ...localOnlyOptions() }
       const pipeline = transformers.pipeline as (task: string, model: string, o?: object) => Promise<unknown>

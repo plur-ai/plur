@@ -53,13 +53,11 @@ learn(statement: string, context?: LearnContext): Promise<Engram>
    * forget that pretends success and leaves the user with a phantom ID).
    */
 /**
-   * Report the closest existing engrams to a statement — REPORTING ONLY (#856).
+   * Report the closest existing engrams to a statement — REPORTING ONLY.
    *
    * `plur_learn` goes through {@link learnRouted} → sync `learn()`, which has
-   * only ever had exact content-hash dedup; `learnAsync` (and therefore the
-   * similarity pass) is reachable solely from `plur_learn_batch`. So the
-   * dominant write path had no near-duplicate visibility at all, which is how
-   * #854 happened on it.
+   * only exact content-hash dedup; `learnAsync` (and therefore the similarity
+   * pass) is reachable solely from `plur_learn_batch`.
    *
    * This gives that path the same observation the batch path gets, without
    * giving either the power to suppress a write. Never throws: similarity is an
@@ -85,19 +83,19 @@ _commitRemoteRouted(localPlaceholder: Engram, remoteDriver: RemoteStore, scope: 
 
 /**
    * Where a learn result went, and a warning when that is not where a reader
-   * would assume (#1264).
+   * would assume.
    *
    * A write to a shared scope (`group:`, `project:`, `org:` …) with no writable
    * url store registered for exactly that scope falls through to the local
    * primary store. That is deliberate — nothing is auto-routed into a shared
-   * store — but it used to be silent, so a team save could sit on one machine
-   * indefinitely while the caller was told only `ADD`. This reports it.
+   * store — but silently, a team save could sit on one machine indefinitely
+   * while the caller was told only `ADD`. This reports it.
    *
    * Pure: reads the returned engram and the store config, never the network,
    * and changes nothing about where anything was written. Pass the object
    * `learn()` / `learnRouted()` returned; a copy loses the `remote` evidence.
    *
-   * `requestedScope` (audit F8): the scope the caller asked for. When the save
+   * `requestedScope`: the scope the caller asked for. When the save
    * came back as an engram in a DIFFERENT scope — recorded as a recurrence on
    * another team's engram, or on a `global` one — nothing was written to the
    * requested shared scope, so the result is `local` for that scope and the
@@ -115,12 +113,12 @@ _deliveryDetails(engram: Engram, requestedScope?: string): {
     reason_code?: OutboxReasonCode
     /** Only for `remote`: the server that holds it — the normalized endpoint
      *  (no userinfo), as recall's `remote.hosts[].host` names it. Absent when
-     *  this process cannot tell (Codex round 5, finding 2). */
+     *  this process cannot tell. */
     host?: string
   }
 
 /**
-   * The id shape the READ paths hand back for an engram (#914).
+   * The id shape the READ paths hand back for an engram.
    *
    * A store's engrams are namespaced with `ENG-{storePrefix(scope)}-` on load,
    * so `recall` returns `ENG-GPL-2026-08-13-025` where the write path returned
@@ -137,7 +135,7 @@ _deliveryDetails(engram: Engram, requestedScope?: string): {
    * the two agree on which writes leave the machine.
    */
 /**
-   * Why an outbox engram was queued (0.21.1), from the failure recorded on it.
+   * Why an outbox engram was queued, from the failure recorded on it.
    * Pure: reads `_outbox`, never the network. Uses the outbox classifier so
    * this line, `plur outbox` and `plur doctor` agree on the cause.
    */
@@ -148,13 +146,12 @@ readIdFor(engram: { id: string; scope: string }): string
 
 /**
    * THE engram constructor — the one place the shape of a new engram is
-   * written down (2026-09 audit; it used to be duplicated inline in `learn()`,
-   * so every new field had to be added twice).
+   * written down.
    *
    * Builds without persisting: `learn()` spreads the result and sets the id it
    * minted; `learnRouted()` posts it to the remote, which assigns the id, and
    * on failure mints a local id for the outbox copy. Neither acquires the
-   * lock nor touches disk here. `validity` (#347) is taken from callers that
+   * lock nor touches disk here. `validity` is taken from callers that
    * already resolved it — learn() fails fast on a malformed window before
    * taking the lock — and derived otherwise.
    */
@@ -168,7 +165,7 @@ _learnAsyncDeps(): Promise<{ hashDedup: (statement: string, scope?: string) => P
 /** @internal */
 _learnAsyncDepsAll(): Promise<{ hashDedup: (statement: string, scope?: string) => Promise<{ id: string; version: number; status: "active" | "dormant" | "retired" | "candidate"; consolidated: boolean; type: "behavioral" | "terminological" | "procedural" | "architectural"; scope: string; visibility: "private" | "public" | "template"; statement: string; derivation_count: number; pack: string | null; abstract: string | null; derived_from: string | null; tags: string[]; activation: { retrieval_strength: number; storage_strength: number; frequency: number; last_accessed: string; }; associations: { target_type: "engram" | "document"; target: string; strength: number; type: "semantic" | "temporal" | "causal" | "co_accessed"; updated_at?: string | undefined; }[]; knowledge_anchors: { path: string; relevance: "primary" | "supporting" | "example"; snippet?: string | undefined; snippet_extracted_at?: string | undefined; }[]; feedback_signals: { positive: number; negative: number; neutral: number; }; polarity: "do" | "dont" | null; write_count: number; injection_count: number; sources: { scope: string; session_id: string | null; stored_at: string; validated_by?: string | undefined; promoted_from?: string | undefined; }[]; recurrence_count: number; engram_version: number; episode_ids: string[]; created_at?: string | undefined; updated_at?: string | undefined; rationale?: string | undefined; contraindications?: string[] | undefined; source?: string | undefined; source_patterns?: string[] | undefined; knowledge_type?: { memory_class: "procedural" | "semantic" | "episodic" | "metacognitive"; cognitive_level: "remember" | "understand" | "apply" | "analyze" | "evaluate" | "create"; } | undefined; domain?: string | undefined; relations?: { broader: string[]; narrower: string[]; related: string[]; conflicts: string[]; supersedes: string[]; superseded_by: string[]; } | undefined; dual_coding?: { example?: string | undefined; analogy?: string | undefined; } | undefined; provenance?: { origin: string; chain: string[]; signature: string | null; license: string; } | undefined; attribution?: { asserted_by?: string | undefined; runtime?: { name: string; version?: string | undefined; } | undefined; model?: { name: string; prompt_id?: string | undefined; prompt_version?: string | undefined; prompt_sha256?: string | undefined; } | undefined; tool?: { name: string; version?: string | undefined; } | undefined; on_behalf_of?: string | undefined; } | undefined; claim_class?: "observed" | "documented" | "structural" | "asserted" | "inferred" | "revised" | undefined; entities?: { name: string; type: "tool" | "person" | "organization" | "technology" | "concept" | "project" | "place" | "event" | "standard" | "other"; uri?: string | undefined; }[] | undefined; temporal?: { learned_at: string; valid_from?: string | undefined; valid_until?: string | undefined; ingested_at?: string | undefined; } | undefined; usage?: { injections: number; hits: number; misses: number; last_hit_at?: string | undefined; } | undefined; episodic?: { emotional_weight: number; confidence: number; trigger_context?: string | undefined; journal_ref?: string | undefined; } | undefined; exchange?: { environmental_diversity: number; adoption_count: number; contradiction_rate: number; fitness_score?: number | undefined; } | undefined; structured_data?: Record<string, unknown> | undefined; insight?: { operation: "distill" | "consolidate" | "dream" | "connect" | "emerge" | "drift"; synthesized_at: string; grounding: "verified" | "unverified" | "ungrounded" | "speculative"; source_episode_ids: string[]; fate: "surfaced" | "promoted" | "cited" | "tasked" | "dismissed" | "expired"; surfaced_count: number; serendipity?: { unexpectedness: number; relevance: number; score: number; } | undefined; fate_ref?: string | undefined; fate_at?: string | undefined; } | undefined; content_hash?: string | undefined; commitment?: "exploring" | "leaning" | "decided" | "locked" | "draft" | undefined; locked_at?: string | undefined; locked_reason?: string | undefined; previous_version_ref?: { event_id: string; changed_at: string; } | undefined; summary?: string | undefined; pinned?: boolean | undefined; pinned_tier?: "hard" | "soft" | undefined; pinned_priority?: number | undefined; measured_under?: { [x: string]: unknown; model?: string | undefined; source_type?: string | undefined; hardware?: string | undefined; dataset?: string | undefined; date?: string | undefined; } | undefined; } | null>; recallHybrid: (query: string, options?: { limit?: number; }) => Promise<{ id: string; version: number; status: "active" | "dormant" | "retired" | "candidate"; consolidated: boolean; type: "behavioral" | "terminological" | "procedural" | "architectural"; scope: string; visibility: "private" | "public" | "template"; statement: string; derivation_count: number; pack: string | null; abstract: string | null; derived_from: string | null; tags: string[]; activation: { retrieval_strength: number; storage_strength: number; frequency: number; last_accessed: string; }; associations: { target_type: "engram" | "document"; target: string; strength: number; type: "semantic" | "temporal" | "causal" | "co_accessed"; updated_at?: string | undefined; }[]; knowledge_anchors: { path: string; relevance: "primary" | "supporting" | "example"; snippet?: string | undefined; snippet_extracted_at?: string | undefined; }[]; feedback_signals: { positive: number; negative: number; neutral: number; }; polarity: "do" | "dont" | null; write_count: number; injection_count: number; sources: { scope: string; session_id: string | null; stored_at: string; validated_by?: string | undefined; promoted_from?: string | undefined; }[]; recurrence_count: number; engram_version: number; episode_ids: string[]; created_at?: string | undefined; updated_at?: string | undefined; rationale?: string | undefined; contraindications?: string[] | undefined; source?: string | undefined; source_patterns?: string[] | undefined; knowledge_type?: { memory_class: "procedural" | "semantic" | "episodic" | "metacognitive"; cognitive_level: "remember" | "understand" | "apply" | "analyze" | "evaluate" | "create"; } | undefined; domain?: string | undefined; relations?: { broader: string[]; narrower: string[]; related: string[]; conflicts: string[]; supersedes: string[]; superseded_by: string[]; } | undefined; dual_coding?: { example?: string | undefined; analogy?: string | undefined; } | undefined; provenance?: { origin: string; chain: string[]; signature: string | null; license: string; } | undefined; attribution?: { asserted_by?: string | undefined; runtime?: { name: string; version?: string | undefined; } | undefined; model?: { name: string; prompt_id?: string | undefined; prompt_version?: string | undefined; prompt_sha256?: string | undefined; } | undefined; tool?: { name: string; version?: string | undefined; } | undefined; on_behalf_of?: string | undefined; } | undefined; claim_class?: "observed" | "documented" | "structural" | "asserted" | "inferred" | "revised" | undefined; entities?: { name: string; type: "tool" | "person" | "organization" | "technology" | "concept" | "project" | "place" | "event" | "standard" | "other"; uri?: string | undefined; }[] | undefined; temporal?: { learned_at: string; valid_from?: string | undefined; valid_until?: string | undefined; ingested_at?: string | undefined; } | undefined; usage?: { injections: number; hits: number; misses: number; last_hit_at?: string | undefined; } | undefined; episodic?: { emotional_weight: number; confidence: number; trigger_context?: string | undefined; journal_ref?: string | undefined; } | undefined; exchange?: { environmental_diversity: number; adoption_count: number; contradiction_rate: number; fitness_score?: number | undefined; } | undefined; structured_data?: Record<string, unknown> | undefined; insight?: { operation: "distill" | "consolidate" | "dream" | "connect" | "emerge" | "drift"; synthesized_at: string; grounding: "verified" | "unverified" | "ungrounded" | "speculative"; source_episode_ids: string[]; fate: "surfaced" | "promoted" | "cited" | "tasked" | "dismissed" | "expired"; surfaced_count: number; serendipity?: { unexpectedness: number; relevance: number; score: number; } | undefined; fate_ref?: string | undefined; fate_at?: string | undefined; } | undefined; content_hash?: string | undefined; commitment?: "exploring" | "leaning" | "decided" | "locked" | "draft" | undefined; locked_at?: string | undefined; locked_reason?: string | undefined; previous_version_ref?: { event_id: string; changed_at: string; } | undefined; summary?: string | undefined; pinned?: boolean | undefined; pinned_tier?: "hard" | "soft" | undefined; pinned_priority?: number | undefined; measured_under?: { [x: string]: unknown; model?: string | undefined; source_type?: string | undefined; hardware?: string | undefined; dataset?: string | undefined; date?: string | undefined; } | undefined; }[]>; recall: (query: string, options?: { limit?: number; }) => Promise<{ id: string; version: number; status: "active" | "dormant" | "retired" | "candidate"; consolidated: boolean; type: "behavioral" | "terminological" | "procedural" | "architectural"; scope: string; visibility: "private" | "public" | "template"; statement: string; derivation_count: number; pack: string | null; abstract: string | null; derived_from: string | null; tags: string[]; activation: { retrieval_strength: number; storage_strength: number; frequency: number; last_accessed: string; }; associations: { target_type: "engram" | "document"; target: string; strength: number; type: "semantic" | "temporal" | "causal" | "co_accessed"; updated_at?: string | undefined; }[]; knowledge_anchors: { path: string; relevance: "primary" | "supporting" | "example"; snippet?: string | undefined; snippet_extracted_at?: string | undefined; }[]; feedback_signals: { positive: number; negative: number; neutral: number; }; polarity: "do" | "dont" | null; write_count: number; injection_count: number; sources: { scope: string; session_id: string | null; stored_at: string; validated_by?: string | undefined; promoted_from?: string | undefined; }[]; recurrence_count: number; engram_version: number; episode_ids: string[]; created_at?: string | undefined; updated_at?: string | undefined; rationale?: string | undefined; contraindications?: string[] | undefined; source?: string | undefined; source_patterns?: string[] | undefined; knowledge_type?: { memory_class: "procedural" | "semantic" | "episodic" | "metacognitive"; cognitive_level: "remember" | "understand" | "apply" | "analyze" | "evaluate" | "create"; } | undefined; domain?: string | undefined; relations?: { broader: string[]; narrower: string[]; related: string[]; conflicts: string[]; supersedes: string[]; superseded_by: string[]; } | undefined; dual_coding?: { example?: string | undefined; analogy?: string | undefined; } | undefined; provenance?: { origin: string; chain: string[]; signature: string | null; license: string; } | undefined; attribution?: { asserted_by?: string | undefined; runtime?: { name: string; version?: string | undefined; } | undefined; model?: { name: string; prompt_id?: string | undefined; prompt_version?: string | undefined; prompt_sha256?: string | undefined; } | undefined; tool?: { name: string; version?: string | undefined; } | undefined; on_behalf_of?: string | undefined; } | undefined; claim_class?: "observed" | "documented" | "structural" | "asserted" | "inferred" | "revised" | undefined; entities?: { name: string; type: "tool" | "person" | "organization" | "technology" | "concept" | "project" | "place" | "event" | "standard" | "other"; uri?: string | undefined; }[] | undefined; temporal?: { learned_at: string; valid_from?: string | undefined; valid_until?: string | undefined; ingested_at?: string | undefined; } | undefined; usage?: { injections: number; hits: number; misses: number; last_hit_at?: string | undefined; } | undefined; episodic?: { emotional_weight: number; confidence: number; trigger_context?: string | undefined; journal_ref?: string | undefined; } | undefined; exchange?: { environmental_diversity: number; adoption_count: number; contradiction_rate: number; fitness_score?: number | undefined; } | undefined; structured_data?: Record<string, unknown> | undefined; insight?: { operation: "distill" | "consolidate" | "dream" | "connect" | "emerge" | "drift"; synthesized_at: string; grounding: "verified" | "unverified" | "ungrounded" | "speculative"; source_episode_ids: string[]; fate: "surfaced" | "promoted" | "cited" | "tasked" | "dismissed" | "expired"; surfaced_count: number; serendipity?: { unexpectedness: number; relevance: number; score: number; } | undefined; fate_ref?: string | undefined; fate_at?: string | undefined; } | undefined; content_hash?: string | undefined; commitment?: "exploring" | "leaning" | "decided" | "locked" | "draft" | undefined; locked_at?: string | undefined; locked_reason?: string | undefined; previous_version_ref?: { event_id: string; changed_at: string; } | undefined; summary?: string | undefined; pinned?: boolean | undefined; pinned_tier?: "hard" | "soft" | undefined; pinned_priority?: number | undefined; measured_under?: { [x: string]: unknown; model?: string | undefined; source_type?: string | undefined; hardware?: string | undefined; dataset?: string | undefined; date?: string | undefined; } | undefined; }[]>; learn: (statement: string, context?: LearnContext) => Promise<{ id: string; version: number; status: "active" | "dormant" | "retired" | "candidate"; consolidated: boolean; type: "behavioral" | "terminological" | "procedural" | "architectural"; scope: string; visibility: "private" | "public" | "template"; statement: string; derivation_count: number; pack: string | null; abstract: string | null; derived_from: string | null; tags: string[]; activation: { retrieval_strength: number; storage_strength: number; frequency: number; last_accessed: string; }; associations: { target_type: "engram" | "document"; target: string; strength: number; type: "semantic" | "temporal" | "causal" | "co_accessed"; updated_at?: string | undefined; }[]; knowledge_anchors: { path: string; relevance: "primary" | "supporting" | "example"; snippet?: string | undefined; snippet_extracted_at?: string | undefined; }[]; feedback_signals: { positive: number; negative: number; neutral: number; }; polarity: "do" | "dont" | null; write_count: number; injection_count: number; sources: { scope: string; session_id: string | null; stored_at: string; validated_by?: string | undefined; promoted_from?: string | undefined; }[]; recurrence_count: number; engram_version: number; episode_ids: string[]; created_at?: string | undefined; updated_at?: string | undefined; rationale?: string | undefined; contraindications?: string[] | undefined; source?: string | undefined; source_patterns?: string[] | undefined; knowledge_type?: { memory_class: "procedural" | "semantic" | "episodic" | "metacognitive"; cognitive_level: "remember" | "understand" | "apply" | "analyze" | "evaluate" | "create"; } | undefined; domain?: string | undefined; relations?: { broader: string[]; narrower: string[]; related: string[]; conflicts: string[]; supersedes: string[]; superseded_by: string[]; } | undefined; dual_coding?: { example?: string | undefined; analogy?: string | undefined; } | undefined; provenance?: { origin: string; chain: string[]; signature: string | null; license: string; } | undefined; attribution?: { asserted_by?: string | undefined; runtime?: { name: string; version?: string | undefined; } | undefined; model?: { name: string; prompt_id?: string | undefined; prompt_version?: string | undefined; prompt_sha256?: string | undefined; } | undefined; tool?: { name: string; version?: string | undefined; } | undefined; on_behalf_of?: string | undefined; } | undefined; claim_class?: "observed" | "documented" | "structural" | "asserted" | "inferred" | "revised" | undefined; entities?: { name: string; type: "tool" | "person" | "organization" | "technology" | "concept" | "project" | "place" | "event" | "standard" | "other"; uri?: string | undefined; }[] | undefined; temporal?: { learned_at: string; valid_from?: string | undefined; valid_until?: string | undefined; ingested_at?: string | undefined; } | undefined; usage?: { injections: number; hits: number; misses: number; last_hit_at?: string | undefined; } | undefined; episodic?: { emotional_weight: number; confidence: number; trigger_context?: string | undefined; journal_ref?: string | undefined; } | undefined; exchange?: { environmental_diversity: number; adoption_count: number; contradiction_rate: number; fitness_score?: number | undefined; } | undefined; structured_data?: Record<string, unknown> | undefined; insight?: { operation: "distill" | "consolidate" | "dream" | "connect" | "emerge" | "drift"; synthesized_at: string; grounding: "verified" | "unverified" | "ungrounded" | "speculative"; source_episode_ids: string[]; fate: "surfaced" | "promoted" | "cited" | "tasked" | "dismissed" | "expired"; surfaced_count: number; serendipity?: { unexpectedness: number; relevance: number; score: number; } | undefined; fate_ref?: string | undefined; fate_at?: string | undefined; } | undefined; content_hash?: string | undefined; commitment?: "exploring" | "leaning" | "decided" | "locked" | "draft" | undefined; locked_at?: string | undefined; locked_reason?: string | undefined; previous_version_ref?: { event_id: string; changed_at: string; } | undefined; summary?: string | undefined; pinned?: boolean | undefined; pinned_tier?: "hard" | "soft" | undefined; pinned_priority?: number | undefined; measured_under?: { [x: string]: unknown; model?: string | undefined; source_type?: string | undefined; hardware?: string | undefined; dataset?: string | undefined; date?: string | undefined; } | undefined; }>; learnRouted: (statement: string, context?: LearnContext) => Promise<{ id: string; version: number; status: "active" | "dormant" | "retired" | "candidate"; consolidated: boolean; type: "behavioral" | "terminological" | "procedural" | "architectural"; scope: string; visibility: "private" | "public" | "template"; statement: string; derivation_count: number; pack: string | null; abstract: string | null; derived_from: string | null; tags: string[]; activation: { retrieval_strength: number; storage_strength: number; frequency: number; last_accessed: string; }; associations: { target_type: "engram" | "document"; target: string; strength: number; type: "semantic" | "temporal" | "causal" | "co_accessed"; updated_at?: string | undefined; }[]; knowledge_anchors: { path: string; relevance: "primary" | "supporting" | "example"; snippet?: string | undefined; snippet_extracted_at?: string | undefined; }[]; feedback_signals: { positive: number; negative: number; neutral: number; }; polarity: "do" | "dont" | null; write_count: number; injection_count: number; sources: { scope: string; session_id: string | null; stored_at: string; validated_by?: string | undefined; promoted_from?: string | undefined; }[]; recurrence_count: number; engram_version: number; episode_ids: string[]; created_at?: string | undefined; updated_at?: string | undefined; rationale?: string | undefined; contraindications?: string[] | undefined; source?: string | undefined; source_patterns?: string[] | undefined; knowledge_type?: { memory_class: "procedural" | "semantic" | "episodic" | "metacognitive"; cognitive_level: "remember" | "understand" | "apply" | "analyze" | "evaluate" | "create"; } | undefined; domain?: string | undefined; relations?: { broader: string[]; narrower: string[]; related: string[]; conflicts: string[]; supersedes: string[]; superseded_by: string[]; } | undefined; dual_coding?: { example?: string | undefined; analogy?: string | undefined; } | undefined; provenance?: { origin: string; chain: string[]; signature: string | null; license: string; } | undefined; attribution?: { asserted_by?: string | undefined; runtime?: { name: string; version?: string | undefined; } | undefined; model?: { name: string; prompt_id?: string | undefined; prompt_version?: string | undefined; prompt_sha256?: string | undefined; } | undefined; tool?: { name: string; version?: string | undefined; } | undefined; on_behalf_of?: string | undefined; } | undefined; claim_class?: "observed" | "documented" | "structural" | "asserted" | "inferred" | "revised" | undefined; entities?: { name: string; type: "tool" | "person" | "organization" | "technology" | "concept" | "project" | "place" | "event" | "standard" | "other"; uri?: string | undefined; }[] | undefined; temporal?: { learned_at: string; valid_from?: string | undefined; valid_until?: string | undefined; ingested_at?: string | undefined; } | undefined; usage?: { injections: number; hits: number; misses: number; last_hit_at?: string | undefined; } | undefined; episodic?: { emotional_weight: number; confidence: number; trigger_context?: string | undefined; journal_ref?: string | undefined; } | undefined; exchange?: { environmental_diversity: number; adoption_count: number; contradiction_rate: number; fitness_score?: number | undefined; } | undefined; structured_data?: Record<string, unknown> | undefined; insight?: { operation: "distill" | "consolidate" | "dream" | "connect" | "emerge" | "drift"; synthesized_at: string; grounding: "verified" | "unverified" | "ungrounded" | "speculative"; source_episode_ids: string[]; fate: "surfaced" | "promoted" | "cited" | "tasked" | "dismissed" | "expired"; surfaced_count: number; serendipity?: { unexpectedness: number; relevance: number; score: number; } | undefined; fate_ref?: string | undefined; fate_at?: string | undefined; } | undefined; content_hash?: string | undefined; commitment?: "exploring" | "leaning" | "decided" | "locked" | "draft" | undefined; locked_at?: string | undefined; locked_reason?: string | undefined; previous_version_ref?: { event_id: string; changed_at: string; } | undefined; summary?: string | undefined; pinned?: boolean | undefined; pinned_tier?: "hard" | "soft" | undefined; pinned_priority?: number | undefined; measured_under?: { [x: string]: unknown; model?: string | undefined; source_type?: string | undefined; hardware?: string | undefined; dataset?: string | undefined; date?: string | undefined; } | undefined; }>; getById: (id: string) => Promise<{ id: string; version: number; status: "active" | "dormant" | "retired" | "candidate"; consolidated: boolean; type: "behavioral" | "terminological" | "procedural" | "architectural"; scope: string; visibility: "private" | "public" | "template"; statement: string; derivation_count: number; pack: string | null; abstract: string | null; derived_from: string | null; tags: string[]; activation: { retrieval_strength: number; storage_strength: number; frequency: number; last_accessed: string; }; associations: { target_type: "engram" | "document"; target: string; strength: number; type: "semantic" | "temporal" | "causal" | "co_accessed"; updated_at?: string | undefined; }[]; knowledge_anchors: { path: string; relevance: "primary" | "supporting" | "example"; snippet?: string | undefined; snippet_extracted_at?: string | undefined; }[]; feedback_signals: { positive: number; negative: number; neutral: number; }; polarity: "do" | "dont" | null; write_count: number; injection_count: number; sources: { scope: string; session_id: string | null; stored_at: string; validated_by?: string | undefined; promoted_from?: string | undefined; }[]; recurrence_count: number; engram_version: number; episode_ids: string[]; created_at?: string | undefined; updated_at?: string | undefined; rationale?: string | undefined; contraindications?: string[] | undefined; source?: string | undefined; source_patterns?: string[] | undefined; knowledge_type?: { memory_class: "procedural" | "semantic" | "episodic" | "metacognitive"; cognitive_level: "remember" | "understand" | "apply" | "analyze" | "evaluate" | "create"; } | undefined; domain?: string | undefined; relations?: { broader: string[]; narrower: string[]; related: string[]; conflicts: string[]; supersedes: string[]; superseded_by: string[]; } | undefined; dual_coding?: { example?: string | undefined; analogy?: string | undefined; } | undefined; provenance?: { origin: string; chain: string[]; signature: string | null; license: string; } | undefined; attribution?: { asserted_by?: string | undefined; runtime?: { name: string; version?: string | undefined; } | undefined; model?: { name: string; prompt_id?: string | undefined; prompt_version?: string | undefined; prompt_sha256?: string | undefined; } | undefined; tool?: { name: string; version?: string | undefined; } | undefined; on_behalf_of?: string | undefined; } | undefined; claim_class?: "observed" | "documented" | "structural" | "asserted" | "inferred" | "revised" | undefined; entities?: { name: string; type: "tool" | "person" | "organization" | "technology" | "concept" | "project" | "place" | "event" | "standard" | "other"; uri?: string | undefined; }[] | undefined; temporal?: { learned_at: string; valid_from?: string | undefined; valid_until?: string | undefined; ingested_at?: string | undefined; } | undefined; usage?: { injections: number; hits: number; misses: number; last_hit_at?: string | undefined; } | undefined; episodic?: { emotional_weight: number; confidence: number; trigger_context?: string | undefined; journal_ref?: string | undefined; } | undefined; exchange?: { environmental_diversity: number; adoption_count: number; contradiction_rate: number; fitness_score?: number | undefined; } | undefined; structured_data?: Record<string, unknown> | undefined; insight?: { operation: "distill" | "consolidate" | "dream" | "connect" | "emerge" | "drift"; synthesized_at: string; grounding: "verified" | "unverified" | "ungrounded" | "speculative"; source_episode_ids: string[]; fate: "surfaced" | "promoted" | "cited" | "tasked" | "dismissed" | "expired"; surfaced_count: number; serendipity?: { unexpectedness: number; relevance: number; score: number; } | undefined; fate_ref?: string | undefined; fate_at?: string | undefined; } | undefined; content_hash?: string | undefined; commitment?: "exploring" | "leaning" | "decided" | "locked" | "draft" | undefined; locked_at?: string | undefined; locked_reason?: string | undefined; previous_version_ref?: { event_id: string; changed_at: string; } | undefined; summary?: string | undefined; pinned?: boolean | undefined; pinned_tier?: "hard" | "soft" | undefined; pinned_priority?: number | undefined; measured_under?: { [x: string]: unknown; model?: string | undefined; source_type?: string | undefined; hardware?: string | undefined; dataset?: string | undefined; date?: string | undefined; } | undefined; } | null>; store: import("/home/gregor/Data/5-plur/2-projects/plur-refactor/packages/core/src/index").PrimaryStore; engramsPath: string; rootPath: string; dedupConfig: { enabled?: boolean | undefined; threshold?: number | undefined; mode?: "llm" | "cosine" | "off" | undefined; }; similarityScores: (statement: string, candidates: Engram[]) => Promise<{ id: string; score: number; }[]>; isLlmAvailable: () => boolean; recordLlmSuccess: () => void; recordLlmFailure: () => void; syncIndex: () => Promise<void>; offendingHitsForScope: (statement: string, scope: string) => SecretMatch[]; sendsToServer: (scope: string) => boolean; openReview: (pair: TensionPair) => Promise<string>; holdAsDraft: (id: string) => Promise<void>; }>
 
-/** Async learn with LLM-driven deduplication (Ideas 1+2+19). */
+/** Async learn with LLM-driven deduplication. */
 learnAsync(statement: string, context?: LearnAsyncContext): Promise<LearnAsyncResult>
 
 /** Batch learn with LLM dedup. LLM calls are capped (default 50) to bound bulk-import cost. */
@@ -182,7 +179,7 @@ async learn(statement: string, context?: LearnContext): Promise<Engram> {
     const guarded = await this._guardSensitiveScope(statement, context)
     this._refuseScopeConflict(guarded.scope)
     context = guarded.context
-    // #347: resolve the validity window up-front (pure) so malformed
+    // Resolve the validity window up-front (pure) so malformed
     // valid_from/valid_until fail fast — even when the write would dedup
     // into an existing engram below.
     const validity = resolveValidity(statement, context)
@@ -193,7 +190,7 @@ async learn(statement: string, context?: LearnContext): Promise<Engram> {
       // Can the store answer BOTH derived facts `learn()` needs — "is this
       // statement already here in this scope" and "what is the next id" —
       // without the corpus, AND take every write `learn()` performs as a
-      // targeted row operation? (#828)
+      // targeted row operation?
       //
       // It is a capability SET, not a pair, and every member is load-bearing.
       // The derive seams are jointly required because each of the two facts is
@@ -203,11 +200,10 @@ async learn(statement: string, context?: LearnContext): Promise<Engram> {
       // `_writeSupersededByEdges`) takes "the corpus in hand" and, absent a
       // row-level write, turns it into a whole-corpus `save()`. Taking the
       // targeted READ without the targeted WRITE would hand a stand-in array
-      // of one or two rows to a FULL REPLACE — the #749 shape that deleted a
-      // corpus on an ordinary recall, and the reason `_reactivateResults`
-      // checks its pair rather than each half.
+      // of one or two rows to a FULL REPLACE, deleting the corpus — the reason
+      // `_reactivateResults` checks its pair rather than each half.
       // remote-only: never the store's own content-hash lookup, which would
-      // answer from personal rows in the team scope (audit of #1521, B1).
+      // answer from personal rows in the team scope.
       const canDelegate = this._learnCanDelegate() && !this._remoteOnly
       // The primary corpus, or an empty stand-in when nothing below will read
       // or rewrite it. Safe ONLY under `canDelegate` — see above.
@@ -221,19 +217,19 @@ async learn(statement: string, context?: LearnContext): Promise<Engram> {
           ? await this._loadSecondaryAndPacks()
           : await this._loadAllEngrams()
 
-      // Idea 29: Content hash fast-path dedup (scope-aware — issue #136).
-      // On dedup hit, mutate: increment write_count, append source (#107).
+      // Content hash fast-path dedup (scope-aware). On dedup hit, mutate:
+      // increment write_count, append source.
       //
       // The store is asked first, matching the corpus order it replaces
       // (`_loadAllEngrams` puts primary rows ahead of secondary ones, so a
-      // primary match has always won).
-      // Unhashable statements skip the store lookup entirely (#896) — the
+      // primary match wins).
+      // Unhashable statements skip the store lookup entirely — the
       // delegated query has the same collapse the in-memory scan does, and
-      // this is the branch a Postgres/PGLite install actually takes.
+      // this is the branch a Postgres/PGLite install takes.
       const { primaryHashMatch, hashMatch, foreign: sameScopeForeign } =
         await this._learnHashMatch(statement, scope, canDelegate, allEngrams)
       if (hashMatch) {
-        // Decision A: `hashMatch` is a row the writer can persist (primary, a
+        // `hashMatch` is a row the writer can persist (primary, a
         // writable secondary store, or the writable remote of this very
         // scope); a pack / readonly / other-remote match never gets here.
         // The store-served hit is a freshly-read row under this same lock, so
@@ -242,7 +238,7 @@ async learn(statement: string, context?: LearnContext): Promise<Engram> {
         return await this._recordDuplicate(hashMatch, corpusInHand, scope, context, statement)
       }
 
-      // #176: cross-scope recurrence — same statement, different scope.
+      // Cross-scope recurrence — same statement, different scope.
       // Treated as evidence of universal applicability: graduates the
       // existing engram toward 'global' + 'locked' commitment instead of
       // creating a new scope-bound duplicate.
@@ -259,7 +255,7 @@ async learn(statement: string, context?: LearnContext): Promise<Engram> {
       // graduation declines the seam and keeps the corpus scan.
       // See `PrimaryStore.findActiveByContentHash`.
       //
-      // Decision A: only a hit the writer can persist graduates; one held in a
+      // Only a hit the writer can persist graduates; one held in a
       // pack, a readonly store or another scope's remote cache does not absorb
       // the write — it falls through to a new row and is noted in history.
       const cross = await this._crossScopeMatch(statement, allEngrams, scope)
@@ -269,26 +265,26 @@ async learn(statement: string, context?: LearnContext): Promise<Engram> {
       if (cross.hit && !this._isTeamValidation(scope, cross.hit)) {
         return await this._recordCrossScopeRecurrence(cross.hit, engrams, scope, context)
       }
-      // #1268: a shared save credits the engram it matched — personal, global
-      // or another team's (decision A1) — and then falls through to write its
+      // A shared save credits the engram it matched — personal, global or
+      // another team's — and then falls through to write its
       // own team copy below.
       if (cross.hit) await this._recordCrossScopeRecurrence(cross.hit, engrams, scope, context)
       const unpersistableHit = sameScopeForeign ?? cross.foreign
 
-      // LRN-9: a supersede proposed by the duplicate checker never lands on a
-      // memory that is locked — checked here, under the store lock, so a lock
-      // taken after the checker read the target still wins. The caller sees
-      // the dropped target missing from `relations.supersedes` and sends the
-      // pair to review instead.
+      // A supersede proposed by the duplicate checker never lands on a memory
+      // that is locked — checked here, under the store lock, so a lock taken
+      // after the checker read the target still wins. The caller sees the
+      // dropped target missing from `relations.supersedes` and sends the pair
+      // to review instead.
       //
-      // Audit 5 F3: when a target is locked the new memory is saved as a DRAFT
-      // in this same write, so it is never deliverable, not between this write
-      // and the caller's review step, and not after a crash at that boundary.
+      // When a target is locked the new memory is saved as a DRAFT in this
+      // same write, so it is never deliverable, not between this write and the
+      // caller's review step, and not after a crash at that boundary.
       //
-      // Audit 5 F4: each target is checked in the store that holds it. A target
-      // in a writable secondary store keeps the supersede, and its reverse edge
-      // is written in that store (`_landSecondarySupersedes`, right before the
-      // new row is written). A target whose store cannot take the reverse edge
+      // Each target is checked in the store that holds it. A target in a
+      // writable secondary store keeps the supersede, and its reverse edge is
+      // written in that store (`_landSecondarySupersedes`, right before the new
+      // row is written). A target whose store cannot take the reverse edge
       // (readonly store, pack, remote cache) is not superseded at all: nothing
       // there would suppress it, so the new memory is linked to it instead.
       let secondarySupersedes: SecondarySupersede[] = []
@@ -339,7 +335,7 @@ async learn(statement: string, context?: LearnContext): Promise<Engram> {
         // remote-only: `allEngrams` leaves out most of the primary store, whose
         // ids a queued (outbox) row must still not collide with.
         : generateEngramId([...engrams, ...allEngrams], await this._idsInUse())
-      // Claim it in-process immediately (#816). The history record is written
+      // Claim it in-process immediately. The history record is written
       // later and best-effort; without this, two writes in the same tick — or
       // one whose history append fails — could both take the same suffix.
       this._rememberMintedId(id)
@@ -355,17 +351,17 @@ async learn(statement: string, context?: LearnContext): Promise<Engram> {
       // will be committed, and inside the lock the write commits under.
       await this._assertHardTierFits(engram)
 
-      // #240: supersedes is a graph edge, not a temporality enum — write the
-      // reverse superseded_by edge on each target found in the local primary
-      // store (best-effort; targets living in other stores are not patched).
-      // The tension scanner skips supersedes-linked pairs: an intentional
-      // update is not a contradiction. The mutated targets are collected so
-      // the incremental write path below can persist them explicitly — on a
-      // store with `append`, writing only the new engram would silently drop
-      // these back-edges (the CI failure ffe04e0 fixed on #745).
+      // supersedes is a graph edge, not a temporality enum — write the reverse
+      // superseded_by edge on each target found in the local primary store
+      // (best-effort; targets living in other stores are not patched). The
+      // tension scanner skips supersedes-linked pairs: an intentional update is
+      // not a contradiction. The mutated targets are collected so the
+      // incremental write path below can persist them explicitly — on a store
+      // with `append`, writing only the new engram would silently drop these
+      // back-edges.
       //
       // Under delegation `engrams` is empty, so the targets are fetched by id.
-      // Dropping the back-edges instead would be the quiet kind of regression:
+      // Dropping the back-edges instead would fail quietly:
       // `supersedes` would still be recorded on the new engram and the reverse
       // edge would simply never appear, which reads as data corruption rather
       // than as a disabled feature.
@@ -377,7 +373,7 @@ async learn(statement: string, context?: LearnContext): Promise<Engram> {
           )
         : []
 
-      // Stamp the demotion marker (#326 review, finding 2) so the plur_learn MCP
+      // Stamp the demotion marker so the plur_learn MCP
       // response can tell the agent its engram was held back from the shared scope
       // it asked for. Set only on a direct learn() whose own guard demoted.
       if (guarded.demotion) {
@@ -387,7 +383,7 @@ async learn(statement: string, context?: LearnContext): Promise<Engram> {
         }
       }
 
-      // Stamp the auto-route marker (Stage 3b, #351) so the plur_learn MCP
+      // Stamp the auto-route marker so the plur_learn MCP
       // response can tell the agent its genuinely-unscoped write was routed to a
       // covers-matched scope by suggestScope (not chosen by the caller).
       // Mirrors _demoted; both can be present when an auto-routed shared scope
@@ -398,7 +394,7 @@ async learn(statement: string, context?: LearnContext): Promise<Engram> {
           _routed: guarded.routed,
         }
       }
-      // #1115 mirror: a shared scope matched and was refused. Stamped the same
+      // A shared scope matched and was refused. Stamped the same
       // way and only when present, so a caller can report what did NOT happen.
       if (guarded.refusedShared) {
         ;(engram as any).structured_data = {
@@ -407,7 +403,7 @@ async learn(statement: string, context?: LearnContext): Promise<Engram> {
         }
       }
 
-      // Multi-store routing (issue #26 outbox pattern): if the engram's
+      // Multi-store routing (outbox pattern): if the engram's
       // scope matches a writable remote store, save locally with outbox
       // metadata first (durable from this point), then fire-and-forget the
       // remote push. On success the local copy is removed asynchronously;
@@ -416,16 +412,15 @@ async learn(statement: string, context?: LearnContext): Promise<Engram> {
       const remoteDriver = this._resolveRemoteStoreForScope(scope)
       if (remoteDriver && context?.visibility === 'private') {
         // Private engrams stay local — sending to a shared remote contradicts
-        // the "only I see this" semantics. See: https://github.com/plur-ai/plur/issues/90
+        // the "only I see this" semantics.
         logger.warning(`[plur:learn] private engram not routed to remote (scope=${scope}), writing locally`)
       } else if (remoteDriver) {
-        // Audit iter-1 fix (Dijkstra): defensive lookup, kept for config
-        // drift between resolver-time and outbox-time. The target is the
-        // resolver's own writable entry (#1633 row 34), so it is the server
-        // the router dialled, never merely the first one listed.
+        // Defensive lookup, for config drift between resolver-time and
+        // outbox-time. The target is the resolver's own writable entry, so it
+        // is the server the router dialled, never merely the first one listed.
         const storeEntry = this._remoteWriteEntry(scope)
         const attemptedTokenFp = storeEntry?.token ? tokenHealthKey(storeEntry.token) : undefined
-        // Idempotency key for this write (2026-09-29 audits): random, minted
+        // Idempotency key for this write: random, minted
         // once, persisted on the outbox entry, never derived from an id.
         const pushKey = randomUUID()
         if (!storeEntry) {
@@ -446,15 +441,15 @@ async learn(statement: string, context?: LearnContext): Promise<Engram> {
               // One key per logical write, reused by every retry of it.
               idempotency_key: pushKey,
               // A save from a remote-only folder may only be delivered or
-              // deleted, never made a local row (audit of #1521, B2).
+              // deleted, never made a local row.
               ...(this._remoteOnly ? { remote_only: true, remote_only_folder: this._remoteOnly.folder } : {}),
             },
           }
         }
-        // Incremental write (#740): append the new engram; on a store without
+        // Incremental write: append the new engram; on a store without
         // `append` this saves the corpus in hand, which already carries the
         // superseded_by back-edges — so the second write below is skipped.
-        // Audit 5 F4: reverse edges in secondary stores, re-checked under that
+        // Reverse edges in secondary stores, re-checked under that
         // store's lock; undone if the new row cannot be written.
         const undoSecondary = await this._landSecondarySupersedes(engram, secondarySupersedes)
         try { await this._appendEngram(engrams, engram) } catch (err) { await undoSecondary(); throw err }
@@ -465,30 +460,29 @@ async learn(statement: string, context?: LearnContext): Promise<Engram> {
 
         // Fire-and-forget: attempt immediate push, clean up on success.
         //
-        // The push and the local bookkeeping are caught SEPARATELY. Wrapping
-        // both in one try meant a failure while removing the local copy — after
-        // the remote had already accepted the engram — was recorded as a failed
-        // push, so the outbox retried it and the remote ended up with a
-        // duplicate. "The write did not land" and "the write landed but I could
-        // not tidy up" are different facts and must not share a handler.
+        // The push and the local bookkeeping are caught SEPARATELY: a failure
+        // while removing the local copy after the remote accepted the engram
+        // must not be recorded as a failed push, or the outbox retries it and
+        // the remote ends up with a duplicate. "The write did not land" and
+        // "the write landed but I could not tidy up" must not share a handler.
         //
         // The trailing `.catch()` is load-bearing: the error path below itself
         // awaits a store write, and if THAT throws the IIFE's promise rejects
         // with nothing attached — an unhandled rejection, which terminates the
         // process on modern Node. A background task must not be able to take
         // the host down.
-        // Started only once the local write has committed (#1178, F16). A
+        // Started only once the local write has committed. A
         // transactional primary store would otherwise hand this task the
         // write's own connection, which is gone by the time it runs. A
         // rolled-back write never launches it, so nothing is marked in flight.
         this._afterStoreCommit(() => {
           this._outboxInFlight.add(engram.id)
           void (async () => {
-            // One pusher per entry (2026-09-29 panel, M6): a flush that started
+            // One pusher per entry: a flush that started
             // between the local write and this push must not POST it too.
             if (this._claimOutboxEntry(engram.id, () => pushKey).status === 'busy') return
             let pushed = false
-            // Decision D1: keep the id the server assigned — if a forget/rescope
+            // Keep the id the server assigned — if a forget/rescope
             // cancels the delivery while this POST is on the wire, the accepted
             // remote copy is queued for retirement by that id.
             let serverId: string | undefined
@@ -500,24 +494,24 @@ async learn(statement: string, context?: LearnContext): Promise<Engram> {
             } catch (err) {
               // The POST did not land. The in-flight claim is still held, and is
               // released only by the `finally` below, AFTER this bookkeeping
-              // write (review of #1231): released before it, another writer could
+              // write: released before it, another writer could
               // take the row in the gap and put its own POST on the wire.
               // Already saved locally with outbox metadata — will be retried.
               logger.warning(`[plur:outbox] immediate push failed for ${engram.id}, queued for retry: ${(err as Error).message}`)
               await this._withStoreLock(this.paths.engrams, async () => {
-                // Targeted read (#827): only this engram's outbox bookkeeping.
+                // Targeted read: only this engram's outbox bookkeeping.
                 const fresh = await this._loadTargeted([engram.id])
                 const target = fresh.find(e => e.id === engram.id) as any
                 if (target?.structured_data?._outbox) {
                   target.structured_data._outbox.last_error = (err as Error).message
                   target.structured_data._outbox.attempt_count = 1
-                  // #1299: the status, when the remote gave one — it is what
+                  // The status, when the remote gave one — it is what
                   // tells a refusal from a blip.
                   if (err instanceof RemoteHttpError) target.structured_data._outbox.last_status = err.status
                   target.structured_data._outbox.last_token_fp = attemptedTokenFp
                 }
                 if (target?.structured_data?._outbox) {
-                  // Incremental write (#740): only the outbox bookkeeping changed.
+                  // Incremental write: only the outbox bookkeeping changed.
                   await this._updateEngrams(fresh, [target as Engram])
                 }
               })
@@ -530,7 +524,7 @@ async learn(statement: string, context?: LearnContext): Promise<Engram> {
             // rather than re-queueing something already accepted.
             try {
               await this._withStoreLock(this.paths.engrams, async () => {
-                // NOT `_loadTargeted` (#827): this REMOVES a row, and the only
+                // NOT `_loadTargeted`: this REMOVES a row, and the only
                 // removal primitive `PrimaryStore` has is a whole-corpus save of
                 // the array without it. A one-row targeted read here would be a
                 // full replace by an empty array — the corpus, deleted. It stays
@@ -539,15 +533,14 @@ async learn(statement: string, context?: LearnContext): Promise<Engram> {
                 const idx = fresh.findIndex(e => e.id === engram.id)
                 // Hand off only a row that is STILL queued FOR THIS STORE. A
                 // forget() or a local rescope that landed while the POST was in
-                // flight cancelled the delivery (#766, #848); a D4 update or a
-                // rescope to another store RETARGETED it (audit of #1228,
-                // finding 1) — the row still carries `_outbox`, but for a store
-                // that has not received it. Deleting the row in either case
-                // loses a decision; keep it and say so.
+                // flight cancelled the delivery; an update or a rescope to
+                // another store RETARGETED it — the row still carries `_outbox`,
+                // but for a store that has not received it. Deleting the row in
+                // either case loses a decision; keep it and say so.
                 const pushedTarget = storeEntry ? { url: storeEntry.url!, scope } : undefined
                 if (idx !== -1 && !Plur._stillQueuedFor(fresh[idx], pushedTarget)) {
                   const retargeted = Plur._stillQueued(fresh[idx])
-                  // Decision D1: queue a durable "retire on remote" entry for the
+                  // Queue a durable "retire on remote" entry for the
                   // copy the remote just accepted; flushOutbox() retries it (and,
                   // for a retargeted row, before it delivers to the new store).
                   const queuedRetire = serverId
@@ -572,13 +565,13 @@ async learn(statement: string, context?: LearnContext): Promise<Engram> {
                 if (idx !== -1) {
                   fresh.splice(idx, 1)
                   // Deliberate removal: the remote accepted this engram, so the
-                  // local copy is redundant by design (audit #794 shrink guard).
+                  // local copy is redundant by design (passes the shrink guard).
                   await this._writeEngrams(this.paths.engrams, fresh, { allowShrink: true })
                   await this._syncIndex()
                 }
               })
             } catch (err) {
-              // Retried by the next flush with the same key (decision C4): a
+              // Retried by the next flush with the same key: a
               // key-honouring server collapses it; one that ignores keys may
               // hold one duplicate.
               logger.warning(
@@ -604,10 +597,10 @@ async learn(statement: string, context?: LearnContext): Promise<Engram> {
         return engram
       }
 
-      // Incremental write (#740): same shape as the outbox path above — append
+      // Incremental write: same shape as the outbox path above — append
       // the new engram, then persist superseded_by back-edges when the append
       // was targeted (a fallback save already wrote them with the corpus).
-      // Audit 5 F4: reverse edges in secondary stores, re-checked under that
+      // Reverse edges in secondary stores, re-checked under that
       // store's lock; undone if the new row cannot be written.
       const undoSecondary = await this._landSecondarySupersedes(engram, secondarySupersedes)
       try { await this._appendEngram(engrams, engram) } catch (err) { await undoSecondary(); throw err }
@@ -635,7 +628,7 @@ async nearDuplicates(statement: string, context?: LearnContext, excludeId?: stri
     // for by default; it should not be unavoidable.
     const dedupCfg = this.config.dedup ?? {}
     if (dedupCfg.enabled === false || dedupCfg.mode === 'off') return { mode: 'hash-only' }
-    // remote-only: no embedder (Codex round 4 on #1663; see recallSemantic).
+    // remote-only: no embedder (see recallSemantic).
     if (this._activeBinding()) return { mode: 'hash-only' }
     try {
       let candidates: Engram[] = []
@@ -643,7 +636,7 @@ async nearDuplicates(statement: string, context?: LearnContext, excludeId?: stri
         candidates = await this.recall(statement, { limit: 6 })
       } catch { candidates = [] }
       candidates = candidates.filter(c => c.status === 'active' && c.id !== excludeId)
-      // Mirror the batch path's scope-awareness (#359).
+      // Mirror the batch path's scope-awareness.
       if (context?.scope) candidates = candidates.filter(c => c.scope === context.scope)
       if (candidates.length === 0) return { mode: 'hash-only' }
 
@@ -665,9 +658,8 @@ async nearDuplicates(statement: string, context?: LearnContext, excludeId?: stri
       if (scored.length === 0) return { mode: 'hash-only' }
 
       // Carry the neighbour's own text, not just its id. Reporting id+score
-      // alone makes "read the neighbour first" an extra tool call, and that
-      // call does not get made (2026-09-07: four near-identical engrams in one
-      // session, every one reporting an unread 0.86-0.87 neighbour).
+      // alone makes "read the neighbour first" an extra tool call, which tends
+      // not to get made.
       const ranked = scored
         .map(s => ({
           id: s.engram.id,
@@ -703,12 +695,10 @@ async nearDuplicates(statement: string, context?: LearnContext, excludeId?: stri
   },
 
 async learnRouted(statement: string, context?: LearnContext, options?: LearnRoutedOptions): Promise<Engram> {
-    // 0.21.1: the caller's deadline for the server leg ONLY. Local work (load,
-    // dedup, write, index) is never raced: a slow local save is a success. A
-    // server that does not answer inside the deadline takes the existing
-    // outbox fallback, so the engram is always stored somewhere. Before, the
-    // CLI raced the WHOLE call against 5 s and exited while core was still
-    // waiting on its 30 s request, so a hanging team server lost the save.
+    // The caller's deadline for the server leg ONLY. Local work (load, dedup,
+    // write, index) is never raced: a slow local save is a success. A server
+    // that does not answer inside the deadline takes the outbox fallback, so
+    // the engram is always stored somewhere.
     const remoteTimeoutMs = options?.remoteTimeoutMs ?? DEFAULT_REMOTE_WRITE_TIMEOUT_MS
     if (!(Number.isFinite(remoteTimeoutMs) && remoteTimeoutMs > 0)) {
       throw new TypeError('plur.learnRouted: remoteTimeoutMs must be a positive number of milliseconds')
@@ -719,21 +709,19 @@ async learnRouted(statement: string, context?: LearnContext, options?: LearnRout
     const scope = guarded.scope
     this._refuseScopeConflict(scope)
     context = guarded.context
-    // #347: fail fast on malformed valid_from/valid_until (pure validation),
+    // Fail fast on malformed valid_from/valid_until (pure validation),
     // mirroring learn() — before dedup can short-circuit the write.
     resolveValidity(statement, context)
     const remoteDriver = this._resolveRemoteStoreForScope(scope)
     const attemptedToken = this._remoteWriteEntry(scope)?.token
     const attemptedTokenFp = attemptedToken ? tokenHealthKey(attemptedToken) : undefined
-    // #90, formal WritePath candidate 4: an engram the caller explicitly marked
-    // private does not go to a remote store. learn() has always refused it
-    // (and warns); this path never checked, so the same input left the machine
-    // or not depending on which method was called. Take the local route and let
-    // learn() apply its #90 branch.
+    // An engram the caller explicitly marked private does not go to a remote
+    // store, whichever method was called. Take the local route and let
+    // learn() apply its private-engram branch.
     if (!remoteDriver || context?.visibility === 'private') {
       // Local route — sync learn() owns dedup, build, write, history. learn()'s
       // own guard sees the already-demoted (local) context and no-ops, so the
-      // demotion marker is stamped here for the learnRouted-demoted case (#326).
+      // demotion marker is stamped here for the learnRouted-demoted case.
       const engram = await this.learn(statement, context)
       if (guarded.demotion) {
         ;(engram as any).structured_data = {
@@ -741,7 +729,7 @@ async learnRouted(statement: string, context?: LearnContext, options?: LearnRout
           _demoted: guarded.demotion,
         }
       }
-      // Mirror the demotion re-stamp for the auto-route marker (Stage 3b, #351),
+      // Mirror the demotion re-stamp for the auto-route marker,
       // so an unscoped local-routed write surfaces its routing decision even if
       // the inner learn() took a dedup/recurrence path that didn't stamp it.
       if (guarded.routed) {
@@ -750,7 +738,7 @@ async learnRouted(statement: string, context?: LearnContext, options?: LearnRout
           _routed: guarded.routed,
         }
       }
-      // #1115 mirror: a shared scope matched and was refused. Stamped the same
+      // A shared scope matched and was refused. Stamped the same
       // way and only when present, so a caller can report what did NOT happen.
       if (guarded.refusedShared) {
         ;(engram as any).structured_data = {
@@ -763,9 +751,9 @@ async learnRouted(statement: string, context?: LearnContext, options?: LearnRout
     // Remote route — dedup against the merged local+cached-remote view,
     // then POST and merge the server-assigned ID into the local engram
     // representation we hand back to the caller. On failure, save to
-    // local outbox for retry (issue #26).
+    // local outbox for retry.
     const allEngrams = await this._writeDedupCorpus(scope)
-    // Decision A: a same-scope match only in a pack or a readonly store does
+    // A same-scope match only in a pack or a readonly store does
     // not absorb the write; it is POSTed and the match noted in history.
     const { hit: hashMatch, foreign: unpersistableHit } = await this._firstPersistableHit(
       allEngrams, this._hashDedupPredicate(statement, scope), scope,
@@ -777,15 +765,15 @@ async learnRouted(statement: string, context?: LearnContext, options?: LearnRout
         return await this._recordDuplicate(hashMatch, engrams, scope, context, statement)
       })
     }
-    // #176 cross-scope recurrence does NOT absorb here: this is the remote
+    // Cross-scope recurrence does NOT absorb here: this is the remote
     // route, and an explicit write to a team store must reach it
     // (`_crossScopeRecurrenceApplies`). Only the same-scope match above
-    // absorbs a write. A cross-scope hit is still CREDITED (#1268 A1).
+    // absorbs a write. A cross-scope hit is still CREDITED.
     const { hit: crossMatch } = await this._crossScopeMatch(statement, allEngrams, scope, { creditOnly: true })
     if (crossMatch) {
-      // #1268: decided BEFORE the recurrence is recorded, exactly as learn()
-      // does — recording can broaden `crossMatch` to global, and reading the
-      // flag afterwards turned an absorbed save into a second team write.
+      // Decided BEFORE the recurrence is recorded, exactly as learn() does —
+      // recording can broaden `crossMatch` to global, and reading the flag
+      // afterwards would turn an absorbed save into a second team write.
       const teamValidation = this._isTeamValidation(scope, crossMatch)
       const credited = await this._withStoreLock(this.paths.engrams, async () => {
         const engrams = await this._primaryStore.load()
@@ -798,7 +786,7 @@ async learnRouted(statement: string, context?: LearnContext, options?: LearnRout
     }
     const now = new Date().toISOString()
     const localPlaceholder = this._buildEngramShape(statement, scope, context, now, undefined, undefined, guarded.scopeSource)
-    // Stamp the auto-route marker on the remote-routed shape (Stage 3b, #351) so
+    // Stamp the auto-route marker on the remote-routed shape so
     // the decision survives onto the server engram and into the MCP response.
     if (guarded.routed) {
       ;(localPlaceholder as any).structured_data = {
@@ -830,7 +818,7 @@ async learnRouted(statement: string, context?: LearnContext, options?: LearnRout
 
 async _commitRemoteRouted(localPlaceholder: Engram, remoteDriver: RemoteStore, scope: string, now: string, allEngrams: Engram[], unpersistableHit: Engram | null, lockHeld: boolean, remoteTimeoutMs?: number, attemptedTokenFp?: string): Promise<Engram> {
     let serverEngram: Engram
-    // Idempotency key for this write (2026-09-29 audits). The placeholder's id
+    // Idempotency key for this write. The placeholder's id
     // is `__pending__` on EVERY direct write, so it can never be the key: a
     // server honouring the contract would collapse them all into the first.
     const writeKey = randomUUID()
@@ -852,15 +840,13 @@ async _commitRemoteRouted(localPlaceholder: Engram, remoteDriver: RemoteStore, s
       }
     } catch (err) {
       // Remote failed — save locally with outbox metadata for retry.
-      // Audit iter-1 fix (Dijkstra): defensive lookup; the catch is the
-      // graceful-fallback path that must never throw. If no writable entry
-      // matches the scope (e.g. readonly remote), we still save the local
-      // engram but omit the outbox marker — the retry path will skip it.
-      // The resolver's writable entry (#1633 row 34); never throws.
+      // Defensive lookup; the catch is the graceful-fallback path that must
+      // never throw. If no writable entry matches the scope (e.g. readonly
+      // remote), we still save the local engram but omit the outbox marker —
+      // the retry path will skip it. The resolver's writable entry; never throws.
       const storeEntry = this._remoteWriteEntry(scope)
       const saveFallback = async () => {
         const engrams = await this._primaryStore.load()
-        // Replace placeholder ID with a real local ID
         localPlaceholder.id = generateEngramId([...engrams, ...allEngrams], await this._idsInUse())
         this._rememberMintedId(localPlaceholder.id)
         if (storeEntry) {
@@ -878,10 +864,10 @@ async _commitRemoteRouted(localPlaceholder: Engram, remoteDriver: RemoteStore, s
               // (a timeout after the server stored it), the retry is collapsed.
               idempotency_key: writeKey,
               ...(this._remoteOnly ? { remote_only: true, remote_only_folder: this._remoteOnly.folder } : {}),
-              // #1299: recorded so the outbox can be classified without
+              // Recorded so the outbox can be classified without
               // parsing the message.
               ...(err instanceof RemoteHttpError ? { last_status: err.status } : {}),
-              // #295: flag auth failures distinctly so the queue isn't read as a
+              // Flag auth failures distinctly so the queue isn't read as a
               // transient network blip — a 401/403 means the token needs reauth,
               // and surfacing it (session_start/doctor) is the actionable signal.
               auth_failed: /\b40[13]\b/.test((err as Error).message),
@@ -890,7 +876,7 @@ async _commitRemoteRouted(localPlaceholder: Engram, remoteDriver: RemoteStore, s
         } else {
           logger.warning(`[plur:learnRouted] no writable store for scope=${scope} — saving locally without outbox marker`)
         }
-        // Incremental write (#740): the fallback engram is new by construction
+        // Incremental write: the fallback engram is new by construction
         // (its id was just minted above).
         await this._appendEngram(engrams, localPlaceholder)
         await this._syncIndex()
@@ -908,13 +894,12 @@ async _commitRemoteRouted(localPlaceholder: Engram, remoteDriver: RemoteStore, s
       return lockHeld ? await saveFallback() : await this._withStoreLock(this.paths.engrams, saveFallback)
     }
 
-    // History is appended OUTSIDE the try that guards the remote write (#813,
-    // audit finding 13). It used to sit inside it, so a history failure —
-    // EACCES, disk full — after the server had already persisted the engram was
-    // caught as a REMOTE failure: the fallback then created a second local
-    // engram plus an outbox entry, and the next flush duplicated it remotely.
-    // A bookkeeping write must never be able to undo, or appear to undo, a
-    // commit that succeeded.
+    // History is appended OUTSIDE the try that guards the remote write: a
+    // history failure (EACCES, disk full) after the server persisted the
+    // engram must not be caught as a REMOTE failure, or the fallback creates a
+    // second local engram plus an outbox entry and the next flush duplicates
+    // it remotely. A bookkeeping write must never be able to undo, or appear
+    // to undo, a commit that succeeded.
     try {
       this._appendHistory({
         event: 'engram_created',
@@ -965,7 +950,7 @@ _deliveryDetails(engram: Engram, requestedScope?: string): {
     reason_code?: OutboxReasonCode
     /** Only for `remote`: the server that holds it — the normalized endpoint
      *  (no userinfo), as recall's `remote.hosts[].host` names it. Absent when
-     *  this process cannot tell (Codex round 5, finding 2). */
+     *  this process cannot tell. */
     host?: string
   } {
     const e = engram as any
@@ -986,7 +971,7 @@ _deliveryDetails(engram: Engram, requestedScope?: string): {
       // A dedup/recurrence hit on a row read from a secondary store: it lives
       // wherever the store that SERVED it lives. Classified by the loader's
       // `_fromRemoteStore` marker, never by the scope's first store entry — a
-      // url store and a path store can share one scope (formal replay, cluster 1).
+      // url store and a path store can share one scope.
       delivery = e._fromRemoteStore === true ? 'remote' : 'local'
     } else delivery = 'local'
     if (delivery === 'outbox') return { delivery, ...this._outboxReason(engram) }
@@ -1067,7 +1052,7 @@ _outboxReason(engram: Engram): { reason: string; reason_code: OutboxReasonCode }
 
 readIdFor(engram: { id: string; scope: string }): string {
     // Only a scope a server actually holds: a conflict or an ungranted scope
-    // keeps its engram on this machine, under its local id (#1631).
+    // keeps its engram on this machine, under its local id.
     if (resolveScopeTarget(engram.scope, this.config.stores ?? []).kind !== 'remote') return engram.id
     return namespaceEngramId(engram.id, engram.scope)
   },
@@ -1086,11 +1071,10 @@ _buildEngramShape(statement: string, scope: string, context: LearnContext | unde
       consolidated: false,
       type,
       scope,
-      // #401: default visibility to 'private' here too. This is the learnRouted
-      // constructor — the PRIMARY production write path (plur_learn / CLI both go
-      // through learnRouted), where `visibility` is never supplied and `domain`
-      // usually is. The old `domain ? 'public'` default silently shipped real
-      // learns as public. Mirrors the learn() constructor's #401 fix above.
+      // Default visibility to 'private'. This constructor serves the PRIMARY
+      // production write path (plur_learn / CLI both go through learnRouted),
+      // where `visibility` is never supplied and `domain` usually is; deriving
+      // 'public' from `domain` would ship ordinary learns as public.
       visibility: context?.visibility ?? 'private',
       statement,
       rationale: context?.rationale,
@@ -1116,7 +1100,7 @@ _buildEngramShape(statement: string, scope: string, context: LearnContext | unde
       pack: null,
       abstract: context?.abstract ?? null,
       derived_from: context?.derived_from ?? null,
-      // Who is answerable (#961) and what kind of claim this is (#963).
+      // Who is answerable and what kind of claim this is.
       // Both absent when the caller supplied nothing: a missing agent is
       // honest, a guessed one is not.
       attribution: buildAttribution(context, this._configuredIdentity()),
@@ -1137,10 +1121,10 @@ _buildEngramShape(statement: string, scope: string, context: LearnContext | unde
       summary: autoSummary(statement, undefined),
       engram_version: 1,
       episode_ids: context?.session_episode_id ? [context.session_episode_id] : [],
-      // #240: forward supersedes edge travels with the remote-routed shape.
+      // The forward supersedes edge travels with the remote-routed shape.
       // The reverse superseded_by edge on remote targets is NOT patched
       // (best-effort — see LearnContext.supersedes docs).
-      // `related` (2026-10-18): batch learning links an item to the memory the
+      // `related`: batch learning links an item to the memory the
       // duplicate checker said it resembles, instead of overwriting that memory.
       // Forward edge only; the target is not modified.
       // A single id passed as a plain string (an untyped caller) is one id, not
@@ -1152,17 +1136,16 @@ _buildEngramShape(statement: string, scope: string, context: LearnContext | unde
       pinned: context?.pinned === true ? true : undefined,
       pinned_tier: context?.pin_tier,
       pinned_priority: context?.pinned_priority,
-      // #869: measurement context — present only when the caller supplies it.
+      // Measurement context — present only when the caller supplies it.
       measured_under: this._validatedMeasuredUnder(context),
     }
-    // Echo marker for extracted expiry (#347) — mirrors the learn() stamping
-    // so the remote-routed MCP response can confirm the parse too.
+    // Echo marker for extracted expiry — mirrors the learn() stamping so the
+    // remote-routed MCP response can confirm the parse too.
     //
-    // #1221 joins it here rather than being stamped by each caller afterwards.
-    // Both write paths run through this constructor, so putting it here is what
-    // makes them agree by construction instead of by two parallel stamps that
-    // can drift — the property test/write-path-consolidation.test.ts and
-    // test/leak-surface.test.ts both exist to hold.
+    // The routing-decision marker is stamped here rather than by each caller:
+    // both write paths run through this constructor, so they agree by
+    // construction (test/write-path-consolidation.test.ts and
+    // test/leak-surface.test.ts hold this).
     //
     // Unlike every other marker it is unconditional: "the caller named it" is
     // as much an answer as "the router guessed it", and a field present on only
@@ -1180,7 +1163,7 @@ async _learnAsyncDeps(): Promise<{ hashDedup: (statement: string, scope?: string
     const remoteOnly = !!this._remoteOnly
     const deps = await this._learnAsyncDepsAll()
     if (!remoteOnly) return deps
-    // remote-only (audit of #1521, C1): no LLM UPDATE/MERGE decisions and no
+    // remote-only: no LLM UPDATE/MERGE decisions and no
     // similarity pass. Those rewrite rows by id and record statements in the
     // local history; here every item is a hash-checked ADD sent to the team.
     return { ...deps, isLlmAvailable: () => false, similarityScores: undefined }
@@ -1188,21 +1171,20 @@ async _learnAsyncDeps(): Promise<{ hashDedup: (statement: string, scope?: string
 
 async _learnAsyncDepsAll(): Promise<{ hashDedup: (statement: string, scope?: string) => Promise<{ id: string; version: number; status: "active" | "dormant" | "retired" | "candidate"; consolidated: boolean; type: "behavioral" | "terminological" | "procedural" | "architectural"; scope: string; visibility: "private" | "public" | "template"; statement: string; derivation_count: number; pack: string | null; abstract: string | null; derived_from: string | null; tags: string[]; activation: { retrieval_strength: number; storage_strength: number; frequency: number; last_accessed: string; }; associations: { target_type: "engram" | "document"; target: string; strength: number; type: "semantic" | "temporal" | "causal" | "co_accessed"; updated_at?: string | undefined; }[]; knowledge_anchors: { path: string; relevance: "primary" | "supporting" | "example"; snippet?: string | undefined; snippet_extracted_at?: string | undefined; }[]; feedback_signals: { positive: number; negative: number; neutral: number; }; polarity: "do" | "dont" | null; write_count: number; injection_count: number; sources: { scope: string; session_id: string | null; stored_at: string; validated_by?: string | undefined; promoted_from?: string | undefined; }[]; recurrence_count: number; engram_version: number; episode_ids: string[]; created_at?: string | undefined; updated_at?: string | undefined; rationale?: string | undefined; contraindications?: string[] | undefined; source?: string | undefined; source_patterns?: string[] | undefined; knowledge_type?: { memory_class: "procedural" | "semantic" | "episodic" | "metacognitive"; cognitive_level: "remember" | "understand" | "apply" | "analyze" | "evaluate" | "create"; } | undefined; domain?: string | undefined; relations?: { broader: string[]; narrower: string[]; related: string[]; conflicts: string[]; supersedes: string[]; superseded_by: string[]; } | undefined; dual_coding?: { example?: string | undefined; analogy?: string | undefined; } | undefined; provenance?: { origin: string; chain: string[]; signature: string | null; license: string; } | undefined; attribution?: { asserted_by?: string | undefined; runtime?: { name: string; version?: string | undefined; } | undefined; model?: { name: string; prompt_id?: string | undefined; prompt_version?: string | undefined; prompt_sha256?: string | undefined; } | undefined; tool?: { name: string; version?: string | undefined; } | undefined; on_behalf_of?: string | undefined; } | undefined; claim_class?: "observed" | "documented" | "structural" | "asserted" | "inferred" | "revised" | undefined; entities?: { name: string; type: "tool" | "person" | "organization" | "technology" | "concept" | "project" | "place" | "event" | "standard" | "other"; uri?: string | undefined; }[] | undefined; temporal?: { learned_at: string; valid_from?: string | undefined; valid_until?: string | undefined; ingested_at?: string | undefined; } | undefined; usage?: { injections: number; hits: number; misses: number; last_hit_at?: string | undefined; } | undefined; episodic?: { emotional_weight: number; confidence: number; trigger_context?: string | undefined; journal_ref?: string | undefined; } | undefined; exchange?: { environmental_diversity: number; adoption_count: number; contradiction_rate: number; fitness_score?: number | undefined; } | undefined; structured_data?: Record<string, unknown> | undefined; insight?: { operation: "distill" | "consolidate" | "dream" | "connect" | "emerge" | "drift"; synthesized_at: string; grounding: "verified" | "unverified" | "ungrounded" | "speculative"; source_episode_ids: string[]; fate: "surfaced" | "promoted" | "cited" | "tasked" | "dismissed" | "expired"; surfaced_count: number; serendipity?: { unexpectedness: number; relevance: number; score: number; } | undefined; fate_ref?: string | undefined; fate_at?: string | undefined; } | undefined; content_hash?: string | undefined; commitment?: "exploring" | "leaning" | "decided" | "locked" | "draft" | undefined; locked_at?: string | undefined; locked_reason?: string | undefined; previous_version_ref?: { event_id: string; changed_at: string; } | undefined; summary?: string | undefined; pinned?: boolean | undefined; pinned_tier?: "hard" | "soft" | undefined; pinned_priority?: number | undefined; measured_under?: { [x: string]: unknown; model?: string | undefined; source_type?: string | undefined; hardware?: string | undefined; dataset?: string | undefined; date?: string | undefined; } | undefined; } | null>; recallHybrid: (query: string, options?: { limit?: number; }) => Promise<{ id: string; version: number; status: "active" | "dormant" | "retired" | "candidate"; consolidated: boolean; type: "behavioral" | "terminological" | "procedural" | "architectural"; scope: string; visibility: "private" | "public" | "template"; statement: string; derivation_count: number; pack: string | null; abstract: string | null; derived_from: string | null; tags: string[]; activation: { retrieval_strength: number; storage_strength: number; frequency: number; last_accessed: string; }; associations: { target_type: "engram" | "document"; target: string; strength: number; type: "semantic" | "temporal" | "causal" | "co_accessed"; updated_at?: string | undefined; }[]; knowledge_anchors: { path: string; relevance: "primary" | "supporting" | "example"; snippet?: string | undefined; snippet_extracted_at?: string | undefined; }[]; feedback_signals: { positive: number; negative: number; neutral: number; }; polarity: "do" | "dont" | null; write_count: number; injection_count: number; sources: { scope: string; session_id: string | null; stored_at: string; validated_by?: string | undefined; promoted_from?: string | undefined; }[]; recurrence_count: number; engram_version: number; episode_ids: string[]; created_at?: string | undefined; updated_at?: string | undefined; rationale?: string | undefined; contraindications?: string[] | undefined; source?: string | undefined; source_patterns?: string[] | undefined; knowledge_type?: { memory_class: "procedural" | "semantic" | "episodic" | "metacognitive"; cognitive_level: "remember" | "understand" | "apply" | "analyze" | "evaluate" | "create"; } | undefined; domain?: string | undefined; relations?: { broader: string[]; narrower: string[]; related: string[]; conflicts: string[]; supersedes: string[]; superseded_by: string[]; } | undefined; dual_coding?: { example?: string | undefined; analogy?: string | undefined; } | undefined; provenance?: { origin: string; chain: string[]; signature: string | null; license: string; } | undefined; attribution?: { asserted_by?: string | undefined; runtime?: { name: string; version?: string | undefined; } | undefined; model?: { name: string; prompt_id?: string | undefined; prompt_version?: string | undefined; prompt_sha256?: string | undefined; } | undefined; tool?: { name: string; version?: string | undefined; } | undefined; on_behalf_of?: string | undefined; } | undefined; claim_class?: "observed" | "documented" | "structural" | "asserted" | "inferred" | "revised" | undefined; entities?: { name: string; type: "tool" | "person" | "organization" | "technology" | "concept" | "project" | "place" | "event" | "standard" | "other"; uri?: string | undefined; }[] | undefined; temporal?: { learned_at: string; valid_from?: string | undefined; valid_until?: string | undefined; ingested_at?: string | undefined; } | undefined; usage?: { injections: number; hits: number; misses: number; last_hit_at?: string | undefined; } | undefined; episodic?: { emotional_weight: number; confidence: number; trigger_context?: string | undefined; journal_ref?: string | undefined; } | undefined; exchange?: { environmental_diversity: number; adoption_count: number; contradiction_rate: number; fitness_score?: number | undefined; } | undefined; structured_data?: Record<string, unknown> | undefined; insight?: { operation: "distill" | "consolidate" | "dream" | "connect" | "emerge" | "drift"; synthesized_at: string; grounding: "verified" | "unverified" | "ungrounded" | "speculative"; source_episode_ids: string[]; fate: "surfaced" | "promoted" | "cited" | "tasked" | "dismissed" | "expired"; surfaced_count: number; serendipity?: { unexpectedness: number; relevance: number; score: number; } | undefined; fate_ref?: string | undefined; fate_at?: string | undefined; } | undefined; content_hash?: string | undefined; commitment?: "exploring" | "leaning" | "decided" | "locked" | "draft" | undefined; locked_at?: string | undefined; locked_reason?: string | undefined; previous_version_ref?: { event_id: string; changed_at: string; } | undefined; summary?: string | undefined; pinned?: boolean | undefined; pinned_tier?: "hard" | "soft" | undefined; pinned_priority?: number | undefined; measured_under?: { [x: string]: unknown; model?: string | undefined; source_type?: string | undefined; hardware?: string | undefined; dataset?: string | undefined; date?: string | undefined; } | undefined; }[]>; recall: (query: string, options?: { limit?: number; }) => Promise<{ id: string; version: number; status: "active" | "dormant" | "retired" | "candidate"; consolidated: boolean; type: "behavioral" | "terminological" | "procedural" | "architectural"; scope: string; visibility: "private" | "public" | "template"; statement: string; derivation_count: number; pack: string | null; abstract: string | null; derived_from: string | null; tags: string[]; activation: { retrieval_strength: number; storage_strength: number; frequency: number; last_accessed: string; }; associations: { target_type: "engram" | "document"; target: string; strength: number; type: "semantic" | "temporal" | "causal" | "co_accessed"; updated_at?: string | undefined; }[]; knowledge_anchors: { path: string; relevance: "primary" | "supporting" | "example"; snippet?: string | undefined; snippet_extracted_at?: string | undefined; }[]; feedback_signals: { positive: number; negative: number; neutral: number; }; polarity: "do" | "dont" | null; write_count: number; injection_count: number; sources: { scope: string; session_id: string | null; stored_at: string; validated_by?: string | undefined; promoted_from?: string | undefined; }[]; recurrence_count: number; engram_version: number; episode_ids: string[]; created_at?: string | undefined; updated_at?: string | undefined; rationale?: string | undefined; contraindications?: string[] | undefined; source?: string | undefined; source_patterns?: string[] | undefined; knowledge_type?: { memory_class: "procedural" | "semantic" | "episodic" | "metacognitive"; cognitive_level: "remember" | "understand" | "apply" | "analyze" | "evaluate" | "create"; } | undefined; domain?: string | undefined; relations?: { broader: string[]; narrower: string[]; related: string[]; conflicts: string[]; supersedes: string[]; superseded_by: string[]; } | undefined; dual_coding?: { example?: string | undefined; analogy?: string | undefined; } | undefined; provenance?: { origin: string; chain: string[]; signature: string | null; license: string; } | undefined; attribution?: { asserted_by?: string | undefined; runtime?: { name: string; version?: string | undefined; } | undefined; model?: { name: string; prompt_id?: string | undefined; prompt_version?: string | undefined; prompt_sha256?: string | undefined; } | undefined; tool?: { name: string; version?: string | undefined; } | undefined; on_behalf_of?: string | undefined; } | undefined; claim_class?: "observed" | "documented" | "structural" | "asserted" | "inferred" | "revised" | undefined; entities?: { name: string; type: "tool" | "person" | "organization" | "technology" | "concept" | "project" | "place" | "event" | "standard" | "other"; uri?: string | undefined; }[] | undefined; temporal?: { learned_at: string; valid_from?: string | undefined; valid_until?: string | undefined; ingested_at?: string | undefined; } | undefined; usage?: { injections: number; hits: number; misses: number; last_hit_at?: string | undefined; } | undefined; episodic?: { emotional_weight: number; confidence: number; trigger_context?: string | undefined; journal_ref?: string | undefined; } | undefined; exchange?: { environmental_diversity: number; adoption_count: number; contradiction_rate: number; fitness_score?: number | undefined; } | undefined; structured_data?: Record<string, unknown> | undefined; insight?: { operation: "distill" | "consolidate" | "dream" | "connect" | "emerge" | "drift"; synthesized_at: string; grounding: "verified" | "unverified" | "ungrounded" | "speculative"; source_episode_ids: string[]; fate: "surfaced" | "promoted" | "cited" | "tasked" | "dismissed" | "expired"; surfaced_count: number; serendipity?: { unexpectedness: number; relevance: number; score: number; } | undefined; fate_ref?: string | undefined; fate_at?: string | undefined; } | undefined; content_hash?: string | undefined; commitment?: "exploring" | "leaning" | "decided" | "locked" | "draft" | undefined; locked_at?: string | undefined; locked_reason?: string | undefined; previous_version_ref?: { event_id: string; changed_at: string; } | undefined; summary?: string | undefined; pinned?: boolean | undefined; pinned_tier?: "hard" | "soft" | undefined; pinned_priority?: number | undefined; measured_under?: { [x: string]: unknown; model?: string | undefined; source_type?: string | undefined; hardware?: string | undefined; dataset?: string | undefined; date?: string | undefined; } | undefined; }[]>; learn: (statement: string, context?: LearnContext) => Promise<{ id: string; version: number; status: "active" | "dormant" | "retired" | "candidate"; consolidated: boolean; type: "behavioral" | "terminological" | "procedural" | "architectural"; scope: string; visibility: "private" | "public" | "template"; statement: string; derivation_count: number; pack: string | null; abstract: string | null; derived_from: string | null; tags: string[]; activation: { retrieval_strength: number; storage_strength: number; frequency: number; last_accessed: string; }; associations: { target_type: "engram" | "document"; target: string; strength: number; type: "semantic" | "temporal" | "causal" | "co_accessed"; updated_at?: string | undefined; }[]; knowledge_anchors: { path: string; relevance: "primary" | "supporting" | "example"; snippet?: string | undefined; snippet_extracted_at?: string | undefined; }[]; feedback_signals: { positive: number; negative: number; neutral: number; }; polarity: "do" | "dont" | null; write_count: number; injection_count: number; sources: { scope: string; session_id: string | null; stored_at: string; validated_by?: string | undefined; promoted_from?: string | undefined; }[]; recurrence_count: number; engram_version: number; episode_ids: string[]; created_at?: string | undefined; updated_at?: string | undefined; rationale?: string | undefined; contraindications?: string[] | undefined; source?: string | undefined; source_patterns?: string[] | undefined; knowledge_type?: { memory_class: "procedural" | "semantic" | "episodic" | "metacognitive"; cognitive_level: "remember" | "understand" | "apply" | "analyze" | "evaluate" | "create"; } | undefined; domain?: string | undefined; relations?: { broader: string[]; narrower: string[]; related: string[]; conflicts: string[]; supersedes: string[]; superseded_by: string[]; } | undefined; dual_coding?: { example?: string | undefined; analogy?: string | undefined; } | undefined; provenance?: { origin: string; chain: string[]; signature: string | null; license: string; } | undefined; attribution?: { asserted_by?: string | undefined; runtime?: { name: string; version?: string | undefined; } | undefined; model?: { name: string; prompt_id?: string | undefined; prompt_version?: string | undefined; prompt_sha256?: string | undefined; } | undefined; tool?: { name: string; version?: string | undefined; } | undefined; on_behalf_of?: string | undefined; } | undefined; claim_class?: "observed" | "documented" | "structural" | "asserted" | "inferred" | "revised" | undefined; entities?: { name: string; type: "tool" | "person" | "organization" | "technology" | "concept" | "project" | "place" | "event" | "standard" | "other"; uri?: string | undefined; }[] | undefined; temporal?: { learned_at: string; valid_from?: string | undefined; valid_until?: string | undefined; ingested_at?: string | undefined; } | undefined; usage?: { injections: number; hits: number; misses: number; last_hit_at?: string | undefined; } | undefined; episodic?: { emotional_weight: number; confidence: number; trigger_context?: string | undefined; journal_ref?: string | undefined; } | undefined; exchange?: { environmental_diversity: number; adoption_count: number; contradiction_rate: number; fitness_score?: number | undefined; } | undefined; structured_data?: Record<string, unknown> | undefined; insight?: { operation: "distill" | "consolidate" | "dream" | "connect" | "emerge" | "drift"; synthesized_at: string; grounding: "verified" | "unverified" | "ungrounded" | "speculative"; source_episode_ids: string[]; fate: "surfaced" | "promoted" | "cited" | "tasked" | "dismissed" | "expired"; surfaced_count: number; serendipity?: { unexpectedness: number; relevance: number; score: number; } | undefined; fate_ref?: string | undefined; fate_at?: string | undefined; } | undefined; content_hash?: string | undefined; commitment?: "exploring" | "leaning" | "decided" | "locked" | "draft" | undefined; locked_at?: string | undefined; locked_reason?: string | undefined; previous_version_ref?: { event_id: string; changed_at: string; } | undefined; summary?: string | undefined; pinned?: boolean | undefined; pinned_tier?: "hard" | "soft" | undefined; pinned_priority?: number | undefined; measured_under?: { [x: string]: unknown; model?: string | undefined; source_type?: string | undefined; hardware?: string | undefined; dataset?: string | undefined; date?: string | undefined; } | undefined; }>; learnRouted: (statement: string, context?: LearnContext) => Promise<{ id: string; version: number; status: "active" | "dormant" | "retired" | "candidate"; consolidated: boolean; type: "behavioral" | "terminological" | "procedural" | "architectural"; scope: string; visibility: "private" | "public" | "template"; statement: string; derivation_count: number; pack: string | null; abstract: string | null; derived_from: string | null; tags: string[]; activation: { retrieval_strength: number; storage_strength: number; frequency: number; last_accessed: string; }; associations: { target_type: "engram" | "document"; target: string; strength: number; type: "semantic" | "temporal" | "causal" | "co_accessed"; updated_at?: string | undefined; }[]; knowledge_anchors: { path: string; relevance: "primary" | "supporting" | "example"; snippet?: string | undefined; snippet_extracted_at?: string | undefined; }[]; feedback_signals: { positive: number; negative: number; neutral: number; }; polarity: "do" | "dont" | null; write_count: number; injection_count: number; sources: { scope: string; session_id: string | null; stored_at: string; validated_by?: string | undefined; promoted_from?: string | undefined; }[]; recurrence_count: number; engram_version: number; episode_ids: string[]; created_at?: string | undefined; updated_at?: string | undefined; rationale?: string | undefined; contraindications?: string[] | undefined; source?: string | undefined; source_patterns?: string[] | undefined; knowledge_type?: { memory_class: "procedural" | "semantic" | "episodic" | "metacognitive"; cognitive_level: "remember" | "understand" | "apply" | "analyze" | "evaluate" | "create"; } | undefined; domain?: string | undefined; relations?: { broader: string[]; narrower: string[]; related: string[]; conflicts: string[]; supersedes: string[]; superseded_by: string[]; } | undefined; dual_coding?: { example?: string | undefined; analogy?: string | undefined; } | undefined; provenance?: { origin: string; chain: string[]; signature: string | null; license: string; } | undefined; attribution?: { asserted_by?: string | undefined; runtime?: { name: string; version?: string | undefined; } | undefined; model?: { name: string; prompt_id?: string | undefined; prompt_version?: string | undefined; prompt_sha256?: string | undefined; } | undefined; tool?: { name: string; version?: string | undefined; } | undefined; on_behalf_of?: string | undefined; } | undefined; claim_class?: "observed" | "documented" | "structural" | "asserted" | "inferred" | "revised" | undefined; entities?: { name: string; type: "tool" | "person" | "organization" | "technology" | "concept" | "project" | "place" | "event" | "standard" | "other"; uri?: string | undefined; }[] | undefined; temporal?: { learned_at: string; valid_from?: string | undefined; valid_until?: string | undefined; ingested_at?: string | undefined; } | undefined; usage?: { injections: number; hits: number; misses: number; last_hit_at?: string | undefined; } | undefined; episodic?: { emotional_weight: number; confidence: number; trigger_context?: string | undefined; journal_ref?: string | undefined; } | undefined; exchange?: { environmental_diversity: number; adoption_count: number; contradiction_rate: number; fitness_score?: number | undefined; } | undefined; structured_data?: Record<string, unknown> | undefined; insight?: { operation: "distill" | "consolidate" | "dream" | "connect" | "emerge" | "drift"; synthesized_at: string; grounding: "verified" | "unverified" | "ungrounded" | "speculative"; source_episode_ids: string[]; fate: "surfaced" | "promoted" | "cited" | "tasked" | "dismissed" | "expired"; surfaced_count: number; serendipity?: { unexpectedness: number; relevance: number; score: number; } | undefined; fate_ref?: string | undefined; fate_at?: string | undefined; } | undefined; content_hash?: string | undefined; commitment?: "exploring" | "leaning" | "decided" | "locked" | "draft" | undefined; locked_at?: string | undefined; locked_reason?: string | undefined; previous_version_ref?: { event_id: string; changed_at: string; } | undefined; summary?: string | undefined; pinned?: boolean | undefined; pinned_tier?: "hard" | "soft" | undefined; pinned_priority?: number | undefined; measured_under?: { [x: string]: unknown; model?: string | undefined; source_type?: string | undefined; hardware?: string | undefined; dataset?: string | undefined; date?: string | undefined; } | undefined; }>; getById: (id: string) => Promise<{ id: string; version: number; status: "active" | "dormant" | "retired" | "candidate"; consolidated: boolean; type: "behavioral" | "terminological" | "procedural" | "architectural"; scope: string; visibility: "private" | "public" | "template"; statement: string; derivation_count: number; pack: string | null; abstract: string | null; derived_from: string | null; tags: string[]; activation: { retrieval_strength: number; storage_strength: number; frequency: number; last_accessed: string; }; associations: { target_type: "engram" | "document"; target: string; strength: number; type: "semantic" | "temporal" | "causal" | "co_accessed"; updated_at?: string | undefined; }[]; knowledge_anchors: { path: string; relevance: "primary" | "supporting" | "example"; snippet?: string | undefined; snippet_extracted_at?: string | undefined; }[]; feedback_signals: { positive: number; negative: number; neutral: number; }; polarity: "do" | "dont" | null; write_count: number; injection_count: number; sources: { scope: string; session_id: string | null; stored_at: string; validated_by?: string | undefined; promoted_from?: string | undefined; }[]; recurrence_count: number; engram_version: number; episode_ids: string[]; created_at?: string | undefined; updated_at?: string | undefined; rationale?: string | undefined; contraindications?: string[] | undefined; source?: string | undefined; source_patterns?: string[] | undefined; knowledge_type?: { memory_class: "procedural" | "semantic" | "episodic" | "metacognitive"; cognitive_level: "remember" | "understand" | "apply" | "analyze" | "evaluate" | "create"; } | undefined; domain?: string | undefined; relations?: { broader: string[]; narrower: string[]; related: string[]; conflicts: string[]; supersedes: string[]; superseded_by: string[]; } | undefined; dual_coding?: { example?: string | undefined; analogy?: string | undefined; } | undefined; provenance?: { origin: string; chain: string[]; signature: string | null; license: string; } | undefined; attribution?: { asserted_by?: string | undefined; runtime?: { name: string; version?: string | undefined; } | undefined; model?: { name: string; prompt_id?: string | undefined; prompt_version?: string | undefined; prompt_sha256?: string | undefined; } | undefined; tool?: { name: string; version?: string | undefined; } | undefined; on_behalf_of?: string | undefined; } | undefined; claim_class?: "observed" | "documented" | "structural" | "asserted" | "inferred" | "revised" | undefined; entities?: { name: string; type: "tool" | "person" | "organization" | "technology" | "concept" | "project" | "place" | "event" | "standard" | "other"; uri?: string | undefined; }[] | undefined; temporal?: { learned_at: string; valid_from?: string | undefined; valid_until?: string | undefined; ingested_at?: string | undefined; } | undefined; usage?: { injections: number; hits: number; misses: number; last_hit_at?: string | undefined; } | undefined; episodic?: { emotional_weight: number; confidence: number; trigger_context?: string | undefined; journal_ref?: string | undefined; } | undefined; exchange?: { environmental_diversity: number; adoption_count: number; contradiction_rate: number; fitness_score?: number | undefined; } | undefined; structured_data?: Record<string, unknown> | undefined; insight?: { operation: "distill" | "consolidate" | "dream" | "connect" | "emerge" | "drift"; synthesized_at: string; grounding: "verified" | "unverified" | "ungrounded" | "speculative"; source_episode_ids: string[]; fate: "surfaced" | "promoted" | "cited" | "tasked" | "dismissed" | "expired"; surfaced_count: number; serendipity?: { unexpectedness: number; relevance: number; score: number; } | undefined; fate_ref?: string | undefined; fate_at?: string | undefined; } | undefined; content_hash?: string | undefined; commitment?: "exploring" | "leaning" | "decided" | "locked" | "draft" | undefined; locked_at?: string | undefined; locked_reason?: string | undefined; previous_version_ref?: { event_id: string; changed_at: string; } | undefined; summary?: string | undefined; pinned?: boolean | undefined; pinned_tier?: "hard" | "soft" | undefined; pinned_priority?: number | undefined; measured_under?: { [x: string]: unknown; model?: string | undefined; source_type?: string | undefined; hardware?: string | undefined; dataset?: string | undefined; date?: string | undefined; } | undefined; } | null>; store: import("/home/gregor/Data/5-plur/2-projects/plur-refactor/packages/core/src/index").PrimaryStore; engramsPath: string; rootPath: string; dedupConfig: { enabled?: boolean | undefined; threshold?: number | undefined; mode?: "llm" | "cosine" | "off" | undefined; }; similarityScores: (statement: string, candidates: Engram[]) => Promise<{ id: string; score: number; }[]>; isLlmAvailable: () => boolean; recordLlmSuccess: () => void; recordLlmFailure: () => void; syncIndex: () => Promise<void>; offendingHitsForScope: (statement: string, scope: string) => SecretMatch[]; sendsToServer: (scope: string) => boolean; openReview: (pair: TensionPair) => Promise<string>; holdAsDraft: (id: string) => Promise<void>; }> {
     return {
-      // Decision A: only a hit the writer can persist is a NOOP; a pack /
+      // Only a hit the writer can persist is a NOOP; a pack /
       // readonly / other-remote match falls through to learn(), which stores
       // the write and notes the match in history.
       hashDedup: async (statement: string, scope?: string) => (await this._firstPersistableHit(
         await this._writeDedupCorpus(scope ?? ''), this._hashDedupPredicate(statement, scope), scope,
       )).hit,
-      // remote:false (#776) — dedup queries are DERIVED FROM STATEMENTS. With
-      // the remote leg on, every plur_learn would fire statement-derived POSTs
-      // to all hosts, and a namespaced remote row could silently suppress a
-      // local write as a "dedup match". Dedup is a local decision.
+      // remote:false — dedup queries are DERIVED FROM STATEMENTS. With the
+      // remote leg on, every plur_learn would fire statement-derived POSTs to
+      // all hosts, and a namespaced remote row could silently suppress a local
+      // write as a "dedup match". Dedup is a local decision.
       //
-      // Decision A (follow-up, owner 2026-09-27): these results are the
-      // LLM/cosine candidates learnAsync may NOOP/UPDATE/MERGE into, so only
-      // rows the writer can persist are offered. A pack / readonly / other-
-      // scope remote-cache row is dropped; with nothing left the write is an
+      // These results are the LLM/cosine candidates learnAsync may
+      // NOOP/UPDATE/MERGE into, so only rows the writer can persist are
+      // offered. A pack / readonly / other-scope remote-cache row is dropped; with nothing left the write is an
       // ADD through learn(), which notes an exact match in history only.
       // learnAsync keeps only candidates in the requested scope, so each row
       // is judged against its own scope (== the writer's when one is given).
@@ -1211,7 +1193,7 @@ async _learnAsyncDepsAll(): Promise<{ hashDedup: (statement: string, scope?: str
       recall: async (query: string, options?: { limit?: number }) =>
         this._persistableCandidates(await this.recall(query, { ...options, remote: false })),
       learn: (statement: string, context?: LearnContext) => this.learn(statement, context),
-      // #930: learnBatch uses this instead of `learn` so remote-scope writes
+      // learnBatch uses this instead of `learn` so remote-scope writes
       // await the server push and return the server-assigned id. See LearnAsyncDeps.learnRouted.
       learnRouted: (statement: string, context?: LearnContext) => this.learnRouted(statement, context),
       getById: (id: string) => this.getById(id),
@@ -1219,7 +1201,7 @@ async _learnAsyncDepsAll(): Promise<{ hashDedup: (statement: string, scope?: str
       engramsPath: this.paths.engrams,
       rootPath: this.paths.root,
       dedupConfig: this.config.dedup ?? {},
-      // Local similarity for the no-LLM dedup path (#854). Scores the already
+      // Local similarity for the no-LLM dedup path. Scores the already
       // fetched candidates rather than the corpus, and reuses the embedding
       // cache, so this costs one query embedding and no API call. Returns []
       // when the embedder is unavailable, which the caller reads as
@@ -1241,7 +1223,7 @@ async _learnAsyncDepsAll(): Promise<{ hashDedup: (statement: string, scope?: str
       syncIndex: () => this._syncIndex(),
       offendingHitsForScope: (statement: string, scope: string) => this._offendingHitsForScope(statement, scope),
       sendsToServer: (scope: string) => this._resolveRemoteStoreForScope(scope) !== null,
-      // LRN-9: an UPDATE onto a locked memory waits in the review queue the
+      // An UPDATE onto a locked memory waits in the review queue the
       // user already resolves (tension records, plur_tensions).
       openReview: async (pair: TensionPair) => (await this.recordTensions([pair])).records[0]?.id,
       holdAsDraft: async (id: string) => {

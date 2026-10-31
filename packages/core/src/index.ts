@@ -34,9 +34,6 @@ export { gitDefaultScope, loadGitScopeSources, type GitScopeOutcome, type GitSco
 export { AddRemoteStoreError, DEFAULT_REMOTE_WRITE_TIMEOUT_MS } from './plur/helpers.js'
 export type { CheckResult, IndexSyncError, IngestCandidate, IngestOptions, LearnDelivery, LearnRoutedOptions, MutationOutcome, OutboxReasonCode, RegisterDiscoveredResult, RemoteHealth, RemoteScopeDiscovery, RescopeOptions, RescopeResult, ServerDiscoveryOutcome, ServerStoreCheck, StatusResult, StoreSummary } from './plur/types.js'
 export { formatSaveDestination, formatServerSessionLine, type SaveDestinationInput, type ServerSessionState } from './save-destination.js'
-// SP5 imports (deferred — vault-export, registry not yet merged)
-// import { exportVault, type VaultExportOptions, type VaultExportResult } from './vault-export.js'
-// import { fetchRegistry, discoverPacks, verifyPackIntegrity, DEFAULT_REGISTRY_URL, type PackRegistry, type RegistryPack } from './registry.js'
 import { type BackendSelection } from './backend-selection.js'
 import { type GitScopeOutcome, type OriginRead } from './git-origin.js'
 import { isRemoteOnlyQueued } from './remote-only-rows.js'
@@ -72,21 +69,20 @@ export { NO_SESSION, SessionScopeRegistry } from './session-scopes.js'
 export { SessionBreadcrumbs } from './session-state.js'
 export { pendingStoreLockOps } from './store/async-lock.js'
 // The trust gate a project's REMOTE settings must pass before an adapter may
-// route prompt text to the host they name (#1196/#1198). Lives here, not in
-// the CLI, so out-of-package adapters (@plur-ai/opencode) can take the
-// capability and the gate together rather than copying one without the other
-// (#1207). See project-remote.ts.
+// route prompt text to the host they name. Lives in core, not the CLI, so
+// out-of-package adapters (@plur-ai/opencode) take the capability and the gate
+// together rather than copying one without the other. See project-remote.ts.
 export {
     projectRemoteRefusalNotice, resolveProjectRemote,
     resolveProjectRemoteFromConfig, type ProjectRemote,
     type TrustChecker
 } from './project-remote.js'
-// Directory trust (2026-09 audit, D2) — a one-time per-directory grant
+// Directory trust — a one-time per-directory grant
 // (`plur trust`) an adapter should require before adopting behaviour-changing
 // configuration it finds on disk (a `.plur.yaml` scope, say) from a directory
 // the user opened but never explicitly vetted. See trust.ts for the model.
 export { coveringTrustedAncestor, isDirectoryTrusted, listTrustedDirectories, trustDirectory, untrustDirectory } from './trust.js'
-// Folder map (#1347) — the user's on/off/ask, default scope and trust
+// Folder map — the user's on/off/ask, default scope and trust
 // decisions per folder, in <PLUR home>/folders.yaml. See folders.ts.
 export {
     answerFolderNotNow, clearFolderTrust, consumeFolderNonce, coversHomeOrRoot, endFolderNonceSession, findPlurMarker, FOLDER_HOST_START_TOLERANCE_MS, FOLDER_NONCE_TTL_MS, FolderMapError, folderMapPath, folderMapProblem, folderNonceOutstanding, folderOffEntries, folderPatternMatches,
@@ -98,18 +94,18 @@ export {
     type FolderMapRepairResult, type FolderMode, type FolderPolicy,
     type FolderPolicySource, type WorkspaceScopeDecision
 } from './folders.js'
-// remote-only folders (owner decisions 2026-10-01): what a bound instance
+// remote-only folders: what a bound instance
 // refuses and how it says so. See remote-only.ts and Plur.bindFolder.
 export { FOLDER_MAP_TEMPLATE, renderFolderMapText } from './folder-map-text.js'
 export { isRemoteOnlyQueued, withoutRemoteOnlyQueued } from './remote-only-rows.js'
 export {
     remoteOnlyRefusalMessage, remoteOnlySessionLine, remoteOnlyUnservedNotice, RemoteOnlyWriteError, type RemoteOnlyBinding, type RemoteOnlyRefusal, type RemoteOnlyStatus
 } from './remote-only.js'
-// Pinpointing and repairing a broken folders.yaml (#1526): pure text checks.
+// Pinpointing and repairing a broken folders.yaml: pure text checks.
 export {
     checkFolderMapText, describeFolderMapIssues, planFolderMapRepair, unifiedDiff, type FolderMapCheck, type FolderMapIssue, type FolderMapRepairPlan
 } from './folder-map-check.js'
-// The one-time folder question and an `on` folder's session settings (#1347),
+// The one-time folder question and an `on` folder's session settings,
 // shared by the CLI's editor hooks and the opencode plugin. See folder-ask.ts.
 export {
     claimSkippedStoreHint, clearFolderAsk, folderAsk, folderAskOnce, escapedPath as folderEscapedPath, folderMarkerDir, quoted as folderQuoted, folderRepairCommand,
@@ -119,13 +115,13 @@ export {
     type FolderAskScopeRanker
 } from './folder-ask.js'
 export { generateGuardrails } from './guardrails.js'
-// Shared memory system-prompt renderer (opencode plugin's task 1): one
+// Shared memory system-prompt renderer: one
 // implementation so @plur-ai/claw and @plur-ai/opencode render the PLUR
 // memory block byte-identically instead of each vendoring a copy.
 export { SHIPPED_CLAW_SECTIONS, SHIPPED_CURSOR_RULES, SHIPPED_PLUR_SECTIONS } from './instruction-history.js'
 export { backupFile, hasStandaloneMarker, InstructionWriteRefused, isShippedText, upsertInstructionSection, writeWithBackup, type InstructionSectionOptions, type InstructionSectionResult } from './instruction-section.js'
 export { PLUR_MEMORY_INSTRUCTIONS, renderMemoryBlock } from './memory-block.js'
-// Shared learning-extraction heuristics (opencode plugin's task 6a): one
+// Shared learning-extraction heuristics: one
 // implementation so @plur-ai/claw and @plur-ai/opencode derive learning
 // candidates identically instead of each vendoring a copy.
 export { EngramStoreShrinkError, EngramStoreUnreadableError } from './engrams.js'
@@ -133,16 +129,11 @@ export { computeIdf, engramSearchText, termMatches, type CorpusStats } from './f
 export { extractLearnings, extractSelfReportedLearnings, isCorrection, type LearnableMessage, type LearnCandidate } from './learner.js'
 export { DomainCoverageSchema, EvidenceEntrySchema, FalsificationSchema, HierarchyPositionSchema, MetaConfidenceSchema, MetaFieldSchema, StructuralTemplateSchema } from './schemas/meta-engram.js'
 export type { DomainCoverage, EvidenceEntry, Falsification, HierarchyPosition, MetaConfidence, MetaField, StructuralTemplate } from './schemas/meta-engram.js'
-// Exported for store-repair tooling (#852's `plur reindex-hashes`), which must
-// read the RAW store rows. `Plur.list()` goes through `_filterEngrams`, which
-// merges packs in and drops inactive/expired engrams — fine for recall, wrong
-// for a repair pass, which would then miss stale rows and try to "fix" pack
-// entries it does not own. Exposing the existing loader rather than letting a
-// caller write a fourth one is the whole point of #877.
+// Exported for store-repair tooling, which must read the RAW store rows.
+// `Plur.list()` goes through `_filterEngrams`, which merges packs in and drops
+// inactive/expired engrams — fine for recall, wrong for a repair pass, which
+// would then miss stale rows and try to "fix" pack entries it does not own.
 export { loadEngrams, saveEngrams } from './engrams.js'
-// The id-namespacing pair (#914). `readIdFor` is the API a surface should use;
-// these are exported so a caller (and the tests) can reason about the shape
-// without re-deriving the prefix rule a fourth time.
 export {
     BACKUP_DIR, listBackups, maybeDailyBackup, planRestore,
     restoreBackup,
@@ -182,10 +173,6 @@ export { autoSummary, generateSummary, needsSummary } from './summary.js'
 // (`isSharedScope`, `isPersonalScope`, `SHARED_SCOPE_PREFIXES`) is unchanged.
 export { isPersonalScope, isSharedScope, makeVisibilityPredicate, scopeAllowFilter, SHARED_SCOPE_PREFIXES } from './scope-util.js'
 export { detectPlurStorage, type PlurPaths } from './storage.js'
-// Exported so the CLI resolves the Postgres DSN and schema exactly as the
-// engine does (#840). A second, divergent resolution in the CLI is how
-// `plur reindex-tokens` came to report a false all-clear on a store whose
-// connection lived in config.yaml rather than the environment.
 export { pruneBackups, registerClaudeUserMcp, type RegisterClaudeUserMcpOptions, type RegisterClaudeUserMcpResult } from './claude-user-config.js'
 export { loadConfig, storeEntryForDisk, tokenFromEnv } from './config.js'
 export {
@@ -221,7 +208,7 @@ export { asyncAtomicWrite, MemoryPrimaryStore, ReadonlyStoreError, ReadonlyStore
 // for any consumer that persists vectors. See embeddings.ts.
 export { DEFAULT_EMBEDDER, EMBEDDER_NAMES, resolveEmbedderName, type EmbedderAdapter, type EmbedderName } from './embedders/index.js'
 export { _appendEmbeddingCacheEntries, activeEmbedderDim, allowBackgroundModelLoad, cosineSimilarity, embed, EMBED_DIM, embedderStatus, semanticModelState, type EmbedderStatus } from './embeddings.js'
-// Reranker surface (#220/#341) — factory + runtime status so MCP/CLI can
+// Reranker surface — factory + runtime status so MCP/CLI can
 // probe reranker health (plur_doctor) and surface non-engagement on recall.
 // _setCachedReranker/_resetRerankerCache are test seams for exercising
 // failure paths without downloading the real ~300 MB model.
@@ -230,7 +217,7 @@ export {
     _resetRerankerCache, _setCachedReranker, classifyRerankerFailure, DEFAULT_RERANKER, getReranker, hfCacheDirName, isRerankerOff, RERANKER_NAMES, rerankerStatus, resetRerankerStatus, resolveRerankerName, type RerankerFailureKind, type RerankerName, type RerankerRuntimeStatus
 } from './rerankers/index.js'
 export type { RerankerAdapter } from './rerankers/types.js'
-// Per-store reranker eval gate (#451) — the self-check that must pass before
+// Per-store reranker eval gate — the self-check that must pass before
 // anyone flips reranking on by default for a store. Advisory only.
 export type { SimilarityResult } from './embeddings.js'
 export {
@@ -239,15 +226,14 @@ export {
 export type { SyncRemoteType, SyncResult, SyncStatus } from './sync.js'
 /**
  * File-write primitives, exported so packages OUTSIDE core write files the same
- * way core does (#805). `@plur-ai/mcp` had its own read-modify-write with
- * neither a lock nor an atomic replace; re-implementing them per package is how
- * the two drift, and the drift is always in the unsafe direction.
+ * way core does (lock + atomic replace) instead of re-implementing them and
+ * drifting in the unsafe direction.
  */
 export { initActorKey, keyFingerprint, keysDirFor, keysRegistryPath, loadKeysRegistry, loadPrivateKeyBuffer, lookupPublicKey, privateKeyPath, registerPublicKey, safeFileName, signWithActorKey, verifySignature, type KeysRegistry, type PublicKeyEntry } from './actor-keys.js'
 export { atomicWrite, withLock } from './sync.js'
 export { hashStoreFile, verifyChain, type BreakReason, type ChainBreak, type ChainFork, type ChainVerifyOutcome, type ChainVerifyResult, type SignatureResult, type SignatureVerdict, type VerifyChainOptions } from './verify-chain.js'
 /**
- * Owner-only protection (#1631): `writeConfigFile` is how config.yaml is
+ * Owner-only protection: `writeConfigFile` is how config.yaml is
  * written; `protectOwnerOnly` / `checkOwnerOnly` are the one rule for files
  * that hold a secret (the installer's backups and key file reuse them).
  */
@@ -257,10 +243,10 @@ export { checkOwnerOnly, currentWindowsAccount, currentWindowsSid, defaultOwnerO
 export { _resetRemoteCapabilityCache, _resetRemoteHostBreaker, clearRemoteHostDown, FEEDBACK_SOURCE_CAPABILITY, markRemoteHostDown, remoteHostDownRemainingMs, salvageRemoteRow } from './store/remote-store.js'
 export { buildBatchContradictionPrompt, buildContradictionPrompt, daysApart, domainSegmentsOverlap, engramDate, engramOrigin, getCandidatePairs, getCandidatePairsDetailed, inTemporalDomain, MEASURED_UNDER_CONFIDENCE_CAP, MEASURED_UNDER_DIMENSIONS, measuredUnderDiffers, measuredUnderGateApplies, parseBatchContradictionResponse, parseContradictionResponse, scanForTensions, scopesOverlap, SNAPSHOT_CONFIDENCE_CAP, statementOverlap, subjectsOverlap, temporalDiscountFactor, type CandidatePairOptions, type CandidatePairs, type ContradictionVerdict, type JudgeStatement, type TemporalGateOptions, type TensionPair, type TensionScanOptions, type TensionScanResult } from './tensions.js'
 export { checkForUpdate, clearVersionCache, getCachedUpdateCheck, minorVersionsBehind, settleVersionChecks, updateCheckOffline, VERSION_CHECK_FAILURE_TTL_MS, VERSION_CHECK_SUCCESS_TTL_MS, type VersionCheckResult } from './version-check.js'
-// Tension lifecycle persistence (#181)
+// Tension lifecycle persistence
 export { TensionCategorySchema, TensionRecordSchema, TensionStatusSchema, type TensionCategory, type TensionRecord, type TensionStatus } from './schemas/tension.js'
 export { categorizeTension, generateTensionId, loadTensions, saveTensions, tensionPairKey } from './tension-store.js'
-// Migration importers (issue #441) — `plur import --from <source> --path <file>`.
+// Migration importers — `plur import --from <source> --path <file>`.
 export { CapabilityCanary, type CanaryStatus, type Capability } from './capability-canary.js'
 export { readCapsule, verifyCapsuleIntegrity, writeCapsule } from './capsule.js'
 export type { ReadCapsuleResult, WriteCapsuleOptions } from './capsule.js'
@@ -287,7 +273,7 @@ export type { PackManifest } from './schemas/pack.js'
 export { getCounters, readOrCreateInstallId, recordEvent, resetCounters, type CounterEvent, type CounterSnapshot, type CountersOpts } from './telemetry-counters.js'
 export { buildHeartbeatPayload, flushIfNeeded, registerFlushOnExit, sendHeartbeat, type FlushOpts, type HeartbeatPayload } from './telemetry-flush.js'
 export { isTelemetryEnabled, resolveTelemetry, type TelemetryResolution, type TelemetrySource, type TelemetryState } from './telemetry.js'
-// Failed-recall miss-signal — feeds the WS5 demand flywheel (opt-in, content-free).
+// Failed-recall miss signal (opt-in, content-free).
 export {
     buildMissSignalPayload, classifyMiss, DEFAULT_MISS_SCORE_THRESHOLD, emitMissSignal, fingerprintQuery, type MissReason,
     type MissSignalInput,
@@ -305,17 +291,17 @@ export {
  * plausible strength, and the two deployments simply stop agreeing.
  */
 export { rrfMergeEngrams } from './hybrid-search.js'
-// Server-authoritative remote recall (#776) — client, health persistence,
-// degradation string table (A4′), and env knobs. The MCP server and CLI hook
+// Server-authoritative remote recall — client, health persistence,
+// degradation string table, and env knobs. The MCP server and CLI hook
 // consume these so all three surfaces share ONE state vocabulary + strings.
 export {
     applyFeedbackSignal, NEGATIVE_STRENGTH_DELTA, nextCommitment,
     POSITIVE_STRENGTH_DELTA, type ApplyFeedbackOptions, type FeedbackSignal, type FeedbackSource
 } from './feedback.js'
 export { BREAKER_COOLDOWN_MS, BREAKER_FAILURE_THRESHOLD, BREAKER_HALF_OPEN_AFTER_MS, BUDGET_TICK_MS, buildRecallRemoteReport, claimHookDegradationLines, DEFAULT_RECALL_DEADLINE_MS, DEFAULT_REMOTE_RECALL_TIMEOUT_MS, doctorRemoteRemediation, HOOK_HEADER_REPEAT_MS, hookRemoteHeaderLine, isRemoteRecallDisabled, MAX_REMOTE_QUERY_CHARS, MAX_REMOTE_RESPONSE_BYTES, MAX_STARVATION_CREDIT_MS, mcpRemoteWarningLine, PROBE_CLEARABLE_STATES, readRemoteHealth, RECALL_BOOKKEEPING_LOCK_WAIT_MS, REMOTE_STATUS_TTL_MS, remoteHealthPath, remoteRecall, resolveRecallDeadlineMs, resolveRemoteRecallTimeoutMs, scopeOrg, startBudgetTimer, UNSUPPORTED_TTL_MS, type BudgetExpiry, type HostRecallOutcome, type RecallRemoteHostReport, type RecallRemoteReport, type RemoteHostState, type RemoteRecallHost, type RemoteRecallOptions, type RemoteRecallResult, type RemoteStoreStatusEntry } from './remote-recall.js'
-// Automatic rating of injected engrams from the reply text (#1310).
+// Automatic rating of injected engrams from the reply text.
 export { AUTO_FEEDBACK_MIN_CONFIDENCE, detectInjectionSignal, rateInjectedEngrams, type InjectionSignal, type InjectionSignalResult, type RatedEngram } from './injection-signal.js'
-// Client-side token inspection (#295/#587) — expiry + display-only payload
+// Client-side token inspection — expiry + display-only payload
 // claims, no signature verification — and the endpoint-identity normalizer,
 // so CLI surfaces (login --status) compare hosts the same way the core does.
 export { decodeJwtExpiry, decodeJwtPayload, type JwtExpiry } from './jwt.js'
@@ -343,7 +329,7 @@ export {
 
 export class Plur {
   /**
-   * Engrams a url store confirmed on the write path (#1264). The server's reply
+   * Engrams a url store confirmed on the write path. The server's reply
    * is the only evidence a write left the machine, and it leaves no mark on the
    * engram itself, so it is remembered here — per returned object, never
    * persisted.
@@ -353,17 +339,16 @@ export class Plur {
    * Which server holds a returned engram, per returned object, never on the
    * row (a loaded row's fields are content-scanned, and a url is not content):
    * the endpoint a write was POSTed to, or the url store a loaded row came
-   * from. Read by `deliveryOf` (Codex round 5, finding 2).
+   * from. Read by `deliveryOf`.
    */
   /** @internal */ _heldBy = new WeakMap<object, string>()
   /** @internal */ paths: PlurPaths
   /** @internal */ config: PlurConfig
   /** @internal */ indexedStorage: IndexedStorage | null = null
   /**
-   * PGLite adapter (ADR-0001, Sprint 0 PR 2). Selected explicitly via
-   * `PLUR_BACKEND=pglite` / `backend: pglite`, or automatically once the store
-   * is large enough to make brute-force scanning the dominant cost (ADR-0005,
-   * `backend-selection.ts`).
+   * PGLite adapter. Selected explicitly via `PLUR_BACKEND=pglite` /
+   * `backend: pglite`, or automatically once the store is large enough to make
+   * brute-force scanning the dominant cost (ADR-0005, `backend-selection.ts`).
    * When active, runs in parallel to the YAML write path: every YAML
    * mutation triggers syncFromYaml on the PGLite index. The YAML file
    * remains the source of truth — see yaml-truth-rebuild and
@@ -372,7 +357,7 @@ export class Plur {
   /** @internal */ pgliteAdapter: PGLiteAdapter | null = null
   /** @internal */ _pgliteInitPromise: Promise<void> | null = null
   /**
-   * In-flight primary-store auto-embed pass (#762), or null. One pass at a
+   * In-flight primary-store auto-embed pass, or null. One pass at a
    * time: a write landing while a pass runs sets `_primaryEmbedRerun` instead
    * of starting a second pass, so back-to-back writes coalesce into one
    * follow-up sweep rather than N overlapping ones re-embedding the same gap.
@@ -382,36 +367,33 @@ export class Plur {
   /** One-shot latch for the embeddings-disabled notice on the primary-store auto-embed path. */
   /** @internal */ _primaryEmbedDisabledNoticeDone = false
   /**
-   * Last background index failure (#272). Set by the .catch of the
+   * Last background index failure. Set by the .catch of the
    * fire-and-forget index chains (initial sync, syncFromYaml, reindex,
    * auto-embed); reset when a new chain is kicked off so a completed
    * successful pass leaves it null. Read via lastIndexError()/status().
    */
   /** @internal */ _lastIndexError: IndexSyncError | null = null
-  /**
-   * The source of truth for this instance's engrams (convergence Phase 1).
-   * Defaults to `YamlPrimaryStore(paths.engrams)` — ADR-0001 behaviour,
-   * unchanged — but the `Plur` class no longer knows that. All reads and writes
-   * of primary engram state go through this, never through `loadEngrams` /
-   * `saveEngrams` directly.
-   */
   /** Constructor-initiated async work — see `ready()`. */
   /** @internal */ _readyPromise: Promise<void> = Promise.resolve()
 
-  /** The primary store as opened (see `_primaryStore` for what callers get). */
+  /**
+   * The primary store as opened (see `_primaryStore` for what callers get).
+   * All reads and writes of primary engram state go through the store, never
+   * through `loadEngrams` / `saveEngrams` directly.
+   */
   /** @internal */ _basePrimaryStore: AsyncPrimaryStore
   /**
    * The primary store every engine path uses. While the instance is bound to
-   * a remote-only folder it is wrapped in RemoteOnlyStoreGuard (re-audit of
-   * #1521): reads see only the folder's queued saves, writes may only touch
+   * a remote-only folder it is wrapped in RemoteOnlyStoreGuard: reads see only
+   * the folder's queued saves, writes may only touch
    * them. The method guards are the first layer; this is the backstop.
    */
   /** @internal */ get _primaryStore(): AsyncPrimaryStore {
-    // Every internal access goes through the queue hold (re-audit 3 of #1521):
-    // the write choke point that keeps a remote-only queued save deliverable,
-    // for every instance, bound or not. While bound, the remote-only guard
-    // sits on top. The binding is the one the current locked operation
-    // started with, if any (R3-5), never one that changed mid-operation.
+    // Every internal access goes through the queue hold: the write choke point
+    // that keeps a remote-only queued save deliverable, for every instance,
+    // bound or not. While bound, the remote-only guard sits on top. The binding
+    // is the one the current locked operation started with, if any, never one
+    // that changed mid-operation.
     if (!this._holdStore || this._holdStore.inner !== this._basePrimaryStore) {
       this._holdStore = new QueueHoldStore(this._basePrimaryStore, sc => this._isDeliverableTeamScope(sc))
     }
@@ -440,7 +422,7 @@ export class Plur {
     return out
   }
 
-  /** The binding a locked store operation captured at its start (R3-5). */
+  /** The binding a locked store operation captured at its start. */
   /** @internal */ static _lockBinding = new AsyncLocalStorage<{ plur: Plur; binding: RemoteOnlyBinding | null; git?: GitScopeOutcome }>()
   /** @internal */ _activeBinding(): RemoteOnlyBinding | null {
     const ctx = Plur._lockBinding.getStore()
@@ -449,8 +431,8 @@ export class Plur {
 
   /**
    * remote-only: whether a walk over url stores for a BARE id may contact
-   * the store serving `scope` — only the folder's own team store (gate review
-   * of #1663). An explicit team scope is checked by its caller instead.
+   * the store serving `scope` — only the folder's own team store. An explicit
+   * team scope is checked by its caller instead.
    */
   /** @internal */ _remoteOnlyWalkAllows(scope: string, requested?: string): boolean {
     const ro = this._remoteOnly
@@ -466,7 +448,7 @@ export class Plur {
 
   /**
    * remote-only: true only when the host positively holds the row the id names
-   * and that row is in a deliverable team scope (Codex round 3). Unknown —
+   * and that row is in a deliverable team scope. Unknown —
    * a failed probe, or a row the host says it holds but does not hand over —
    * is false, as is a personal row.
    */
@@ -484,7 +466,7 @@ export class Plur {
   }
 
   /**
-   * The ONE rule for "a deliverable team scope" (re-audit 3 of #1521): a
+   * The ONE rule for "a deliverable team scope": a
    * shared, non-personal, non-local-family scope with a writable url store in
    * the config. Used by the store guard, the queue hold, learn routing in a
    * remote-only folder, the flush, and the remote walks while bound.
@@ -494,7 +476,7 @@ export class Plur {
     const stores = this.config.stores ?? []
     if (isLocalOnlyScope(scope, stores)) return false
     if (scope.toLowerCase().startsWith('user:')) return false
-    // Where a write goes is the shared resolver's answer (#1631): one writable
+    // Where a write goes is the shared resolver's answer: one writable
     // server for exactly this scope. A scope two servers claim (`conflict`) or
     // one not granted (`unauthorized`) is not deliverable.
     const target = resolveScopeTarget(scope, stores)
@@ -514,36 +496,32 @@ export class Plur {
    */
   /** @internal */ _backendSelection: BackendSelection
   /**
-   * engram_id → injection_id of the most recent co_injection that included it
-   * (#452). Fast path for linking plur_feedback verdicts to their injection
-   * event; findLatestInjectionFor covers the cross-process case.
+   * engram_id → injection_id of the most recent co_injection that included it.
+   * Fast path for linking plur_feedback verdicts to their injection event;
+   * findLatestInjectionFor covers the cross-process case.
    */
   /** @internal */ _lastInjectionByEngram: Map<string, string> = new Map()
   /** Spreading-activation drop counters — accumulated in-memory, reset on process restart. */
   /** @internal */ _spreadDrops = { dropped_unresolvable: 0, dropped_retired: 0 }
   /**
-   * Timestamps (ms) of recent LLM failures, newest last (convergence Phase 2).
+   * Timestamps (ms) of recent LLM failures, newest last.
    *
-   * Replaces a plain `_llmFailureCount` that `_recordLlmSuccess()` zeroed. That
-   * reset is a lost-update under concurrency: `isLlmAvailable()` → `await llm()`
-   * → record is a read-modify-write straddling an await, so a success returning
-   * from one in-flight call erases the failures other in-flight calls just
-   * recorded, and a breaker meant to trip on 3 failures never trips at all. A
-   * window of failure timestamps has no such reset — a success simply does not
-   * add one, and old failures age out on their own.
+   * A window rather than a counter that success resets: availability check →
+   * `await llm()` → record straddles an await, so a reset would erase failures
+   * other in-flight calls just recorded and the breaker would never trip. A
+   * success simply adds nothing, and old failures age out on their own.
    */
   /** @internal */ _llmFailures: number[] = []
   /** @internal */ _llmDisabledUntil: number | null = null
   /**
-   * Per-session default write scopes (convergence Phase 2). Was a single
-   * `_sessionScope` field shared by every caller of the instance; see
-   * `session-scopes.ts` for why that could not survive the async write path.
+   * Per-session default write scopes. See `session-scopes.ts` for why a single
+   * field shared by every caller cannot survive the async write path.
    */
   /** @internal */ _sessionScopes = new SessionScopeRegistry()
   /** @internal */ _gitOrigins = new Map<string, { at: number; origin: OriginRead }>()
   /**
    * Set when this instance is bound to a `remote-only` folder
-   * (`bindFolder` / `bindFolderPolicy`, owner decisions 2026-10-01): writes go
+   * (`bindFolder` / `bindFolderPolicy`): writes go
    * only to the folder's team scope (or another writable team scope), and
    * recall/inject read only that scope, dialled, plus installed packs. Null
    * everywhere else, where nothing below changes.
@@ -557,7 +535,7 @@ export class Plur {
       : git?.kind === 'local' || git?.kind === 'unknown' ? 'local' : null
   }
   /**
-   * The binding in effect for THIS operation (Codex round 8 on #1663): the
+   * The binding in effect for THIS operation: the
    * one a public mutator captured when it started, else the current one. A
    * rebind while an operation waits on the network does not change it.
    */
@@ -570,30 +548,30 @@ export class Plur {
     return Plur._lockBinding.run({ plur: this, binding: this._boundFolder, git: this._boundGit }, fn)
   }
   /**
-   * Cross-encoder reranker adapter (#220). Resolved lazily on first recall with
+   * Cross-encoder reranker adapter. Resolved lazily on first recall with
    * `rerank: true`. Defaults to the "off" sentinel when PLUR_RERANKER is unset,
    * so existing call sites pay zero cost until they opt in.
    */
   /** @internal */ _reranker: RerankerAdapter | null = null
   /**
-   * Per-store reranker eval gate advisory (#451) — logged at most once per
+   * Per-store reranker eval gate advisory — logged at most once per
    * instance when the enable path resolves a reranker whose cached self-eval
    * verdict is 'harmful'. Advisory only: reranking is never auto-disabled.
    */
   /** @internal */ _rerankerEvalAdvisoryDone = false
-  /** mtime (ms) of config.yaml at last load — drives reloadConfigIfChanged (#307). */
+  /** mtime (ms) of config.yaml at last load — drives reloadConfigIfChanged. */
   /** @internal */ configMtimeMs = 0
   /** Local store entries dropped at load because they name the primary file
-   *  or a store already registered under another spelling (#1319). Kept on
+   *  or a store already registered under another spelling. Kept on
    *  disk; see {@link _loadConfig}. */
   /** @internal */ _ignoredDuplicates: Array<{ entry: StoreEntry; duplicateOf: string }> = []
   /** @internal */ _warnedDuplicateStores = new Set<string>()
-  /** url\0scope of pinned scopes already warned as unlisted by /me (#1631). */
+  /** url\0scope of pinned scopes already warned as unlisted by /me. */
   /** @internal */ _warnedPinnedUnlisted = new Set<string>()
   /** Whether constructor-time cwd store discovery is enabled for this instance. */
   /** @internal */ _autoDiscover = true
   /**
-   * Read-only instance (#731). Guards THREE write surfaces, because the
+   * Read-only instance. Guards THREE write surfaces, because the
    * primary-store guard alone covers only one of them:
    *   1. the primary store — wrapped in {@link ReadonlyStoreGuard};
    *   2. secondary file stores — wrapped lazily in `_storeAt`;
@@ -601,16 +579,15 @@ export class Plur {
    *      public mutators gate on {@link _assertWritable} before routing.
    */
   /** @internal */ readonly _readonly: boolean = false
-  /** Unsubscribes this instance from its store's id-rename reports (P1); see `close()`. */
+  /** Unsubscribes this instance from its store's id-rename reports; see `close()`. */
   /** @internal */ _unsubscribeRenames: (() => void) | null = null
 
   /**
    * Detach this instance from resources it subscribed to on a store it does
-   * not own. Today: the id-rename reports of a shared primary store (owner
-   * decision P1 — a Postgres `save` that renames a clashing id reports it to
-   * every attached instance, which records it in its own history). Does NOT
-   * close the store: the caller passed it in and owns its lifecycle.
-   * Idempotent.
+   * not own: the id-rename reports of a shared primary store (a Postgres
+   * `save` that renames a clashing id reports it to every attached instance,
+   * which records it in its own history). Does NOT close the store: the caller
+   * passed it in and owns its lifecycle. Idempotent.
    */
   close(): void {
     this._unsubscribeRenames?.()
@@ -621,15 +598,15 @@ export class Plur {
    * @param options.path  Root directory for this instance (defaults to
    *   `PLUR_PATH` or `~/.plur`).
    * @param options.store Source of truth for primary engram state. Defaults to
-   *   `YamlPrimaryStore(paths.engrams)`, i.e. exactly the previous behaviour.
-   *   Supplying one is what makes `Plur` source-of-truth agnostic: nothing in
-   *   the class reads or writes `engrams.yaml` directly any more.
+   *   `YamlPrimaryStore(paths.engrams)`. Supplying one is what makes `Plur`
+   *   source-of-truth agnostic: nothing in the class reads or writes
+   *   `engrams.yaml` directly.
    * @param options.autoDiscover Run cwd-walking project-store discovery in the
    *   constructor. Defaults to true (`PLUR_AUTO_DISCOVER=0` flips the default
    *   without touching call sites). See {@link autoDiscoveryEnabled}.
    * @param options.cwd Directory discovery walks up from. Defaults to
    *   `process.cwd()`.
-   * @param options.readonly Open the instance read-only (#731). Every mutation
+   * @param options.readonly Open the instance read-only. Every mutation
    *   — local, secondary-store, and remote-routed — throws
    *   {@link ReadonlyStoreError}; reads work unchanged, except that recall's
    *   activation refresh is silently skipped (see `_reactivateResults`).
@@ -653,12 +630,11 @@ export class Plur {
     this._readonly = options?.readonly === true
     const baseStore = options?.store ?? new YamlPrimaryStore(this.paths.engrams)
     this._basePrimaryStore = this._readonly ? new ReadonlyStoreGuard(baseStore) : baseStore
-    // Owner decision P1 (2026-09-27, "keep both, rename one — nothing lost or
-    // hidden"): a store that renames a clashing id on write (Postgres `save`)
-    // reports the rename here, and it is recorded in THIS instance's history
-    // like every other rename — never log-only.
-    // Every instance on a shared store subscribes (a Set on the store side), and
-    // `close()` unsubscribes.
+    // A store that renames a clashing id on write (Postgres `save`) reports the
+    // rename here, and it is recorded in THIS instance's history like every
+    // other rename — nothing lost or hidden, never log-only. Every instance on
+    // a shared store subscribes (a Set on the store side), and `close()`
+    // unsubscribes.
     const renameSink = (baseStore as { addRenameListener?: (fn: (r: Array<{ from: string; to: string }>) => void) => () => void }).addRenameListener
     if (typeof renameSink === 'function' && !this._readonly) {
       this._unsubscribeRenames = renameSink.call(baseStore, renames => {
@@ -676,31 +652,25 @@ export class Plur {
     // `loadByIds` and `updateMany` are a capability PAIR: recall's targeted
     // reactivation uses them together or not at all (`canTarget` in
     // `_reactivateResults` — implementing only one silently falls back to the
-    // whole-corpus load/replace path). Historically, one-without-the-other was
-    // a data-loss hazard (#749: targeted read + whole-file write replaced a
-    // 12-engram corpus with the 3 recalled rows). The call-site guard makes the
-    // split SAFE now, but it is still almost certainly an implementation
-    // mistake — so say so at attachment time, where the implementor is looking,
-    // instead of leaving it to a JSDoc they may never read. A warning rather
-    // than a throw: a split store works correctly today, and construction is
-    // not the place to turn a performance mistake into an outage.
+    // whole-corpus load/replace path). A split is almost certainly an
+    // implementation mistake, so warn at attachment time where the implementor
+    // is looking. A warning rather than a throw: a split store still writes
+    // correctly, so this is a performance mistake, not an outage.
     if (options?.store) {
       const s = options.store as Partial<AsyncPrimaryStore>
-      // Contract check (audit #794, issue #802). Every write-path guard rests
-      // on SOMETHING the store says being trustworthy. A store that can
-      // under-report on `load()` and offers no per-row write primitive defeats
-      // all of them at once: read-modify-write is the only shape available, the
-      // engine has no second opinion to check the read against, and the
-      // resulting whole-corpus `save()` is indistinguishable from "the corpus
-      // really is this small now". Probe p10 demonstrates it losing rows with
-      // every guard in place.
+      // Contract check. Every write-path guard rests on SOMETHING the store
+      // says being trustworthy. A store that can under-report on `load()` and
+      // offers no per-row write primitive defeats all of them at once:
+      // read-modify-write is the only shape available, the engine has no
+      // second opinion to check the read against, and the resulting
+      // whole-corpus `save()` is indistinguishable from "the corpus really is
+      // this small now".
       //
-      // This one THROWS where the pair check below only warns, because the two
-      // are different in kind: a split loadByIds/updateMany is a performance
-      // mistake that still writes correctly, while this is an unprotectable
-      // data-loss path. Failing at construction puts it in front of the
-      // implementor, seconds after they wired it, instead of in front of the
-      // user after their corpus is gone.
+      // This one THROWS where the pair check below only warns: a split
+      // loadByIds/updateMany still writes correctly, while this is an
+      // unprotectable data-loss path. Failing at construction puts it in front
+      // of the implementor instead of in front of the user after their corpus
+      // is gone.
       const canWriteRows = typeof s.append === 'function' && typeof s.updateMany === 'function'
       if (!canWriteRows && !s.refusesUnreadable && !options.allowUnprotectedStore) {
         throw new Error(
@@ -725,7 +695,7 @@ export class Plur {
           + `whole-corpus reactivation. Implement both to enable targeted reads/writes.`,
         )
       }
-      // The `learn()` seams (#828) are a SET, and a partial set is silent:
+      // The `learn()` seams are a SET, and a partial set is silent:
       // `canDelegate` in `learn()` is a single boolean, so a store missing one
       // member keeps paying two full corpus loads per write with nothing to
       // indicate why. Say so where the implementor is looking. A warning, not a
@@ -768,17 +738,12 @@ export class Plur {
     this.configMtimeMs = this.statConfigMtime()
     const selection = this._resolveBackend()
     this._backendSelection = selection
-    // Phase 2b removed the constraint that used to live here: `Plur`'s write
-    // path was synchronous, and Node has no synchronous Postgres client, so a
-    // network-backed store could not satisfy the primary-store contract. The
-    // store interface is async now (`AsyncPrimaryStore`), and `PostgresAdapter`
-    // implements it alongside `StorageAdapter` — so the postgres tier CAN be
-    // this process's primary store.
-    //
-    // Selection still does not construct one implicitly: a connection is a
-    // resource with credentials and a lifecycle, and manufacturing one from a
-    // config string inside a constructor would make failure modes appear at
-    // surprising moments. The caller passes the adapter in
+    // A network-backed store CAN be this process's primary store (the store
+    // interface is async and `PostgresAdapter` implements it), but selection
+    // does not construct one implicitly: a connection is a resource with
+    // credentials and a lifecycle, and manufacturing one from a config string
+    // inside a constructor would make failure modes appear at surprising
+    // moments. The caller passes the adapter in
     // (`new Plur({ store: new PostgresAdapter(...) })`), and selection reports
     // the tier so a deployment can act on it.
     if (selection.tier === 'postgres' && this._primaryStore.kind !== 'postgres') {
@@ -794,15 +759,9 @@ export class Plur {
       )
     }
     // A Postgres PRIMARY store answers its own queries — do not build a PGLite
-    // index alongside it.
-    //
-    // This used to read `selection.tier === 'postgres' ? 'pglite' : ...`
-    // unconditionally, which then constructed a `PGLiteAdapter` rooted at
-    // `this.paths.engrams` and synced it `syncFromYaml()`. For a Postgres-backed
-    // deployment that YAML file is not the source of truth and need not exist,
-    // so the derived index was built from nothing and every query went to it
-    // instead of to the store that actually holds the data — which is why
-    // `searchBM25` and `corpusStats` had no reachable call sites.
+    // index alongside it. For such a deployment engrams.yaml is not the source
+    // of truth and need not exist, so a PGLite index synced from it would be
+    // built from nothing and shadow the store that holds the data.
     //
     // The condition is the injected store, not the size-based tier: the tier can
     // read 'postgres' while the caller passed no Postgres store at all (the
@@ -812,9 +771,9 @@ export class Plur {
       ? 'none'
       : selection.tier === 'postgres' ? 'pglite' : selection.tier
     if (indexTier === 'pglite' && selection.reason !== 'size') {
-      // #1046: PGLite is opt-in now. Say so on the way in, so an operator who
-      // set it months ago and forgot can see which engine they are on when a
-      // command feels slow — it boots Postgres in WASM on every process.
+      // PGLite is opt-in. Say so on the way in, so an operator can see which
+      // engine they are on when a command feels slow — it boots Postgres in
+      // WASM on every process.
       logger.warning(
         `[plur] backend=pglite (${selection.reason}). PGLite boots Postgres in WASM per process; ` +
         'it is for pgvector/AGE capabilities, not speed. Unset PLUR_BACKEND / backend: to use SQLite.',
@@ -822,10 +781,10 @@ export class Plur {
     }
     if (indexTier === 'pglite') {
       // PGLite path. Keep SQLite indexedStorage null so we don't double-index.
-      // vector.precision (#223): unset = keep the store's existing column
+      // vector.precision: unset = keep the store's existing column
       // type; 'halfvec' opts in to fp16 storage (lazy in-place migration).
       this.pgliteAdapter = new PGLiteAdapter(this.paths.engrams, this.paths.pglite, {
-        // #335: size the vector column from the ACTIVE embedder (PLUR_EMBEDDER),
+        // Size the vector column from the ACTIVE embedder (PLUR_EMBEDDER),
         // not the 384 default constant — bge-base/embedding-gemma are 768,
         // openai-3-large is 3072. Metadata-only: adapters construct lazily,
         // no model load happens here. Existing stores keep their on-disk
@@ -842,19 +801,14 @@ export class Plur {
         logger.warning(`[plur] PGLite initial sync failed: ${(err as Error).message}. Run 'plur sync --full' to rebuild.`)
       })
     } else if (indexTier === 'sqlite' ? this.config.index !== false : this.config.index) {
-      // The `indexTier === 'sqlite'` arm exists because of the bug ADR-0005 §1
-      // documents and #1046 nearly reintroduced. `PlurConfigSchema` is
-      // `.partial()`, which NEUTRALISES Zod defaults — so `config.index` is
-      // `undefined` on a default install, and a plain `if (this.config.index)`
-      // silently builds nothing. That is how "the default backend does
-      // nothing" happened the first time: selection reported a tier, no index
-      // was built, and every recall brute-forced cosine over the whole corpus
-      // (~350 MB resident at ~4,700 engrams, per process).
+      // `PlurConfigSchema` is `.partial()`, which NEUTRALISES Zod defaults, so
+      // `config.index` is `undefined` on a default install and a plain
+      // `if (this.config.index)` would silently build nothing — every recall
+      // would then brute-force cosine over the whole corpus (see ADR-0005 §1).
       //
       // When selection ASKED for sqlite, an absent config value means "not
       // configured", not "disabled" — only an explicit `index: false` opts
-      // out. The other arm keeps the historical behaviour for tiers that were
-      // never size-selected.
+      // out. Tiers that were never size-selected need an explicit `index: true`.
       this.indexedStorage = new IndexedStorage(this.paths.engrams, this.paths.db, this.config.stores)
     }
     // Wire config-level embeddings opt-out into the embedder module. The env
@@ -864,13 +818,10 @@ export class Plur {
     if (this.config.embeddings?.enabled === false) {
       setEmbeddingsEnabled(false, 'embeddings disabled in config.yaml (embeddings.enabled = false)')
     }
-    // Auto-purge legacy tension false positives (#156). PR #138 removed all
-    // conflict creation from the dedup prompt, so any remaining conflicts are
-    // false positives from the old system. Run once, mark with a sentinel file.
-    // A constructor cannot await, and this is a one-time migration guarded by a
-    // sentinel file (#156). It must never take the constructor down — but with
-    // an async write path, "started in the constructor" and "finished" are no
-    // longer the same moment, so callers that need the result get `ready()`.
+    // One-time auto-purge of tension false positives left by an older dedup
+    // prompt that created conflicts, guarded by a sentinel file. A constructor
+    // cannot await, and this must never take the constructor down, so callers
+    // that need it finished await `ready()`.
     const startDir = options?.cwd || process.cwd()
     this._readyPromise = this._autoPurgeLegacyTensions(startDir).catch((err: unknown) => {
       logger.warning(`[plur] legacy tension auto-purge failed: ${(err as Error).message}`)
@@ -892,62 +843,46 @@ export class Plur {
    * (`warmRemoteCaches()`, e.g. via session_start), it returns [] for that
    * store every time, not just on the first call.
    *
-   * #776 (server-authoritative recall): this peek is DEMOTED. Live recall now
-   * reaches remote engrams through `remoteRecall` (`POST /api/v1/recall` per
-   * host, merged at the call sites), so the peek serves only the non-recall
-   * duties that still route through `_loadSecondaryAndPacks` (stores_list
-   * counts, feedback/getById resolution) plus warm-site loads. The floating
-   * `void driver.load()` background refresh that used to fire here on EVERY
-   * read is gone with it — the refresh existed to make the NEXT recall less
-   * cold, and recall no longer feeds from this cache. Warm sites
-   * (`warmRemoteCaches`) still populate it explicitly.
+   * Live recall reaches remote engrams through `remoteRecall`
+   * (`POST /api/v1/recall` per host, merged at the call sites), so this peek
+   * serves only the non-recall duties that route through
+   * `_loadSecondaryAndPacks` (stores_list counts, feedback/getById resolution)
+   * plus warm-site loads. It deliberately fires no background refresh; warm
+   * sites (`warmRemoteCaches`) populate it explicitly.
    */
   /** @internal */ _remoteStores = new Map<string, RemoteStore>()
   /**
    * Ids whose outbox delivery is being pushed by THIS instance right now —
    * learn()'s fire-and-forget push or a running flushOutbox(). A second pusher
-   * skips them: without this, a flush that started while learn()'s immediate
-   * push was in flight selected the same row (attempt_count 0) and POSTed it
-   * again, so the remote got the engram twice (formal WritePath, candidate 1).
-   * In-process only; across processes (and instances) the per-entry claim
-   * file does the same job (decision C3, `_claimOutboxEntry`).
+   * skips them, so a flush that starts while learn()'s immediate push is in
+   * flight does not POST the same row again. In-process only; across processes
+   * (and instances) the per-entry claim file does the same job
+   * (`_claimOutboxEntry`).
    */
   /** @internal */ _outboxInFlight = new Set<string>()
 
-  /**
-   * Resolve the `PrimaryStore` that owns `path`.
-   *
-   * `paths.engrams` maps to the configured primary store — which may be
-   * injected and need not be YAML at all. Every other path is a file-backed
-   * secondary store (a `stores:` entry, or an installed pack's engrams.yaml),
-   * which is a YAML artifact by definition. Instances are memoised so each
-   * path keeps one cache, matching the old per-path `_engramCache` map.
-   */
   /**
    * Run a read-modify-write under exclusive access to the store that owns
    * `path`.
    *
    * Every write method here is load → mutate → save, which is only safe under
-   * mutual exclusion. That exclusion used to be `withAsyncLock(path, …)`
-   * unconditionally: an in-process mutex plus an `O_EXCL` file on the LOCAL
-   * disk. Correct for a YAML store, where the path being locked IS the data —
-   * and worthless for a shared database, where two processes share neither the
-   * mutex nor the file, so both load, both mutate, and both save. Because
-   * `save()` replaces the whole corpus, the loser deletes rows the winner had
-   * already committed.
+   * mutual exclusion. An in-process mutex plus an `O_EXCL` file on the LOCAL
+   * disk is correct for a YAML store, where the path being locked IS the data,
+   * and worthless for a shared database: two processes share neither, both
+   * load, both mutate, and both save — and because `save()` replaces the whole
+   * corpus, the loser deletes rows the winner had already committed.
    *
    * So ask the store first. A store that spans processes says how it wants to
    * be serialized (`PostgresAdapter` takes a Postgres advisory lock); one that
-   * does not, or that has no cross-process story, falls back to the file lock,
-   * which is exactly right for a local file.
-   *
+   * does not falls back to the file lock, which is exactly right for a local
+   * file.
    * @see AsyncPrimaryStore.withExclusiveAccess
    */
   /** @internal */ async _withStoreLock<T>(path: string, fn: () => Promise<T>, lockOptions?: AsyncLockOptions): Promise<T> {
-    // One binding per locked operation (re-audit 3 of #1521, R3-5): captured
-    // here and used for every store access inside it, read and write alike, so
-    // a rebind in the middle cannot switch a guarded read into an unguarded
-    // write. A nested lock keeps the outer operation's binding.
+    // One binding per locked operation: captured here and used for every store
+    // access inside it, read and write alike, so a rebind in the middle cannot
+    // switch a guarded read into an unguarded write. A nested lock keeps the
+    // outer operation's binding.
     const ctx = Plur._lockBinding.getStore()
     if (ctx?.plur === this) return await this._withStoreLockBound(path, fn, lockOptions)
     return await Plur._lockBinding.run({ plur: this, binding: this._boundFolder, git: this._boundGit }, () => this._withStoreLockBound(path, fn, lockOptions))
@@ -955,15 +890,11 @@ export class Plur {
 
   /** @internal */ async _withStoreLockBound<T>(path: string, fn: () => Promise<T>, lockOptions?: AsyncLockOptions): Promise<T> {
     const store = this._storeAt(path)
-    // Lock the store's PHYSICAL location, not the conventional path (#813,
-    // audit finding 11). `paths.engrams` is where a store would live by
-    // convention; an INJECTED store can own bytes somewhere else entirely, and
-    // `location` is the interface's answer to "where are they". Locking the
-    // convention meant two Plur instances with different roots but the same
-    // injected YamlPrimaryStore took DIFFERENT lock files while doing
-    // read-modify-write against the SAME file — so one write could overwrite
-    // the other with both reporting success.
-    //
+    // Lock the store's PHYSICAL location, not the conventional path. An
+    // INJECTED store can own bytes somewhere other than `paths.engrams`; two
+    // Plur instances with different roots sharing one injected
+    // YamlPrimaryStore must take the SAME lock file, or one write can
+    // overwrite the other with both reporting success.
     // Falls back to `path` when the store reports no location: an in-memory
     // store has no file to contend over, and a network store answers with
     // `withExclusiveAccess` before this line is reached.
@@ -985,15 +916,15 @@ export class Plur {
    * (`plur.primaryStore.kind`) instead of assuming `engrams.yaml`.
    */
   get primaryStore(): AsyncPrimaryStore {
-    // The store as passed in (or the YAML default), by identity — part of the
-    // API (re-audit 3 of #1521, R3-1). It is NOT guarded: in a remote-only
-    // folder, PLUR's own paths go through the guarded internal access, and a
-    // caller writing through this handle directly bypasses that.
+    // The store as passed in (or the YAML default), by identity. It is NOT
+    // guarded: in a remote-only folder, PLUR's own paths go through the
+    // guarded internal access, and a caller writing through this handle
+    // directly bypasses that.
     return this._basePrimaryStore
   }
 
   /**
-   * Decision E1 "me-only" (2026-09-26): the `/me` identity each remote token
+   * The `/me` identity each remote token
    * last reported, keyed `normalizedUrl::token`. Filled by every successful
    * `/me` this instance makes (`discoverRemoteScopes`, `checkRemoteHealth`);
    * DROPPED when a later `/me` for the same key fails, so "unknown" — never
@@ -1006,7 +937,7 @@ export class Plur {
   /**
    * Fold a personal `user:` scope to its configured store's scope BEFORE the
    * async/batch hash dedup runs, so dedup looks in the namespace the write
-   * will land in (re-audit N5). Same rule as `_guardSensitiveScope`.
+   * will land in. Same rule as `_guardSensitiveScope`.
    */
   /** @internal */ _canonicalLearnContext<C extends { scope?: string } | undefined>(context: C): C {
     if (!context?.scope) return context
@@ -1015,25 +946,25 @@ export class Plur {
   }
 
   // -------------------------------------------------------------------------
-  // Server-authoritative remote recall (#776, plan A2′)
+  // Server-authoritative remote recall
   // -------------------------------------------------------------------------
 
   /** Last per-host recall outcomes (in-process), keyed by normalized URL —
-   *  feeds `remoteStoreStatus()` (plan A4′). Each entry carries the time it
-   *  was observed: the map is written ONLY by hosts a recall actually dialed,
-   *  so without an age the newest entry is indistinguishable from one made
-   *  days ago by a process that has since been idle (#864). */
+   *  feeds `remoteStoreStatus()`. Each entry carries the time it was observed:
+   *  the map is written ONLY by hosts a recall actually dialed, so without an
+   *  age the newest entry is indistinguishable from one made days ago by a
+   *  process that has since been idle. */
   /** @internal */ _lastRemoteOutcomes = new Map<string, { outcome: HostRecallOutcome; observed_at: number }>()
 
   /** Token of each claim this instance holds, so a release removes only its own. */
   /** @internal */ _outboxClaimTokens = new Map<string, string>()
 
-  /** Background embedding-cache fills this instance started (0 or 1, #1586 R3). */
+  /** Background embedding-cache fills this instance started (0 or 1). */
   /** @internal */ _embeddingFillStarts = 0
   /** @internal */ _embeddingFillChecking = false
 
   /** Why a hybrid recall or injection answered without its semantic leg, in
-   *  words, with the next step where there is one (#1586 rounds 3-4). */
+   *  words, with the next step where there is one. */
   /** @internal */ static readonly DEGRADED_MESSAGES: Record<DegradedReason, string> = {
     embedding_model_missing: 'the embedding model is not downloaded yet — keyword results only. Run `plur doctor` once to download it (~133 MB).',
     semantic_deadline: 'semantic search did not finish within the recall deadline — keyword results only',
@@ -1051,16 +982,16 @@ export class Plur {
    * A row is still waiting for delivery: it carries `_outbox` and is not
    * retired — exactly flushOutbox()'s selection predicate. The merge-back and
    * learn()'s hand-off re-check it on the FRESH row, so a cancellation that
-   * landed during the network round-trip (forget #766, local rescope #848)
-   * is honoured instead of overwritten.
+   * landed during the network round-trip (forget, local rescope) is honoured
+   * instead of overwritten.
    */
   /** @internal */ static _stillQueued(e: Engram | undefined): boolean {
     return !!e && !!(e as any).structured_data?._outbox && e.status !== 'retired'
   }
 
   /**
-   * Still queued AND still queued for the store a push just went to (audit of
-   * #1228, finding 1). A D4 update or a rescope can retarget `_outbox` to
+   * Still queued AND still queued for the store a push just went to. An update
+   * or a rescope can retarget `_outbox` to
    * another store while the POST to the old one is on the wire; the fresh row
    * then still carries `_outbox`, but for a store that has NOT received it.
    * Only a row whose entry still names the same url and scope is handed off.
@@ -1076,7 +1007,7 @@ export class Plur {
   }
 
   /**
-   * Decision D1 "queue-retire": stamp a durable "retire on remote" entry on the
+   * Queue-retire: stamp a durable "retire on remote" entry on the
    * local row — the copy a remote accepted AFTER a forget/rescope cancelled
    * its delivery. `flushOutbox()` retries it like any other queued write, as a
    * DELETE of `server_id` on the store at `target_url`/`target_scope`; it never
@@ -1098,11 +1029,6 @@ export class Plur {
     return true
   }
 
-  /**
-   * Auto-discover .plur/engrams.yaml in CWD and parent dirs (up to git root).
-   * If found and not already registered, auto-register as a project store.
-   * Returns list of newly discovered stores (empty if none found or all already known).
-   */
   /**
    * Resolve whether constructor-time discovery should run.
    *
@@ -1136,13 +1062,13 @@ export class Plur {
     const requested = context?.scope ?? undefined
     const refuse = (why: RemoteOnlyRefusal): never => { throw this._remoteOnlyError(why, requested) }
     // An unreadable map / unresolvable folder writes NOTHING, an explicit team
-    // scope included (re-audit of #1521, S-1).
+    // scope included.
     if (ro.blocked) refuse('blocked')
     if (context?.visibility === 'private') refuse('private')
     const target = requested ?? ro.scope
     if (!target) refuse('no-scope')
-    // A scope two servers claim is refused by the shared resolver's own error
-    // (#1631), before any remote-only reason.
+    // A scope two servers claim is refused by the shared resolver's own error,
+    // before any remote-only reason.
     this._refuseScopeConflict(target!)
     if (requested !== undefined && requested !== ro.scope) {
       if (!isSharedScope(requested)) refuse('personal-scope')
@@ -1162,16 +1088,15 @@ for (const methods of [storeIoMethods, routingMethods, provenanceIdentityMethods
   }
 }
 
-// One folder binding per public call (gate review of #1663, structural
-// change 2; GLM round 14). Every public method of Plur, sync or async, runs
-// its ORIGINAL body inside _captured, which records the remote-only binding
-// in effect when the call starts and keeps it until the call settles. A sync
-// method gets it for its whole body, and so does any promise it returns; a
-// rebind of the same instance while a call waits cannot change what it reads,
-// refuses or queues. The wrapper never calls the public name again, so a spy
-// on a method counts each call once. A call made inside another one of the
-// same instance keeps the outer call's binding. Each wrapper carries
-// BINDING_CAPTURED, which a test checks on every public method.
+// One folder binding per public call. Every public method of Plur, sync or
+// async, runs its ORIGINAL body inside the captured binding context, which
+// records the remote-only binding in effect when the call starts and keeps it
+// until the call settles (including any promise it returns). A rebind of the
+// same instance while a call waits cannot change what it reads, refuses or
+// queues. The wrapper never calls the public name again, so a spy on a method
+// counts each call once. A call made inside another one of the same instance
+// keeps the outer call's binding. Each wrapper carries BINDING_CAPTURED, which
+// a test checks on every public method.
 export const BINDING_CAPTURED: unique symbol = Symbol('plur.bindingCaptured')
 for (const name of Object.getOwnPropertyNames(Plur.prototype)) {
   if (name === 'constructor' || name.startsWith('_')) continue

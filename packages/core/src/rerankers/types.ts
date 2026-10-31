@@ -1,8 +1,8 @@
 /**
- * Reranker adapter interface — Sprint 0 cross-encoder reranker stage (#220).
+ * Reranker adapter interface: the cross-encoder reranker stage.
  *
  * A reranker scores a `(query, document)` pair jointly in a single
- * transformer pass. Distinct from the bi-encoder embedders we ship:
+ * transformer pass. Distinct from the bi-encoder embedders:
  *   - Embedder: independently encodes query and document, cosine after.
  *     Can be pre-computed. Order: ~1ms/score after indexing.
  *   - Reranker: reads the pair together, emits a single relevance score.

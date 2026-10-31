@@ -1,11 +1,11 @@
 /**
- * Server-authoritative remote recall (#776, plan A2′).
+ * Server-authoritative remote recall.
  *
  * One live `POST {host}/api/v1/recall` per configured (url, token) endpoint
  * group, timeout-bounded, merged by the caller with local results. There is
  * deliberately NO disk caching of remote engrams — engrams change, so remote
  * content is always retrieved live; an unreachable host means local-only
- * results plus loud degradation (plan A4′). The in-memory `RemoteStore` peek
+ * results plus loud degradation. The in-memory `RemoteStore` peek
  * cache keeps only its non-recall duties (stores_list counts, feedback/getById
  * routing).
  *
@@ -22,11 +22,11 @@
  * | 403 ×2 consecutive   | `forbidden`        | treated as auth-level revocation            |
  * | 404                  | `unsupported`      | host parked for 10 min (NOT process life)   |
  * | 422                  | `unreachable`      | refusal: breaker neither counts nor resets  |
- * |                      |                    | (decision C5, as the write leg, #1308)      |
+ * |                      |                    | (same rule as the write leg)                |
  * | 429                 | `rate_limited`     | honor Retry-After (else 30 s) cooldown      |
  * | breaker open         | `skipped_cooldown` | 3 straight failures → 5 min cooldown        |
  *
- * Keying (formal R2-CoreB, core-policy#3): reachability — the failure
+ * Keying: reachability — the failure
  * breaker, its cooldown, the 404 TTL — is per HOST (normalized url), shared
  * by every token. The 403 streak and the 429 cooldown are per CREDENTIAL
  * (url, token): a revocation or a per-principal rate limit is a fact about
@@ -40,7 +40,7 @@
  * recall volume, so in-memory state would reset every prompt and an off-LAN
  * host would burn the connect budget on every prompt indefinitely.
  *
- * ## Dialing rule (strict scope relevance — user decision, plan rows 39/44)
+ * ## Dialing rule (strict scope relevance)
  *
  * A host is dialed only with the subset of its granted scopes relevant to the
  * current project/work:
@@ -98,19 +98,18 @@ export const BREAKER_FAILURE_THRESHOLD = 3
 export const BREAKER_COOLDOWN_MS = 5 * 60 * 1000
 
 /**
- * How long an open breaker waits before it lets ONE trial read through
- * (#1586). Without it the cooldown was all-or-nothing for the full
- * {@link BREAKER_COOLDOWN_MS}: a host that recovered a few seconds after the
- * breaker opened stayed parked for five minutes. One trial per cooldown, claimed
+ * How long an open breaker waits before it lets ONE trial read through, so a
+ * host that recovers soon after the breaker opens is not parked for the full
+ * {@link BREAKER_COOLDOWN_MS}. One trial per cooldown, claimed
  * under the health-file lock so concurrent processes do not all dial at once. A
  * success closes the breaker; a network failure re-opens it for a full cooldown.
  */
 export const BREAKER_HALF_OPEN_AFTER_MS = 60 * 1000
 
 /**
- * End-to-end deadline for one recall call (#1586). Only the remote leg was
- * bounded before; the local pipeline and the post-recall bookkeeping write were
- * not, and that write waits up to 180 s for the store lock. A recall returns
+ * End-to-end deadline for one recall call, covering the local pipeline and the
+ * post-recall bookkeeping write (which can wait up to 180 s for the store
+ * lock) as well as the remote leg. A recall returns
  * within this deadline with whatever is ready and says what is missing.
  * `PLUR_RECALL_DEADLINE_MS` overrides it.
  */
@@ -118,7 +117,7 @@ export const DEFAULT_RECALL_DEADLINE_MS = 10_000
 
 /**
  * How long a recall waits for the store lock before it skips its freshness
- * bookkeeping (#1586). The bookkeeping (frequency, last_accessed, co-access
+ * bookkeeping. The bookkeeping (frequency, last_accessed, co-access
  * edges) is not the answer to the read; a read must not queue behind a writer
  * for it. Uncontended, the lock is taken in milliseconds and nothing changes.
  */
@@ -126,7 +125,7 @@ export const RECALL_BOOKKEEPING_LOCK_WAIT_MS = 500
 
 /**
  * How many `client_slow` results in a row a host is given before further ones
- * count as host timeouts (#1586 audit L4). A `client_slow` result is not the
+ * count as host timeouts. A `client_slow` result is not the
  * host's fault on its own; but a process whose loop is blocked on EVERY call
  * would otherwise never open the breaker against a server that is really
  * dead, and would pay the full hard cap on each call. After this many in a
@@ -136,7 +135,7 @@ export const RECALL_BOOKKEEPING_LOCK_WAIT_MS = 500
 export const CLIENT_SLOW_STREAK_LIMIT = 3
 
 /** How long before a recall's deadline the remote leg aborts the requests
- *  still in flight, so their outcome is recorded before the reply (#1586 L7). */
+ *  still in flight, so their outcome is recorded before the reply. */
 const DEADLINE_ABORT_LEAD_MS = 25
 
 /** Resolve the effective recall deadline: env override → caller value → default. */
@@ -162,7 +161,7 @@ export const RATE_LIMIT_DEFAULT_COOLDOWN_MS = 30 * 1000
 export const RATE_LIMIT_MAX_COOLDOWN_MS = 60 * 60 * 1000
 
 /** Hook-header suppression window: after printing (host, state), the same
- *  pair prints again at most once per this window (plan A4′, default 4h). */
+ *  pair prints again at most once per this window (default 4h). */
 export const HOOK_HEADER_REPEAT_MS = 4 * 60 * 60 * 1000
 
 /** How often {@link startBudgetTimer} samples the event loop to tell elapsed
@@ -191,13 +190,11 @@ export const MAX_STARVATION_CREDIT_MS = 5000
  * initialisation — blocks Node's single event loop, and a plain `setTimeout`
  * keeps counting through the block. The response cannot be read, the timer
  * fires the moment the loop frees up, and the request is recorded as a host
- * timeout that the host had no part in: measured cold, the connect phase
- * aborted at ~1335 ms against a server answering in ~600 ms, while the very
- * next call on the same process and host succeeded in ~1.1 s.
+ * timeout that the host had no part in.
  *
- * That misattribution is not cosmetic. Hooks are one-shot processes at ~86% of
- * recall volume, so for most of the fleet EVERY call is a cold call, and the
- * breaker then counts these as host failures and parks a healthy host.
+ * That misattribution matters: hooks are one-shot processes and most recalls
+ * come from them, so most calls are cold calls, and the breaker would count
+ * these as host failures and park a healthy host.
  *
  * So: sample the loop every {@link BUDGET_TICK_MS}. A tick that arrives late
  * proves the loop was blocked, and the overshoot is credited back rather than
@@ -208,7 +205,7 @@ export const MAX_STARVATION_CREDIT_MS = 5000
  *
  * Returns a cancel function.
  */
-/** Why a {@link startBudgetTimer} fired (#1586). */
+/** Why a {@link startBudgetTimer} fired. */
 export interface BudgetExpiry {
   /** Extra wall time credited back because this process's loop was blocked. */
   creditMs: number
@@ -234,13 +231,13 @@ export function startBudgetTimer(
   const started = now()
   let last = started
   let credit = 0
-  /** All blocked time observed, uncapped — tells a client-side expiry apart
-   *  (#1586): `credit` stops at the cap, the loop does not stop blocking. */
+  /** All blocked time observed, uncapped — tells a client-side expiry apart:
+   *  `credit` stops at the cap, the loop does not stop blocking. */
   let blocked = 0
   let timer: ReturnType<typeof setTimeout> | undefined
   let done = false
   /** The delay the pending tick was scheduled for — a late tick is measured
-   *  against it, not against the full `tickMs` (#1586 round 8, C-2). */
+   *  against it, not against the full `tickMs`. */
   let scheduled = tickMs
 
   const schedule = (): void => {
@@ -280,14 +277,13 @@ export function startBudgetTimer(
 
 /**
  * How long a recorded per-host recall outcome may still be presented as the
- * host's CURRENT state (#864).
+ * host's CURRENT state.
  *
  * The outcome map is fed only by hosts a recall actually dialed. A recall that
  * dials nothing — `remote: false`, the kill-switch, an empty query, or no host
  * implicated by the current project/work — leaves the previous entry in place,
- * so without an age bound a single early failure is re-reported as live
- * degradation for the entire life of the process. On a workstation that is
- * days, and it accuses the server of a fault that is entirely client-side.
+ * so without an age bound a single early failure would be re-reported as live
+ * degradation for the entire life of the process.
  *
  * Aligned with {@link BREAKER_COOLDOWN_MS}: once the breaker would have
  * re-dialed the host anyway, a stale failure has outlived its evidence.
@@ -297,7 +293,7 @@ export const REMOTE_STATUS_TTL_MS = BREAKER_COOLDOWN_MS
 /**
  * States a successful non-recall interaction with the host (e.g. the
  * `/me` probe behind `checkRemoteHealth`) genuinely CONTRADICTS, and may
- * therefore clear (#864).
+ * therefore clear.
  *
  * Deliberately network-class only. `unsupported` (404 on the recall route)
  * and `rate_limited` (429 against a separate budget) say nothing about `/me`
@@ -310,7 +306,7 @@ export const PROBE_CLEARABLE_STATES: ReadonlySet<RemoteHostState> =
   new Set<RemoteHostState>(['timeout', 'unreachable', 'skipped_cooldown', 'client_slow'])
 
 /**
- * Wait for `p` until the epoch-ms `deadlineAt` (#1586). Never rejects: a
+ * Wait for `p` until the epoch-ms `deadlineAt`. Never rejects: a
  * rejection reads as `{ done: true, error }`. The promise keeps running when
  * the deadline wins — callers that abandon it must not need its result.
  */
@@ -368,11 +364,11 @@ export type RemoteHostState =
   | 'rate_limited'
   | 'unsupported'
   | 'skipped_cooldown'
-  /** #1586: the request timed out because THIS process's event loop was
+  /** The request timed out because THIS process's event loop was
    *  blocked (cold start, busy machine) — not counted against the host. */
   | 'client_slow'
 
-/** One host's part in one recall call (#1586). */
+/** One host's part in one recall call. */
 export interface RecallRemoteHostReport {
   host: string
   state: RemoteHostState
@@ -381,13 +377,13 @@ export interface RecallRemoteHostReport {
   /** The ids (namespaced, as in the results) of the rows THIS host returned,
    *  listed before rows from several hosts are merged: one server's ids can
    *  equal another's, and the merged results keep the first host's row. The
-   *  only per-host attribution a caller gets (Codex round 5, finding 2). */
+   *  only per-host attribution a caller gets. */
   ids: string[]
   detail?: string
 }
 
 /**
- * What the remote (server) leg did on ONE recall call (#1586). Unlike
+ * What the remote (server) leg did on ONE recall call. Unlike
  * `remote_stores` / {@link RemoteStoreStatusEntry}, which report the latest
  * outcome per host for the whole process, this describes this call only.
  * `state` is `ok` when every dialed host answered, the first non-ok host's
@@ -426,7 +422,7 @@ export interface HostRecallOutcome {
   mode?: string
   /** Server-reported: the semantic (vector) leg actually ran. */
   vector?: boolean
-  /** Requested scope selectors the server silently narrowed away (#628). */
+  /** Requested scope selectors the server silently narrowed away. */
   dropped_scopes?: string[]
   /** Bounded diagnostic detail (never server-controlled free text). */
   detail?: string
@@ -446,7 +442,7 @@ export interface RemoteRecallHost {
    *  This is not what `_loadSecondaryAndPacks` does: that leg narrows a
    *  `global` row into EVERY store entry whose load returned it, so a global
    *  row has one load-leg id per such entry and the recall-leg id matches the
-   *  one for this host's first dialed entry (formal R2-CoreB, core-policy#7b). */
+   *  one for this host's first dialed entry. */
   entries: Array<{ scope: string }>
 }
 
@@ -476,7 +472,7 @@ export interface RemoteRecallOptions {
    *  {@link MAX_STARVATION_CREDIT_MS}); a test seam. */
   maxStarvationCreditMs?: number
   /**
-   * The recall's end-to-end deadline (epoch ms, #1586 L7). Requests still in
+   * The recall's end-to-end deadline (epoch ms). Requests still in
    * flight are aborted just before it and reported `timeout` with detail
    * `recall_deadline` — without counting against the host's breaker, since
    * the recall's deadline is not the host's budget. Hosts that answered keep
@@ -491,7 +487,7 @@ export interface RemoteRecallOptions {
 // ---------------------------------------------------------------------------
 
 /**
- * Per-CREDENTIAL state (formal R2-CoreB, core-policy#3). Recall dials per
+ * Per-CREDENTIAL state. Recall dials per
  * (url, token), and two tokens on one url are two credentials with
  * independent validity and — the server limits per principal — independent
  * rate budgets. Keyed by {@link tokenHealthKey}, never by the token itself.
@@ -509,18 +505,17 @@ interface HostHealth {
   failures?: number
   /** Breaker open until (epoch ms) — `skipped_cooldown` while in force, for
    *  every token. Set by the network breaker only; a 429 cools down the token
-   *  that earned it (`tokens[k].rate_limited_until`). A file written before
-   *  that split may still carry a 429 cooldown here; it is honored until it
-   *  expires. */
+   *  that earned it (`tokens[k].rate_limited_until`). An older file may still
+   *  carry a 429 cooldown here; it is honored until it expires. */
   cooldown_until?: number
-  /** When the breaker cooldown opened (epoch ms) — #1586 trial read. A file
-   *  written before this field derives it as `cooldown_until − cooldown`. */
+  /** When the breaker cooldown opened (epoch ms), for the trial read. When
+   *  absent it is derived as `cooldown_until − cooldown`. */
   cooldown_opened_at?: number
-  /** When this cooldown's one trial read was claimed (epoch ms) — #1586. */
+  /** When this cooldown's one trial read was claimed (epoch ms). */
   half_open_trial_at?: number
   /** 404 TTL — `unsupported` while in force. */
   unsupported_until?: number
-  /** Consecutive `client_slow` results (#1586 audit L4); reset by any answer. */
+  /** Consecutive `client_slow` results; reset by any answer. */
   client_slow_streak?: number
   /** Legacy host-wide 403 streak, from before the per-token split. Ignored
    *  and dropped on the next dial: a streak built from several tokens'
@@ -530,7 +525,7 @@ interface HostHealth {
   tokens?: Record<string, TokenHealth>
   last_state?: RemoteHostState
   updated_at?: number
-  /** Hook-header suppression bookkeeping (plan A4′). */
+  /** Hook-header suppression bookkeeping. */
   printed_state?: string
   printed_at?: number
 }
@@ -544,7 +539,7 @@ interface RemoteHealthFile {
  * The key a token's state is persisted under in remote-health.json: a
  * truncated SHA-256, so the file never holds a credential. 64 bits is ample to
  * keep a handful of tokens per host apart; a collision would only merge two
- * tokens' advisory state, which is what every token shared before the split.
+ * tokens' advisory state.
  */
 export function tokenHealthKey(token: string): string {
   return createHash('sha256').update(token, 'utf8').digest('hex').slice(0, 16)
@@ -593,7 +588,7 @@ function writeRemoteHealth(path: string, file: RemoteHealthFile): boolean {
 const HEALTH_LOCK_OPTS = { maxRetries: 3, baseDelay: 25 }
 
 /**
- * Run `fn` holding the remote-health.json file lock (the same #685 F7
+ * Run `fn` holding the remote-health.json file lock (the same
  * `withLock` used for engrams.yaml/config.yaml persistence). Health state is
  * ADVISORY — if the lock cannot be acquired, `fallback` runs unlocked rather
  * than failing recall or dropping a degradation header.
@@ -620,7 +615,7 @@ function applyFieldChanges(
   after: Record<string, unknown>,
   skip: ReadonlySet<string>,
   /** Fields this call observed and must write even when its own value did not
-   *  change (#1586 re-audit N2): the host answered, so `failures`, the
+   *  change: the host answered, so `failures`, the
    *  cooldown and `last_state` are what it saw — whatever another process
    *  wrote meanwhile. */
   forced: ReadonlySet<string> = new Set(),
@@ -651,9 +646,9 @@ function applyFieldChanges(
 
 /**
  * Persist what this call CHANGED about each host, field by field, against the
- * current file under the lock (#1586 audit M1/M2; the lost-update fix).
+ * current file under the lock.
  *
- * The naive end-of-call `writeRemoteHealth(path, healthReadAtEntry)` loses
+ * A plain end-of-call `writeRemoteHealth(path, healthReadAtEntry)` would lose
  * concurrent updates: two processes read the same base, each writes its whole
  * in-memory copy, and the second write erases the first's breaker / cooldown /
  * suppression progress. The `printed_state` / `printed_at` fields are never
@@ -676,8 +671,7 @@ function persistHostChanges(
     let dirty = false
     for (const { key, before, after, forced } of changes) {
       const cur: HostHealth = { ...(current.hosts[key] ?? {}) }
-      // #1586 round 3 (R2): a success this call saw is older than what the
-      // file now says about the host (another process recorded failures or
+      // A success this call saw is older than what the file now says about the host (another process recorded failures or
       // opened the breaker after it — e.g. while a slower host of this same
       // call was still pending). The newer record wins: this call's host-level
       // fields are not written; per-token state still is.
@@ -718,7 +712,7 @@ function cooldownOpenedAt(h: HostHealth): number {
 }
 
 /**
- * Claim this cooldown's one trial read (#1586), under the health-file lock so
+ * Claim this cooldown's one trial read, under the health-file lock so
  * that of several processes past the trial interval only one dials. Re-reads
  * the file inside the lock: a claim against the entry-time snapshot would let
  * two processes both see "unclaimed".
@@ -727,7 +721,7 @@ function cooldownOpenedAt(h: HostHealth): number {
  * - `free`: the cooldown already ended (or a save cleared it) — dial normally;
  *   `current` is the file's entry, to resync the caller's snapshot.
  * - `denied`: not due, already claimed, or the claim could not be made safely
- *   — the lock was not taken or the claim was not persisted (audit L8). Fails
+ *   — the lock was not taken or the claim was not persisted. Fails
  *   closed: without the lock every caller would be told it may dial.
  */
 function claimHalfOpenTrial(
@@ -750,17 +744,11 @@ function claimHalfOpenTrial(
 }
 
 /**
- * Is this host's breaker open right now? (#785)
+ * Is this host's breaker open right now?
  *
- * The recall leg has always consulted this state; the WRITE leg never did, so
- * `flushOutbox()` sent one full-timeout attempt per queued engram to a host the
- * read leg already knew was down — on every session start, and with the failures
- * not feeding back, so the read leg learned nothing from them either. Two legs,
- * one host, two independent opinions about whether it is reachable.
- *
- * Exported rather than duplicated: the breaker, its persistence, the
- * classification table and the file-lock helper all already exist here and are
- * already correct. The write path only has to ask.
+ * Shared by the recall leg and the WRITE leg, so `flushOutbox()` does not
+ * spend a full-timeout attempt per queued engram on a host the read leg
+ * already knows is down: one host, one opinion about whether it is reachable.
  */
 export function isHostInCooldown(
   url: string,
@@ -768,16 +756,15 @@ export function isHostInCooldown(
   statePath: string = remoteHealthPath(),
   /** The credential the caller will dial with. Without it only the host-wide
    *  breaker is consulted; with it, that token's own 429 cooldown too (a 429
-   *  is per principal — core-policy#3). */
+   *  is per principal). */
   token?: string,
 ): { inCooldown: boolean; until?: number; reason?: 'breaker' | 'rate_limit' } {
   try {
     const health = readRemoteHealth(statePath)
     const h = health.hosts[normalizeEndpointUrl(url)]
     if (h?.cooldown_until && h.cooldown_until > now) {
-      // Host-wide `cooldown_until` is the network breaker; only a file written
-      // before the per-token split carries a 429 here, which `last_state`
-      // still labels. The skip decision is the same either way.
+      // Host-wide `cooldown_until` is the network breaker; only an older file
+      // carries a 429 here, which `last_state` still labels. The skip decision is the same either way.
       return {
         inCooldown: true,
         until: h.cooldown_until,
@@ -798,7 +785,7 @@ export function isHostInCooldown(
 
 /**
  * Record a WRITE-leg failure into the same per-host state the recall leg uses,
- * so a host that only ever fails on writes still opens its breaker (#785).
+ * so a host that only ever fails on writes still opens its breaker.
  *
  * Mirrors the recall leg's accounting: count consecutive network-class
  * failures, open for {@link BREAKER_COOLDOWN_MS} at
@@ -819,12 +806,12 @@ export function recordWriteOutcome(
       const h: HostHealth = { ...(health.hosts[key] ?? {}) }
       if (ok) {
         h.failures = 0
-        // The host answered: a run of client_slow results is over (re-audit N3).
+        // The host answered: a run of client_slow results is over.
         h.client_slow_streak = 0
         // A save proves the host reachable, which ends a network cooldown
         // (timeout / unreachable). A host-wide 429 cooldown is the server's
         // own instruction to back off, not a reachability guess: a save does
-        // not end it (#1586 audit L5).
+        // not end it.
         const rateLimited = h.last_state === 'rate_limited' && (h.cooldown_until ?? 0) > now
         if (!rateLimited) {
           delete h.cooldown_until
@@ -874,7 +861,7 @@ export function scopeOrg(scope: string | undefined): string | null {
 // ---------------------------------------------------------------------------
 
 /**
- * Tolerant envelope (#628 contract from enterprise PR #631). Old servers may
+ * Tolerant envelope. Old servers may
  * return a bare envelope without mode/vector/effective_scopes/dropped_scopes
  * — every field beyond `results` is optional, and unknown fields pass
  * through. A bare array body (defensively) coerces to `{results: [...]}`.
@@ -902,13 +889,10 @@ function clamp01(n: number): number {
  * store's scope, namespace the id (idempotently — `namespaceEngramId`), and
  * set the loader markers `_originalId` / `_storeScope`. Any `_`-prefixed key
  * the row itself carried is dropped first: loader markers are the loader's,
- * never the row's (core-policy#6). The input is not mutated.
+ * never the row's. The input is not mutated.
  *
- * Exported so both remote ingestion legs can share ONE rule (formal R2-CoreB,
- * core-policy#7b): the recall leg uses it below; `_loadSecondaryAndPacks`
- * (index.ts) still has its own copy, whose bare regex replace is not
- * idempotent — a row whose id already carries the store prefix gets it twice
- * there and once here, so the two legs mint different ids for the same row.
+ * Exported so both remote ingestion legs can share ONE rule; the recall leg
+ * uses it below.
  */
 export function stampStoreRow(e: Engram, storeScope: string): Engram {
   const cloned: Record<string, unknown> = {}
@@ -930,8 +914,8 @@ export function stampStoreRow(e: Engram, storeScope: string): Engram {
  * Scope guard: a row must fall `isScopeWithin` one of the DIALED scopes —
  * but `scope === 'global'` rows are ADMITTED and narrowed to the mapped
  * entry's scope during namespacing, mirroring `_loadSecondaryAndPacks`'s
- * global clause (index.ts). Dropping global rows would reimplement the #570
- * server bug client-side and throw away exactly the rows B-T1 restores.
+ * global clause (index.ts). Dropping global rows would discard legitimate
+ * results the server returns for the dialed scopes.
  *
  * Deterministic row→store-entry mapping: a row's scope maps to the FIRST
  * dialed entry (config order) whose scope contains it; `global` maps to the
@@ -954,7 +938,7 @@ function processHostRows(
   for (const raw of rawRows) {
     if (!raw || typeof raw !== 'object') continue
     const r = raw as Record<string, unknown>
-    // Rows are top-level engrams per the #628 envelope; tolerate the DB-row
+    // Rows are top-level engrams per the recall envelope; tolerate the DB-row
     // shape {id, scope, status, data} some surfaces emit (same reshape rule
     // as RemoteStore: authoritative columns win over `data`).
     const candidate = (r.data && typeof r.data === 'object' && !('statement' in r))
@@ -985,11 +969,11 @@ function processHostRows(
     // The injection scorer iterates `tags` unguarded — a row without them
     // must not throw at scoring time.
     if (!Array.isArray(cloned.tags)) cloned.tags = []
-    // Activation normalization — synthesized-fresh (plan: decay-parity task
-    // dissolved into this). The raw `...act` spread goes FIRST: spread after
-    // the type-guarded defaults, it overwrote them with the very server values
-    // they guard (a string `storage_strength` reached ranking arithmetic —
-    // formal R2-CoreB, core-policy#7a). Unmodelled keys still pass through.
+    // Activation normalization — synthesized-fresh. The raw `...act` spread
+    // goes FIRST: spread after the type-guarded defaults, it would overwrite
+    // them with the very server values they guard (e.g. a string
+    // `storage_strength` reaching ranking arithmetic). Unmodelled keys still
+    // pass through.
     const act = (cloned.activation && typeof cloned.activation === 'object') ? cloned.activation : {}
     cloned.activation = {
       ...act,
@@ -1091,20 +1075,20 @@ export async function remoteRecall(
   const health = readRemoteHealth(statePath)
   const today = new Date().toISOString().slice(0, 10)
   const truncatedQuery = query.length > MAX_REMOTE_QUERY_CHARS ? query.slice(0, MAX_REMOTE_QUERY_CHARS) : query
-  // #1586 audit M1/M2: each host's entry as read at entry, so the end of the
+  // Each host's entry as read at entry, so the end of the
   // call can persist only what THIS call changed — and only for hosts it
   // actually dialed. A call that did not dial has nothing new to say.
   const snapshots = new Map<string, HostHealth>()
   const dialedKeys = new Set<string>()
   const trialKeys = new Set<string>()
-  /** Per host, the fields this call observed directly (re-audit N2). */
+  /** Per host, the fields this call observed directly. */
   const forcedKeys = new Map<string, Set<string>>()
   const force = (key: string, ...fields: string[]) => {
     const set = forcedKeys.get(key) ?? new Set<string>()
     for (const f of fields) set.add(f)
     forcedKeys.set(key, set)
   }
-  // #1586 audit L7: the recall deadline aborts what is still in flight.
+  // The recall deadline aborts what is still in flight.
   const deadlineAt = opts.deadlineAt
   const inflight = new Set<AbortController>()
   let deadlineHit = false
@@ -1118,10 +1102,10 @@ export async function remoteRecall(
     const h: HostHealth = health.hosts[key] ?? {}
     health.hosts[key] = h
     if (!snapshots.has(key)) snapshots.set(key, JSON.parse(JSON.stringify(h)) as HostHealth)
-    // Credential state lives under the token's key (core-policy#3): hosts
-    // sharing a url are dialed in parallel here, and one shared counter let a
-    // healthy token reset a revoked token's streak, two tokens' single 403s
-    // add up to a revocation, and one token's 429 park the other.
+    // Credential state lives under the token's key: hosts sharing a url are
+    // dialed in parallel here, and a shared counter would let a healthy token
+    // reset a revoked token's streak, two tokens' single 403s add up to a
+    // revocation, and one token's 429 park the other.
     delete h.forbidden_count
     const tokens = h.tokens ?? (h.tokens = {})
     const tk = tokenHealthKey(host.token)
@@ -1138,7 +1122,7 @@ export async function remoteRecall(
         scores: rows.scores,
       }
     }
-    /** This dial is a cooldown's one trial read (#1586). */
+    /** This dial is a cooldown's one trial read. */
     let trial = false
     const openBreaker = () => {
       h.cooldown_until = now() + BREAKER_COOLDOWN_MS
@@ -1203,10 +1187,10 @@ export async function remoteRecall(
     dialedKeys.add(key)
     inflight.add(ctrl)
     if (deadlineHit) ctrl.abort()
-    // Why the request was aborted, when a budget timer did it (#1586).
+    // Why the request was aborted, when a budget timer did it.
     let expiry: BudgetExpiry | undefined
     const abortFor = (info: BudgetExpiry) => { expiry ??= info; ctrl.abort() }
-    // Starvation-aware (#864 follow-up): a cold process spends its first
+    // Starvation-aware: a cold process spends its first
     // seconds initialising the embedder, and a wall-clock timer would abort a
     // request the loop never got round to servicing.
     const cancelOverall = startBudgetTimer(timeoutMs, abortFor, timerOpts)
@@ -1228,7 +1212,7 @@ export async function remoteRecall(
           // request would 400 and feed the breaker for a client-side mistake.
           ...(opts.limit != null ? { limit: Math.min(100, Math.max(1, Math.floor(opts.limit))) } : {}),
           ...(host.scopes.length > 0 ? { scopes: host.scopes } : {}),
-          // B-T7d wire param — the server races its embed() against this and
+          // The server races its embed() against this and
           // degrades to keyword rather than blowing the client budget. Old
           // servers ignore unknown body fields.
           timeout_ms: timeoutMs,
@@ -1238,7 +1222,7 @@ export async function remoteRecall(
       // the body read.
       cancelConnect?.()
       cancelConnect = undefined
-      // The host answered: a run of client_slow results is over (audit L4).
+      // The host answered: a run of client_slow results is over.
       h.client_slow_streak = 0
       force(key, 'client_slow_streak')
       // Any answer below 500 proves the host reachable (a 5xx is counted below).
@@ -1254,7 +1238,7 @@ export async function remoteRecall(
         th.forbidden_count = (th.forbidden_count ?? 0) + 1
         // Require 2 CONSECUTIVE 403s before treating as revocation — a
         // transient proxy 403 must not read as auth loss (server-side scope
-        // narrowing is silent-with-dropped_scopes, never 403 — B-T7 Q1).
+        // narrowing is silent-with-dropped_scopes, never 403).
         if (th.forbidden_count >= 2) return finish('forbidden')
         return finish('unreachable', { detail: 'http_403_unconfirmed' })
       }
@@ -1265,12 +1249,11 @@ export async function remoteRecall(
         return finish('unsupported', { detail: 'http_404' })
       }
       if (res.status === 422) {
-        // Decision C5: the host answered that the REQUEST was invalid — a
-        // refusal, like 401/403/404, not a sign the host is down. The same
-        // rule as the write leg (#1308): it neither counts toward the
-        // per-host breaker nor resets it. Counting it let three refused
-        // recalls park queued writes to every scope on the host.
-        th.forbidden_count = 0 // a non-403 breaks the token's consecutive-403 streak (re-audit N5)
+        // The host answered that the REQUEST was invalid — a refusal, like
+        // 401/403/404, not a sign the host is down. Same rule as the write
+        // leg: it neither counts toward the per-host breaker nor resets it,
+        // so refused recalls cannot park queued writes to every scope on the host.
+        th.forbidden_count = 0 // a non-403 breaks the token's consecutive-403 streak
         return finish('unreachable', { detail: 'http_422_refused' })
       }
       if (res.status === 429) {
@@ -1304,7 +1287,7 @@ export async function remoteRecall(
       delete h.half_open_trial_at
       // What this call saw: the host answered in full. Written even where the
       // values look unchanged, so a cooldown another process opened while the
-      // request was in flight is closed (re-audit N2).
+      // request was in flight is closed.
       force(key, 'failures', 'cooldown_until', 'cooldown_opened_at', 'half_open_trial_at')
       const rows = processHostRows(envelope.data.results, host, today)
       const dropped = envelope.data.dropped_scopes
@@ -1316,18 +1299,18 @@ export async function remoteRecall(
     } catch (err) {
       const isAbort = err instanceof Error && err.name === 'AbortError'
       if (isAbort && !expiry && deadlineHit) {
-        // #1586 audit L7: the RECALL's deadline, not this host's budget,
+        // The RECALL's deadline, not this host's budget,
         // stopped the request. No evidence about the host either way: the
         // breaker neither counts nor resets, and a trial claim is released.
         if (trial) delete h.half_open_trial_at
         return finish('timeout', { detail: 'recall_deadline' })
       }
       if (isAbort && expiry?.clientSlow) {
-        // #1586: the budget ran out on this process's blocked event loop
+        // The budget ran out on this process's blocked event loop
         // before the host had its serviced budget. Not the host's fault: the
         // breaker neither counts nor resets, and a trial claim is released so
         // the next call may try again — unless the run of such results is
-        // already longer than CLIENT_SLOW_STREAK_LIMIT (audit L4): then the
+        // already longer than CLIENT_SLOW_STREAK_LIMIT: then the
         // host has had its chances, and this counts as a timeout.
         h.client_slow_streak = (h.client_slow_streak ?? 0) + 1
         if (h.client_slow_streak > CLIENT_SLOW_STREAK_LIMIT) return networkFailure('timeout', 'client_slow_streak')
@@ -1422,7 +1405,7 @@ export async function remoteRecall(
 }
 
 // ---------------------------------------------------------------------------
-// A4′ — degradation string table (per state × per surface)
+// Degradation string table (per state × per surface)
 // ---------------------------------------------------------------------------
 
 export interface RemoteStoreStatusEntry {
@@ -1432,9 +1415,9 @@ export interface RemoteStoreStatusEntry {
   dropped_scopes?: string[]
   ms?: number
   count?: number
-  /** When this outcome was observed (epoch ms) — #864. */
+  /** When this outcome was observed (epoch ms). */
   observed_at?: number
-  /** Age of the observation at the time the status was read (ms) — #864.
+  /** Age of the observation at the time the status was read (ms).
    *  Renderers MUST NOT present a non-zero age as the host's state "now". */
   age_ms?: number
 }
@@ -1447,7 +1430,7 @@ export interface RemoteStoreStatusEntry {
  *
  * The re-auth string deliberately does NOT reference `plur login` — it
  * targets device-flow endpoints the enterprise server doesn't have, and the
- * token it writes has no consumers on the recall path (plan DX finding 1).
+ * token it writes has no consumers on the recall path.
  */
 export function mcpRemoteWarningLine(o: RemoteStoreStatusEntry): string {
   const host = o.host
@@ -1544,7 +1527,7 @@ export function doctorRemoteRemediation(o: RemoteStoreStatusEntry): string | nul
 }
 
 /**
- * Hook-header suppression policy (plan A4′): print on state CHANGE per host,
+ * Hook-header suppression policy: print on state CHANGE per host,
  * then at most once per {@link HOOK_HEADER_REPEAT_MS} per (host, state) —
  * persisted in the same remote-health.json, because hooks are one-shot
  * processes. `skipped_cooldown` and `unsupported` never print. A recovery to

@@ -1,8 +1,6 @@
 /**
- * The writeback rule for a store's `sensitivity` (PR-3 #353, R2-D #14,
- * scope-audit 2026-07-24), shared by per-scope entries
- * (`mergeStoresForWriteback`) and server entries (`collapseExpandedStores`,
- * #1631).
+ * The writeback rule for a store's `sensitivity`, shared by per-scope entries
+ * (`mergeStoresForWriteback`) and server entries (`collapseExpandedStores`).
  *
  * `rawValue` is the on-disk value, read fresh and unvalidated: it can be
  * anything a hand-edit put there, so it only counts when it is a plain object.

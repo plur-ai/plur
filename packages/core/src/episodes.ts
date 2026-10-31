@@ -14,14 +14,9 @@ function generateEpisodeId(): string {
 /**
  * Append one episode to the episode log.
  *
- * ## Why the lock (audit #794, F8)
- *
- * This was load -> push -> write with no mutual exclusion of any kind, while
- * being reachable from `plur_capture`, `plur_session_end` and `reportFailure` —
- * i.e. from every MCP server the user has open at once. Since the write
- * replaces the whole array, a concurrent capture did not interleave, it
- * overwrote: probe P02 ran 4 processes x 25 episodes and **30 of 100
- * survived**.
+ * The load-push-write runs under a lock: this is reachable from every MCP
+ * server the user has open at once, and since the write replaces the whole
+ * array, an unlocked concurrent capture would overwrite other captures.
  *
  * The lock is keyed on the episodes path, which nothing else locks, so it
  * cannot contend with (or deadlock against) the engram store lock. The load
@@ -29,9 +24,8 @@ function generateEpisodeId(): string {
  * narrower.
  *
  * `withLock` is the synchronous variant because this function is synchronous
- * and has synchronous callers. That is safe HERE specifically because no async
- * holder ever takes this path's lock, so the busy-wait cannot starve one out
- * (the failure mode measured as F10 on the store lock).
+ * and has synchronous callers. That is safe here only because no async holder
+ * ever takes this path's lock, so the busy-wait cannot starve one out.
  */
 export function captureEpisode(path: string, summary: string, context?: CaptureContext): Episode {
   const episode: Episode = {
@@ -69,10 +63,8 @@ export function queryTimeline(path: string, query?: TimelineQuery): Episode[] {
 /**
  * Read the episode log, or throw when it is unreadable.
  *
- * Returned `[]` for a corrupt or wrongly-shaped file until the #811 audit —
- * and since `captureEpisode` rewrites the whole array, the next capture then
- * wrote a one-episode file over everything. Same shape as the engram-store
- * wipe (#794 F1), in an artifact the original sweep listed but never fixed.
+ * Never returns `[]` for a corrupt or wrongly-shaped file: `captureEpisode`
+ * rewrites the whole array, so the next capture would overwrite everything.
  */
 function loadEpisodesWithQuarantine(path: string): { valid: Episode[]; quarantined: unknown[] } {
   return parseRecordArrayFile<Episode>(path, entry =>

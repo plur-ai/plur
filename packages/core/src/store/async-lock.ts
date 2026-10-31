@@ -8,9 +8,9 @@
  *   cross-process (exclusive create + async retry) — another process holding
  *     the lock file is waited out with an async backoff. The file is published
  *     with its owner token already in it (hard link), never as an empty file
- *     (#1354; see `publishLockFile`).
+ *     (see `publishLockFile`).
  *
- * Why the in-process level is not optional (convergence Phase 2): `O_EXCL`
+ * Why the in-process level is not optional: `O_EXCL`
  * hands a losing caller `EEXIST` and nothing else, so the only recovery is
  * retry-with-backoff. That is the right shape for cross-process contention,
  * which is rare — and the wrong shape for in-process contention, which is the
@@ -43,8 +43,8 @@ import { logger } from '../logger.js'
 export interface AsyncLockOptions {
   /**
    * @deprecated Superseded by {@link AsyncLockOptions.acquireTimeout}, which
-   * bounds the wait in TIME rather than in attempts. Still honoured so existing
-   * callers keep working: when set, it caps the number of retries as before.
+   * bounds the wait in TIME rather than in attempts. When set, it still caps
+   * the number of retries.
    */
   maxRetries?: number
   baseDelay?: number
@@ -58,21 +58,19 @@ export interface AsyncLockOptions {
    * {@link DEFAULT_ACQUIRE_TIMEOUT}.
    *
    * MUST exceed `staleThreshold`, or waiters abandon a holder the lock protocol
-   * still considers legitimate — see the header note on F9.
+   * still considers legitimate (see {@link DEFAULT_ACQUIRE_TIMEOUT}).
    */
   acquireTimeout?: number
 }
 
 /**
- * How long before an untouched lock is considered abandoned (audit #794, F9).
+ * How long before an untouched lock is considered abandoned.
  *
- * Raised from 10 s. The audit measured a 50,000-engram store holding the lock
- * ~4.9 s (2.4 s save + 2.4 s load), and the daily backup (#799) adds ~1.4 s once
- * per day, taking the realistic worst case to ~6.3 s. Against a 10 s threshold
- * that is barely a 1.6× margin — and it evaporates entirely on a cloud-synced
- * `~/.plur`, on a laptop that suspends mid-write, or when an index sync runs
- * inside the lock. Stealing a lock from a process that is still writing is a
- * corpus-corruption bug, so the margin needs to be large.
+ * A 50,000-engram store holds the lock ~4.9 s (save + load), and the daily
+ * backup adds ~1.4 s; the margin must also survive a cloud-synced `~/.plur`, a
+ * laptop that suspends mid-write, or an index sync inside the lock. Stealing a
+ * lock from a process that is still writing corrupts the corpus, so the margin
+ * needs to be large.
  *
  * The cost of a high threshold is slow recovery after a crash, and that is paid
  * for separately by the liveness check below: a dead holder's lock is stolen at
@@ -83,46 +81,36 @@ export const DEFAULT_STALE_THRESHOLD = 60_000
 /**
  * How long a waiter keeps trying before giving up.
  *
- * Deliberately LARGER than {@link DEFAULT_STALE_THRESHOLD}. The old defaults had
- * this backwards: five retries of exponential backoff gave a ~3.1 s budget
- * against a 10 s stale threshold, so a waiter threw `Failed to acquire lock`
- * while the holder was still inside its legitimate working window — and for MCP
- * `plur_learn` that meant the engram was silently never stored (audit #794, F9).
+ * Deliberately LARGER than {@link DEFAULT_STALE_THRESHOLD}: a waiter that gives
+ * up while the holder is still inside its legitimate working window throws
+ * `Failed to acquire lock`, and for MCP `plur_learn` the engram is then never
+ * stored. With the deadline above the threshold, a waiter facing a genuinely
+ * stuck holder always reaches the stale check and steals the lock instead.
  *
- * With the deadline above the threshold, a waiter facing a genuinely stuck
- * holder always reaches the stale check and steals the lock rather than failing.
- *
- * Raised from 90s to clear the longest legitimate hold (audit 2026-08-03,
- * finding 10). `Plur.sync()` holds the store lock across `git fetch`,
- * `pull`/`rebase` and `push` — deliberately, because releasing it between the
- * pull and the local write reintroduces the lost-engram race that holding it
- * was added to close (#811 finding 2). Each git command has its own 30s
- * timeout, so a sync against an unresponsive remote can legitimately hold the
- * lock for ~90s plus local staging.
- *
- * Against a 90s budget that is not a delay, it is a FAILURE: a concurrent
- * `plur_learn` exhausts its wait and the engram is silently never stored, which
- * is precisely the F9 harm. The budget must therefore exceed the maximum honest
- * hold, not merely the typical one.
+ * It must also exceed the longest legitimate hold. `Plur.sync()` holds the
+ * store lock across `git fetch`, `pull`/`rebase` and `push`, because releasing
+ * it between the pull and the local write opens a lost-engram race. Each git
+ * command has its own 30s timeout, so a sync against an unresponsive remote
+ * can legitimately hold the lock for ~90s plus local staging.
  *
  * The cost is bounded, and paid only by a waiter behind a LIVE holder — a dead
  * one is stolen from immediately by the liveness check, and a wedged one is
  * stolen after `DEFAULT_STALE_THRESHOLD`. Anything that raises git's per-command
- * timeout must raise this too, or reopen the same hole.
+ * timeout must raise this too.
  */
 export const DEFAULT_ACQUIRE_TIMEOUT = 180_000
 
 /**
- * How old an EMPTY lock file must be before it is treated as abandoned (#1354).
+ * How old an EMPTY lock file must be before it is treated as abandoned.
  *
  * An empty lock is what a creator leaves when it dies between creating the file
- * and writing its owner token. With no token there is no pid to probe, so before
- * this every waiter sat out the full {@link DEFAULT_STALE_THRESHOLD} (60s): a
- * hook SIGKILLed at its harness budget cost every later writer a minute.
+ * and writing its owner token. With no token there is no pid to probe, so
+ * without this grace every waiter would sit out the full
+ * {@link DEFAULT_STALE_THRESHOLD}.
  *
- * Core itself no longer produces empty locks: it publishes the lock complete
- * (see {@link publishLockFile}). They still come from older clients sharing the
- * store, from filesystems without hard links (the fallback there), and from
+ * Core publishes the lock complete (see {@link publishLockFile}). Empty locks
+ * still come from older clients sharing the store, from filesystems without
+ * hard links (the fallback there), and from
  * anything else that creates first and writes second. For such a creator the
  * create→write gap is the only time an empty lock is legitimately live, so the
  * grace must clear that gap by a wide margin.
@@ -132,7 +120,7 @@ export const DEFAULT_ACQUIRE_TIMEOUT = 180_000
  * 20ms synchronous bursts, p99 117ms, max 0.68s. The tail is scheduling, not
  * I/O (the write continuation waits for the event loop), so the grace must also
  * cover a creator whose loop is blocked by a large synchronous YAML parse
- * (~2.4s at 50,000 engrams, audit #794). 10s is >13x the worst measured gap and
+ * (~2.4s at 50,000 engrams). 10s is >13x the worst measured gap and
  * >4x that parse, and still recovers six times sooner than the stale threshold.
  */
 export const EMPTY_LOCK_GRACE_MS = 10_000
@@ -150,11 +138,10 @@ function lostDuringAcquire(lockPath: string): Error {
 }
 
 /**
- * Create `lockPath` holding `token`, or throw `EEXIST` if it exists (#1354).
+ * Create `lockPath` holding `token`, or throw `EEXIST` if it exists.
  *
- * The lock used to be `writeFile(lockPath, token, { flag: O_EXCL })`: an
- * exclusive create followed by a separate write. Between the two the lock
- * exists but is EMPTY, and a process killed there leaves a lock nobody can
+ * An exclusive create followed by a separate write would leave the lock EMPTY
+ * in between, and a process killed there would leave a lock nobody can
  * attribute. So the token is written to a private file first and hard-linked
  * into place. `link()` fails with `EEXIST` exactly like `O_EXCL`, and the lock
  * appears with its token already in it, or not at all.
@@ -223,7 +210,7 @@ export function publishLockFileSync(lockPath: string, token: string): void {
  * Has a lock whose holder we CANNOT probe been untouched long enough to steal?
  *
  * Only for liveness `undefined`: a holder confirmed alive is never stolen from,
- * a confirmed-dead one is stolen at once. An EMPTY lock (#1354) is abandoned
+ * a confirmed-dead one is stolen at once. An EMPTY lock is abandoned
  * after {@link EMPTY_LOCK_GRACE_MS}; anything carrying a token keeps the full
  * stale threshold.
  */
@@ -258,12 +245,9 @@ let tokenCounter = 0
 /**
  * Contents written into the lock file: who holds it, and which acquisition.
  *
- * The nonce is what makes release safe. Before this, release was an
- * unconditional `unlink`, so once a waiter stole a lock the ORIGINAL holder's
- * `finally` deleted the *thief's* lock on its way out — and a third process
- * walked straight in while the thief was still writing (audit #794, F9;
- * measured by probe p05b). A holder now removes the lock only if the file still
- * carries its own token.
+ * The nonce is what makes release safe: a holder removes the lock only if the
+ * file still carries its own token, so after a steal the original holder's
+ * `finally` cannot delete the new holder's lock and let a third process in.
  *
  * The hostname is what makes the liveness check safe: a pid is only meaningful
  * on the machine that owns it, and `~/.plur` on a synced or networked volume can
@@ -301,15 +285,13 @@ export function holderIsAlive(token: string): boolean | undefined {
 }
 
 /**
- * Heartbeat (owner decision P1, formal run 2026-09-26).
+ * Heartbeat.
  *
- * A contender that cannot probe the holder's liveness — the holder is on
- * another host sharing `~/.plur`, or wrote a legacy bare-pid token — has only
+ * A contender that cannot probe the holder's liveness (the holder is on
+ * another host sharing `~/.plur`, or wrote a legacy bare-pid token) has only
  * the lock file's age to go on, and steals once it is older than
- * `staleThreshold`. Nothing refreshed that age during a hold, so a legitimate
- * `Plur.sync()` (git fetch/pull/push, each up to 30 s — ~90 s in all) was
- * stolen from at 60 s and a second writer entered (replayed:
- * findings/persistence.md §4).
+ * `staleThreshold`. A legitimate hold such as `Plur.sync()` (git
+ * fetch/pull/push, each up to 30 s) can outlast that threshold.
  *
  * So a holder re-touches its own lock (token-checked `utimes`) every
  * `staleThreshold / 3` while it holds it — from a timer during async work, and
@@ -386,8 +368,7 @@ const warnedThresholds = new Set<number>()
  * `staleThreshold` at or below that bound — `T/3 + 30 s ≥ T`, i.e. T ≤ ~45 s —
  * a holder blocked in one git command can be judged abandoned (when its liveness
  * cannot be probed) and stolen from mid-hold. Said once per threshold value, not
- * refused: short thresholds are legitimate for locks that never run git (formal
- * round 2, findings/r2-persist.md item 7).
+ * refused: short thresholds are legitimate for locks that never run git.
  */
 function warnIfThresholdTooShort(staleThreshold: number, interval: number): void {
   if (staleThreshold === DEFAULT_STALE_THRESHOLD || warnedThresholds.has(staleThreshold)) return
@@ -413,7 +394,7 @@ async function withFileLock<T>(
   const acquireTimeout = options?.acquireTimeout ?? Math.max(
     DEFAULT_ACQUIRE_TIMEOUT,
     // A caller that raises staleThreshold must not thereby make waiters give up
-    // before it — the inversion F9 was about.
+    // before a stale lock can be stolen.
     Math.ceil(staleThreshold * 1.5),
   )
   const maxRetries = options?.maxRetries
@@ -435,9 +416,7 @@ async function withFileLock<T>(
     // The `continue` paths — a stale lock stolen, a lock that vanished mid-check
     // — reach the next attempt without passing the wait. Checking the budget
     // only before sleeping therefore leaves them unbounded, and a lock that
-    // another process keeps recreating stale spins forever. (Caught by
-    // async-lock-contention's `retry budget spent by a stale-lock cleanup`,
-    // which is exactly the case the old attempt-bounded `for` covered for free.)
+    // another process keeps recreating stale would spin forever.
     if (attempt > 0) {
       const elapsed = Date.now() - start
       const outOfRetries = maxRetries !== undefined && attempt > maxRetries
@@ -487,7 +466,7 @@ async function withFileLock<T>(
         //     visible error after `acquireTimeout` that names the lock file.
         //     A loud stall beats silent corruption.
         //
-        //     An EMPTY lock gets a much shorter window (#1354). With no token
+        //     An EMPTY lock gets a much shorter window. With no token
         //     it can only be a creator between its create and its write
         //     (milliseconds when alive), or one that died there.
         else if (alive === undefined && abandonedByAge(holder, Date.now() - s.mtimeMs, staleThreshold)) abandoned = true
@@ -515,7 +494,7 @@ async function withFileLock<T>(
     }
   }
 
-  // Heartbeat while held (decision P1); stopped before release, on return or throw.
+  // Heartbeat while held; stopped before release, on return or throw.
   const stopHeartbeat = acquired ? startHeartbeat(lockPath, token, staleThreshold) : () => {}
   try {
     return await fn()
@@ -523,8 +502,7 @@ async function withFileLock<T>(
     stopHeartbeat()
     // Only ours to remove. `acquired` stops a failed acquisition deleting the
     // holder's file; the token comparison stops US deleting a THIEF's file
-    // after our lock was stolen, which is what turned one stale-lock steal into
-    // a cascade (F9).
+    // after our lock was stolen, which would cascade one steal into several.
     if (acquired) await releaseIfOurs(lockPath, token)
   }
 }
@@ -537,17 +515,10 @@ function isAbandoned(holder: string, mtimeMs: number, staleThreshold: number): b
 }
 
 /**
- * Take over an abandoned lock (#1354), serialized by #1228's steal-guard LADDER
- * (owner decision C1; proofs on formal/field-report-2026-09-29:
- * spec/formal/PlurSpec/R2Persist.lean `ladder_mutex`, and §6 `TakeoverG`
- * `combined_mutex` for this lock + ladder combination; findings
- * spec/formal/findings/persistence.md §G). Returns false when another
- * contender is taking over the same lock instance.
- *
- * This replaces a single `.takeover` guard file. That guard, abandoned by a
- * crashed stealer, had to be removed by the same rename claim, unguarded: two
- * stealers could then both be "under" it after a double crash (replayed in
- * test/formal-fr-c2-takeover.test.ts).
+ * Take over an abandoned lock, serialized by a steal-guard LADDER (proofs:
+ * spec/formal/PlurSpec/R2Persist.lean `ladder_mutex`, and `TakeoverG`
+ * `combined_mutex` for this lock + ladder combination). Returns false when
+ * another contender is taking over the same lock instance.
  *
  * Why a guard at all: the rename claim in {@link stealLock} makes the steal
  * single-winner, but not the DECISION — two waiters that judged the same
@@ -556,15 +527,14 @@ function isAbandoned(holder: string, mtimeMs: number, staleThreshold: number): b
  *
  * Why a ladder keyed by the judged token, not one `.takeover` file: a guard
  * abandoned by a crashed stealer must itself be removed, and removing it is a
- * read-then-unlink of someone else's file — the same race one level up
- * (replayed in r2-persist item 1). Slots are keyed by the judged lock's token,
+ * read-then-unlink of someone else's file, the same race one level up. Slots are keyed by the judged lock's token,
  * so nobody but a slot's own writer ever unlinks it while that token is still
  * at `lockPath`; a dead slot is stepped over, never deleted.
  *
  * Under the slot the lock is re-inspected; only a file with the same token AND
- * the same inode as the one judged (#1354: empty locks have equal contents) is
- * claimed, and only if it is STILL abandoned (decision C2: a holder we cannot
- * probe may have refreshed its mtime since we judged it).
+ * the same inode as the one judged (empty locks have equal contents) is
+ * claimed, and only if it is STILL abandoned (a holder we cannot probe may
+ * have refreshed its mtime since we judged it).
  */
 async function takeOver(lockPath: string, staleThreshold: number): Promise<boolean> {
   const seen = await inspectLock(lockPath)
@@ -575,7 +545,7 @@ async function takeOver(lockPath: string, staleThreshold: number): Promise<boole
   try {
     const cur = await inspectLock(lockPath)
     if (!cur || cur.holder !== seen.holder || cur.ino !== seen.ino) return true
-    // Decision C2: still abandoned NOW, not only the same file. A holder we
+    // Still abandoned NOW, not only the same file. A holder we
     // cannot probe proves it is alive only by refreshing its mtime, and it may
     // have done so since we judged it.
     if (!isAbandoned(cur.holder, cur.mtimeMs, staleThreshold)) return true
@@ -596,7 +566,7 @@ export function takeOverSync(lockPath: string, staleThreshold: number): boolean 
   try {
     const cur = inspectLockSync(lockPath)
     if (!cur || cur.holder !== seen.holder || cur.ino !== seen.ino) return true
-    // Decision C2: still abandoned NOW, not only the same file. A holder we
+    // Still abandoned NOW, not only the same file. A holder we
     // cannot probe proves it is alive only by refreshing its mtime, and it may
     // have done so since we judged it.
     if (!isAbandoned(cur.holder, cur.mtimeMs, staleThreshold)) return true
@@ -760,18 +730,15 @@ function inspectLockSync(p: string): LockInspection | null {
 }
 
 /**
- * Remove a lock believed abandoned — by CLAIMING it first (audit 2026-08-03,
- * finding 1).
+ * Remove a lock believed abandoned, by CLAIMING it first.
  *
- * The previous shape was read-compare-unlink, which closed the case where the
- * holder released and a third party acquired between the inspection and the
- * steal (F9), but left a narrower window open: between the compare and the
- * `unlink` itself. Two contenders that both judge the same lock stale can both
- * pass the compare; the first unlinks and acquires, the second then unlinks the
- * pathname — now the FIRST one's live lock — and acquires too. Both run the
+ * Read-compare-unlink leaves a window between the compare and the `unlink`:
+ * two contenders that both judge the same lock stale can both pass the
+ * compare; the first unlinks and acquires, the second then unlinks the
+ * pathname (now the first one's live lock) and acquires too. Both run the
  * critical section, and on a whole-corpus writer that is a lost update.
  *
- * `rename` is the atomic primitive that fixes it. Only one process can
+ * `rename` is the atomic primitive that closes it. Only one process can
  * successfully rename a given path; the loser gets ENOENT. So a contender can
  * only ever delete a file it has already moved out of the way, and can never
  * delete a lock another process created at `lockPath` — because the file it
@@ -790,7 +757,7 @@ async function stealLock(lockPath: string, expected: string, expectedIno: number
     return false // another contender claimed it, or the holder released — re-evaluate
   }
   try {
-    // Same FILE, not just the same contents (#1354). Contents cannot tell two
+    // Same FILE, not just the same contents. Contents cannot tell two
     // empty locks apart: if the old empty lock we judged was released and a
     // creator made a fresh one before our rename, '' === '' would delete a
     // lock whose owner is about to write its token.
@@ -897,7 +864,7 @@ let pendingOps = 0
 /**
  * How many {@link withAsyncLock} operations this process has in progress —
  * queued behind another in-process caller, acquiring the file lock, holding
- * it, or releasing it (#1343).
+ * it, or releasing it.
  *
  * For a process about to force-exit (CLI hooks call `process.exit()`, which
  * does not wait for in-flight work). The lock FILE cannot answer "is this

@@ -1,5 +1,5 @@
 /**
- * mem0 importer (issue #441).
+ * mem0 importer.
  *
  * Parses mem0's JSON export shape — the `{"results": [...]}` envelope that
  * `Memory.get_all()` returns (v1.1+, mem0 OSS `mem0/memory/main.py`) and the

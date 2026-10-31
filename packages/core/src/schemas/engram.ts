@@ -1,6 +1,6 @@
 import { z } from 'zod'
 
-// === Existing schemas (unchanged for backward compat) ===
+// === Core sub-schemas ===
 
 export const ActivationSchema = z.object({
   retrieval_strength: z.number().min(0).max(1),
@@ -43,10 +43,10 @@ export const RelationsSchema = z.object({
   narrower: z.array(z.string()).default([]),
   related: z.array(z.string()).default([]),
   conflicts: z.array(z.string()).default([]),
-  /** IDs of engrams this one intentionally replaces (#240). An intentional
-   *  update is not a tension — the scanner skips supersedes-linked pairs. */
+  /** IDs of engrams this one intentionally replaces. An intentional
+   *  update is not a tension: the scanner skips supersedes-linked pairs. */
   supersedes: z.array(z.string()).default([]),
-  /** Reverse edge of `supersedes` (#240) — IDs of engrams that replace this one. */
+  /** Reverse edge of `supersedes`: IDs of engrams that replace this one. */
   superseded_by: z.array(z.string()).default([]),
 }).describe('Typed graph edges between engram IDs.')
 
@@ -59,7 +59,7 @@ export const ProvenanceSchema = z.object({
 }).describe('Origin and signing chain. STABLE for origin/chain/license; signature is RESERVED (see ENGRAM-STANDARD-v1.md §7).')
 
 /**
- * Who is answerable for an engram (#961).
+ * Who is answerable for an engram.
  *
  * Every field is optional and every field is omitted rather than guessed. A
  * record with no agent is valid PROV; a record with a guessed agent is worse
@@ -100,11 +100,11 @@ export const AttributionSchema = z.object({
 }).describe('Who is answerable for this engram (#961). All fields optional; omit rather than guess.')
 
 /**
- * What kind of claim an engram is (#963).
+ * What kind of claim an engram is.
  *
  * A statement a person typed, a line a pattern scraped and a conclusion a model
- * inferred are all stored identically today. This is the single most useful
- * field for a reader deciding how much weight to give a memory.
+ * inferred would otherwise be stored identically. This is the single most
+ * useful field for a reader deciding how much weight to give a memory.
  *
  * The vocabulary is reused from the repository extraction tool rather than
  * invented, so the two agree.
@@ -124,7 +124,7 @@ export const FeedbackSignalsSchema = z.object({
   neutral: z.number().int().default(0),
 })
 
-// === NEW: Structured entity extraction ===
+// === Structured entity extraction ===
 
 export const EntityRefSchema = z.object({
   name: z.string(),
@@ -136,7 +136,7 @@ export const EntityRefSchema = z.object({
   uri: z.string().url().optional(),
 })
 
-// === NEW: Temporal anchoring (Zep-inspired bi-temporal) ===
+// === Temporal anchoring (Zep-inspired bi-temporal) ===
 
 export const TemporalSchema = z.object({
   learned_at: z.string(),
@@ -145,7 +145,7 @@ export const TemporalSchema = z.object({
   ingested_at: z.string().optional(),
 }).describe('Bi-temporal anchoring (Zep-inspired). When is this knowledge true?')
 
-// === NEW: Usage tracking (Softmax Engram-inspired hit/miss) ===
+// === Usage tracking (hit/miss) ===
 
 export const UsageStatsSchema = z.object({
   injections: z.number().int().default(0),
@@ -154,7 +154,7 @@ export const UsageStatsSchema = z.object({
   last_hit_at: z.string().optional(),
 })
 
-// === NEW: Episodic memory fields (from DIP-0019) ===
+// === Episodic memory fields ===
 
 export const EpisodicFieldsSchema = z.object({
   emotional_weight: z.number().int().min(1).max(10).default(5),
@@ -163,14 +163,14 @@ export const EpisodicFieldsSchema = z.object({
   journal_ref: z.string().optional(),
 })
 
-// === NEW: Version lineage (SP2 Idea 8) ===
+// === Version lineage ===
 
 export const PreviousVersionRefSchema = z.object({
   event_id: z.string(),
   changed_at: z.string(),
 })
 
-// === NEW: Exchange metadata (marketplace fitness) ===
+// === Exchange metadata (marketplace fitness) ===
 
 export const ExchangeMetadataSchema = z.object({
   fitness_score: z.number().min(0).max(1).optional(),
@@ -179,20 +179,19 @@ export const ExchangeMetadataSchema = z.object({
   contradiction_rate: z.number().min(0).max(1).default(0),
 })
 
-// === NEW: Memory-stream insight engrams (metacognition Phase 1) ===
+// === Memory-stream insight engrams ===
 //
 // An "insight engram" is a normal engram carrying an optional `insight` sub-object.
-// Following the #110 failure-engram pattern, this is ORTHOGONAL to `type`: `type`
-// stays the cognitive class (behavioral/terminological/procedural/architectural),
-// while `insight` records that the engram was synthesized by the metacognition
-// memory stream — its synthesis origin, source grounding, serendipity, and
-// downstream fate. The "episodic insight buffer" is simply the set of engrams
-// where `insight != null`. Source citations reuse `knowledge_anchors[]`; lifecycle
-// reuses `status`/`activation` decay; gist consolidation reuses the meta-engram
-// pipeline. Decisions: 5-plur/3-knowledge/pages/insight-engram-schema-2026-06-14.md
+// This is ORTHOGONAL to `type`: `type` stays the cognitive class
+// (behavioral/terminological/procedural/architectural), while `insight` records
+// that the engram was synthesized by the metacognition memory stream: its
+// synthesis origin, source grounding, serendipity, and downstream fate. The
+// "episodic insight buffer" is simply the set of engrams where `insight != null`.
+// Source citations reuse `knowledge_anchors[]`; lifecycle reuses
+// `status`/`activation` decay; gist consolidation reuses the meta-engram pipeline.
 
 /** Serendipity objective for connect/emerge/dream insights = unexpectedness × relevance
- *  (Kotkov et al., JCST 2020). Scored on existing embeddings + buffer novelty —
+ *  (Kotkov et al., JCST 2020). Scored on existing embeddings + buffer novelty,
  *  NOT a learned link predictor. */
 export const SerendipitySchema = z.object({
   unexpectedness: z.number().min(0).max(1),
@@ -200,7 +199,7 @@ export const SerendipitySchema = z.object({
   score: z.number().min(0).max(1),
 })
 
-/** Downstream fate of a surfaced insight — the substrate for the primary
+/** Downstream fate of a surfaced insight: the substrate for the primary
  *  evaluation metric "insight acted-upon rate" (NOT engagement). */
 export const InsightFateSchema = z.enum([
   'surfaced',   // shown in a briefing; no downstream action yet
@@ -214,7 +213,7 @@ export const InsightFateSchema = z.enum([
 export const InsightFieldSchema = z.object({
   /** Which memory-stream operation produced this insight. Nightly arc:
    *  `distill` (episode→insight synthesis) → `consolidate` (convergent gist
-   *  abstraction over the buffer) → `dream` (divergent REM-style recombination —
+   *  abstraction over the buffer) → `dream` (divergent REM-style recombination,
    *  speculative, never auto-promoted). `connect`/`emerge`/`drift` are on-demand lenses. */
   operation: z.enum(['distill', 'consolidate', 'dream', 'connect', 'emerge', 'drift']),
   synthesized_at: z.string(),
@@ -223,7 +222,7 @@ export const InsightFieldSchema = z.object({
    *  `knowledge_anchors[]`; this flags whether the claim was verified against those
    *  snippets. `ungrounded` = couldn't cite sources → quarantined (`candidate`, never
    *  surfaced). `speculative` = a `dream`: its recombined INPUTS are cited but its
-   *  CONCLUSION is an explicit hypothesis — surfaced only as inspiration, and (per the
+   *  CONCLUSION is an explicit hypothesis, surfaced only as inspiration, and (per the
    *  promote-requires-grounding refine below) it must be re-grounded to `verified`
    *  before it can be promoted to a durable engram. */
   grounding: z.enum(['verified', 'unverified', 'ungrounded', 'speculative']).default('unverified'),
@@ -240,17 +239,17 @@ export const InsightFieldSchema = z.object({
   /** How many briefings have surfaced this insight (acted-upon-rate denominator). */
   surfaced_count: z.number().int().min(0).default(0),
 }).refine(
-  // Promote-requires-grounding (user rule 2026-06-15): a dream is inspiration, not
-  // fact. A speculative/ungrounded insight can only become a durable promotion once
-  // it has been re-grounded in reality (grounding=verified).
+  // Promote-requires-grounding: a dream is inspiration, not fact. A
+  // speculative/ungrounded insight can only become a durable promotion once it
+  // has been re-grounded in reality (grounding=verified).
   i => i.fate !== 'promoted' || i.grounding === 'verified',
   { message: 'A promoted insight must be grounded (grounding=verified); speculative dreams cannot be promoted until re-grounded.', path: ['grounding'] },
 )
 
-// === Convention: ETL extraction provenance (issue #463) ===
+// === Convention: ETL extraction provenance ===
 //
-// The enterprise ETL CLI (enterprise#409) emits engrams carrying classifier-time
-// provenance in `structured_data.extraction`:
+// ETL extractors emit engrams carrying classifier-time provenance in
+// `structured_data.extraction`:
 //
 //   structured_data:
 //     extraction:
@@ -258,21 +257,21 @@ export const InsightFieldSchema = z.object({
 //       source_commit: "abc123" # git SHA at extraction time (reproducibility)
 //       extractor_version: "0.1.0"  # CLI version (schema-migration handle)
 //
-// This is a CONVENTION riding in the existing `structured_data` extension bag —
-// deliberately NOT wired into EngramSchema (zero schema change; promote to a
-// first-class sub-object only when a consumer needs to query/filter on it).
-// The schema below is a validation helper for producers/consumers of the
-// convention. `.passthrough()` keeps unknown keys so newer extractors can add
-// fields without invalidating older consumers.
+// This is a CONVENTION riding in the existing `structured_data` extension bag,
+// deliberately NOT wired into EngramSchema (promote to a first-class sub-object
+// only when a consumer needs to query/filter on it). The schema below is a
+// validation helper for producers/consumers of the convention. `.passthrough()`
+// keeps unknown keys so newer extractors can add fields without invalidating
+// older consumers.
 //
 // THREE DISTINCT "confidence" SEMANTICS — do not conflate:
-//   1. `structured_data.extraction.confidence` (here) — 0-1 CLASSIFIER score,
+//   1. `structured_data.extraction.confidence` (here): 0-1 CLASSIFIER score,
 //      frozen at extraction time. Never updated after write.
-//   2. `computeConfidence()` (src/confidence.ts) — 0-1 score DERIVED at read
+//   2. `computeConfidence()` (src/confidence.ts): 0-1 score DERIVED at read
 //      time from feedback_signals (+ consolidation bonus). Changes as feedback
 //      accumulates.
-//   3. `episodic.confidence` — 1-10 integer SUBJECTIVE certainty of an episodic
-//      memory (DIP-0019).
+//   3. `episodic.confidence`: 1-10 integer SUBJECTIVE certainty of an episodic
+//      memory.
 // Mixing them (e.g. seeding feedback-derived scores from extraction confidence)
 // would corrupt the feedback loop.
 export const ExtractionProvenanceSchema = z.object({
@@ -288,11 +287,11 @@ export const ExtractionProvenanceSchema = z.object({
 export type ExtractionProvenance = z.infer<typeof ExtractionProvenanceSchema>
 
 /**
- * Read and validate the #463 extraction-provenance convention from an engram.
+ * Read and validate the extraction-provenance convention from an engram.
  *
  * Returns the validated `structured_data.extraction` object, or `null` when it
  * is absent or malformed (wrong container type, wrong field types, confidence
- * out of [0,1]) — malformed provenance is ignored gracefully, never thrown.
+ * out of [0,1]); malformed provenance is ignored gracefully, never thrown.
  *
  * Accepts any object with an optional `structured_data` field so it works with
  * Engram, WireEngram, or plain parsed YAML (same pattern as computeConfidence).
@@ -306,21 +305,17 @@ export function getExtractionProvenance(
   return parsed.success ? parsed.data : null
 }
 
-// === NEW: Measurement context (issue #869) ===
+// === Measurement context ===
 //
 // Captures the configuration under which a numeric or benchmark-derived claim
-// was measured. The motivating incidents:
-//   - max_tokens 16384 (bench, operation context) asserted for a different op
-//   - 87% wall-clock (local-git) asserted as a general ratio (inverts on GitLab)
-//
-// Both had the same shape: evidence gathered under configuration A was asserted
-// for configuration B, with the difference invisible in the stored artifact.
-// `measured_under` makes the measurement context explicit so tension-aware
-// retrieval (#203) can store differing-condition measurements as refinements
-// rather than contradictions.
+// was measured, so evidence gathered under configuration A is not silently
+// asserted for configuration B (e.g. a wall-clock ratio measured on local git
+// that inverts on a hosted forge). `measured_under` makes the context explicit
+// so tension-aware retrieval can store differing-condition measurements as
+// refinements rather than contradictions.
 //
 // Kept deliberately loose (.passthrough()) so future fields can be added by
-// producers without invalidating consumers. All fields optional — absent =
+// producers without invalidating consumers. All fields optional: absent =
 // unknown, not "not applicable".
 
 export const MeasuredUnderSchema = z.object({
@@ -347,13 +342,12 @@ export const EngramSchema = z.object({
     .describe('Unique identifier. Class prefix ENG (concrete engram), ABS (abstraction), or META (meta-engram). Canonical concrete form: ENG-YYYY-MMDD-NNN; store-namespaced form: ENG-{PREFIX}-YYYY-MMDD-NNN.'),
   version: z.number().int().min(1).default(2)
     .describe('Schema-shape generation of this engram object (currently 2). Distinct from engram_version, which tracks content evolution.'),
-  // 'active' and 'retired' are the two states any current code path assigns
-  // (retire via forget/dedup/supersede). 'dormant' and 'candidate' are NOT
-  // assigned by any code today: 'dormant' was only ever set by the batchDecay
-  // pass removed in #563 (decay is now a read-time property, not a materialized
-  // status), and 'candidate' is reserved. They are kept in the enum so stores
-  // written before #563 that persisted status:'dormant' still load, and so the
-  // status filter accepts them; do not remove without a data migration.
+  // 'active' and 'retired' are the two states code paths assign (retire via
+  // forget/dedup/supersede). 'dormant' and 'candidate' are not assigned by any
+  // code: decay is a read-time property, not a materialized status, and
+  // 'candidate' is reserved. They stay in the enum so older stores that
+  // persisted status:'dormant' still load, and so the status filter accepts
+  // them; do not remove without a data migration.
   status: z.enum(['active', 'dormant', 'retired', 'candidate']).describe('Lifecycle state. Assigned values today are active/retired; dormant/candidate are legacy/reserved (see note above).'),
   consolidated: z.boolean().default(false)
     .describe('Whether this engram has been through consolidation (sleep-like batch reprocessing).'),
@@ -364,18 +358,15 @@ export const EngramSchema = z.object({
   visibility: z.enum(['private', 'public', 'template']).default('private')
     .describe("Sharing posture. 'private' engrams MUST NOT be exported in packs."),
 
-  // Provenance timestamps (added 2026-09-07).
+  // Provenance timestamps.
   //
-  // Before this the object carried no canonical creation time. `sources[]`
-  // records a `stored_at` per write, but only 2,765 of 5,477 engrams in a real
-  // store had one; `temporal.learned_at` had 12. So for half the corpus there
-  // was no answer to "when was this learned", and callers fell back to parsing
-  // the date out of the ID — which is date-only, absent on non-canonical ids,
-  // and silently wrong for a store-namespaced or migrated engram.
+  // `sources[].stored_at` and `temporal.learned_at` are often absent, and the
+  // date in the ID is date-only, absent on non-canonical ids, and wrong for a
+  // store-namespaced or migrated engram, so these give a canonical time.
   //
   // Both OPTIONAL rather than defaulted: a default would stamp today's date
-  // onto every legacy engram at load time and destroy the very provenance this
-  // adds. Absent means genuinely unknown; the backfill sets what can be known.
+  // onto every legacy engram at load time and destroy the provenance. Absent
+  // means genuinely unknown; the backfill sets what can be known.
   created_at: z.string().optional()
     .describe('ISO 8601 timestamp of first mint. Immutable — never rewritten by an update. Absent on engrams written before this field existed and not recoverable from any other record.'),
   updated_at: z.string().optional()
@@ -416,16 +407,16 @@ export const EngramSchema = z.object({
   // Provenance
   provenance: ProvenanceSchema.optional(),
 
-  /** Who is answerable for this engram (#961). Optional; omitted rather than guessed. */
+  /** Who is answerable for this engram. Optional; omitted rather than guessed. */
   attribution: AttributionSchema.optional(),
 
-  /** What kind of claim this is (#963). Optional; omitted when undeterminable. */
+  /** What kind of claim this is. Optional; omitted when undeterminable. */
   claim_class: ClaimClassSchema.optional(),
 
   // Feedback
   feedback_signals: FeedbackSignalsSchema.default({ positive: 0, negative: 0, neutral: 0 }),
 
-  // === NEW OPTIONAL FIELDS (v2.1) ===
+  // === Optional extension fields ===
 
   /** Typed entity references extracted from statement. Enables graph queries. */
   entities: z.array(EntityRefSchema).optional()
@@ -447,7 +438,7 @@ export const EngramSchema = z.object({
   structured_data: z.record(z.string(), z.unknown()).optional()
     .describe('Extensible key-value data for domain-specific fields.'),
 
-  /** Memory-stream insight provenance (metacognition Phase 1). Orthogonal to
+  /** Memory-stream insight provenance. Orthogonal to
    *  `type`. Present iff this engram was synthesized by the metacognition memory
    *  stream; the episodic insight buffer is the set of engrams where this is set. */
   insight: InsightFieldSchema.optional(),
@@ -456,25 +447,25 @@ export const EngramSchema = z.object({
   polarity: z.enum(['do', 'dont']).nullable().default(null)
     .describe("'do' for directives, 'dont' for prohibitions, null for unclassified."),
 
-  // === SP1: Memory Intelligence fields ===
+  // === Memory intelligence fields ===
   content_hash: z.string().optional().describe('Hash of normalized statement content, used for dedup.'),
   commitment: z.enum(['exploring', 'leaning', 'decided', 'locked', 'draft']).optional()
     .describe("Commitment level of the asserted knowledge. `draft` marks an engram as pending human approval: core stores and RECALLS it like any other value but NEVER injects it (#1141), so an unapproved rule cannot shape an agent's behaviour before someone has agreed to it. Retrieval stays open because reviewing something requires reading it. A positive feedback signal does not advance it (see feedback.ts:nextCommitment) — relevance is not approval."),
   locked_at: z.string().optional().describe("Timestamp when commitment reached 'locked'."),
   locked_reason: z.string().optional().describe('Why this engram was locked.'),
 
-  // === SP1: Reference counting (issue #107, renamed #866) ===
+  // === Reference counting ===
   /** Number of learn() write attempts that resolved to this engram.
    * Incremented on every hash-dedup hit; decremented by forget().
    * Engram physically retires only when this reaches 0.
-   * Renamed from reference_count (#866) — backfill runs on first parse of old stores. */
+   * Formerly `reference_count`; a backfill runs on first parse of old stores. */
   write_count: z.number().int().min(0).default(1)
     .describe('Number of learn() write attempts that resolved to this engram (same-scope re-learns). Engram retires only when this reaches 0. Renamed from reference_count (#866).'),
 
   /** Number of times this engram was selected into a session's injection context.
    * Distinct from activation.frequency (which counts recall() retrieval events, not
-   * inject() selections). High injection_count + low feedback_signals.positive is a
-   * signal for #865 efficacy detection. Incremented in the inject path (#866). */
+   * inject() selections). High injection_count + low feedback_signals.positive
+   * signals low efficacy. Incremented in the inject path. */
   injection_count: z.number().int().min(0).default(0)
     .describe('Number of times this engram was injected into session context. Distinct from activation.frequency (recall events). Use with feedback_signals for efficacy auditing (#866).'),
   /** Provenance of each write attempt. One entry per write (including the
@@ -489,23 +480,23 @@ export const EngramSchema = z.object({
       .describe('Set on the first source of a global copy the recurrence ladder made of a team-store engram (#1268): the team scope it was promoted from. The team engram itself is left in its store; `derived_from` names it.'),
   })).default([]).describe('Provenance of each write attempt; one entry per write.'),
 
-  // === SP1: Cross-scope recurrence (issue #176) ===
+  // === Cross-scope recurrence ===
   /** Number of times this engram's content was re-learned at a DIFFERENT
    * scope than the original. Triggers auto-broadening + commitment
    * escalation when threshold is crossed. Distinct from write_count
-   * (which counts re-learns in the SAME scope) — recurrence_count is
+   * (which counts re-learns in the SAME scope): recurrence_count is
    * evidence of universal applicability, not just repetition. */
   recurrence_count: z.number().int().min(0).default(0)
     .describe('Number of times this content was re-learned at a DIFFERENT scope than the original. Evidence of universal applicability.'),
 
-  // === SP2: History & Evolution fields ===
+  // === History & evolution fields ===
   engram_version: z.number().int().min(1).default(1)
     .describe('Content-evolution version (incremented when the statement materially changes).'),
   previous_version_ref: PreviousVersionRefSchema.optional(),
   episode_ids: z.array(z.string()).default([])
     .describe('IDs of episodes (raw conversational events) that produced or reinforced this engram.'),
 
-  // === SP3: Retrieval & Injection fields ===
+  // === Retrieval & injection fields ===
   summary: z.string().max(80).optional().describe('Short (<=80 char) injection-friendly summary.'),
 
   /**
@@ -513,7 +504,7 @@ export const EngramSchema = z.object({
    * and are eligible for injection on every session start, regardless of
    * keyword overlap with the user's task. Use sparingly: meta-rules,
    * cross-cutting safety conventions, and core operating principles only.
-   * Pinned engrams still respect the token budget — they bypass per-pack and
+   * Pinned engrams still respect the token budget; they bypass per-pack and
    * per-domain fairness caps in fillTokenBudget so always-load behavior is
    * honored even if a single pack contributes many. Tier is controlled by
    * pinned_tier; see pinned_tier and pinned_priority for budget semantics.
@@ -557,7 +548,7 @@ export const EngramSchema = z.object({
       'Ignored for pinned_tier="hard".'
     ),
 
-  /** Measurement context for numeric or benchmark-derived claims (#869).
+  /** Measurement context for numeric or benchmark-derived claims.
    *  Records model, source_type, hardware, dataset, and/or date under which the
    *  asserted value was measured. The tension scanner does not judge two
    *  same-origin measurements taken under different configurations as a
@@ -569,14 +560,13 @@ export const EngramSchema = z.object({
 
 /**
  * Runtime schema with .passthrough() so unknown fields are preserved during parsing.
- * This prevents data loss when new fields are added by hand or by other SPs.
+ * This prevents data loss when fields are added by hand or by other producers.
  * The Engram type is derived from the strict schema (without passthrough) to keep
- * TypeScript type safety — passthrough only affects runtime Zod validation.
+ * TypeScript type safety; passthrough only affects runtime Zod validation.
  *
- * `commitment: 'draft'` is in the strict enum (added in #905). It is a valid lifecycle
- * state: an engram staged in a review queue pending human approval. `nextCommitment`
- * deliberately leaves it untouched so a positive feedback signal does not publish
- * unreviewed content. See plur-ai/enterprise#567 for the review-queue write sites.
+ * `commitment: 'draft'` is a valid lifecycle state: an engram staged in a review
+ * queue pending human approval. `nextCommitment` deliberately leaves it untouched
+ * so a positive feedback signal does not publish unreviewed content.
  */
 export const EngramSchemaPassthrough = EngramSchema.passthrough()
 

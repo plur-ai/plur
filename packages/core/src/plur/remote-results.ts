@@ -29,7 +29,7 @@ import type {
 
 export interface RemoteResultsMethods {
 /**
-   * Strict scope-relevance dialing (#776, user decision — plan rows 39/44).
+   * Strict scope-relevance dialing.
    *
    * For each configured (url, token) endpoint group, the dialed scope set is
    * the subset of its granted scopes relevant to the current project/work:
@@ -47,9 +47,9 @@ export interface RemoteResultsMethods {
    * When `options.scopes` is given, nothing outside it is dialed (`[]` →
    * nothing), whichever rule selected the entry.
    * No project/work context implicating a remote store → ZERO remote calls.
-   * A host whose relevant subset is empty is NOT dialed — a datafund-org host
-   * is never dialed from plur-org work (cross-org exfiltration solved by
-   * construction).
+   * A host whose relevant subset is empty is NOT dialed — a host for one org
+   * is never dialed from another org's work (cross-org exfiltration is
+   * prevented by construction).
    *
    * Overrides: per-store `dial: never` removes the entry from dialing;
    * `dial: always` forces its host to be dialed with that entry's scope,
@@ -96,9 +96,9 @@ _filterRemoteRows(rows: Engram[], options?: RecallOptions & { include_expired?: 
    * only, not ranking.
    */
 /**
-   * Wait for the remote leg until the recall's deadline (#1586). The leg
+   * Wait for the remote leg until the recall's deadline. The leg
    * itself stops at the deadline — it aborts what is still in flight and
-   * keeps what answered (audit L7) — so this normally gets its per-host
+   * keeps what answered — so this normally gets its per-host
    * outcomes. The fallback, for a leg that still has not settled a moment
    * after the deadline, reports every dialed host as cut by the deadline.
    */
@@ -108,7 +108,7 @@ _awaitRemote(remotePromise: (Promise<RemoteRecallResult> & { hostUrls?: string[]
 /**
    * In a long-lived process that opted in ({@link allowBackgroundModelLoad}),
    * fill the store's embedding cache in the background — once per instance,
-   * never awaited by a recall, never retried (#1586 round 5, R3). Each
+   * never awaited by a recall, never retried. Each
    * cut-off recall also keeps its own progress; this finishes the job without
    * waiting for more recalls.
    */
@@ -124,7 +124,7 @@ _recallDeadlineAt(options?: { deadline_ms?: number; deadline_at?: number }): num
 _mergeRemoteRecall(local: Engram[], remotePromise: (Promise<RemoteRecallResult> & { hostUrls?: string[] }) | null, options: (RecallOptions & { include_expired?: boolean }) | undefined, limit: number, deadlineAt?: number): Promise<{ engrams: Engram[]; remote: RecallRemoteReport }>
 
 /**
-   * Server rows for the injection path (#776): filtered for authorization +
+   * Server rows for the injection path: filtered for authorization +
    * visibility BEFORE boosts are assigned — the boost channel resurrects
    * scope-zeroed rows otherwise (`scoreEngram` returns 0 for both
    * no-keyword-hits and scope-excluded, and `raw = embBoost*2` revives
@@ -135,12 +135,12 @@ _mergeRemoteRecall(local: Engram[], remotePromise: (Promise<RemoteRecallResult> 
 _remoteInjectCandidates(remote: RemoteRecallResult | undefined, options?: InjectOptions): { engrams: Engram[]; boosts: Map<string, number> } | undefined
 
 /**
-   * Per-host remote recall degradation status (plan A4′), fed by the last
+   * Per-host remote recall degradation status, fed by the last
    * outcomes this process observed — NOT by driver caches or fresh probes.
    * MCP surfaces attach a `remote_stores` block from this when any host is
    * non-ok (or silently scope-narrowed); plur_doctor renders remediation.
    *
-   * Every entry carries `observed_at` and `age_ms` (#864). An observation is
+   * Every entry carries `observed_at` and `age_ms`. An observation is
    * evidence about the moment it was taken, and this map is only written by
    * hosts a recall actually DIALED — a recall that dials nothing leaves the
    * previous entry untouched. Callers that speak in the present tense
@@ -151,25 +151,22 @@ _remoteInjectCandidates(remote: RemoteRecallResult | undefined, options?: Inject
 remoteStoreStatus(opts?: { freshOnly?: boolean; now?: number }): RemoteStoreStatusEntry[]
 
 /**
-   * A direct write to `url` just succeeded (#1586): the host is reachable, so
-   * the read leg's breaker cooldown ends, exactly as an outbox flush success
-   * already ended it (#785). Before this the direct `plur_learn` path — the
-   * one a save normally takes — neither consulted nor fed the breaker, so
-   * saves reached the server while reads stayed paused for the full five
-   * minutes. Best-effort: health bookkeeping never fails a write.
+   * A direct write to `url` just succeeded: the host is reachable, so the
+   * read leg's breaker cooldown ends, as an outbox flush success does.
+   * Otherwise saves reach the server while reads stay paused for the full
+   * cooldown. Best-effort: health bookkeeping never fails a write.
    */
 /** @internal */
 _noteRemoteWriteSucceeded(url: string): void
 
 /**
    * Record that a non-recall interaction with `url` just SUCCEEDED, clearing a
-   * cached network-class failure for that host (#864).
+   * cached network-class failure for that host.
    *
-   * Without this, `plur_doctor` contradicts itself inside one report: the
-   * `/me` probe says "Reachable, auth valid" and the line directly beneath it
-   * says the host timed out, because the second line is a cached recall
-   * outcome that nothing ever invalidates. A store that just answered a
-   * request is not unreachable, and the fresher observation wins.
+   * Otherwise `plur_doctor` could contradict itself in one report: a live
+   * probe says "reachable" while a cached recall outcome beneath it says the
+   * host timed out. A store that just answered a request is not unreachable,
+   * and the fresher observation wins.
    *
    * Only {@link PROBE_CLEARABLE_STATES} are cleared — see that constant for
    * why an authorization or endpoint-support failure must survive a probe.
@@ -177,7 +174,7 @@ _noteRemoteWriteSucceeded(url: string): void
 noteRemoteHostReachable(url: string): void
 
 /**
-   * Endpoints configured with more than one distinct token (#776). The
+   * Endpoints configured with more than one distinct token. The
    * (url, token) fan-out dials once per token, so this is a misconfiguration
    * worth a doctor warning — same user, same instance should mean one token.
    */
@@ -187,11 +184,10 @@ remoteEndpointTokenConflicts(): Array<{ url: string; tokens: number }>
    * Engrams a primary-store pushdown cannot see: secondary (team/project)
    * stores from `config.stores`, and installed packs.
    *
-   * `searchBM25` queries ONE table. `_loadAllEngrams` merges these in, so
-   * without this the Postgres tier answered `recall()` from the primary store
-   * alone — an enterprise user's team store vanished from `plur_recall` while
-   * `recallHybrid` on the same instance still returned it. No error, no
-   * warning: just fewer results.
+   * `searchBM25` queries ONE table while `_loadAllEngrams` merges these in;
+   * without this, the Postgres tier would answer `recall()` from the primary
+   * store alone and silently drop team-store results that `recallHybrid`
+   * returns.
    *
    * Scope and domain are applied here to mirror what the SQL side does to the
    * primary rows; the residual filters are applied by the caller.
@@ -202,31 +198,28 @@ _engramsOutsidePrimaryStore(options?: RecallOptions): Promise<Engram[]>
 
 export const remoteResultsMethods: RemoteResultsMethods & ThisType<Plur> = {
 _remoteRecallHosts(options?: { scope?: string; scopes?: string[]; context_scopes?: string[]; session?: string; remote_project?: RemoteProjectConfig }): RemoteRecallHost[] {
-    // Pick up out-of-process config edits (#307) before reading tokens: a
-    // rotated credential must reach the very next dial, not the next restart.
-    // The constructor's only re-read compares `stores.length`, so a rotation
-    // that leaves the store count unchanged was previously invisible for the
-    // life of the process (#864).
+    // Pick up out-of-process config edits before reading tokens: a rotated
+    // credential must reach the very next dial, not the next restart, even
+    // when the store count is unchanged.
     this.reloadConfigIfChanged()
     const stores = (this.config.stores ?? []).filter(s => s.url)
     if (this._remoteOnly) {
-      // remote-only (owner decisions 2026-10-01): dial exactly the store(s)
-      // serving the folder's team scope, for that scope only — with or
-      // without a session scope, and never a `.plur.yaml` remote.
+      // remote-only: dial exactly the store(s) serving the folder's team
+      // scope, for that scope only — with or without a session scope, and
+      // never a `.plur.yaml` remote.
       const scope = this._remoteOnly.scope
       // Only a deliverable team scope is dialled: a hand-written personal
-      // scope reads nothing (gate review of #1663).
+      // scope reads nothing.
       if (!scope || this._remoteOnly.blocked || !this._isDeliverableTeamScope(scope)) return []
-      // The caller's authorization allow-list bounds what is dialed (audit F2
-      // of #1515), here as everywhere.
-      // Exact membership, as RecallOptions.scopes documents (Codex round 5 on #1663).
+      // The caller's authorization allow-list bounds what is dialed, by exact
+      // membership as RecallOptions.scopes documents.
       if (options?.scopes !== undefined && !options.scopes.includes(scope)) return []
       const seen = new Set<string>()
       const hosts: RemoteRecallHost[] = []
       for (const s of stores) {
         if (s.scope !== scope) continue
-        // #1564 review M2: never dial with an empty Bearer because the
-        // entry's `token_env` variable is unset.
+        // Never dial with an empty Bearer because the entry's `token_env`
+        // variable is unset.
         if (!s.token && s.token_env) continue
         const key = `${normalizeEndpointUrl(s.url!)}::${s.token ?? ''}`
         if (seen.has(key)) continue
@@ -237,37 +230,34 @@ _remoteRecallHosts(options?: { scope?: string; scopes?: string[]; context_scopes
     }
     const rp = options?.remote_project
     const rpKey = rp ? normalizeEndpointUrl(rp.url) : null
-    // Dialing context (#243): an explicit recall scope wins; otherwise the
-    // SESSION default scope establishes the org context — a session whose
-    // default write scope names org X is doing org-X work, so its recalls
-    // dial org-X hosts. Resolved per-session via the same registry the write
-    // path uses (`options.session` — ADR-0004), so a mid-session scope
-    // switch redirects subsequent recall dialing too. No session scope set
-    // (the pre-#243 state) leaves dialing exactly as before.
+    // Dialing context: an explicit recall scope wins; otherwise the SESSION
+    // default scope establishes the org context — a session whose default
+    // write scope names org X is doing org-X work, so its recalls dial org-X
+    // hosts. Resolved per-session via the same registry the write path uses
+    // (`options.session`), so a mid-session scope switch redirects subsequent
+    // recall dialing too.
     const dialScope = options?.scope ?? this._sessionScopes.get(options?.session) ?? undefined
     const contextOrgs = new Set((options?.scope !== undefined ? [options.scope] : options?.context_scopes ?? [dialScope]).map(scopeOrg).filter(Boolean))
-    // A personal `user:` scope names its own store (#1515): a recall scoped to
+    // A personal `user:` scope names its own store: a recall scoped to
     // `user:acme:me` dials the ONE store entry whose scope matches it (case
     // folded, exact-case preferred — `personalStoreEntry`), with that entry
     // alone. Only a scope the caller passed, or the session's OWN
     // registration, counts — never the process default an unregistered
-    // session inherits (audit F2): that default is another caller's choice.
-    // Without this a personal scope gave no dialing context, so `learn` to a
-    // personal remote store landed on the server but `recall` with the same
-    // scope never read it back.
+    // session inherits: that default is another caller's choice. Without this,
+    // `recall` with a personal scope would never read back what `learn` wrote
+    // to the personal remote store.
     const personalScope = options?.scope ?? this._sessionScopes.own(options?.session) ?? undefined
     // Selected over EVERY configured store, exactly as a write selects
     // (`_canonicalPersonalScope`); a selected path-backed or `dial: never`
-    // store means no personal dial — never a fall-through to a case twin
-    // (re-audit N3).
+    // store means no personal dial — never a fall-through to a case twin.
     const selectedPersonal = personalStoreEntry(personalScope, (this.config.stores ?? []).filter(e => typeof e.scope === 'string'))
     const personalEntry = selectedPersonal?.url && selectedPersonal.dial !== 'never' ? selectedPersonal : null
     // The caller's authorization allow-list bounds what is DIALED, not only
     // what is kept afterwards: a query sent to a scope the caller may not
-    // read has already left the machine (audit F2). `[]` dials nothing. A
+    // read has already left the machine. `[]` dials nothing. A
     // store is dialable when it can hold rows the allow-list admits: its
     // scope equals, or is a parent of, an allowed scope (`isScopeWithin`,
-    // the nesting every read filter uses — re-audit N4). The rows themselves
+    // the nesting every read filter uses). The rows themselves
     // are still filtered by exact membership afterwards (`_filterRemoteRows`).
     const allowList = options?.scopes
     const allowed = (storeScope: string): boolean =>
@@ -275,11 +265,9 @@ _remoteRecallHosts(options?: { scope?: string; scopes?: string[]; context_scopes
 
     const groups = new Map<string, { url: string; token?: string; entries: StoreEntry[] }>()
     for (const s of stores) {
-      // Same `::` composite-key convention as _getRemoteDriver (#394) — a
-      // printable separator (an earlier draft used a raw \x00, which made
-      // tooling treat this whole source file as binary). Normalized URLs and
-      // tokens don't contain `::` in practice, and a contrived collision only
-      // merges two entries into one endpoint group — same POST, same token.
+      // Same `::` composite-key convention as _getRemoteDriver. Normalized URLs
+      // and tokens don't contain `::` in practice, and a contrived collision
+      // only merges two entries into one endpoint group — same POST, same token.
       const key = `${normalizeEndpointUrl(s.url!)}::${s.token ?? ''}`
       let g = groups.get(key)
       if (!g) { g = { url: s.url!, token: s.token, entries: [] }; groups.set(key, g) }
@@ -306,8 +294,8 @@ _remoteRecallHosts(options?: { scope?: string; scopes?: string[]; context_scopes
       // Config order preserved — row→entry mapping must be deterministic.
       const dialEntries = dialable.filter(e => selected.has(e) && allowed(e.scope))
       if (dialEntries.length === 0) continue
-      // #1564 review M2: no token because its `token_env` variable is unset —
-      // never dial with an empty Bearer.
+      // No token because its `token_env` variable is unset — never dial with
+      // an empty Bearer.
       if (!g.token && !(projectImplicated && rp?.token) && dialEntries.some(e => e.token_env)) continue
       hosts.push({
         url: g.url,
@@ -343,7 +331,7 @@ _startRemoteRecall(query: string, options?: { scope?: string; scopes?: string[];
     const hosts = this._remoteRecallHosts(options)
     if (hosts.length === 0) return null
     // The dialed hosts ride along so a recall that stops waiting at its
-    // deadline can still name them in its per-call report (#1586).
+    // deadline can still name them in its per-call report.
     return Object.assign(remoteRecall(hosts, query, {
       timeoutMs: resolveRemoteRecallTimeoutMs(options?.remote_timeout_ms),
       limit: options?.limit,
@@ -390,7 +378,7 @@ _maybeFillEmbeddingCache(): void {
     if (!backgroundModelLoadAllowed() || this._embeddingFillStarts > 0 || this._embeddingFillChecking) return
     this._embeddingFillChecking = true
     void (async () => {
-      // Not for a remote embedder (#1586 round 6, L4): it has no cold start,
+      // Not for a remote embedder: it has no cold start,
       // and a fill would keep a host that exits on its own busy embedding the
       // whole store through a paid API. A cut-off recall still keeps what it
       // computed.
@@ -410,7 +398,7 @@ _recallDeadlineAt(options?: { deadline_ms?: number; deadline_at?: number }): num
   },
 
 async _mergeRemoteRecall(local: Engram[], remotePromise: (Promise<RemoteRecallResult> & { hostUrls?: string[] }) | null, options: (RecallOptions & { include_expired?: boolean }) | undefined, limit: number, deadlineAt: number = Infinity): Promise<{ engrams: Engram[]; remote: RecallRemoteReport }> {
-    // Team rows from a warm cache sit among the local results (#1532 re-audit R2).
+    // Team rows from a warm cache sit among the local results.
     this._noteSeenRows(local)
     const { result: remote, report } = await this._awaitRemote(remotePromise, deadlineAt)
     if (!remote) return { engrams: local, remote: report }
@@ -502,8 +490,7 @@ remoteEndpointTokenConflicts(): Array<{ url: string; tokens: number }> {
 async _engramsOutsidePrimaryStore(options?: RecallOptions): Promise<Engram[]> {
     // Delegates to the SAME loader `_loadAllEngrams` uses, so remote stores,
     // id namespacing, scope narrowing and the containment guard cannot drift
-    // between the pushdown path and every other read path. This method used to
-    // re-implement that loop and got all four wrong.
+    // between the pushdown path and every other read path.
     let filtered = (await this._loadSecondaryAndPacks()).filter(e => e.status === 'active')
     if (options?.scopes !== undefined) {
       const allowed = scopeAllowFilter(options.scopes)
@@ -511,7 +498,7 @@ async _engramsOutsidePrimaryStore(options?: RecallOptions): Promise<Engram[]> {
     }
     if (options?.domain) filtered = filtered.filter(e => e.domain?.startsWith(options.domain!))
     if (options?.scope) {
-      // Visibility filter (#353/#775): scope containment, personal-family
+      // Visibility filter: scope containment, personal-family
       // pass-through, and mounted-scope grants — the ONE shared predicate.
       const visible = makeVisibilityPredicate(options.scope, this._grantedScopes())
       filtered = filtered.filter(e => visible(e.scope))

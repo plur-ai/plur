@@ -1,5 +1,5 @@
 /**
- * Per-store reranker fit check (#451).
+ * Per-store reranker fit check.
  *
  * Cross-encoders are trained on specific domains (ms-marco-MiniLM-L6 on MS
  * MARCO passage retrieval; bge-reranker-v2-m3 on multilingual retrieval).
@@ -18,14 +18,10 @@
  *   4. Compute separability = (mean_positive - mean_negative) / span.
  *   5. Gate: separability ≥ MIN_SEPARABILITY → fit.
  *
- * #451 fix: the previous version built "positive" pairs from two DIFFERENT
- * same-domain engrams and fed them to the cross-encoder as (query, document).
- * A cross-encoder scores query→document RELEVANCE, not topical co-membership;
- * two distinct facts in one domain share few tokens, so even a HEALTHY reranker
- * scored them no higher than cross-domain negatives → separability ≈ 0 → the
- * tool reported "poor fit" for a working reranker and told users to disable it.
- * A probe must be relevant to its paired document; that only holds when the
- * document is the engram the probe was synthesized from.
+ * Positives must pair a probe with the engram it came from: a cross-encoder
+ * scores query→document RELEVANCE, not topical co-membership, so two distinct
+ * same-domain facts score no higher than cross-domain negatives even on a
+ * healthy reranker.
  *
  * A fit score of 1.0 means the model perfectly separates relevant from
  * irrelevant. 0.0 means it gives the same scores to both — useless.
@@ -42,9 +38,9 @@ export interface FitCheckResult {
   fit: boolean
   /**
    * Separability score in [−1, +1].
-   *   > 0  : model scores same-domain pairs higher — the right direction.
+   *   > 0  : model scores relevant pairs higher — the right direction.
    *   ≈ 0  : model cannot distinguish — no signal.
-   *   < 0  : model scores cross-domain pairs higher — potentially harmful.
+   *   < 0  : model scores irrelevant pairs higher — potentially harmful.
    */
   separability: number
   positive_mean: number
@@ -81,12 +77,10 @@ export async function checkRerankerFit(
 ): Promise<FitCheckResult> {
   const sampleSize = opts?.sampleSize ?? 100
 
-  // Work with at most sampleSize engrams.
   const sample = engrams.length > sampleSize
     ? deterministicSample(engrams, sampleSize)
     : [...engrams]
 
-  // Build (query, document) pairs for each polarity.
   const { posPairs, negPairs } = buildPairs(sample, PAIRS_PER_POLARITY)
 
   const n_pairs = posPairs.length + negPairs.length
@@ -104,7 +98,6 @@ export async function checkRerankerFit(
     }
   }
 
-  // Score all pairs in two batches.
   const [posScores, negScores] = await Promise.all([
     scorePairs(reranker, posPairs),
     scorePairs(reranker, negPairs),

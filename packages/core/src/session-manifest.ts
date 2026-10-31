@@ -1,5 +1,5 @@
 /**
- * Session memory manifest (#1657): which engrams an agent had in its context
+ * Session memory manifest: which engrams an agent had in its context
  * during one session, as one canonical object that can be checked later.
  *
  * Three roles, each read from a record PLUR already keeps:
@@ -11,7 +11,7 @@
  * of its content fields, so `verifySessionManifest` can tell an edited
  * rationale from an untouched engram. There is deliberately no hash of the
  * bare statement (`content_hash`): it is unsalted, so a published one would
- * let anyone confirm a guessed memory text (0.23 audit, finding 3). The record
+ * let anyone confirm a guessed memory text. The record
  * hash is unsalted too, but covers rationale, tags, provenance and attribution
  * (with their timestamps), which a guesser does not have.
  *
@@ -19,7 +19,7 @@
  * acted. It never says they caused the action.
  *
  * What it never contains: engram text, scope names, tags or domains. Scope
- * names can carry customer names, and a manifest is made to be published.
+ * names can be sensitive, and a manifest is made to be published.
  *
  * No network here. Uploading a manifest to write-once storage is done outside
  * core (the `WormStore` interface below), because core makes no external calls.
@@ -67,7 +67,7 @@ export interface SessionManifest {
   /** The configured identity (`provenance.identity`), or the unidentified marker. */
   actor: string
   window: { from: string | null; to: string | null }
-  /** The newest checkpoint written in this session, when there is one (#1052): anchoring the manifest anchors it too. */
+  /** The newest checkpoint written in this session, when there is one: anchoring the manifest anchors it too. */
   checkpoint?: { event_hash: string; store_hash?: string; signer?: string; signature?: string }
   engrams: ManifestEntry[]
   created_at: string
@@ -177,7 +177,7 @@ export interface ManifestVerification {
   /**
    * True when nothing CHANGED and, if any engram is listed, at least one
    * matched. NOT AVAILABLE entries are counted; a check in which every listed
-   * engram is NOT AVAILABLE checked nothing, so it is not ok (audit finding 12).
+   * engram is NOT AVAILABLE checked nothing, so it is not ok.
    */
   ok: boolean
 }
@@ -205,9 +205,9 @@ export function verifySessionManifest(manifest: SessionManifest, engrams: readon
 }
 
 /**
- * Write-once storage for manifests (#1657, decision of 2026-10-17). Swarm is
- * the first and only implementation, outside core. The interface exists so a
- * second store can be added without touching callers; there is no registry.
+ * Write-once storage for manifests. Implementations (e.g. Swarm) live outside
+ * core. The interface lets a store be added without touching callers; there is
+ * no registry.
  */
 export interface WormPutResult {
   reference: string

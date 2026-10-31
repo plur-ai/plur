@@ -10,7 +10,7 @@ import { normalizeEndpointUrl, RemoteStore } from '../store/remote-store.js'
 import { REMOTE_PROBE_TIMEOUT_MS } from './helpers.js'
 
 export interface RoutingMethods {
-/** The `token_env` variable configured for this url (+scope), if any (#1561). */
+/** The `token_env` variable configured for this url (+scope), if any. */
 /** @internal */
 _tokenEnvFor(url: string, scope?: string): string | undefined
 
@@ -22,16 +22,16 @@ _getRemoteDriver(entry: { url: string; token?: string; scope: string }): RemoteS
    * Resolve a remote store for a write scope. Returns the RemoteStore driver
    * if the engram's scope matches a registered remote entry, else null.
    *
-   * Match rule (pilot scope): exact-match `entry.scope === engramScope`. We
-   * intentionally don't do prefix-match yet — agents that want to write to a
-   * narrower scope than they registered must explicitly register the narrower
-   * scope. Keeps routing predictable and prevents accidental cross-team writes.
+   * Match rule: exact-match `entry.scope === engramScope`, no prefix matching.
+   * Agents that want to write to a narrower scope must register that scope
+   * explicitly. Keeps routing predictable and prevents accidental cross-team
+   * writes.
    */
 /** @internal */
 _resolveRemoteStoreForScope(scope: string): RemoteStore | null
 
 /**
-   * Refuse a write to a scope two servers claim (#1631), BEFORE anything is
+   * Refuse a write to a scope two servers claim, BEFORE anything is
    * saved: learn()'s dedup can record a recurrence before it reaches the
    * router, so the router's own throw would come too late there.
    */
@@ -43,13 +43,12 @@ _refuseScopeConflict(scope: string): void
    * `url` (data leaves this machine) whose scope exactly matches; for a personal
    * scope, when the ONE selected store is a url store. Used for routing
    * decisions (auto-route refusal, `readIdFor`). The secret scan does NOT use
-   * it: it uses {@link _hasUrlStoreForScope}, which ignores the selection
-   * (#1515 re-audit 3, M2).
+   * it: it uses {@link _hasUrlStoreForScope}, which ignores the selection.
    *
-   * Pure CONFIG lookup — NO driver instantiation, NO network, NO side effects —
+   * Pure CONFIG lookup (no driver instantiation, no network, no side effects)
    * because this runs on every learn(). It uses `_resolveRemoteStoreForScope`'s
-   * exact-scope-match rule (no prefix matching), but DELIBERATELY does not
-   * mirror its readonly skip (core-index#9, round 2): a readonly URL store is not
+   * exact-scope-match rule (no prefix matching), but deliberately does not
+   * mirror its readonly skip: a readonly URL store is not
    * a write target, yet its scope names a remote namespace, so the leak guard
    * still scans writes into it. That can only demote more, never let more out.
    * Where "a write here reaches the remote" is the question, use
@@ -59,7 +58,7 @@ _refuseScopeConflict(scope: string): void
 _isRemoteBackedScope(scope: string): boolean
 
 /**
-   * The SECRET-SCAN predicate (#1515 re-audit 3, M2): any url store whose
+   * The SECRET-SCAN predicate: any url store whose
    * scope is exactly `scope`, readonly or not, whatever the personal-store
    * selection says. The selection decides ROUTING only. Callers of the scan
    * also act on a concrete url entry — the remote update walk, the outbox
@@ -77,8 +76,8 @@ _isRemoteWriteScope(scope: string): boolean
 
 /**
    * The entry a write to `scope` goes through when it leaves the machine: the
-   * resolver's `remote`, writable answer (#1631), else undefined. The learn
-   * path's outbox target reads it (#1633 row 34), so the queued `target_url`
+   * resolver's `remote`, writable answer, else undefined. The learn
+   * path's outbox target reads it, so the queued `target_url`
    * is always the server the router dials.
    */
 /** @internal */
@@ -86,7 +85,7 @@ _remoteWriteEntry(scope: string): StoreEntry | undefined
 
 /**
    * The url store an explicit `scope` argument names for an id lookup
-   * (forget, feedback, setPinned; #1633 row 34): the resolver's `remote`
+   * (forget, feedback, setPinned): the resolver's `remote`
    * entry, so a lookup acts on the store a write to that scope goes to, and
    * matching is exact. A scope two servers claim throws ScopeConflictError
    * before any server is asked (`outcome` says what did not happen); acting
@@ -98,9 +97,9 @@ _remoteWriteEntry(scope: string): StoreEntry | undefined
 _scopedUrlEntry(scope: string, outcome: string): StoreEntry | undefined
 
 /**
-   * The store a scoped pin PATCHes (#1633 row 34): {@link _scopedUrlEntry}
+   * The store a scoped pin PATCHes: {@link _scopedUrlEntry}
    * over the writable stores only, so a readonly store listed for the same
-   * scope never competes (#1532 re-audit R6) and two writable servers are a
+   * scope never competes and two writable servers are a
    * refused conflict.
    */
 /**
@@ -131,19 +130,19 @@ _noteMeIdentity(url: string, token: string | undefined, me: { username?: string;
 _isOwnRemoteNamespace(scope: string): boolean
 
 /**
-   * The configured scope a personal `user:` scope resolves to (#1515):
+   * The configured scope a personal `user:` scope resolves to:
    * `personalStoreEntry` over EVERY configured store, path-backed and url —
    * exact case first, else case-folded; local before remote within each.
    * Returns `scope` unchanged when it is not personal, names no store, or
    * already names one exactly. One rule for writes (learn, learnAsync,
    * learnBatch) and for the read dial, so the same string reaches the same
-   * store (re-audit N1/N3/N5).
+   * store.
    */
 /** @internal */
 _canonicalPersonalScope(scope: string): string
 
 /**
-   * Decision E1 "me-only": an auto-route candidate the router must refuse like
+   * "Me-only" rule: an auto-route candidate the router must refuse like
    * a shared scope — backed by a URL store (so the write would leave the
    * machine) and not the user's own `/me` namespace. Path-backed and unbacked
    * personal scopes are never refused here. Shared scopes are
@@ -158,13 +157,13 @@ _refuseRemotePersonalAutoRoute(scope: string): boolean
    * `storeScope` — the loader's `_storeScope` stamp of the row, when the caller
    * holds one — names the store exactly. `storePrefix` is three letters, so
    * two store scopes can share one (group:plur/eng and group:plur/ops are both
-   * GPL) and a namespaced id alone then names both; ids collide across stores
-   * as the common case, so the first store with the bare id was the wrong one
-   * (audit of #1228). A stamped row is never the primary's.
+   * GPL) and a namespaced id alone then names both; ids commonly collide
+   * across stores, so the first store with the bare id may be the wrong one.
+   * A stamped row is never the primary's.
    *
    * The stored id may itself carry the prefix (a row from another client or
    * a sync): namespacing on load is idempotent, so the loaded id IS the stored
-   * id, and the stripped form is not in the file (audit of #1228, finding 2).
+   * id, and the stripped form is not in the file.
    * Both forms are tried; `originalId` is the id as the store file has it.
    */
 /** @internal */
@@ -175,7 +174,6 @@ _findEngramStore(id: string, storeScope?: string): Promise<{ path: string; reado
    * _loadAllEngrams adds ENG-{PREFIX}- to avoid local ID collisions; the remote
    * server only knows the original ID. If the ID doesn't match this store's prefix,
    * return it unchanged (it may belong to a different store or be unprefixed).
-   * See: https://github.com/plur-ai/plur/issues/86
    */
 /** @internal */
 _stripRemotePrefix(id: string, scope: string): string
@@ -195,8 +193,7 @@ _stripForScope(id: string, scope: string): string
    * server answers `GET /engrams/:id` for every scope the token can read, so
    * the driver of a writable store "finds" a row that lives in another
    * (possibly readonly) store on the same server. Acting on it through this
-   * store is the readonly bypass of the 0.21.1 audit (H1, and L1 of the #1576
-   * review for bare ids). A row with no scope, or `global`, counts as the
+   * store would bypass that store's readonly setting. A row with no scope, or `global`, counts as the
    * store's, as the loaders treat it.
    */
 /** @internal */
@@ -207,7 +204,7 @@ _sharedPrefixRefusal(id: string, verb: string, prefix: string, scopes: string[])
 
 /**
    * Resolve a namespaced id to the ONE store it names, before any action on
-   * it (0.21.1 audit of #1570, H1). Returns the id to act with — the current
+   * it. Returns the id to act with — the current
    * prefix form for the store that holds the row — or the id unchanged when it
    * carries no store prefix or no configured store matches it.
    *
@@ -224,7 +221,7 @@ _sharedPrefixRefusal(id: string, verb: string, prefix: string, scopes: string[])
    * A url store "holds" the row only when the row's scope falls within the
    * store's scope: one server serves every scope the token can read, so a
    * driver for scope A answers for a row in scope B, and acting through A is
-   * how a readonly B row used to be retired. When several stores hold the SAME
+   * would let a readonly B row be retired. When several stores hold the SAME
    * row (one server, nested scopes), the store whose scope is the row's own —
    * or else the most specific — is the one named. Distinct rows in different
    * stores are ambiguous and refused; so is a candidate that could not be
@@ -236,15 +233,12 @@ _resolveNamespacedId(id: string, verb: string): Promise<string>
 
 /** Content hash fast-path dedup. Scope-aware: same statement in a different
    * scope is a promotion, not a duplicate. Retired engrams are excluded —
-   * re-learning a retired statement creates a fresh engram (issue #107).
+   * re-learning a retired statement creates a fresh engram.
    *
-   * A statement with no hashable content never matches (#896). Every such
-   * statement hashes to the SHA-256 of the empty string, so matching on it
-   * declares unrelated facts to be the same fact — which is exactly how the
-   * non-Latin collapse absorbed four distinct memories into one row. The
-   * normalizer no longer produces that for real prose; this is the belt to its
-   * braces, and it fails in the safe direction (a missed dedup costs a
-   * duplicate row, a false dedup costs the memory). */
+   * A statement with no hashable content never matches. Every such statement
+   * hashes to the SHA-256 of the empty string, so matching on it would declare
+   * unrelated facts to be the same fact. This fails in the safe direction: a
+   * missed dedup costs a duplicate row, a false dedup costs the memory. */
 /** @internal */
 _hashDedup(statement: string, engrams: Engram[], scope?: string): Engram | null
 }
@@ -257,7 +251,7 @@ _tokenEnvFor(url: string, scope?: string): string | undefined {
   },
 
 _getRemoteDriver(entry: { url: string; token?: string; scope: string }): RemoteStore {
-    // #394: include the token in the cache key so a ROTATED token produces a FRESH
+    // Include the token in the cache key so a ROTATED token produces a FRESH
     // driver instead of one still holding the old (now-401) token + its stale cache.
     // On rotation, drop any prior driver for the same url::scope so the old token
     // can't keep serving and the map doesn't grow unbounded across rotations.
@@ -269,7 +263,7 @@ _getRemoteDriver(entry: { url: string; token?: string; scope: string }): RemoteS
         if (k !== key && k.startsWith(baseKey + '::')) this._remoteStores.delete(k)
       }
       // A `token_env` store whose variable is unset gets a driver that refuses
-      // every request, naming the variable (#1564 review M2).
+      // every request, naming the variable.
       const tokenEnv = entry.token ? undefined : this._tokenEnvFor(entry.url, entry.scope)
       driver = new RemoteStore(entry.url, entry.token ?? '', entry.scope, tokenEnv ? { tokenEnv } : {})
       this._remoteStores.set(key, driver)
@@ -278,8 +272,8 @@ _getRemoteDriver(entry: { url: string; token?: string; scope: string }): RemoteS
   },
 
 _resolveRemoteStoreForScope(scope: string): RemoteStore | null {
-    // One resolver for routing and the leak guard (#1631). A personal scope
-    // routes through the ONE selected entry (#1515 L1): when a local path
+    // One resolver for routing and the leak guard. A personal scope
+    // routes through the ONE selected entry: when a local path
     // store shares the exact scope, the write stays local. A scope two
     // servers claim is refused, never sent to whichever is listed first.
     const target = resolveScopeTarget(scope, this.config.stores ?? [])
@@ -295,7 +289,7 @@ _refuseScopeConflict(scope: string): void {
   },
 
 _isRemoteBackedScope(scope: string): boolean {
-    // Fail-safe (#1631): a scope two servers claim, or one under a company
+    // Fail-safe: a scope two servers claim, or one under a company
     // server's org that it has not granted, counts as remote-backed too.
     return resolveScopeTarget(scope, this.config.stores ?? []).kind !== 'local'
   },
@@ -318,7 +312,7 @@ _scopedUrlEntry(scope: string, outcome: string): StoreEntry | undefined {
     if (target.kind === 'conflict') throw new ScopeConflictError(scope, target.servers, outcome)
     // Under a company server's org but not granted: no store claims it, so
     // there is nothing to act on, and the remote walk must not act on a row
-    // of another store instead (gate of #1667).
+    // of another store instead.
     if (target.kind === 'unauthorized') {
       throw new Error(`"${scope}" is not granted to you on ${target.server}; ${outcome}. `
         + 'Ask an admin for access, or pass a granted scope (plur stores list).')
@@ -350,8 +344,8 @@ _noteMeIdentity(url: string, token: string | undefined, me: { username?: string;
   },
 
 _isOwnRemoteNamespace(scope: string): boolean {
-    // The entry the write lands on: the resolver's answer (#1633 row 34),
-    // which for a personal scope is the ONE selected store (#1515). A scope
+    // The entry the write lands on: the resolver's answer, which for a
+    // personal scope is the ONE selected store. A scope
     // two servers claim is nobody's own namespace (fail closed).
     const target = resolveScopeTarget(scope, this.config.stores ?? [])
     const entry = target.kind === 'remote' ? target.entry : undefined
@@ -365,7 +359,7 @@ _isOwnRemoteNamespace(scope: string): boolean {
   },
 
 _canonicalPersonalScope(scope: string): string {
-    // Read the CURRENT config (re-audit M1): learnAsync/learnBatch fold here
+    // Read the CURRENT config: learnAsync/learnBatch fold here
     // before the guard's own reload, and a store another process just added
     // must already count — a stale list would send a write meant for a new
     // local store to a remote case twin.
@@ -379,7 +373,7 @@ _refuseRemotePersonalAutoRoute(scope: string): boolean {
   },
 
 async _findEngramStore(id: string, storeScope?: string): Promise<{ path: string; readonly: boolean; originalId: string } | null> {
-    // Check primary first (uses mtime cache)
+    // Primary first (uses the mtime cache).
     if (storeScope === undefined) {
       const primaryEngrams = await this._loadCached(this.paths.engrams)
       if (primaryEngrams.find(e => e.id === id)) {
@@ -388,8 +382,8 @@ async _findEngramStore(id: string, storeScope?: string): Promise<{ path: string;
     }
 
     // Check stores — ID might be namespaced. Remote stores are skipped
-    // here because remote IDs are not namespaced (the remote PLUR
-    // Enterprise server assigns its own IDs); writes to remote stores
+    // here because remote IDs are not namespaced (the remote server
+    // assigns its own IDs); writes to remote stores
     // go through their own path.
     const stores = this.config.stores ?? []
     for (const store of stores) {
@@ -449,15 +443,14 @@ async _resolveNamespacedId(id: string, verb: string): Promise<string> {
     if (candidates.length > 0) {
       // Two DIFFERENT configured scopes behind one prefix: the id cannot say
       // which store it names, whatever the stores hold. Refused before anything
-      // is asked or changed (review of #1576: rare at eight digest letters,
-      // never guessed at).
+      // is asked or changed (rare at eight digest letters, never guessed at).
       const scopes = [...new Set(candidates.map(c => c.scope))]
       if (scopes.length > 1) throw this._sharedPrefixRefusal(id, verb, loose.prefix, scopes)
       if (candidates.length === 1) return id
     } else {
       // The OLD three-letter form. Only a dated server-form id can be one
       // (`ENG-XXX-YYYY-MM-DD-NNN`): pack ids such as `ENG-PFR-001` share the
-      // shape of a prefix and must stay as they are (review of #1576, M1). And
+      // shape of a prefix and must stay as they are. And
       // it is rewritten only once a store is seen to hold the row — below.
       const strict = parseNamespacedId(id)
       if (!strict) return id
@@ -468,7 +461,7 @@ async _resolveNamespacedId(id: string, verb: string): Promise<string> {
     }
 
     // remote-only: a url store is asked only when it is the folder's own team
-    // store (Codex round 3); local path stores are read as before.
+    // store; local path stores are always read.
     if (this._activeBinding()) candidates = candidates.filter(c => !c.url || this._remoteOnlyWalkAllows(c.scope))
     type Holder = { entry: StoreEntry; rowScope: string; key: string }
     const holders: Holder[] = []
@@ -497,7 +490,7 @@ async _resolveNamespacedId(id: string, verb: string): Promise<string> {
         row = await driver.getById(parsed.bare)
         // The store said it holds the row, then could not hand it over
         // (`getById` reads a timeout or a 5xx as null): that is "cannot
-        // tell", never "does not hold it" (review of #1576, L3).
+        // tell", never "does not hold it".
         if (!row && ownership === 'owned') { unreached.push(entry.scope); continue }
       } catch {
         unreached.push(entry.scope)

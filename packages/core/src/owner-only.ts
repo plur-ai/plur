@@ -5,8 +5,8 @@ import { tmpdir } from 'os'
 import { join, sep } from 'path'
 
 /**
- * Owner-only protection for files (and folders) that hold a secret (#1631,
- * plan B Task 1b; audit finding 2). One rule for every caller — core's
+ * Owner-only protection for files (and folders) that hold a secret. One rule
+ * for every caller — core's
  * config.yaml writes, atomicWrite's temporary files, the enterprise
  * installer's backups and key file:
  *
@@ -19,8 +19,8 @@ import { join, sep } from 'path'
  *   account's.
  *
  * Windows works on security identifiers (SIDs), never on account names:
- * icacls prints names and paths in the OEM code page (measured on a Windows
- * runner: `ü` came out as byte 0x81, `Č` as `C`), so a name or path that is
+ * icacls prints names and paths in the OEM code page (e.g. `ü` comes out as
+ * byte 0x81, `Č` as `C`), so a name or path that is
  * not ASCII cannot be matched in its text output — every write for such a
  * user would be refused. The current account's SID comes from
  * `whoami /user /fo csv /nh` (the SID column is ASCII); the access list is
@@ -174,7 +174,7 @@ function isSelf(trustee: string, sid: string): boolean {
   const t = trustee.toUpperCase()
   if (t === sid.toUpperCase()) return true
   // SDDL writes the local machine's built-in Administrator (RID 500) and Guest
-  // (RID 501) accounts as `LA` / `LG` — a GitHub runner's account is `LA`.
+  // (RID 501) accounts as `LA` / `LG` — e.g. a CI runner's account is `LA`.
   if (t === 'LA') return /-500$/.test(sid)
   if (t === 'LG') return /-501$/.test(sid)
   return false
@@ -284,10 +284,9 @@ export function protectOwnerOnly(path: string, opts: OwnerOnlyOptions = {}): Own
     let r = readAcl(path, exec, sid)
     if (r.kind === 'shared') {
       // `/inheritance:r` drops only INHERITED entries. A file or folder can also
-      // carry explicit entries for other principals — measured on a GitHub
-      // Windows runner (#1631): NT AUTHORITY\SYSTEM and BUILTIN\Administrators
-      // stayed on a new file after the grant. Remove every other principal by
-      // its SID (grants and denies), then read the list back again.
+      // carry explicit entries for other principals (e.g. NT AUTHORITY\SYSTEM
+      // and BUILTIN\Administrators on a new file). Remove every other principal
+      // by its SID (grants and denies), then read the list back again.
       const targets: string[] = []
       for (const t of r.others) {
         const s = SID.test(t) ? t : WELL_KNOWN[t]
