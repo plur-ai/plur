@@ -55,22 +55,13 @@ export interface ScopeGuardsMethods {
   previewAutoRoute(input: ScopeSignals): AutoRouteDecision
 
   /**
-   * Suggest which registered scope(s) an engram belongs in, ranked by fit.
-   * Deterministic — NO LLM, NO network. Scores the engram's signals (statement
-   * keywords, `domain` namespace, `tags`) against the `covers[]` each scope
-   * declares (see {@link rankScopes} for the weights).
-   *
-   * ADVISORY ONLY. This does NOT route or store anything — `learn()` /
-   * `learnRouted()` ignore it; see {@link previewAutoRoute} for the routing
-   * decision.
-   *
-   * `options.minConfidence` floors the returned list — candidates strictly
-   * below it are dropped. Precedence: explicit option >
-   * `scope_routing.min_confidence` config > 0 (unfiltered). This floors the
-   * SUGGESTION surface only; the auto-route gate is
-   * `scope_routing.match_threshold` and is deliberately independent. Returns
-   * candidates sorted by confidence descending — an empty array means nothing
-   * matched OR every match fell below the floor.
+   * Suggest registered scopes for an engram, ranked by fit. Deterministic, no
+   * LLM or network: scores statement keywords, `domain` and `tags` against each
+   * scope's `covers[]` (weights: {@link rankScopes}). ADVISORY ONLY — routing is
+   * {@link previewAutoRoute}. `options.minConfidence` (else
+   * `scope_routing.min_confidence`, else 0) floors this suggestion list only;
+   * the auto-route gate `scope_routing.match_threshold` is independent.
+   * Sorted by confidence descending; empty means no match above the floor.
    */
   suggestScope(input: ScopeSignals, options?: { minConfidence?: number }): ScopeCandidate[]
 
@@ -84,28 +75,13 @@ export interface ScopeGuardsMethods {
   getScopeRoutingConfig(): Readonly<ScopeRoutingConfig>
 
   /**
-   * Single source of truth for "does this content carry sensitivity that scope
-   * `scope` forbids?". Returns the offending {@link SecretMatch} hits, or `[]`
-   * when there are none.
-   *
-   * Scope discipline: data can leak when the scope is SHARED (`isSharedScope`,
-   * others can read it) OR REMOTE-backed (`_hasUrlStoreForScope`, it routes off
-   * this machine — e.g. a `user:` scope on a remote server). For a scope that is
-   * neither — `global`/`local`/a local-file store — this returns `[]`
-   * unconditionally: infra notes legitimately live in local storage, the content
-   * never leaves the machine, and the demotion target is local anyway, so a local
-   * write is always coherent.
-   *
-   * Policy: scan `text` with `detectSensitive`, then keep only the hits the
-   * scope's per-scope `sensitivity` policy forbids. With no scope metadata the
-   * default policy is `forbid:['secrets','infra'], allow:[]` — i.e. every hit is
-   * offending. A hit is tolerated when its category is in
-   * `allow` (by category name OR by the specific detector pattern name) or when
-   * its category is not in `forbid`.
-   *
-   * Used by `_guardSensitiveScope` (the learn/learnRouted guard) AND by the
-   * mutation-path guards (learnAsync UPDATE/MERGE, reportFailure, updateEngram)
-   * so there is exactly one definition of "offending".
+   * Single source of truth for "does this content carry sensitivity that
+   * `scope` forbids?" — returns the offending hits, or `[]`. Used by
+   * `_guardSensitiveScope` and every mutation-path guard.
+   * Only SHARED or REMOTE-backed scopes are checked; purely local scopes return
+   * `[]` (content never leaves the machine). Hits from `detectSensitive` are kept
+   * unless the scope's `sensitivity` policy allows them (by category or pattern
+   * name) or does not forbid their category; the default forbids secrets and infra.
    */
   /** @internal */
   _offendingHitsForScope(statement: string, scope: string): SecretMatch[]
@@ -122,57 +98,25 @@ export interface ScopeGuardsMethods {
   _engramContextFields(engram: Engram): Record<string, unknown> | undefined
 
   /**
-   * Leak guard for the EXPLICIT-update mutation path (`updateEngram` /
-   * `updateEngramAsync`). Unlike learn/learnAsync, the caller hands us a fully
-   * formed engram and chose its scope deliberately, so the response differs by
-   * residence:
-   *
-   * - REMOTE-resident (`isRemote: true`): there is no coherent demotion (we
-   *   can't silently re-scope an engram living on someone else's server), so a
-   *   forbidden hit THROWS — mirroring the hard `detectSecrets` guard. The
-   *   caller must re-scope locally or set `config.allow_secrets`.
-   * - LOCAL-resident: a forbidden hit DEMOTES in place (scope→'local',
-   *   visibility→'private') and warns. Returns the override the caller applies
-   *   before persisting; returns `null` when the statement is clean.
-   *
-   * Scans the FULL content like `_guardSensitiveScope`, not just `statement`.
-   * Callers pass the engram's context-ish fields (rationale, source, snippet,
-   * dual_coding, structured_data) via `contextFields`; they are serialized onto
-   * the scan text so a credential hiding in a context field is caught. The 64KB
-   * byte-aware truncation is applied inside `detectSensitive` (reached via
-   * `_offendingHitsForScope`), so the scan is bounded here too.
+   * Leak guard for explicit updates (`updateEngram`/`updateEngramAsync`).
+   * Remote-resident: a forbidden hit THROWS (an engram on another server cannot
+   * be silently re-scoped). Local-resident: it DEMOTES in place (scope 'local',
+   * visibility 'private') and warns, returning the override; `null` when clean.
+   * Scans `statement` plus `contextFields` so credentials in context are caught;
+   * size is bounded inside `detectSensitive`.
    */
   /** @internal */
   _guardExplicitUpdate(statement: string, scope: string, isRemote: boolean, contextFields?: Record<string, unknown>): { scope: string; visibility: 'private' } | null
 
   /**
-   * Resolve the scope for a write whose caller supplied NO explicit scope and
-   * for which no session/`.plur.yaml` default is in effect — the genuinely
-   * UNSCOPED case. Two non-explicit signals decide it:
-   *
-   *  - `config.auto_route_scope` (default true): run the deterministic
-   *    {@link suggestScope} ranker over the registered scopes' `covers[]`.
-   *      - If the top writable candidate matched via a FULL domain-prefix
-   *        (`domainMatch`), route to it DETERMINISTICALLY — bypass the
-   *        squash/threshold. A full domain match is the strongest, most
-   *        deliberate routing signal; under the current weights a LONE domain
-   *        match squashes to EXACTLY {@link SCOPE_MATCH_THRESHOLD} (0.5) and
-   *        would otherwise route only via the edge-of-threshold `>=` gate.
-   *        The bypass gives headroom and is independent of the weight curve.
-   *      - Otherwise (tag-only / keyword-only — NO domain match): apply the
-   *        threshold to the squashed confidence. Weak signals
-   *        stay gated — only a genuine domain-prefix match gets the bypass.
-   *  - otherwise (auto_route_scope false): fall to `config.unscoped_default`.
-   *
-   * INERT until scopes declare `covers`: with no `covers` the ranker
-   * returns `[]` and every unscoped write falls to `unscoped_default`. Both
-   * `local` and `global` are PERSONAL scopes, so this is an organizational
-   * default, not a leak-safety control — the sensitivity guard runs AFTER this
-   * and still demotes an auto-routed SHARED scope carrying sensitive content.
-   *
-   * Returns the resolved scope and, when auto-routing fired, a `routed` marker
-   * `{ scope, confidence, reason }`; `routed` is null on the `unscoped_default`
-   * fall-through (so an explicit/default `global` is never mislabeled as routed).
+   * Resolve the scope for a genuinely UNSCOPED write (no explicit scope, no
+   * session/`.plur.yaml` default). With `config.auto_route_scope` (default true)
+   * run {@link suggestScope}: a full domain-prefix match routes deterministically
+   * (a lone domain match squashes to exactly the 0.5 threshold, so it bypasses
+   * the gate); weaker matches must pass the threshold. Otherwise fall to
+   * `config.unscoped_default`. Inert until scopes declare `covers`. This is an
+   * organizational default, not a leak control; the sensitivity guard runs after.
+   * `routed` is null on the fall-through, so a default `global` is never labelled routed.
    */
   /** @internal */
   _resolveUnscopedScope(statement: string, context?: LearnContext): Promise<{ scope: string; routed: { scope: string; confidence: number; reason: string } | null; refusedShared: { scope: string; confidence: number; reason: string } | null }>
@@ -187,23 +131,13 @@ export interface ScopeGuardsMethods {
   _hardScanText(statement: string, context: LearnContext | undefined): string
 
   /**
-   * Write-time leak guard. If the target scope can let data leave the machine —
-   * either SHARED (`isSharedScope`: group:/project:/space:/team:/org:/public, so
-   * others can read it) OR REMOTE-backed (`_hasUrlStoreForScope`: routes to a
-   * remote store, e.g. a personal `user:` scope on a remote server) — AND the
-   * content trips `detectSensitive` (IPs, internal hosts, basic-auth, host:port,
-   * secrets), DEMOTE to a private local scope — the engram is kept but never
-   * written to a shared/remote store — and warn. Purely-local scopes
-   * (`global`/`local`/local-file stores) are exempt: infra notes legitimately
-   * live there and never leave the machine. Called at the top of both
-   * `learn()` and `learnRouted()`, so every client (CLI, MCP, hooks, OpenClaw,
-   * Hermes) is covered, since they all route through one of those two.
-   *
-   * Per-scope policy: when the target scope declares `sensitivity` metadata,
-   * that policy decides demotion (see {@link _offendingHitsForScope}). With no
-   * metadata, any `detectSensitive` hit on a shared/remote scope demotes; the
-   * default policy (`forbid: ['secrets','infra']`, `allow: []`) reproduces
-   * that, so adding metadata is non-breaking.
+   * Write-time leak guard, called by both `learn()` and `learnRouted()` so every
+   * client is covered. If the target scope is SHARED (`isSharedScope`) or
+   * REMOTE-backed (`_hasUrlStoreForScope`) and the content trips
+   * `detectSensitive`, DEMOTE to a private local scope and warn. Purely-local
+   * scopes are exempt. A scope's `sensitivity` metadata decides via
+   * {@link _offendingHitsForScope}; the default policy (`forbid: ['secrets','infra']`)
+   * demotes on any hit.
    */
   /** @internal */
   _guardSensitiveScope(statement: string, context?: LearnContext): Promise<{ scope: string; context: LearnContext | undefined; demotion: { from: string; to: string; patterns: string } | null; routed: { scope: string; confidence: number; reason: string } | null; refusedShared: { scope: string; confidence: number; reason: string } | null; scopeSource: ScopeSource }>
@@ -221,26 +155,13 @@ export interface ScopeGuardsMethods {
   _validatedMeasuredUnder(context: LearnContext | undefined): MeasuredUnder | undefined
 
   /**
-   * The input gate every learn path runs before touching a store.
-   *
-   * The statement must be a non-empty string; line terminators are collapsed
-   * so a crafted boundary cannot be promoted to system-prompt authority by the
-   * renderer's splitter; the type must be a known engram type — checked
-   * BEFORE the secret scan so a bad type fails loudly even when the statement
-   * would also trip the detector; and, unless `config.allow_secrets`, the
-   * statement plus every caller-supplied content field — as listed by
-   * `LEARN_CONTEXT_FIELD_ROLES`, which the compiler checks against
-   * `LearnContext` — must carry no secret. Shared/remote writes are
-   * additionally policy-scanned by `_guardSensitiveScope`.
-   *
-   * `learn()` and `learnRouted()` both call it on entry. learnRouted must,
-   * because on its remote route it never enters learn(): it posts the shape it
-   * builds and the outbox fallback writes that same shape locally — a gate
-   * living only in learn() would miss the CLI and the Python SDK, and the
-   * highest-impact variant (a forged entry on a SHARED store reaching other
-   * people's system prompts). Idempotent, so the local route gating twice is
-   * harmless. Returns the sanitised statement, which every downstream gate
-   * and the content hash must see.
+   * The input gate every learn path runs before touching a store: non-empty
+   * statement with line terminators collapsed (no forged prompt boundaries);
+   * known engram type, checked BEFORE the secret scan; and, unless
+   * `config.allow_secrets`, no secret in the statement or any field listed in
+   * `LEARN_CONTEXT_FIELD_ROLES`. Both `learn()` and `learnRouted()` call it —
+   * learnRouted's remote route never enters learn(). Idempotent. Returns the
+   * sanitised statement, which every downstream gate and the content hash must see.
    */
   /** @internal */
   _validateLearnInput(fn: 'learn' | 'learnRouted', statement: string, context?: LearnContext): string
@@ -307,20 +228,11 @@ export interface ScopeGuardsMethods {
 
   /**
    * Would `learn(statement, context)` resolve to an EXISTING engram instead of
-   * writing a new one? Returns that engram's id, or null. Writes nothing.
-   *
-   * Same scope resolution (`_guardSensitiveScope`) and the same dedup code as
-   * learn(): the same-scope hash match (store seam or scan), then cross-scope
-   * recurrence over the corpus learn() scans — which on a delegating store
-   * (Postgres/PGLite) deliberately excludes the primary store (scopes are a
-   * permission boundary there). So a dry run — the importer's — predicts the
-   * real run on every backend.
-   * Covers learn()'s local dedup; secret refusal is the caller's own check.
-   *
-   * A hit the writer cannot persist (pack, readonly store, another scope's
-   * remote cache) does not count — learn() stores a new row — so it answers
-   * null. The importer asks this BEFORE learn() and skips without writing when
-   * it answers an id.
+   * writing? Returns its id, or null; writes nothing. Uses learn()'s scope
+   * resolution and dedup (incl. excluding the primary store on delegating
+   * backends), so an importer's dry run predicts the real run on every backend.
+   * A hit the writer cannot persist (pack, readonly, another scope's remote
+   * cache) answers null. Secret refusal is the caller's own check.
    */
   wouldDeduplicate(statement: string, context?: LearnContext): Promise<string | null>
 
@@ -493,18 +405,13 @@ export const scopeGuardsMethods: ScopeGuardsMethods & ThisType<Plur> = {
       writableScopeMetadata,
       weightTagOverride !== undefined ? { weightTag: weightTagOverride } : undefined,
     )
-    // ONE decision function, shared with `previewAutoRoute` (and through it the
-    // `plur_suggest_scope` surface), so the write path and the suggestion tool
-    // cannot disagree about where an unscoped write lands.
-    //
-    // A FORWARD domain match routes deterministically; everything weaker stays
-    // gated by `matchThreshold`. A SHARED candidate is refused unless this
-    // install opted in: an unscoped write landing in a team store would be
-    // pushed to its remote, where local cleanup cannot undo it. A refused
-    // shared candidate does not end the search — the next eligible PERSONAL
-    // candidate still wins. A URL-backed personal candidate that is not the
-    // user's own `/me` namespace (or whose identity is unknown) is refused
-    // exactly like a shared one — same predicate as previewAutoRoute.
+    // ONE decision function, shared with `previewAutoRoute`, so the write path
+    // and `plur_suggest_scope` cannot disagree. A forward domain match routes
+    // deterministically; weaker matches stay gated by `matchThreshold`.
+    // SHARED candidates are refused unless the install opted in (a push to a
+    // team remote cannot be undone locally); a URL-backed personal scope that is
+    // not the user's own `/me` namespace is refused the same way. The next
+    // eligible PERSONAL candidate still wins.
     const decision = decideAutoRoute(candidates, {
       matchThreshold,
       allowSharedScope: scopeRoutingCfg.allow_shared_auto_route === true,
@@ -680,20 +587,12 @@ export const scopeGuardsMethods: ScopeGuardsMethods & ThisType<Plur> = {
         throw new Error(`Secret detected in statement or context: ${secrets[0].pattern}. Use config.allow_secrets to override.`)
       }
     }
-    // Prompt-injection check for auto-harvested writes. An adapter that
-    // harvests engrams from text an agent merely READ (a webpage it
-    // summarized, a file it was asked to quote, tool output) can carry
-    // attacker-authored content the agent never asserted on its own account.
-    //
-    // The distinguishing signal is `claim_class: 'inferred'` — "I worked this
-    // out", set by every automatic harvester (opencode's self-report/user-text
-    // paths; `@plur-ai/mcp`'s `plur_session_end` engram_suggestions) and never
-    // by a human calling `plur_learn` directly. Gating on it rather than on
-    // `source` (free text, one string per adapter) means a human-invoked write
-    // is untouched by construction. Refuses (does not quarantine) on a hit,
-    // mirroring the secret check above: there is no queued-for-review path for
-    // engram writes, and a caller can still write the statement as
-    // `asserted`/omitted if it genuinely came from the user.
+    // Prompt-injection check for auto-harvested writes: text an agent merely
+    // READ can carry attacker-authored content. Gate on `claim_class: 'inferred'`
+    // (set by every automatic harvester, never by a human `plur_learn`), not on
+    // free-text `source`, so human writes are untouched. Refuse rather than
+    // quarantine, like the secret check: there is no review queue for engram
+    // writes, and a genuine user statement can be written as `asserted`.
     if (context?.claim_class === 'inferred') {
       const injections = detectPromptInjection(this._hardScanText(statement, context))
       if (injections.length > 0) {

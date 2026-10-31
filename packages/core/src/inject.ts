@@ -11,18 +11,12 @@ import { isNotYetValid, isExpired, isExpiredBeyondGrace } from './validity.js'
 import { ftsTokenize } from './fts.js'
 
 /**
- * Recall/inject asymmetry. When an inject is given an EXPLICIT
- * `scopeFilter === 'global'`, the first branch of scoreEngram returns ONLY
- * `global`-scoped engrams — it is TARGETED global-namespace injection, NOT a
- * personal-family catch-all. This is intentionally narrower than a PROJECT-scope
- * filter, whose branch passes ALL personal-family scopes (`local`, `global`,
- * `user:*`, `agent:*`).
- *
- * An explicit `scope=global` RECALL returns all personal-family engrams
- * (because `isPersonalScope('global')` is true), whereas an explicit
- * `scope=global` INJECT returns only `global`. The asymmetry is deliberate. A
- * change that makes global inject a personal-family catch-all MUST rename
- * this constant so the intent is unmistakable. See the D1-ASYMMETRY tests.
+ * Recall/inject asymmetry, deliberate: an explicit `scope=global` INJECT returns
+ * only `global`-scoped engrams (targeted injection), while an explicit
+ * `scope=global` RECALL returns all personal-family engrams, and a project-scope
+ * inject filter passes all personal-family scopes. A change that makes global
+ * inject a personal-family catch-all MUST rename this constant. See the
+ * D1-ASYMMETRY tests.
  */
 export const INJECT_GLOBAL_IS_TARGETED = true
 
@@ -84,17 +78,11 @@ export interface InternalInjectionResult {
 const DEFAULT_MAX_TOKENS = 8000
 const DEFAULT_MIN_RELEVANCE = 0.3
 /**
- * Nearby-variant suppression. With the meaning model available, an
- * unpinned candidate is left out when a clearly better match is nearly the same
- * rule: its relevance is below NEIGHBOUR_RELEVANCE_RATIO of that match's, and
- * the two statements share at least NEIGHBOUR_SIMILARITY of their words
- * (Jaccard over the search tokens). Such a pair is one rule written for two
- * situations; the task matches one of them better, so the other does not apply.
- * Memories on other parts of the task share few words with the best match and
- * are kept, and so are variants about as relevant (a variant naming a sibling
- * service while sharing most of the task's words stays above the ratio).
- * On a labelled task set the result changes smoothly between 0.1 and 0.25
- * similarity and between 0.78 and 0.84 relevance ratio.
+ * Nearby-variant suppression (needs the meaning model): an unpinned candidate is
+ * left out when a clearly better match is nearly the same rule — its relevance
+ * is below NEIGHBOUR_RELEVANCE_RATIO of that match's, and the statements share
+ * at least NEIGHBOUR_SIMILARITY of their words (Jaccard over search tokens).
+ * Memories on other parts of the task, and variants about as relevant, are kept.
  */
 const NEIGHBOUR_SIMILARITY = 0.2
 const NEIGHBOUR_RELEVANCE_RATIO = 0.8
@@ -218,16 +206,9 @@ function skipForValidity(
 }
 
 /**
- * An engram awaiting human approval MUST NOT be injected.
- *
- * `commitment: 'draft'` means the engram is sitting in a review queue: it is
- * not part of shared memory and must not shape an agent's behaviour. Enforced
- * here, in core, so the guarantee does not depend on every deployment
- * reimplementing it.
- *
- * Retrieval is deliberately unaffected — an explicit `plur_recall` may still
- * return a draft. Review requires being able to read the thing under review;
- * what is gated is automatic delivery into an agent's context.
+ * An engram awaiting human approval (`commitment: 'draft'`) MUST NOT be
+ * injected; enforced in core so no deployment has to reimplement it. Explicit
+ * retrieval (`plur_recall`) is deliberately unaffected, so drafts can be reviewed.
  */
 function skipForApproval(engram: Engram): boolean {
   return (engram as { commitment?: string }).commitment === 'draft'
@@ -282,17 +263,11 @@ export function isConstraintCandidate(e: Pick<Engram, 'statement' | 'polarity'> 
 }
 
 /**
- * Where a pinned row came from, for ordering.
- *
- * 0 = primary store, 1 = a `stores:` entry or remote store, 2 = an installed
- * pack. Markers are stamped by the LOADER (`_storeScope` in index.ts and
- * remote-recall.ts, `_pack` in the pack loop below), never by the row itself —
- * so a row that ships its own marker can only rank itself lower, never claim
- * to be primary.
- *
- * This is a security control, not a preference. `pinned` bypasses the
- * relevance gate, so without it an installed pack could fill the pinned budget
- * and displace the user's own always-load rules.
+ * Where a pinned row came from, for ordering: 0 = primary store, 1 = a `stores:`
+ * entry or remote store, 2 = an installed pack. Markers are stamped by the
+ * LOADER (`_storeScope`, `_pack`), never trusted from the row, so a row can only
+ * rank itself lower. Security control: `pinned` bypasses the relevance gate, so
+ * without this a pack could displace the user's own always-load rules.
  */
 export function pinnedOriginRank(e: Record<string, unknown>): 0 | 1 | 2 {
   if (typeof e._pack === 'string') return 2
@@ -301,33 +276,18 @@ export function pinnedOriginRank(e: Record<string, unknown>): 0 | 1 | 2 {
 }
 
 /**
- * Cost of an engram against the injection budget.
- *
- * Estimates what the formatters actually EMIT, not the stored record: runtime
- * state such as `activation`, `feedback_signals`, `usage` or `provenance`
- * reaches no layer and must not be charged.
- *
- * Estimated at the RICHEST layer (3: statement + contraindications + rationale
- * + meta line). Constraints are charged at that layer too; over-charging costs
- * a little budget, while under-charging overflows the context.
- *
- * MUST stay in step with formatLayer2/formatLayer3. If a formatter starts
- * emitting a field this does not count, the budget silently drifts from
- * reality.
+ * Cost of an engram against the injection budget: what the formatters EMIT, not
+ * the stored record (runtime state such as `activation` or `usage` is not
+ * charged). Estimated at the richest layer; over-charging costs a little budget,
+ * under-charging overflows the context. MUST stay in step with
+ * formatLayer2/formatLayer3.
  */
 export function estimateTokens(engram: ScoredEngram): number {
-  // Measured by rendering through the formatters themselves: a hand-kept
-  // field sum drifts from what formatLayer3 emits (e.g. `Kind: <claim_class>`
-  // or the soft-expiry prefix). Rendering is the only estimate that cannot drift.
-  //
-  // Charged at the RICHER of the layers an engram can render at (3 for
-  // directives/constraints, 1 for consider), since selection happens before
-  // the bucket is known. `confidence_score` is a placeholder of the same
-  // rendered width ("0.00"); +1 is the newline that joins entries.
-  //
-  // The field-sum estimate is kept as a FLOOR: budgets and fixtures are
-  // calibrated against it, so rendering can only add cost where the field sum
-  // under-charges — it never loosens an existing budget.
+  // Measured by rendering through the formatters, so the estimate cannot drift.
+  // Charged at the richer layer an engram can render at (selection happens
+  // before the bucket is known); `confidence_score` is a same-width placeholder,
+  // +1 is the joining newline. The field-sum estimate stays as a FLOOR so no
+  // existing budget is loosened.
   const wire = { ...engram, confidence_score: 0 } as unknown as WireEngram
   const rendered = Math.max(formatLayer3(wire).length, formatLayer1(wire).length) + 1
   return Math.ceil(Math.max(rendered, legacyEstimateChars(engram)) / 4)
@@ -439,22 +399,12 @@ function isSupersededEngram(engram: ScoredEngram): boolean {
 }
 
 /**
- * Replaced by an engram that this session could deliver. Such an engram is not
- * current: the correction that replaced it is, so it is not injected (outside
- * a historical prompt). When no replacement is deliverable here — retired,
- * living only in a remote store, a draft awaiting approval, expired,
- * in an on_request pack, or in a scope this injection cannot see —
- * dropping the old engram would leave the session with neither, so the ×0.3
- * re-rank still applies instead.
- *
- * A supersede loop is not a replacement. Self-supersession, and a replacement
- * whose own superseded_by chain leads back to this engram (A → B → A), would
- * otherwise make every member of the loop disappear; each member keeps the
- * ×0.3 re-rank instead.
- *
- * Only DIRECT superseded_by edges count. On a chain A → B → C where B is not
- * deliverable and C is, A is not suppressed: it keeps the ×0.3 re-rank and is
- * injected beside C.
+ * Replaced by an engram this session could deliver, so not injected (outside a
+ * historical prompt). When no replacement is deliverable here (retired,
+ * remote-only, draft, expired, on_request pack, invisible scope), the ×0.3
+ * re-rank applies instead so the session is not left with neither.
+ * - A supersede loop (self, or A → B → A) is not a replacement; members keep the re-rank.
+ * - Only DIRECT superseded_by edges count (A → B → C with only C deliverable: A stays).
  */
 function isReplacedByDeliverable(
   engram: Engram,
@@ -468,17 +418,11 @@ function isReplacedByDeliverable(
 }
 
 /**
- * A row of ANOTHER store that a primary row supersedes, read from
- * the primary row's forward edge. The reverse edge written into that store
- * names the replacement in a primary-qualified form no view resolves to a
- * loaded id (in the store's own view it must name nothing), so in this view the
- * forward edge is what says the old row is replaced.
- *
- * Only primary rows count, and only edges to a namespaced (other-store) id:
- * a store row's or pack row's forward edge must never hide a row of another
- * store, and primary-to-primary supersession keeps working by the reverse edge
- * store, and primary-to-primary supersession keeps working by the reverse
- * edge. A primary row is one with no loader marker and a bare id.
+ * A row of ANOTHER store that a primary row supersedes, read from the primary
+ * row's forward edge (the reverse edge in that store resolves to no loaded id).
+ * Only primary rows (no loader marker, bare id) and only edges to a namespaced
+ * id count: a store or pack row must never hide another store's row.
+ * Primary-to-primary supersession keeps using the reverse edge.
  */
 function isPrimaryRow(e: Engram): boolean {
   const m = e as { _storeScope?: unknown; _fromRemoteStore?: unknown; _pack?: unknown }
@@ -520,16 +464,10 @@ function stripScoring(engram: AgentEngram): WireEngram {
 
 /**
  * Is `engram` visible under the inject's scope filter? The SAME decision as the
- * scope gate at the top of `scoreEngram` (targeted `global`, else
- * `makeVisibilityPredicate`), exposed as a boolean.
- *
- * `scoreEngram` answers 0 both for "excluded by scope" and for "no keyword
- * hits". Three paths in `selectAndSpread` revive a 0 — the pinned exemption,
- * the semantic-only embedding boost, and spreading activation — and they are
- * right to revive a no-hits 0 and wrong to revive an excluded one (e.g. a
- * pinned engram in an ungranted `group:*` scope under `scope: 'project:a'`).
- * Invisible engrams are therefore dropped before scoring and never enter the
- * spreading map.
+ * scope gate in `scoreEngram`, as a boolean. Needed because `scoreEngram`
+ * returns 0 for both "excluded" and "no hits", and the pinned exemption,
+ * embedding boost and spreading activation may revive only the latter.
+ * Invisible engrams are dropped before scoring and never enter the spreading map.
  */
 export function isInjectVisible(
   engramScope: string,
@@ -665,19 +603,14 @@ export interface OmittedPinned {
 }
 
 /**
- * Tokens the hard tier holds back from the soft tier in one injection: what the
- * hard-pinned candidates cost, up to the hard cap.
- *
- * Computed ONCE over every candidate and shared through the ledger, because
- * selection runs in several section passes. Without the reservation a
- * soft pin in the constraints pass could spend the pinned share before a hard
- * pin in the directives pass is even looked at — inverting the tiers.
+ * Tokens the hard tier holds back from the soft tier: what the hard-pinned
+ * candidates cost, up to the hard cap. Computed ONCE over every candidate and
+ * shared through the ledger, so a soft pin in an earlier section pass cannot
+ * spend the share before a hard pin is looked at.
  */
 //
-// Known limitation: a hard pin that can never fit (larger than the cap, or than
-// what the section passes leave) still counts toward the reserve, so the soft
-// tier can be held back by up to the cap for a pin that is then reported as
-// omitted. The write-time cap makes that state rare; it is not corrected here.
+// Known limitation: a hard pin that can never fit still counts toward the
+// reserve; the write-time cap makes that rare and it is not corrected here.
 export function hardPinnedReserve(scored: Array<ScoredEngram>, hardCap: number): number {
   let sum = 0
   for (const e of scored) {
@@ -687,13 +620,8 @@ export function hardPinnedReserve(scored: Array<ScoredEngram>, hardCap: number):
 }
 
 /**
- * Union the per-pass omission lists into what the caller actually did not get.
- *
- * One entry per engram, and nothing that a later pass went on to select — an
- * engram skipped by the constraints floor may still land in the slack pass, and
- * reporting it as omitted would be a lie in the other direction.
- *
- * Extracted so the empty guard and the normal return cannot disagree.
+ * Union the per-pass omission lists into what the caller actually did not get:
+ * one entry per engram, and nothing a later pass went on to select.
  *
  * @param all - omissions from every pass, in pass order.
  * @param selected - the engrams that made the final set.
@@ -752,19 +680,12 @@ export function fillTokenBudget(
   }
   let tokensUsed = 0
 
-  // Two-pass selection: pinned engrams first, then the rest. Pinned items
-  // ignore per-pack and per-domain fairness caps because they're meant to be
-  // always-load; they respect maxTokens AND the pinned share (and the hard
-  // tier its sub-cap inside it), and the rest gets what they leave.
-  // Primary-store pins first, then `stores:`/remote, then packs; score orders
-  // within an origin. Sorted before selection so budget pressure can never let
-  // a pack pin in ahead of one of the user's own.
-  //
-  // Pinned two-tier model: WITHIN an origin, hard-tier pins come first, then
-  // soft pins by `pinned_priority` (higher first), then score. Origin stays the
-  // outer key — the tiers must not reopen the trust boundary it enforces. An
-  // engram with no tier fields is soft at the default priority, so for a store
-  // that never sets them the order is exactly origin, then score.
+  // Two-pass selection: pinned engrams first, then the rest. Pins ignore
+  // per-pack/per-domain fairness caps but respect maxTokens and the pinned share
+  // (hard tier: its sub-cap). Order: origin (primary, stores/remote, packs), so
+  // budget pressure never admits a pack pin ahead of the user's own; within an
+  // origin, hard tier, then soft by `pinned_priority`, then score. Origin stays
+  // the outer key so tiers cannot reopen the trust boundary.
   const pinned = scored.filter(e => (e as any).pinned === true).sort((a, b) =>
     pinnedOriginRank(a as never) - pinnedOriginRank(b as never)
     || (isHardPinned(a as never) ? 0 : 1) - (isHardPinned(b as never) ? 0 : 1)
@@ -788,18 +709,10 @@ export function fillTokenBudget(
     return r.pinned_tier === 'soft' || r.pinned_priority != null ? 'soft-tier-budget' : 'pinned-sub-budget'
   }
 
-  // Omissions are REPORTED, not silent. `pinned: true` reads as a promise of
-  // always-load, but pinning is priority-subject-to-capacity: a pinned engram
-  // that does not fit the sub-budget is skipped even when the overall budget
-  // has room, and callers must be able to see what they did not get.
+  // Omissions are REPORTED, not silent: pinning is priority-subject-to-capacity.
   // Once a pin is skipped for budget, no LOWER-origin pin may be admitted after
-  // it, so a large primary pin cannot be skipped while smaller pack pins still
-  // get in. Within one origin, greedy is fine and wastes less budget.
-  //
-  // The rule is kept per tier: the hard tier draws on its own reserve, which
-  // no soft pin can spend, so a soft skip must not block a lower-origin hard
-  // pin and vice versa. A total-budget skip means no room at all and blocks
-  // both. With no hard-tier engrams only the soft rank is ever set.
+  // it; within one origin, greedy is fine. Kept per tier (the hard tier has its
+  // own reserve); a total-budget skip blocks both tiers.
   let skippedRankSoft: number | null = null
   let skippedRankHard: number | null = null
   const lower = (cur: number | null, rank: number) => cur === null ? rank : Math.min(cur, rank)
@@ -1090,26 +1003,13 @@ export function selectAndSpread(
   }
 
   // Step 6: Fill section budgets — CONSTRAINTS FIRST, from a reserved floor.
-  //
-  // `isConstraintCandidate` mirrors the wire-time routing below (polarity
-  // 'dont', or cognitive_level apply/analyze). It must stay in step with it:
-  // if the two disagree, the floor reserves space for engrams that then get
-  // rendered into a different section.
-  //
-  // PINNED FIRST, across both sections, in ONE origin-ordered pass. Selecting
-  // pins inside each section pass would apply the origin ordering only within
-  // a pass, so an installed pack's pin could be admitted in one pass and the
-  // user's own primary pin refused in a later one. One pass over every pin
-  // makes the origin rule global; the section passes below see only unpinned
-  // engrams and draw on what the pins left.
-  //
-  // ONE ledger for every pass drawing on `maxTokens`. The pinned sub-budget is
-  // a share of the injection; granting it per pass would multiply it by the
-  // number of passes and let pinned starve contextual recall.
-  //
-  // Pinned two-tier model: the hard-tier reserve is computed over ALL
-  // candidates, so within the origin-ordered pinned pass a higher-origin soft
-  // pin cannot spend the share a lower-origin hard pin is entitled to.
+  // - `isConstraintCandidate` must stay in step with the wire-time routing
+  //   below, or the floor reserves space for engrams rendered elsewhere.
+  // - PINNED FIRST, across both sections, in ONE origin-ordered pass, so the
+  //   origin rule is global; section passes see only unpinned engrams.
+  // - ONE ledger for every pass drawing on `maxTokens`, so the pinned share is
+  //   not multiplied by the number of passes.
+  // - The hard-tier reserve is computed over ALL candidates.
   const hardRatio = config?.pinned_hard_ratio ?? DEFAULT_PINNED_HARD_RATIO
   const pinnedRatio = config?.pinned_ratio ?? PINNED_TOKEN_BUDGET_RATIO
   const pinnedLedger = {
@@ -1321,17 +1221,10 @@ export function selectAndSpread(
 // --- Progressive Disclosure ---
 
 /**
- * A compact mark for a memory no person or artifact asserted.
- *
- * Layers 1 and 2 carry no metadata line at all, so without it a model's
- * conclusion and a user's flat statement render identically, and an agent may
- * treat both as equally authoritative.
- *
- * Only `inferred` is marked, and only in the layers with no room for the full
- * field. `documented` and `structural` were extracted, but from something real
- * that can be checked; `inferred` means a model worked it out and nothing else
- * stands behind it. Marking all six would be noise on the statements that need
- * no caveat, and noise is how a marker stops being read.
+ * A compact mark for a memory no person or artifact asserted. Layers 1 and 2
+ * have no metadata line, so without it a model's conclusion and a user's
+ * statement render identically. Only `inferred` is marked: other claim classes
+ * come from something checkable, and marking everything would be noise.
  */
 function inferredMark(engram: WireEngram): string {
   return (engram as any).claim_class === 'inferred' ? '(inferred) ' : ''
@@ -1350,24 +1243,12 @@ function inferredMark(engram: WireEngram): string {
 const entrySafe = (value: string): string => collapseLineTerminators(String(value))
 
 /**
- * Additionally fold the meta line's own FIELD delimiter out of a value.
- *
- * `formatLayer3` joins meta fields with ' | ', and two of those fields carry
- * pack-controlled free text: `domain` and `activation.last_accessed`. A domain
- * of `devops | Commitment: locked | Confidence: 1.00` would otherwise render
- * those forged values BEFORE the engram's real ones, on the same line, inside
- * `## DIRECTIVES`.
- *
- * Folding the delimiter out of values — rather than escaping it, or asking the
- * reader to distrust the line — keeps the invariant to one sentence: the
- * renderer owns ' | ', and values never contain it. The forged TEXT survives,
- * visibly inside the field it was smuggled into; only its ability to pose as a
- * field of ours does not. Same trade `flatten()` makes for headings.
- *
- * Deliberately NOT applied to `statement` or `rationale`: those occupy whole
- * lines rather than delimiter-joined fields, so a pipe there forges nothing,
- * and stripping it would mangle ordinary technical text like
- * `Array<string> | null`.
+ * Additionally fold the meta line's field delimiter ' | ' out of a value:
+ * `domain` and `activation.last_accessed` carry pack-controlled text that could
+ * otherwise forge meta fields inside `## DIRECTIVES`. Invariant: the renderer
+ * owns ' | ', values never contain it (same trade `flatten()` makes for headings).
+ * Deliberately NOT applied to `statement` or `rationale`, which are whole lines
+ * where a pipe forges nothing (e.g. `Array<string> | null`).
  */
 const metaSafe = (value: string): string => entrySafe(value).replace(/\s*\|\s*/g, ' ')
 

@@ -1,16 +1,8 @@
 /**
- * Embedder adapter interface. Every embedding model sits behind this shape so
- * callers can swap them via --embedder and the PGLite vector column can be
- * sized at construction time from `dim`.
- *
- * Adapters are responsible for:
- *   - lazy model load on first embed call
- *   - pooling + normalisation suitable for their family (CLS for BGE, mean
- *     for MiniLM, model-specific for EmbeddingGemma)
- *   - returning Float32Arrays of exactly `dim` floats
- *
- * Adapters must be stateless w.r.t. caller — repeated embed("foo") calls
- * produce identical output once the model is loaded.
+ * Embedder adapter interface: models swap via --embedder, and `dim` sizes the
+ * PGLite vector column at construction. Adapters load lazily, pool and
+ * normalise per family (CLS for BGE, mean for MiniLM), return exactly `dim`
+ * floats, and are deterministic once loaded.
  */
 
 /** Asymmetric embedding role — models that use role-aware prefixes (e.g. EmbeddingGemma)

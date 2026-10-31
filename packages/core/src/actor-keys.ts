@@ -1,26 +1,11 @@
 /**
  * Per-actor Ed25519 signing keys for engram store checkpoints.
- *
- * ## Key storage layout
- *
- *   ~/.plur/keys/<identity>.key   — PKCS#8 DER, mode 0600, never in a repo or store
- *   <store-root>/keys.yaml        — public key registry (identity → SPKI DER base64, added_at)
- *
- * ## What this makes possible
- *
- * When a key exists for the acting identity, `emitCheckpoint` gains a
- * `signature` field — Ed25519 over the checkpoint event's canonical bytes
- * (the same canonical form everything else hashes). `plur verify --signatures`
- * then checks that field against the public key in `keys.yaml`.
- *
- * An unsigned checkpoint is a valid L2 object; the signature upgrades it to
- * L3-capable. A signature from an unknown identity is a named failure, not a
- * skip.
- *
- * ## No external dependencies
- *
- * All operations use `node:crypto`. YAML stays the source of truth; no
- * runtime dependencies are added to plur core.
+ *   ~/.plur/keys/<identity>.key — PKCS#8 DER, mode 0600, never in a repo or store
+ *   <store-root>/keys.yaml      — public registry (identity → SPKI DER base64, added_at)
+ * With a key for the acting identity, `emitCheckpoint` adds an Ed25519
+ * `signature` over the event's canonical bytes; `plur verify --signatures`
+ * checks it. Unsigned checkpoints stay valid L2; a signature from an unknown
+ * identity is a named failure, not a skip. Uses only `node:crypto`.
  */
 import * as fs from 'node:fs'
 import * as crypto from 'node:crypto'
@@ -97,15 +82,8 @@ export function keysRegistryPath(storeRoot: string): string {
 }
 
 /**
- * Generate an Ed25519 key pair and persist the private key.
- *
- * Private key written as PKCS#8 DER to `keysDir/<identity>.key`, mode 0600.
- * `keysDir` is created if it does not exist.
- *
- * Idempotent: if a valid key file already exists for `identity`, the existing
- * public key is returned without generating a new pair — callers can run
- * `plur keys init` safely more than once.
- *
+ * Generate an Ed25519 key pair and write the private key as PKCS#8 DER to
+ * `keysDir/<identity>.key` (mode 0600). Idempotent: an existing valid key is reused.
  * @param identity - the actor identity string (e.g. `"agent:miles"`)
  * @param keysDir  - directory that holds private keys (e.g. `~/.plur/keys`)
  * @returns the Ed25519 public key as SPKI DER, base64-encoded
@@ -254,15 +232,8 @@ export function lookupPublicKey(storeRoot: string, identity: string): string | n
 }
 
 /**
- * Register (or update) an identity's public key in `<storeRoot>/keys.yaml`.
- *
- * Idempotent: if the identity is already registered with the same public key,
- * the registry is left unchanged. If registered with a DIFFERENT key, the
- * entry is replaced (not appended) and `added_at` updated; key rotation is
- * not handled.
- *
- * The registry is written atomically (temp-file + rename).
- *
+ * Register an identity's public key in `<storeRoot>/keys.yaml` (atomic write).
+ * Same key: unchanged. Different key: the entry is replaced; rotation is not handled.
  * @param storeRoot   - the store root directory
  * @param identity    - the actor identity string
  * @param publicKeyB64 - the public key to register, SPKI DER base64-encoded

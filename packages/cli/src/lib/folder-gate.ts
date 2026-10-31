@@ -33,24 +33,13 @@ export {
 } from '@plur-ai/core'
 
 /**
- * The folder map in the editor hooks. Every hook asks one question first —
- * what has the user decided about this folder? — and this module answers it:
- *
- *   - `on`  → the hook does its normal work. The policy's `scope` (a map
- *             entry's scope, else a trusted `.plur.yaml`'s hint) is the
- *             session scope, which is also what makes core dial the team
- *             store that scope belongs to.
- *   - `off` → the hook is silent and does nothing at all.
- *   - `ask` → the hook is silent, except the prompt-level inject hook of each
- *             editor, which on the first prompt of a session emits the one
- *             question built by {@link folderAskOnce} instead of memories.
- *   - `remote-only` → the hook works as for `on`, with its Plur instance bound
- *             to the folder ({@link bindHookFolder}): core then writes only to
- *             the folder's team scope and reads only that scope (dialled) and
- *             installed packs. If the team server does not answer, the session
- *             starts without memory and says so once ({@link remoteOnlyLines}).
- *
- * Only the CLI (`plur folders set`) writes the map; nothing here writes it.
+ * The folder map in the editor hooks — what has the user decided about this folder?
+ *   - `on`  → normal work; the policy's `scope` (map entry, else a trusted `.plur.yaml`) is the session scope.
+ *   - `off` → silent, does nothing.
+ *   - `ask` → silent, except each editor's prompt-level inject hook asks {@link folderAskOnce} once per session.
+ *   - `remote-only` → as `on`, bound to the folder ({@link bindHookFolder}): only the team scope and packs; if the
+ *     server is down the session starts without memory and says so once ({@link remoteOnlyLines}).
+ * Only the CLI (`plur folders set`) writes the map.
  */
 
 /** The PLUR home the hooks read the map from: `--path`, else PLUR_PATH, else ~/.plur. */
@@ -198,35 +187,14 @@ function within(dir: string, root: string): boolean {
 }
 
 /**
- * What a Cursor hook decides for the workspace. Cursor runs a hook
- * wherever it likes (a plugin's folder, for hooks loaded from a plugin) and
- * names the workspace in `workspace_roots`; some hooks also send the tool's
- * `cwd`. Every Cursor hook calls this, so they all reach the same decision
- * for the same workspace, and it is the MCP server's decision
- * (workspaceWriteScope and the folder gate in packages/mcp):
- *
- *  - The inputs are the workspace roots. Only when the payload has no
- *    `workspace_roots` key: its `cwd`, else (no `cwd` either) the hook
- *    process folder.
- *  - Roots that are present but unusable — not a list, an empty list, an
- *    entry that is not an absolute path or a local `file://` URI — fail
- *    closed: off, so no scope, no question and no memory. Never the process
- *    folder: that is where Cursor started the hook, not the workspace.
- *  - Each input is realpath-resolved before the folder map and `.plur.yaml`
- *    are read, so a link takes the decision of the folder it points at.
- *  - Off wins: any root off — including a root that does not exist (an
- *    unmounted disk), checked by its path as given — or a payload `cwd` that
- *    is off, makes the whole workspace off, for every hook.
- *  - The question is about the first undecided root that exists and is not
- *    the home folder, a folder above it or a filesystem root (an answer there
- *    would cover every folder under it). With no such root, an undecided
- *    workspace is off (asked about nothing, nothing loaded).
- *  - A remote-only root makes the workspace remote-only (fail
- *    closed): memory then lives only on that root's team server.
- *  - Otherwise memory is on. The scope applies only when every root exists,
- *    is not home or above, and is on with that same scope; else no scope.
- *  - A payload `cwd` never decides by itself when there are roots: it picks
- *    which root the output belongs to (the root it is in), nothing more.
+ * What a Cursor hook decides for the workspace — the same decision as the MCP server's folder gate.
+ *  - Inputs are `workspace_roots`; only without that key: `cwd`, else the hook process folder.
+ *  - Present but unusable roots fail closed (off) — never the process folder. Inputs are realpath-resolved.
+ *  - Off wins: any root off (including a missing one, by its given path) or an off `cwd` makes the workspace off.
+ *  - The question concerns the first undecided existing root that is not home, above home or a filesystem root;
+ *    with none, an undecided workspace is off. A remote-only root makes it remote-only (fail closed).
+ *  - Otherwise on; the scope applies only when every root exists, is below home and is on with that same scope.
+ *  - With roots present, `cwd` only picks which root the output belongs to.
  */
 export function cursorHookFolder(
   input: Record<string, unknown> | null | undefined,
@@ -356,24 +324,12 @@ export interface FolderReadContext {
 }
 
 /**
- * The remote side of a `plur recall` / `plur inject` run in `cwd`. Local
- * memory is always read and printed; this decides only what leaves the
- * machine, by the MCP server's rule for the same folder:
- *
- *  - a broken folder map: no store is contacted, whatever `--scope` says
- *    (MCP refuses every memory tool until the map is fixed). One stderr note
- *    says so and names the repair command;
- *  - an `off` folder: no store is contacted, whatever `--scope` says (MCP
- *    refuses an `off` folder outright);
- *  - an undecided folder: no store is contacted for an unscoped read. An
- *    explicit `--scope` is the user's own choice for this one command and is
- *    honoured. The home folder, a folder above it and a filesystem root are
- *    never undecided here, as over MCP (an answer there would cover every
- *    folder under it), so a read there contacts stores as usual;
- *  - an `on` folder: an explicit `--scope` wins in core; otherwise the
- *    folder's scope (core's workspaceFolderScope, the MCP resolver) is the
- *    dialing context, registered under an internal key. It is a dialing
- *    context, not a filter: local results are unchanged.
+ * The remote side of `plur recall` / `plur inject` in `cwd` (local memory is always read), by the MCP rule:
+ *  - broken folder map: no store contacted, whatever `--scope` says; one stderr note names the repair command;
+ *  - `off`: no store contacted, whatever `--scope` says;
+ *  - undecided: none for an unscoped read; explicit `--scope` is honoured (home, above home and filesystem roots
+ *    are never undecided);
+ *  - `on`: explicit `--scope` wins; else the folder's scope is the dialing context (not a filter).
  */
 export function folderReadContext(plur: Plur, explicitScope: string | undefined, cwd: string = process.cwd()): FolderReadContext {
   const root = plur.storageRoot

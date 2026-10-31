@@ -27,46 +27,22 @@ const SECRET_PATTERNS: { name: string; regex?: RegExp; find?: (text: string) => 
   { name: 'github_token', regex: /(?<![A-Za-z])gh[pousr]_[A-Za-z0-9]{36,}/ },
   // GitHub fine-grained PAT: `github_pat_`, 22 base62, `_`, 59 base62.
   { name: 'github_pat', regex: /(?<![A-Za-z])github_pat_[A-Za-z0-9]{22,}_[A-Za-z0-9]{40,}/ },
-  // GitLab's documented token prefixes (docs.gitlab.com, "Token prefixes"):
-  // personal/project/group/impersonation access (`glpat-`), OAuth application
-  // secret (`gloas-`), deploy (`gldt-`), runner authentication (`glrt-`, or
-  // `glrtr-` when created by registration), CI/CD job (`glcbt-`), trigger
-  // (`glptt-`), feed (`glft-`), incoming mail (`glimt-`), Kubernetes agent
-  // (`glagent-`), workspace (`glwt-`), SCIM (`glsoat-`), feature-flag client
-  // (`glffct-`).
-  //
-  // Legacy bodies are 20 base64url characters, so `-` and `_` are legitimate
-  // inside a token and cannot be excluded; routable bodies are longer and end
-  // in `.xx.xxxxxxx`, which the 20-character run still matches before the dot.
-  // Because hyphens are allowed, a docs slug such as `glrt-` followed by
-  // "runner-authentication-tokens" has the right length, and prose URLs like
-  // it are common. What a random body has and a slug does not is case or digit structure, so the
-  // body must also contain a lower-or-digit followed by an upper, an upper
-  // followed by an upper or digit, or four digits. A lowercase or Title-Case
-  // slug has none of these; a seeded sample of 12,000 random 20-character
-  // bodies in the test suite checks that real tokens still match.
-  //
-  // Both lookahead runs are bounded to 64 characters. Unbounded, every
-  // repeated prefix scans to the end of the run, so input such as
-  // `glpat-glpat-glpat-…` takes quadratic time, and packs and engrams are
-  // scanned up to 1 MiB. The structure check looks at the first 64 characters
-  // of the body, which covers every legacy 20-character body.
+  // GitLab's documented token prefixes (docs.gitlab.com, "Token prefixes").
+  // Bodies may contain `-` and `_`, so docs slugs like `glrt-runner-...` have
+  // the right length; the body must also show case/digit structure (lower-or-
+  // digit then upper, upper then upper-or-digit, or four digits), which slugs
+  // lack. A seeded random-body test checks real tokens still match.
+  // Lookahead runs are bounded to 64 characters to avoid quadratic time on
+  // repeated prefixes (`glpat-glpat-…`).
   {
     name: 'gitlab_token',
     regex: /(?<![A-Za-z])(?:glpat|gloas|gldt|glrtr|glrt|glcbt|glptt|glft|glimt|glagent|glwt|glsoat|glffct)-(?=[A-Za-z0-9_-]{0,64}(?:[a-z0-9][A-Z]|[A-Z][A-Z0-9])|(?:[A-Za-z_-]{0,64}[0-9]){4})[A-Za-z0-9_-]{20,}/,
   },
-  // Slack. Bot (`xoxb-`), user (`xoxp-`) and legacy session (`xoxs-`) tokens
-  // open with a numeric workspace id of eight or more digits, then more ids
-  // and a random tail. Legacy workspace tokens (`xoxa-`, `xoxr-`) are an
-  // optional single digit and `-`, then an unbroken alphanumeric run.
-  // Requiring the long numeric id, or an unbroken run with both letters and
-  // digits, keeps prose out: a short number followed by
-  // hyphenated words is not a token.
-  //
-  // App-level tokens (`xapp-1-<app id>-<number>-<hex>`) and token-rotation
-  // tokens — refresh (`xoxe-1-…`) and the rotating access tokens
-  // (`xoxe.xoxp-1-…`, `xoxe.xoxb-1-…`), whose bodies are well over 100
-  // alphanumerics — are separate shapes.
+  // Slack: `xoxb-`/`xoxp-`/`xoxs-` need a numeric id of 8+ digits; legacy
+  // `xoxa-`/`xoxr-` need an unbroken run with letters and digits, so short
+  // numbers followed by hyphenated words (prose) do not match.
+  // App-level (`xapp-`) and rotation (`xoxe-`, `xoxe.xox[bp]-`) tokens are
+  // separate shapes.
   {
     name: 'slack_token',
     regex: /(?<![A-Za-z])(?:xox[bps]-[0-9]{8,}-[A-Za-z0-9-]{10,}|xox[ar]-(?:[0-9]-)?(?=[A-Za-z]*[0-9])(?=[0-9]*[A-Za-z])[A-Za-z0-9]{16,}|xapp-[0-9]+-[A-Z0-9]{8,}-[0-9]{8,}-[A-Za-z0-9]{16,}|xoxe(?:\.xox[bp])?-[0-9]+-[A-Za-z0-9]{100,})/,
@@ -99,17 +75,10 @@ const isJwtSegmentChar = (c: number): boolean =>
 
 /**
  * The leftmost match of `eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}` in
- * `text`, or null, found in linear time.
- *
- * As a regex the pattern is quadratic: on repeated `eyJ` every start position
- * runs its first segment to the end of the run before failing to find the
- * dot. Bounding the runs would cap real tokens, whose payload segment can run to
- * several kilobytes. Instead this anchors on each `.eyJ`, the one fixed
- * point between header and payload: it walks back over the header run to the
- * leftmost `eyJ` that leaves ten characters before the dot, and forward over
- * the payload run. Runs end at a dot, so the runs walked for successive
- * `.eyJ` are disjoint and the whole scan is linear. The test suite checks it
- * against the regex on seeded random inputs.
+ * `text`, or null, in linear time. As a regex it is quadratic, and bounding
+ * the runs would cap real multi-kilobyte payloads. So this anchors on each
+ * `.eyJ` and walks back/forward; runs end at a dot, so walks are disjoint.
+ * Tests check it against the regex on seeded random inputs.
  */
 function findJwt(text: string): string | null {
   for (let dot = text.indexOf('.eyJ'); dot !== -1; dot = text.indexOf('.eyJ', dot + 1)) {
@@ -141,21 +110,11 @@ function scanViews(text: string): string[] {
 }
 
 /**
- * The text with percent-encoded ASCII decoded, or null when there is none.
- *
- * A credential pasted as part of a URL or query string arrives encoded:
- * `access_token%3Dghp_…` hides the `=` that separates the token from the
- * word before it, and `ghp%5F…` hides the underscore inside the prefix
- * Decoding is a view, scanned IN ADDITION to the raw text, so
- * nothing that matches the raw text stops matching. Up to three passes cover
- * double and triple encoding. Only `%00`–`%7F` are decoded — every
- * credential format here is ASCII — and a malformed `%` is left as it is,
- * so decoding never throws.
- *
- * Credentials only: `detectSensitive`'s infra patterns keep the raw and
- * folded views, since decoding `%3A` into a port separator would change what
- * those patterns see in ordinary encoded URLs, and that is a separate
- * decision.
+ * The text with percent-encoded ASCII decoded, or null when there is none:
+ * URL-encoded credentials (`access_token%3Dghp_…`) otherwise hide separators.
+ * Scanned IN ADDITION to the raw text; up to three passes; only `%00`–`%7F`;
+ * malformed `%` left as is, so it never throws.
+ * Credentials only: infra patterns keep the raw and folded views.
  */
 function percentDecodedView(text: string): string | null {
   if (!/%[0-7][0-9A-Fa-f]/.test(text)) return null
@@ -173,17 +132,10 @@ const ESCAPES: Record<string, string> = {
 }
 
 /**
- * The text with literal backslash escapes unfolded, or null when there are none.
- *
- * JSON-escaped text and pasted logs carry a newline as the two characters `\`
- * and `n`, so the character before a token on the next line is the letter
- * `n`, and the vendor patterns' leading boundary rejects it. This view
- * turns the JSON escapes (`\n`, `\t`, `\r`, `\b`, `\f`, `\\`, `\"`, `\/`)
- * and ASCII `\u00XX` escapes (`\u000a` ends in a letter too) back into the
- * characters they stand for. Like the percent-decoded view it is scanned IN
- * ADDITION to the raw text, so nothing that matches the raw text stops matching. Up
- * to three passes cover JSON nested in JSON. Each pass is one linear
- * `replace`.
+ * The text with literal backslash escapes unfolded (JSON escapes and ASCII
+ * `\u00XX`), or null when there are none. Escaped newlines put a letter `n`
+ * before a token, which the vendor patterns' boundary rejects.
+ * Scanned IN ADDITION to the raw text; up to three linear passes.
  */
 function escapeUnfoldedView(text: string): string | null {
   if (!/\\(?:[nrtbf\\"/]|u00[0-7][0-9A-Fa-f])/.test(text)) return null
@@ -312,20 +264,11 @@ const LOOKALIKES: Record<string, string> = {
 }
 
 /**
- * Fold text to the form a reader sees, before matching against it.
- *
- * Without it, "ignore all previous instructions" slips past every pattern with
- * one Cyrillic letter that looks exactly like its Latin twin, a zero-width
- * space inside a word, or fullwidth characters. Folding once handles the
- * whole class instead of a pattern per variation.
- *
- * Compatibility normalisation collapses fullwidth and other presentation forms
- * to plain letters. Zero-width and formatting characters are removed outright:
- * they are invisible, so a reader cannot be relying on them. Lookalikes are
- * mapped last, on the folded text.
- *
- * Matching runs on the folded copy; the text REPORTED back is the original, so
- * the person reading the finding sees what the file actually contains.
+ * Fold text to the form a reader sees before matching, so lookalike letters,
+ * zero-width characters or fullwidth forms cannot slip past every pattern.
+ * NFKC collapses presentation forms, invisible formatting characters are
+ * removed, then lookalikes are mapped.
+ * Match on the folded copy but REPORT the original text.
  */
 export function foldForMatching(text: string): string {
   // Pure ASCII has nothing to fold — no invisible characters, no lookalikes,
@@ -374,49 +317,23 @@ export function detectPromptInjection(text: string): InjectionMatch[] {
 // Patterns are deliberately low-false-positive (an IP or a host:port in a
 // *public* engram is the red flag).
 const SENSITIVE_PATTERNS: { name: string; regex: RegExp }[] = [
-  // user:pass@host credential URL. Catches the full form
-  // (https://team:secret@hub-staging.example.com), the scheme-less form
-  // (user:pass@host:5432/db), and the empty-username form (https://:token@host).
-  // The username may be empty; a password and an `@host` are required so a
-  // bare `key:value` or a `time:12:30` (no `@host`) is NOT a match.
-  //
-  // Two alternatives:
-  //   A) SCHEME-PRESENT (`scheme://user:pass@<any host char>`) — a real `://`
-  //      URL is unambiguous, so the host stays loose.
-  //   B) SCHEME-LESS (`user:pass@<host>`) — the `@host` must LOOK like a host:
-  //      a dotted domain with a TLD (`db.internal`, `hub.example.com`),
-  //      `localhost`, a dotted-quad IPv4 (`10.0.0.5`), or a `host:port`
-  //      (`user:pass@host:5432/db`). Benign prose such as `5:30@cafe` or
-  //      `name:value@scope` does not match.
-  //
-  // Every quantifier is bounded (`{0,N}`/`{1,N}`). With the optional scheme,
-  // unbounded `*`/`+` backtrack quadratically: on a `:`-free run the userinfo
-  // class scans for a `:` at every start position (seconds on a 64KB input,
-  // even with the 64KB length cap). Real userinfo and passwords are short, so
-  // the bounds lose no functional case and keep the scan linear.
+  // user:pass@host credential URL, with or without scheme, username may be
+  // empty. A password and `@host` are required, so `key:value` and `time:12:30`
+  // do not match.
+  //   A) With `scheme://`: unambiguous, so the host stays loose.
+  //   B) Scheme-less: the host must look like one (dotted domain with TLD,
+  //      localhost, IPv4, or host:port), so `5:30@cafe` does not match.
+  // Every quantifier is bounded: unbounded ones backtrack quadratically.
   {
     name: 'basic_auth_url',
     regex:
       /(?:[a-z][a-z0-9+.-]{0,31}:\/\/[^/\s:@]{0,64}:[^/\s@]{1,128}@[a-z0-9.-]|[^/\s:@]{0,64}:[^/\s@]{1,128}@(?:[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}|localhost|\d{1,3}(?:\.\d{1,3}){3}|[a-z0-9-]+:\d{2,5}))/i,
   },
-  // FQDN:port — e.g. hub-staging.example.com:443, db.internal:5432 (infra topology)
-  //
-  // BOUNDED QUANTIFIERS (ReDoS): `(?:[a-z0-9-]+\.)+[a-z]{2,}:\d{2,5}` has a
-  // `+`-over-`+` ambiguity — when `:port` fails, the engine explores every
-  // partition of a dotted run, quadratic on a 64KB `a.a.a…` input (the scan
-  // cap does not help; 64KB IS the worst case). The host is written as one
-  // leading label plus bounded `\.label` groups — every `.` is a hard anchor,
-  // so there is no cross-label backtracking — with label {1,63}, up to 7 inner
-  // groups, TLD {2,24}, port {2,5}. Linear time.
-  //
-  // CODE-REF GATE: a code location `file.ext:line` (inject.ts:49, app.py:100,
-  // main.rs:55) would otherwise match as host:port — the extension looks like
-  // a TLD and the line number like a port — and demote shareable code-citing
-  // engrams out of shared scopes. A negative lookahead anchored to the `:port`
-  // boundary (`(?!(?:ts|py|rs|…):)`) excludes source/file extensions in the
-  // TLD position, while a real `host.tld:port` (db.internal:5432,
-  // redis.prod.svc:6379) still matches. The lookahead inherits the `i` flag,
-  // so `Main.RS:55` and `Config.YAML:33` are excluded too.
+  // FQDN:port, e.g. db.internal:5432 (infra topology).
+  // ReDoS: the host is one leading label plus bounded `\.label` groups, so every
+  // `.` is a hard anchor and the scan is linear.
+  // Code-ref gate: a negative lookahead excludes source/file extensions in the
+  // TLD position so `inject.ts:49` is not host:port; it inherits the `i` flag.
   {
     name: 'fqdn_port',
     regex:
@@ -504,52 +421,23 @@ function isPublicIpv6(addr: string): boolean {
   return (h0 & 0xe000) === 0x2000
 }
 
-// Targeted internal/infra hostname detection (portless variant — the ported
-// form is already caught by `fqdn_port`). CONSERVATIVE by design: only
-// high-signal forms, because a false match silently demotes a legitimate
-// engram. We flag a multi-label hostname that EITHER ends in an unambiguous
-// internal suffix label (.local/.internal/.corp/.lan/.intranet, or k8s
-// .svc / .svc.cluster.local) OR contains a `staging` label. We do NOT flag
-// standalone words (db/prod/redis alone) or ordinary public FQDNs
-// (example.com, api.github.com).
-//
-// TWO-PASS DESIGN: a single regex would flag shareable content such as
-// `config.local`, `data-staging.csv`, `staging-build.yml`, `vite.config.local`
-// or `tsconfig.json` as "infra". So:
-//   PASS 1 (INTERNAL_HOST below): find host-SHAPED candidate tokens. Only the
-//     host token is inside the `(?<host>...)` named group; the leading
-//     delimiter lives in a NON-capturing prefix OUTSIDE the group. PASS 2 runs
-//     on `match.groups.host`.
-//   PASS 2 (isInternalHostFalsePositive): the SOLE false-positive gate. Exactly
-//     two rules (known-extension tail; curated config-stem before internal
-//     suffix). Host-shaped tokens that survive both rules are flagged.
-// Invoked via `matchInternalHost`, which iterates ALL matches with the global
-// flag (named groups are undefined on a non-global `.match()`), so an FP-gated
-// leading candidate cannot hide a real host later in the text.
+// Portless internal/infra hostname detection (`fqdn_port` covers the ported
+// form). Conservative, because a false match silently demotes an engram: flag
+// a multi-label host that ends in an internal suffix (.local/.internal/.corp/
+// .lan/.intranet, .svc[.cluster.local]) OR contains a `staging` label; never
+// standalone words or public FQDNs.
+// Two passes: INTERNAL_HOST finds host-shaped tokens (only the host is in the
+// named group); isInternalHostFalsePositive is the sole FP gate (known-extension
+// tail; config stem before an internal suffix). Use `matchInternalHost`, which
+// iterates all global matches (named groups are undefined on non-global `.match()`).
 const INTERNAL_HOST = new RegExp(
-  // ONE `(?<host>...)` group wrapping the four host-SHAPE alternatives (a-d). JS
-  // forbids duplicate named groups in a single regex ("Duplicate capture group
-  // name" on Node 20/22), so the leading delimiter and the trailing lookahead
-  // are factored out and SHARED; only the host shapes alternate INSIDE the
-  // group, so `match.groups.host` is always set on a match.
-  //
-  // DELIMITERS: both the leading class and the trailing lookahead accept the
-  // same terminators, including `.` `,` `;` `]` `=` and backtick, so a host at
-  // the end of a sentence (`db.internal.`), in a list (`a,db.internal`), in
-  // backticks, or in an assignment (`DATABASE_HOST=app.corp`) is caught. The
-  // host SHAPE consumes internal dots greedily, so `.` in the leading class
-  // only matches a separator BEFORE the host and does not truncate
-  // `db.internal.corp`.
-  //
-  // BOUNDED QUANTIFIERS (ReDoS): `(?:[a-z0-9-]+\.)+SUFFIX` has a `+`-over-`+`
-  // ambiguity; on a long dotted run that never ends in an internal suffix
-  // (`ab.ab.ab…`, 64KB) it backtracks over every partition at every start
-  // position — a write/publish DoS, since matchInternalHost runs on every
-  // guarded write. Each alternative is a single leading label
-  // `[a-z0-9-]{1,63}`, bounded `(?:\.[a-z0-9-]{1,63}){0,N}` inner groups and a
-  // hard `\.` before the suffix — every `.` is an anchor, so there is no
-  // cross-label backtracking and the scan is linear. Bounds (up to ~9 labels)
-  // cover every realistic internal hostname.
+  // One `(?<host>...)` group wraps the host shapes (a-d): JS forbids duplicate
+  // named groups, so the leading delimiter and trailing lookahead are shared
+  // and `match.groups.host` is always set.
+  // Delimiters include `.` `,` `;` `]` `=` and backtick, so hosts at sentence
+  // end, in lists, backticks or assignments are caught.
+  // ReDoS: quantifiers are bounded and every `.` is a hard anchor, keeping
+  // the scan linear (this runs on every guarded write).
   "(?:^|[\\s/@'\"(`\\[=,;.\\]])(?<host>" +
     // a. internal-suffix label (.local/.internal/.corp/.lan/.intranet)
     '[a-z0-9-]{1,63}(?:\\.[a-z0-9-]{1,63}){0,7}\\.(?:local|internal|corp|lan|intranet)' +
@@ -594,19 +482,11 @@ function isInternalHostFalsePositive(host: string): boolean {
 }
 
 /**
- * Run the two-pass internal-host detector over `text`. Returns the FIRST flagged
- * host token that survives the FP gate, or null if no host-shaped candidate does.
- *
- * PASS 1 finds host-shaped tokens (INTERNAL_HOST, named `host` group); PASS 2 is
- * the sole FP gate with exactly two rules (known-extension tail; curated
- * config-stem before internal suffix). DELIBERATELY accepts that real
- * internal-host shapes — app.corp, dataset.internal, db.internal — stay flagged.
- *
- * Iterates EVERY match with the global flag and returns the first host the FP
- * gate lets through, so a real internal host after an FP-gated config token
- * (e.g. `see config.local then ssh db.internal.corp`) is still found.
- * INTERNAL_HOST is global module-level state, so `lastIndex` is reset before
- * the loop, and zero-width matches are guarded to avoid an infinite loop.
+ * Two-pass internal-host detector: returns the first host-shaped token
+ * (INTERNAL_HOST) that survives the FP gate, or null. Real internal hosts such
+ * as app.corp or db.internal deliberately stay flagged.
+ * Iterates every global match so an FP-gated token cannot hide a later real
+ * host. INTERNAL_HOST is shared state: reset `lastIndex` and guard zero-width matches.
  */
 function matchInternalHost(text: string): string | null {
   INTERNAL_HOST.lastIndex = 0
@@ -624,19 +504,11 @@ function matchInternalHost(text: string): string | null {
   return null
 }
 
-// Scan-input ceiling. The write guard scans statement + JSON.stringify(context)
-// and the pack scan whole files, so an unbounded input is an unbounded scan.
-// Every pattern is bounded and linear-time. Benign filler is ~7ms/64KB under
-// V8 Irregexp; adversarial regex-dense input is ~4x that, so a full 1 MiB pass
-// costs a few hundred ms worst case — a per-write CPU cost on large engrams,
-// not a DoS. 1 MiB is far above any realistic engram, so content is not left
-// unscanned before reaching shared/remote stores.
-//
-// Beyond the ceiling we do NOT silently truncate-and-pass: `detectSensitive`
-// emits a synthetic `scan_truncated` hit so the write guard demotes and the
-// pack privacy scan (`scanPrivacy`) blocks — fail-closed, since the unscanned
-// tail can't be certified clean. Realistic engrams never approach 1 MiB, so this
-// never falsely demotes ordinary content.
+// Scan-input ceiling. Every pattern is linear-time, so a full 1 MiB pass costs
+// at most a few hundred ms; 1 MiB is far above any realistic engram.
+// Beyond it we do NOT truncate-and-pass: `detectSensitive` emits a synthetic
+// `scan_truncated` hit so the write guard demotes and `scanPrivacy` blocks
+// (fail-closed — an unscanned tail can't be certified clean).
 const MAX_SCAN_BYTES = 1024 * 1024
 
 /** Synthetic detector name emitted when input exceeded MAX_SCAN_BYTES. */
@@ -651,18 +523,13 @@ export function truncateToScanLimit(text: string): string {
 }
 
 /**
- * Scan text for secrets AND infrastructure-sensitive content (public IPv4/IPv6,
- * basic-auth URLs, host:port topology, internal/infra hostnames). Superset of
- * `detectSecrets` — this is the gate used before an engram is allowed into a
- * public/shipped set, because the visibility tag alone is not trustworthy.
- * Returns [] only when clean.
+ * Scan for secrets AND infrastructure-sensitive content (public IPs, basic-auth
+ * URLs, host:port, internal hostnames). Superset of `detectSecrets`; the gate
+ * before an engram enters a public/shipped set, since the visibility tag alone
+ * is not trustworthy. Returns [] only when clean.
  *
- * Scans at most the first MAX_SCAN_BYTES (1 MiB) of input. Input OVER the cap is
- * NOT silently truncated-and-passed: a synthetic `scan_truncated` hit is emitted
- * so the unscanned tail is treated as offending (fail-closed). The cap is
- * applied here, so the call sites — the write guard (`_guardSensitiveScope` /
- * `_offendingHitsForScope` in index.ts) and the pack privacy scan
- * (`scanPrivacy` in packs.ts) — inherit the bound.
+ * Input over MAX_SCAN_BYTES emits a synthetic `scan_truncated` hit (fail-closed);
+ * the write guard and `scanPrivacy` inherit this bound.
  */
 export function detectSensitive(text: string): SecretMatch[] {
   if (typeof text !== 'string') {
@@ -724,20 +591,13 @@ export function detectSensitive(text: string): SecretMatch[] {
 }
 
 /**
- * Sensitivity category a detector pattern belongs to. Lets per-scope policy
- * (ScopeMetadata.sensitivity) reason about `detectSensitive` hits in terms of
- * the broad families a scope forbids/allows — 'secrets' (credentials/tokens)
- * vs 'infra' (topology: IPs, internal hosts, host:port) — rather than the
- * fine-grained pattern names. The infra family is exactly the set introduced by
- * `detectSensitive` over `detectSecrets` (SENSITIVE_PATTERNS + public_ipv4 +
- * public_ipv6 + internal_host); everything else `detectSecrets` finds is a
- * credential, i.e. 'secrets'.
+ * Sensitivity family of a detector pattern, so per-scope policy
+ * (ScopeMetadata.sensitivity) can forbid/allow 'secrets' (credentials) vs
+ * 'infra' (IPs, internal hosts, host:port). Infra is exactly what
+ * `detectSensitive` adds over `detectSecrets`; everything else is 'secrets'.
  */
-// `basic_auth_url` is a credential-in-a-URL (a password), so it belongs to the
-// 'secrets' family, NOT 'infra' — a custom `forbid:['secrets']` policy must catch
-// a password-in-URL. It lives in SENSITIVE_PATTERNS (it surfaces only via
-// `detectSensitive`), so we spread the rest of SENSITIVE_PATTERNS as infra but
-// explicitly exclude it here.
+// `basic_auth_url` is a password in a URL, so it is 'secrets', not 'infra':
+// a `forbid:['secrets']` policy must catch it.
 const INFRA_PATTERN_NAMES = new Set<string>([
   ...SENSITIVE_PATTERNS.map(p => p.name).filter(n => n !== 'basic_auth_url'),
   'public_ipv4',

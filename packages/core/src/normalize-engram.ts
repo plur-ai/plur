@@ -1,28 +1,12 @@
 /**
- * The one place field-compatibility rules live.
- *
- * Three code paths turn stored data into an `Engram` — the YAML primary store
- * (`parseEngramFile`), Postgres/PGLite rows (`parseRow`), and rows reshaped
- * from an enterprise server (`RemoteStore.reshape`). A per-field rule missed by
- * one of them fails silently: Zod fills the schema default and the result is
- * indistinguishable from a real value. For example, a legacy row carrying only
- * `reference_count` would load as `write_count: 1`, and since `write_count`
- * gates retirement, one `forget()` could retire a well-corroborated engram.
- *
- * ## Invariants
- *
- * 1. **Normalise BEFORE parse, never after.** Once Zod has filled a default,
- *    "absent" is unrecoverable.
- * 2. **Idempotent.** A store already migrated, or written by a newer PLUR, must
- *    be untouched. Every rule guards on the new key being absent.
- * 3. **Never applied to quarantined entries.** A rejected engram is written back
- *    verbatim and must not be silently rewritten on its way to being preserved.
- * 4. **Non-destructive on anything unrecognised.** A non-object is returned as
- *    given; the caller's own guards still apply.
- *
- * To add a migration: append a rule to `RULES`. `normalize-engram.test.ts` runs
- * every rule against every loader, so a fourth backend cannot quietly skip the
- * set.
+ * The one place field-compatibility rules live, applied by every loader (YAML
+ * `parseEngramFile`, Postgres/PGLite `parseRow`, `RemoteStore.reshape`) — a missed rule
+ * fails silently once Zod fills a default.
+ * 1. Normalise BEFORE parse, never after ("absent" is unrecoverable afterwards).
+ * 2. Idempotent: every rule guards on the new key being absent.
+ * 3. Never applied to quarantined entries (written back verbatim).
+ * 4. Non-objects are returned as given.
+ * To add a migration, append to `RULES`; normalize-engram.test.ts runs every rule on every loader.
  */
 
 /** One field-compatibility rule. `apply` receives and returns a plain object. */

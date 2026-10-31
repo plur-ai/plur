@@ -1,41 +1,12 @@
 /**
- * Deterministic scope-suggestion ranker. Given an engram's signals (statement,
- * domain, tags) and the registered scopes that declare a `covers[]` list, score
- * how well each scope is the home for that engram and return a ranked
- * candidate list.
- *
- * Pure and side-effect free: NO LLM, NO network, fully deterministic so the
- * same inputs always produce the same ordering. Nothing here decides where an
- * engram is stored; callers use the ranking (see {@link decideAutoRoute}).
- *
- * Scoring is overlap between the engram's signals and each scope's `covers`
- * tokens, across three weighted channels:
- *
- *   - domain-prefix (highest): the engram `domain` is a dotted namespace
- *     (e.g. `plur.core.security`). A cover entry of `plur`, `plur.core`, or
- *     `plur.*` matches it as a namespace prefix. This is the strongest signal
- *     because domain is the most deliberate routing hint.
- *   - tag (medium): any `tags[]` entry equal to, or a dotted-prefix of, a cover
- *     token (or vice-versa).
- *   - statement-keyword (low): tokenize the statement and count hits against the
- *     cover tokens. Weakest because free text is noisy.
- *
- * Confidence is normalized into [0,1] by squashing the raw weighted score, so a
- * single weak keyword hit reads as low-confidence and a domain-prefix match
- * reads as high-confidence. Ties break deterministically: equal confidence
- * prefers a domain-prefix match, then more-specific cover depth, then scope
- * name ascending. Keyword-only ties therefore break alphabetically — a known
- * limitation of the purely lexical keyword channel. Set a deliberate `domain`
- * on the engram to route reliably.
- *
- * Each candidate carries two domain-channel booleans (see {@link ScopeCandidate}):
- * `domainMatch` (true for EITHER prefix direction — used for scoring/ordering)
- * and `coverContainsDomain` (true ONLY when the cover is a prefix of, or equals,
- * the engram domain — the FORWARD direction). The write-path router routes a
- * clean FORWARD domain match deterministically, bypassing the threshold. The
- * REVERSE direction (engram broader than the cover) and weak signals (tag-only,
- * keyword-only) stay gated by the threshold, so a broad/generic engram does not
- * over-route into a narrow shared scope.
+ * Deterministic scope-suggestion ranker: scores how well each scope with `covers[]` fits
+ * an engram. Pure — no LLM, no network; callers decide via {@link decideAutoRoute}.
+ * Channels: domain-prefix (highest; dotted namespace match), tag (medium), statement
+ * keyword (low; noisy). Confidence squashes the weighted score into [0,1]. Ties: domain
+ * match, then deeper cover, then scope name (so keyword-only ties are alphabetical).
+ * `domainMatch` is either prefix direction (scoring); `coverContainsDomain` is FORWARD only
+ * and is the key for the deterministic route bypass. Reverse and weak signals stay
+ * threshold-gated so a broad engram does not over-route into a narrow shared scope.
  */
 import type { ScopeMetadata } from './schemas/scope-metadata.js'
 import { isSharedScope } from './scope-util.js'
@@ -103,20 +74,9 @@ const WEIGHT_DOMAIN_REVERSE = WEIGHT_TAG
 const SATURATION = 1.5
 
 /**
- * The confidence a LONE domain-prefix match produces, derived from the squash
- * function squash(x) = x / (x + SATURATION) with x = WEIGHT_DOMAIN:
- *
- *     THRESHOLD_SINGLE_DOMAIN = WEIGHT_DOMAIN / (WEIGHT_DOMAIN + SATURATION)
- *                             = 1.5 / (1.5 + 1.5)  =  1.5 / 3.0  =  0.5
- *
- * 0.5 is exactly representable in IEEE-754, and 1.5/3.0 evaluates to it exactly,
- * so this equals {@link SCOPE_MATCH_THRESHOLD} and the `>=` auto-route gate
- * accepts a lone-domain match. A unit test pins
- * `THRESHOLD_SINGLE_DOMAIN === SCOPE_MATCH_THRESHOLD` so a weight/saturation
- * change that stops a lone domain match from auto-routing fails CI.
- *
- * VALID ONLY for squash(x) = x/(x+SATURATION); if the squash function changes,
- * recompute this constant against the new function.
+ * Confidence of a LONE domain-prefix match: squash(WEIGHT_DOMAIN) = 1.5 / (1.5 + 1.5) = 0.5,
+ * exactly {@link SCOPE_MATCH_THRESHOLD}, so the `>=` gate accepts it. A unit test pins the
+ * equality. VALID ONLY for squash(x) = x/(x+SATURATION) — recompute if that changes.
  */
 export const THRESHOLD_SINGLE_DOMAIN = WEIGHT_DOMAIN / (WEIGHT_DOMAIN + SATURATION)
 
@@ -135,36 +95,17 @@ export interface ScopeCandidate {
   /** Human-readable matched signals, e.g. "domain plur.core.security ⊂ covers plur.*". */
   reason: string
   /**
-   * True when this candidate matched via the domain-prefix channel — in EITHER
-   * direction: the engram's `domain` is namespace-covered by one of the scope's
-   * `covers` entries (`cover ⊃ domain`, forward), OR the engram's `domain` is
-   * BROADER than the cover (`domain ⊃ cover`, reverse). The two directions are
-   * NOT weighted equally: forward adds the full WEIGHT_DOMAIN (1.5) while reverse
-   * adds only WEIGHT_DOMAIN_REVERSE (= WEIGHT_TAG = 0.5), so a lone reverse hit
-   * squashes to 0.25 and does NOT auto-route. This flag exists for scoring/ordering
-   * (the domain-preferring tie-break) — NOT as the bypass key.
-   *
-   * Do NOT use `domainMatch` for the deterministic auto-route bypass: the reverse
-   * direction would over-route a broad/generic engram into a NARROW shared scope.
-   * Key the bypass on {@link coverContainsDomain} instead.
+   * True when matched via the domain-prefix channel in EITHER direction: forward
+   * (`cover ⊃ domain`, full WEIGHT_DOMAIN) or reverse (`domain ⊃ cover`, only
+   * WEIGHT_DOMAIN_REVERSE, so a lone reverse hit squashes to 0.25). For scoring/ordering.
+   * Do NOT use it for the auto-route bypass — key that on {@link coverContainsDomain}.
    */
   domainMatch: boolean
   /**
-   * True ONLY for the FORWARD direction of the domain match — the scope's
-   * declared coverage CONTAINS the engram's topic: a `covers` entry is a
-   * namespace-prefix of, or equals, the engram's `domain` (`cover ⊃ domain` or
-   * `cover === domain`). The engram is at least as specific as the scope, so it
-   * genuinely belongs there.
-   *
-   * The caller (`_resolveUnscopedScope` in index.ts) routes a clean FORWARD
-   * domain match DETERMINISTICALLY, bypassing the squash/threshold edge. The
-   * REVERSE direction (`domain ⊃ cover`, engram broader than the cover) leaves
-   * this `false`: it contributes only the down-weighted WEIGHT_DOMAIN_REVERSE
-   * (0.5), so a LONE reverse hit squashes to 0.25 — below the `>=` threshold —
-   * and never gets the deterministic bypass either. A broad engram therefore
-   * never lands in a narrow shared scope on the reverse match alone; it can only
-   * route if additional tag/keyword evidence pushes the squashed score to >= 0.5.
-   * Weak signals (tag-only, keyword-only) also leave this `false`.
+   * True ONLY for the FORWARD domain match: a `covers` entry is a namespace-prefix of, or
+   * equals, the engram's `domain`. `_resolveUnscopedScope` (index.ts) routes these
+   * deterministically, bypassing the threshold. Reverse and weak signals leave it `false`,
+   * so a broad engram reaches a narrow shared scope only if other evidence lifts it to 0.5.
    */
   coverContainsDomain: boolean
   /**
@@ -369,18 +310,11 @@ export function rankScopes(
 }
 
 /**
- * Who chose a write's scope.
- *
- * A server receiving a write sees only a scope string, so a scope the user
- * typed and one the router picked from `covers` arrive identical; this field
- * lets them be told apart without punishing deliberate writes.
- *
+ * Who chose a write's scope (a server otherwise sees only the string):
  * - `explicit` — named on the call itself.
- * - `session`  — a session or `.plur.yaml` scope was in effect. A standing
- *   human choice, not stated on this call.
+ * - `session`  — a session or `.plur.yaml` scope was in effect (standing human choice).
  * - `default`  — nothing named it; the unscoped default applied.
- * - `routed`   — the router chose it from `covers`. The only value that means
- *   no human picked this destination.
+ * - `routed`   — the router chose it from `covers`; the only value meaning no human picked it.
  */
 export type ScopeSource = 'explicit' | 'session' | 'default' | 'routed'
 
@@ -421,23 +355,12 @@ export interface DecideAutoRouteOptions {
 }
 
 /**
- * Pick the auto-route target from a ranked candidate list. The write path and
- * the suggestion surface both call this, so what a suggestion reports is what
- * an unscoped write does.
- *
- * A FORWARD domain match (`coverContainsDomain` — the scope's coverage contains
- * the engram's topic) routes deterministically, bypassing the confidence gate,
- * because it is the strongest and most deliberate signal; everything else —
- * a reverse domain match, tags only, keywords only — must clear
- * `matchThreshold`.
- *
- * A shared candidate is REFUSED unless the caller opted in: routing an
- * unscoped write into a team store pushes it to a remote, which local cleanup
- * cannot undo. Auto-routing stays for personal-family scopes, where a wrong
- * guess can be fixed with `plur_rescope`. A refused candidate does not stop
- * the search: the next eligible non-shared candidate still wins, unless
- * `refuseScope` rejects it too. `refusedShared` reports the highest-ranked
- * candidate passed over, so the caller can say what it declined to do.
+ * Pick the auto-route target from a ranked candidate list; the write path and suggestions
+ * share it so they agree. A FORWARD domain match (`coverContainsDomain`) routes without the
+ * confidence gate; everything else must clear `matchThreshold`.
+ * A shared candidate is REFUSED unless the caller opted in (a remote push cannot be undone
+ * locally); the search continues to the next eligible candidate unless `refuseScope`
+ * rejects it. `refusedShared` reports the highest-ranked candidate passed over.
  */
 export function decideAutoRoute(
   candidates: ScopeCandidate[],

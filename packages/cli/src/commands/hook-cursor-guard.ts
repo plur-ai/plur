@@ -11,30 +11,12 @@ import {
 } from '../lib/cursor-hook-io.js'
 
 /**
- * plur hook-cursor-guard — Cursor `preToolUse` hook.
- *
- * Cursor's `preToolUse` fires for every tool call, including MCP tools, and
- * its `permission: "deny"` output is documented to be enforced — the analog
- * of Claude Code's PreToolUse session guard. That enforcement is documented
- * but not verified against a live Cursor install; the tests can only assert
- * that the hook process emits `{"permission":"deny"}`. Cursor hooks can only
- * reliably deny (an "allow" does not override Cursor's MCP approval UI), so
- * this hook emits a deny or nothing, never an explicit allow.
- *
- * In normal interactive use this rarely denies: sessionStart already wrote
- * the sentinel before the first tool call. Its job is the background/cloud-
- * agent path, where sessionStart never runs — there it denies until the agent
- * calls plur_session_start, which hook-cursor-post-tool then marks
- * (postToolUse runs for cloud agents). Whether Cursor fires preToolUse on
- * that path is not confirmed; if it does not, this hook never runs there.
- *
- * Deadlock prevention, as in Claude Code's hook-session-guard: stop blocking
- * after one nudge so a broken MCP server can't wedge the agent into only ever
- * being allowed to call plur_session_start. On giving up, the session is
- * marked started too: hook-cursor-post-tool's reminders are gated on the
- * sentinel, and without it the background/cloud-agent case would get no
- * memory reminders for the rest of the conversation.
- *
+ * plur hook-cursor-guard — Cursor `preToolUse` session guard. Emits a deny or nothing,
+ * never an allow (it cannot override Cursor's MCP approval UI); enforcement unverified.
+ * Its job is the background/cloud-agent path where sessionStart never runs: deny
+ * until plur_session_start (marked by hook-cursor-post-tool). After one nudge it
+ * stops blocking and marks the session started, so a broken MCP server cannot wedge
+ * the agent and post-tool reminders still fire.
  * Input: JSON on stdin — { tool_name, tool_input, conversation_id | session_id, ... }
  * Output: JSON on stdout — { permission: "deny", user_message, agent_message } or nothing
  */

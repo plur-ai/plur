@@ -1,16 +1,8 @@
 /**
- * Refuse a flag the command does not understand.
- *
- * A parser that ends in `else { i++ }` skips an unrecognised argument in
- * silence and the command succeeds. `plur packs install <dir> --dry-run`, for
- * example, would install the pack for someone who believed they were
- * previewing it; a dropped `--license` or `--asserted-by` produces a
- * clean-looking success with the provenance fields missing.
- *
- * **Opt-in by command.** A command declares what it accepts by exporting
- * `FLAGS`; the dispatcher checks against it. A command that exports nothing
- * is not checked, so commands adopt this one at a time and this file needs no
- * list of them.
+ * Refuse a flag the command does not understand: silently skipping one can turn
+ * e.g. `--dry-run` into a real install, or drop provenance flags. **Opt-in by
+ * command:** a command exporting `FLAGS` is checked by the dispatcher; one that
+ * exports nothing is not.
  */
 
 /** Global flags every command accepts, stripped before a command ever sees them. */

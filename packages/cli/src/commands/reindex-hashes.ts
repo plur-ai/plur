@@ -1,26 +1,11 @@
 /**
- * `plur reindex-hashes` — repair engrams whose `content_hash` no longer
- * describes their statement.
- *
- * `content_hash` is what `_hashDedup` matches on. An engram whose hash points at
- * text it no longer contains becomes an ATTRACTOR: a later write matching that
- * old text hash-matches it and is absorbed into an engram that now says
- * something else, and each absorption raises its `write_count`. Stale hashes
- * already on disk stay until something rewrites them.
- *
- * Not done silently during `loadEngrams`: that would mutate the YAML source of
- * truth as a side effect of reading, and hide the count, which is worth seeing.
- *
- * Not under `plur doctor`: `doctor` diagnoses integration and never repairs;
- * this rewrites stored engrams. `doctor` reports; this repairs — the same split
- * as `reindex-tokens`.
- *
- * The scan and the write live in `Plur.repairContentHashes()`, not here. An
- * inline `loadEngrams` → mutate → `saveEngrams` would be an unlocked
- * whole-corpus read-modify-write that can destroy a concurrent writer's engram.
- * Going through the engine gets the store lock, the daily backup and a targeted
- * UPDATE on stores that support one, and also reaches an injected non-YAML
- * primary store.
+ * `plur reindex-hashes` — repair engrams whose `content_hash` no longer describes
+ * their statement. A stale hash makes the engram an attractor for `_hashDedup`,
+ * absorbing later writes of the old text.
+ * - Not done during `loadEngrams` (reading must not mutate the YAML source of truth).
+ * - Not under `plur doctor`, which diagnoses and never repairs (as with `reindex-tokens`).
+ * - The work lives in `Plur.repairContentHashes()` for the store lock, daily backup,
+ *   targeted updates and non-YAML stores; never an inline unlocked read-modify-write.
  */
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { shouldOutputJson, outputJson, outputText, exit } from '../output.js'

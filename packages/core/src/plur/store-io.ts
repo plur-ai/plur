@@ -27,18 +27,9 @@ import { type CollisionProbe } from './types.js'
 
 export interface StoreIoMethods {
   /**
-   * Root directory of this instance's store (`~/.plur`, `PLUR_PATH`, or the
-   * explicit constructor `path`). Synchronous mirror of `status().storage_root`
-   * for callers that need the location without an async round-trip — e.g. the
-   * MCP server's payload-drop forensic log, which must write
-   * next to the store the dropped call was aimed at.
-   */
-  /**
-   * Record what a recall returned to a session, so the session's
-   * manifest can list it. Called by the surfaces that answer an agent's recall
-   * (MCP, CLI) — not by `recall()` itself, which inject and dedup also call.
-   * Ids and a query hash only; never the query text. Best-effort: returns
-   * whether the event was written.
+   * Record what a recall returned to a session, for the session manifest. Called by
+   * the surfaces that answer an agent's recall (MCP, CLI), not by `recall()` itself.
+   * Ids and a query hash only; never the query text. Best-effort: returns whether written.
    */
   recordRecall(input: { session_id?: string; ids: readonly string[]; query: string; source?: 'recall' | 'recall_hybrid' }): boolean
 
@@ -109,27 +100,13 @@ export interface StoreIoMethods {
   _readCorpus(): Promise<Engram[]>
 
   /**
-   * Everything that is NOT the primary store: configured secondary stores
-   * (file-path AND remote) plus installed packs, with the id namespacing, scope
-   * narrowing and containment guard applied.
-   *
-   * Separate so the BM25 pushdown path can reach these rows without loading the
-   * primary corpus. Every caller must use this one implementation: skipping
-   * `url` stores, the id namespacing, the `global` narrowing or the
-   * `isScopeWithin` guard each breaks reads. Namespacing in particular is not
-   * cosmetic: every store mints date-sequenced ids (`ENG-YYYY-MM-DD-NNN`,
-   * legacy `ENG-YYYY-MMDD-NNN`) from a per-store daily sequence, so ids collide
-   * as the common case, and `feedback()` / `forget()` resolve by exact id
-   * against the primary store first — an un-namespaced id would mutate an
-   * unrelated engram.
+   * Non-primary rows (secondary file and url stores, packs) must all go through one
+   * implementation: ids collide across stores, and `feedback()` / `forget()` resolve by
+   * exact id, so skipping namespacing, `global` narrowing or `isScopeWithin` breaks reads.
    */
   /**
-   * Installed packs as every read path hands them out: each row under its
-   * pack id ({@link packEngramId}), never under the id its author's store
-   * minted. That id can be one of MY memory ids (same day, same sequence, or
-   * picked on purpose), and a pack row shown under it reads to the agent as my
-   * own memory. Injection, search/list and the receipt all load packs
-   * through here, so the id a pack row carries is the same on every path.
+   * Installed packs, each row under its pack id ({@link packEngramId}) on every read path,
+   * never its author's id — which could equal one of the user's own memory ids.
    */
   /** @internal */
   _loadInstalledPacks(): LoadedPack[]
@@ -148,39 +125,24 @@ export interface StoreIoMethods {
   _loadCached(path: string): Promise<Engram[]>
 
   /**
-   * What the ambiguity guards (forget, feedback) may conclude from a
-   * store's cache WITHOUT a network call.
-   *
+   * What the ambiguity guards (forget, feedback) may conclude from a store's cache
+   * without a network call:
    * - `present`: the cache holds the id — a collision, refuse.
-   * - `absent`: ONLY when the cache is a complete load younger than the
-   *   driver's TTL. A cold-cache `append()` seeds `{ ts: 0, [stored] }` —
-   *   explicitly "one engram is not all engrams in this scope" — and a cache
-   *   past its TTL may predate the remote row; neither proves absence.
+   * - `absent`: ONLY for a complete load younger than the TTL (a cold-cache `append()`
+   *   seed or a stale cache proves nothing).
    * - `unknown`: cold, empty, partial or stale — the caller probes live.
-   *
    * Model: spec/formal/PlurSpec/R2CoreA.lean §2 (`peek_absent_sound`).
    */
   /** @internal */
   _remoteCacheAnswer(store: StoreEntry, serverId: string): 'present' | 'absent' | 'unknown'
 
   /**
-   * Does a bare id ALSO name an engram in a configured url store?
-   *
-   * One answer per url store, for the operations that act on a local row by
-   * a bare id — forget, feedback, setPinned — since ids are minted per store
-   * and two stores mint the same id on the same day.
-   *
-   * Run WITHOUT the store lock, so a hanging server cannot hold the lock every
-   * other writer needs for a full request budget.
-   * Each live probe is bounded by REMOTE_PROBE_TIMEOUT_MS, and the walk by
-   * REMOTE_GUARD_BUDGET_MS. A warmed cache answers for free.
-   *
-   * Outcomes are reported, not acted on; each caller decides:
-   *   - `present`: ambiguous — every caller refuses and says how to choose.
-   *   - `auth_rejected` (401/403): this caller cannot read OR change anything
-   *     in that store, so the bare id can only mean the local row it holds.
-   *   - `unreachable`: cannot tell. forget refuses (irreversible); feedback
-   *     and pin go ahead with a warning (recoverable).
+   * Does a bare id ALSO name an engram in a configured url store? (Ids are minted per store.)
+   * Runs WITHOUT the store lock so a hanging server cannot block writers; bounded by
+   * REMOTE_PROBE_TIMEOUT_MS per probe and REMOTE_GUARD_BUDGET_MS overall. Outcomes:
+   *   - `present`: ambiguous — every caller refuses.
+   *   - `auth_rejected` (401/403): the bare id can only mean the local row.
+   *   - `unreachable`: forget refuses (irreversible); feedback and pin warn and proceed.
    */
   /** @internal */
   _hasUrlStore(): boolean
@@ -189,16 +151,10 @@ export interface StoreIoMethods {
   _probeIdCollisions(id: string, opts?: { skipLive?: boolean }): Promise<CollisionProbe[]>
 
   /**
-   * Local evidence that a bare id has ALSO named an engram on a server
-   * A 401/403 probe only says this caller cannot SEE the
-   * remote row — not that there is none — so before acting on the local row,
-   * look for any sign this machine ever met that id remotely:
-   *   - history: an event for this id routed to a remote (a team save the
-   *     server numbered this way, a remote retire or rating) — excluding the
-   *     deferred-push record, which logs the LOCAL id;
-   *   - the outbox id map: a queued row delivered under this server id;
-   *   - any url store's cached rows, fresh or stale.
-   * Returns a plain description of the first piece found, or null. No network.
+   * Local evidence that a bare id has also named a server engram (a 401/403 probe does
+   * not prove there is none): a history event routed to a remote (excluding the
+   * deferred-push record), the outbox id map, or any url store's cached rows.
+   * Returns a description of the first evidence found, or null. No network.
    */
   /** @internal */
   _idSeenRemotely(id: string): string | null
@@ -265,59 +221,21 @@ export interface StoreIoMethods {
   _writeEngrams(path: string, engrams: Engram[], opts?: { allowShrink?: boolean }): Promise<void>
 
   /**
-   * Persist one brand-NEW engram to the primary store.
-   *
-   * `corpus` is the caller's already-loaded primary corpus, held under
-   * `_withStoreLock`; the engram is pushed into it here so the caller's view
-   * and the fallback write stay consistent by construction. A store with the
-   * `append` capability gets a true single-row INSERT; every other store gets
-   * one `save()` of the corpus in hand. The corpus is REUSED, never re-loaded:
-   * re-parsing a file the caller just parsed (under the same lock) is wasted
-   * work on the hottest write path.
+   * Persist one brand-NEW engram to the primary store. `corpus` is the caller's
+   * already-loaded corpus held under `_withStoreLock`; the engram is pushed into it.
+   * `append`-capable stores get a single-row INSERT, others one `save()` of the corpus
+   * in hand — never a re-load.
    */
   /** @internal */
   _appendEngram(corpus: Engram[], engram: Engram): Promise<void>
 
   /**
-   * Persist mutations to EXISTING primary-store engrams.
-   *
-   * `changed` are rows from `corpus` (the caller's already-loaded primary
-   * corpus, held under `_withStoreLock`) that the caller has mutated in place.
-   * A store with `updateMany` gets a targeted write of just those rows — the
-   * same machinery recall's activation refresh uses, so there is ONE
-   * incremental-update seam, not two. Every other store gets a whole-corpus
-   * `save()`, reusing the corpus in hand.
-   *
-   * Missing-id policy: this cannot silently drop a mutation. `updateMany` is
-   * an upsert on every capability store (Postgres `ON CONFLICT DO UPDATE`,
-   * MemoryPrimaryStore mirrors it), so a row that vanished between the
-   * caller's locked load and this write is re-inserted rather than lost; the
-   * fallback writes the corpus, which contains the mutation by construction.
-   * There is deliberately no found/not-found boolean here — a signal every
-   * call site would have to remember to check is worse than semantics that
-   * cannot lose the write.
+   * Persist in-place mutations: `updateMany` (an upsert, so a vanished row is re-inserted)
+   * when available, else a whole-corpus `save()` of the corpus in hand.
    */
   /**
-   * Read the primary-store rows for `ids` — targeted when the store can, a
-   * whole-corpus load when it cannot.
-   *
-   * Every caller is the same shape: load, find one row by id, mutate it, hand
-   * it to {@link _updateEngrams}. A targeted read avoids a full table scan to
-   * fetch a row by primary key on every feedback signal, pin toggle, update
-   * and forget.
-   *
-   * `loadByIds` and `updateMany` are checked as a PAIR, and the pair is what
-   * makes the return value safe to use as "the corpus in hand". Callers pass
-   * the array straight on to `_updateEngrams`, which falls back to a FULL
-   * REPLACE of whatever it is given when `updateMany` is absent. Taking the
-   * targeted read alone would therefore hand a one-row array to a whole-corpus
-   * save and delete everything else.
-   * Requiring both means the subset is only ever produced when the write that
-   * consumes it is itself targeted.
-   *
-   * Ids absent from the store are simply not returned, so a caller's
-   * `find(...)` miss keeps its existing meaning and its existing fall-through
-   * to the secondary stores.
+   * Read primary-store rows for `ids`, targeted only when `loadByIds` AND `updateMany` exist:
+   * `_updateEngrams` otherwise does a full replace, and a subset would delete everything else.
    */
   /** @internal */
   _loadTargeted(ids: string[]): Promise<Engram[]>
@@ -336,20 +254,10 @@ export interface StoreIoMethods {
   _assertWritable(): void
 
   /**
-   * Snapshot the primary store once per process per day.
-   *
-   * Called from INSIDE the lock and BEFORE `fn` runs, which is the whole point:
-   * the copy must be of the on-disk bytes as they were before any write path
-   * could replace them, and it must be under the lock so it cannot catch a
-   * half-written file.
-   *
-   * Only the primary store, and only when writable. A read-only instance must
-   * not have write side effects, and secondary stores are the remote's
-   * or the pack's to protect — snapshotting them here would silently multiply
-   * disk use for data this instance does not own.
-   *
-   * Never throws: the backup is a safety net for the write, not a precondition
-   * of it. A failed snapshot warns and lets the write proceed.
+   * Snapshot the primary store once per process per day, INSIDE the lock and BEFORE
+   * `fn` runs, so the copy is of the pre-write bytes and never half-written.
+   * Only the writable primary store (secondary stores are not ours to protect).
+   * Never throws: a failed snapshot warns and the write proceeds.
    */
   /** @internal */
   _maybeDailyBackup(path: string): void
@@ -554,19 +462,10 @@ export const storeIoMethods: StoreIoMethods & ThisType<Plur> = {
           Object.entries(e as unknown as Record<string, unknown>).filter(([k]) => !k.startsWith('_')),
         ) as any
         cloned._pack = pack.manifest.name
-        // Sanitise HERE, at the point pack content enters the injection corpus.
-        // Pack install does not call learn() or learnRouted() —
-        // it copies the pack's file into the packs directory and this loop
-        // feeds those rows straight into the corpus — so a pack statement with
-        // a forged boundary would mint a fabricated entry with neither write
-        // path in front of it. Pack content is the explicit threat model in the
-        // splitter's own docstring: it is the one corpus whose author is by
-        // definition someone else.
-        //
-        // Load time rather than install time, deliberately. Install time would
-        // leave every already-installed pack, and any pack placed in the
-        // directory by hand or by a sync, unsanitised. This is the last gate
-        // before injection, so it is the one that has to hold.
+        // Sanitise HERE, where pack content enters the injection corpus: pack install
+        // bypasses learn()/learnRouted(), so a forged boundary would otherwise get through.
+        // Load time, not install time, so hand-placed or synced packs are covered too —
+        // this is the last gate before injection.
         for (const f of ['statement', 'rationale', 'source', 'summary', 'domain'] as const) {
           if (typeof cloned[f] === 'string') cloned[f] = collapseLineTerminators(cloned[f])
         }
@@ -783,19 +682,10 @@ export const storeIoMethods: StoreIoMethods & ThisType<Plur> = {
 
   async _writeEngrams(path: string, engrams: Engram[], opts?: { allowShrink?: boolean }): Promise<void> {
     const store = this._storeAt(path)
-    // Backend-independent floor. The YAML writer has
-    // its own shrink guard, but that guard lives in `saveEngrams` and so only
-    // covers YAML. `save()` is a whole-corpus replace on EVERY backend, and on
-    // Postgres it ends in `DELETE FROM engrams WHERE id NOT IN (…)` — with an
-    // empty array, an unqualified `DELETE FROM engrams`.
-    //
-    // Emptying the corpus is never an incidental outcome: `compact`, `forget`,
-    // the outbox handoff and pack uninstall all declare `allowShrink`. An
-    // undeclared empty save means the caller read nothing and is about to make
-    // that permanent.
-    // (A remote-only binding writes through RemoteOnlyStoreGuard, which puts
-    // every hidden row back: an empty visible set there removes queued saves
-    // only.)
+    // Backend-independent floor: refuse an undeclared empty whole-corpus save. On Postgres
+    // it would become an unqualified `DELETE FROM engrams`, and the YAML shrink guard
+    // only covers YAML. Legitimate emptying (`compact`, `forget`, outbox handoff, pack
+    // uninstall) declares `allowShrink`. (A remote-only binding restores hidden rows itself.)
     if (!opts?.allowShrink && engrams.length === 0 && !this._activeBinding()) {
       throw new Error(
         `[plur] refusing to write an empty corpus to ${path}.\n` +
@@ -853,20 +743,9 @@ export const storeIoMethods: StoreIoMethods & ThisType<Plur> = {
 
   _mintedTodayIds(): string[] {
     const day = new Date().toISOString().slice(0, 10)
-    // Cached per process, per day.
-    //
-    // Without this, every learn() would re-read and re-parse a month of
-    // history.jsonl on the hottest write path. The cache is keyed on the DAY so it
-    // self-invalidates across midnight (allocation is per-day, so yesterday's
-    // ids are irrelevant to today's suffix).
-    //
-    // Staleness is safe in the one direction that matters: ids minted by
-    // ANOTHER process after this cache was filled are missing from it, which
-    // degrades to corpus-only allocation rather than introducing a
-    // new hazard — and the corpus scan, which is always fresh, still sees any
-    // engram that other process actually wrote. Ids minted by THIS process are
-    // added below without a re-read, so a burst of writes in one session stays
-    // monotonic without touching disk again.
+    // Cached per process, keyed on the DAY (allocation is per-day), so learn() does not
+    // re-parse history.jsonl on every write. Missing other processes' ids is safe: the
+    // always-fresh corpus scan still sees their engrams. Ids minted here are added below.
     if (this._mintedCache?.day !== day) {
       this._mintedCache = {
         day,

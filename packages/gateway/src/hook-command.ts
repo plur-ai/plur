@@ -125,22 +125,11 @@ const NPX_FORM = new RegExp(`^npx(?:[ \\t]+-y)?[ \\t]+@plur-ai/cli(?:@${PLAIN}+)
 const HOME_SHIM_TAIL = new RegExp(`^${HOOK_TAIL}`)
 
 /**
- * This machine's own shim, `<homedir>/.plur/bin/plur-hook` (`.cmd` on
- * Windows), normalised like the command (forward slashes, lower case). Init
- * writes it unquoted whenever it holds no whitespace (hookCommandPrefix,
- * windowsHookCommand), and older installs wrote it unquoted even with
- * spaces (as does the Antigravity fallback). Such a path can
- * hold a space (`C:\Users\John Smith`) or a character PLAIN rejects
- * (`C:\Users\O'Brien`, `a&b`, `x(1)`), so the patterns cannot recognise it.
- * A command is claimed through this path only when it STARTS with it,
- * compared as a literal string (never built into a regex), followed by the
- * hook tail, which still admits no separator or newline. A space alone
- * cannot tell a path from an argument, which is why this is the only way an
- * unquoted spaced path is claimed: `/usr/bin/time ~/.plur/bin/plur-hook
- * hook-x` and `C:/Tools/log.exe %USERPROFILE%/.plur/bin/plur-hook.cmd hook-x`
- * are another binary running the shim. When in doubt the command is the
- * user's: a PLUR hook left unclaimed costs at worst a duplicate entry, a
- * user's hook wrongly claimed is deleted by init.
+ * This machine's own shim, `<homedir>/.plur/bin/plur-hook` (`.cmd` on Windows), normalised like the command.
+ * Init and older installs may write it unquoted even when it holds spaces or characters PLAIN rejects, which the
+ * patterns cannot recognise. So a command is claimed through this path only when it STARTS with it (literal
+ * compare, never a regex) followed by the hook tail; e.g. `/usr/bin/time ~/.plur/bin/plur-hook hook-x` is not ours.
+ * When in doubt the command is the user's: an unclaimed PLUR hook costs a duplicate, a wrong claim deletes theirs.
  */
 function homeShimPaths(): string[] {
   const bin = `${homedir().replace(/\\/g, '/').toLowerCase().replace(/\/+$/, '')}/.plur/bin/`

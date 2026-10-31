@@ -5,16 +5,10 @@ import { shouldOutputJson, outputJson, outputText, outputInfo, exit } from '../o
 import { shortPackIntegrity, type LicenseSource } from '@plur-ai/core'
 
 /**
- * The four ways a licence can be arrived at (provenance profile §8.4), in the
- * words a preview prints, so "the author configured this once", "somebody
- * decided" and "nobody ever chose it" stay distinct. Keyed by the closed
- * enum, so an unknown value cannot reach this table: core drops it before
- * the view is built.
- *
- * A `Map`, not an object literal, so the lookup cannot walk a prototype chain:
- * with an object, `??` does not catch an inherited value such as
- * `constructor` or `toString`, which would render a function's source text
- * into the terminal. This holds even if core's gate on the value slipped.
+ * The four ways a licence can be arrived at (provenance profile §8.4), worded
+ * for previews so "configured", "decided" and "never chosen" stay distinct.
+ * A `Map`, not an object literal, so an inherited key like `constructor` can
+ * never render function source into the terminal, even if core's gate slipped.
  */
 const LICENCE_SOURCE_WORDS = new Map<LicenseSource, string>([
   ['chosen', 'chosen for the engram itself'],

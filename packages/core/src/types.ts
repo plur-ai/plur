@@ -265,17 +265,10 @@ export interface RecallOptions {
   context_scopes?: string[]
   /**
    * Permitted-scope allow-list — an AUTHORIZATION filter, distinct from the
-   * `scope` visibility filter above (see `ScopeRestriction` in
-   * storage-adapter.ts for the full contract).
-   *
-   * Absent = unrestricted. `[]` = matches NOTHING (a principal with no
-   * permitted scopes must see nothing — never widened to "no filter").
-   * Non-empty = EXACT membership: no hierarchy expansion, no personal-family
-   * pass-through, because the caller has already resolved identity to a
-   * complete set of permitted scopes.
-   *
-   * Pushed into the query on the indexed paths so `limit` counts permitted
-   * results rather than being spent on rows the caller may not see.
+   * `scope` visibility filter (contract: `ScopeRestriction` in storage-adapter.ts).
+   * Absent = unrestricted; `[]` = matches NOTHING (never widened); non-empty =
+   * EXACT membership, no hierarchy expansion or personal-family pass-through.
+   * Pushed into the query so `limit` counts permitted results.
    */
   scopes?: string[]
   domain?: string
@@ -305,16 +298,11 @@ export interface RecallOptions {
    */
   rerank?: boolean
   /**
-   * Server-authoritative remote recall leg. Default true: recall dials
-   * every configured remote host implicated by the current project/work (see
-   * the strict scope-relevance dialing rule in remote-recall.ts) in parallel
-   * with the local pipeline and RRF-merges the results.
-   *
-   * INTERNAL CALLERS MUST PASS false: learn-dedup, forget-by-search and
-   * self-eval probes derive queries from statements/prompts — without the
-   * opt-out every plur_learn fires prompt-derived POSTs to all hosts, and a
-   * namespaced remote row can silently suppress a local write as a "dedup
-   * match".
+   * Server-authoritative remote recall leg. Default true: dials every remote
+   * host implicated by the current work (see remote-recall.ts) in parallel and
+   * RRF-merges. INTERNAL CALLERS MUST PASS false (learn-dedup, forget-by-search,
+   * self-eval): otherwise every learn fires prompt-derived POSTs to all hosts
+   * and a remote row can silently suppress a local write as a "dedup match".
    */
   remote?: boolean
   /** Per-call remote budget in ms (env PLUR_REMOTE_RECALL_TIMEOUT_MS wins).

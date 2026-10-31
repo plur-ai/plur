@@ -32,18 +32,10 @@ export const POSITIVE_STRENGTH_DELTA = 0.05
 export const NEGATIVE_STRENGTH_DELTA = 0.1
 
 /**
- * Next commitment level after a positive signal.
- *
- * Advances one step toward `decided` and never further: reaching `locked`
- * requires explicit human intent, and no amount of accumulated feedback should
- * substitute for it.
- *
- * `undefined` seeds at `leaning`: an engram that received a positive signal
- * has been retrieved and found useful, which is what `leaning` means.
- *
- * Anything unrecognised is returned untouched. A deployment may extend the
- * enum (`commitment: 'draft'` stages an engram in a review queue, see
- * `schemas/engram.ts`), and promoting a draft on a thumbs-up would publish
+ * Next commitment level after a positive signal: one step, never past
+ * `decided` (`locked` requires explicit human intent). `undefined` seeds at
+ * `leaning`. Unrecognised values (e.g. a deployment's `draft` review state, see
+ * `schemas/engram.ts`) are returned untouched, so a thumbs-up never publishes
  * unreviewed content.
  */
 export function nextCommitment(current: string | undefined): string | undefined {
@@ -58,15 +50,11 @@ export function nextCommitment(current: string | undefined): string | undefined 
 }
 
 /**
- * Apply a feedback signal to an engram, in place.
- *
- * Mutates rather than returning a copy because every caller already owns the
- * engram it loaded and writes the whole collection back.
- *
+ * Apply a feedback signal to an engram, in place (callers own and write back
+ * the whole collection).
  * @param engram  the engram to update
  * @param signal  the verdict
- * @param today   date stamp to re-anchor `last_accessed` with, `YYYY-MM-DD`.
- *                Injectable so tests are not clock-dependent.
+ * @param today   `YYYY-MM-DD` stamp for `last_accessed`; injectable for tests.
  * @param options `source: 'auto'` adjusts strength only and never advances
  *                `commitment`.
  */

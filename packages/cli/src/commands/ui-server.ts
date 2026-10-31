@@ -27,15 +27,10 @@ export interface UiArgs {
 const DEFAULT_PORT = 7777
 
 /**
- * Validate one host-shaped flag value and fold it to canonical form.
- *
- * The value ends up in three places that must agree: `listen()`, the printed
- * URL, and the `Host` allowlist a browser's request is checked against. So it
- * is folded the way a browser folds a URL host (see `canonicalHostName`), and
- * anything that is not a bare hostname or IP literal is refused with a
- * message naming the mistake — the URL parser would otherwise silently drop a
- * port or a path and bind something the operator did not ask for.
- *
+ * Validate one host-shaped flag value and fold it to canonical form, the way a
+ * browser folds a URL host (`canonicalHostName`), so `listen()`, the printed URL
+ * and the `Host` allowlist agree. Anything but a bare hostname or IP literal is
+ * refused (the URL parser would silently drop a port or path).
  * @param raw - the flag's value, possibly missing.
  * @param flag - the flag's name, for the error.
  * @returns the canonical name, IPv6 without brackets.
@@ -152,22 +147,11 @@ export function urlHostFor(bind: string): string {
 }
 
 /**
- * Decide the socket, the URL and the allowlist from the parsed flags.
- *
- * The allowlist is every name this server is legitimately reachable at:
- *
- * - The literal `--host` value, always. It is what the printed URL carries
- *   and therefore what the browser sends — and the server's own built-in set
- *   is deliberately stricter than the classifier here (`localhost.` and
- *   `127.0.0.2` are loopback to bind, and spoof shapes to a header), so the
- *   literal value is the only way those spellings ever pass.
- * - When bound to all interfaces, every interface address. A client on the
- *   network types one of those. Never the unspecified address itself.
- * - Everything from `--allow-host`. A DNS or mDNS name that resolves to this
- *   machine cannot be enumerated from inside it, so the operator vouches for
- *   it explicitly rather than the server trusting any name it is asked for —
- *   trusting one on request is precisely the hole the check closes.
- *
+ * Decide the socket, the URL and the `Host` allowlist from the parsed flags.
+ * The allowlist is: the literal `--host` value (the only way spellings such as
+ * `localhost.` pass, since the built-in set treats them as spoofs); every
+ * interface address when bound to all interfaces (never the unspecified address);
+ * and every `--allow-host` — names are vouched for by the operator, never trusted on request.
  * @param args - the parsed flags.
  * @param deps - the interface enumerator, injectable for tests.
  * @returns the plan.

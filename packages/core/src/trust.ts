@@ -3,26 +3,11 @@ import { canonicalize } from './project-config.js'
 import { loadFolderMap, isTrustedInMap, setFolderEntry, clearFolderTrust, removeLegacyTrustEntry, withFolderMapLock } from './folders.js'
 
 /**
- * Directory trust — a one-time, explicit, per-directory grant, the same
- * shape as `direnv allow`, `git config safe.directory`, and VS Code's
- * workspace trust.
- *
- * Why: a `.plur.yaml` a repo ships can set `scope`/`domain`, and an adapter
- * (opencode, claw, ...) that adopts those values automatically lets a
- * directory the user merely opened — cloned, not vetted — redirect that
- * session's recall/writes to a scope the user never chose. Team/remote stores
- * are the legitimate use of `.plur.yaml` (a user's own repo declaring `scope:
- * group:acme/eng` so recall reaches their team's store), so remote scopes are
- * not refused; the user must instead have said, once, "I trust this
- * directory."
- *
- * Stored under the PLUR home, never inside the project — a repo cannot grant
- * itself trust; only a human running `plur trust` on their own machine can.
- *
- * The grant lives in the folder map (`<root>/folders.yaml`) as `trusted: true`
- * on an entry. A legacy `<root>/trust.yaml` is imported once, on the first
- * read of a missing folders.yaml, and every grant and revocation is
- * dual-written to both files (see folders.ts).
+ * Directory trust — a one-time, explicit, per-directory grant (like `direnv allow`). Without it, a cloned repo's
+ * `.plur.yaml` could redirect a session's recall and writes to a scope the user never chose; remote scopes are not
+ * refused, the user must just have trusted the directory once.
+ * Stored under the PLUR home, never in the project, so a repo cannot trust itself. The grant is `trusted: true` in
+ * `<root>/folders.yaml`; a legacy `trust.yaml` is imported once and dual-written (see folders.ts).
  */
 
 /**
@@ -56,16 +41,9 @@ export function trustDirectory(dir: string, root: string, opts?: { nonce?: strin
 }
 
 /**
- * Revoke trust from `dir`. Exact entry only — untrusting a root does not
- * walk its previously-covered descendants (they were never their own
- * entries). Returns whether a grant was removed.
- *
- * The grant is removed from folders.yaml AND from trust.yaml (the dual-write
- * for adapters on an older core), so neither an older reader, a downgrade
- * nor a re-import can bring it back.
- *
- * Takes no nonce: a revocation only removes trust, so it works from a
- * script. Only a grant is gated.
+ * Revoke trust from `dir` (exact entry only; descendants are not walked). Returns whether a grant was removed.
+ * Removed from folders.yaml AND trust.yaml so no older reader, downgrade or re-import brings it back. Takes no
+ * nonce: only a grant is gated.
  */
 export function untrustDirectory(dir: string, root: string): boolean {
   return withFolderMapLock(root, () => {

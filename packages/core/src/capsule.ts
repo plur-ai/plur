@@ -162,23 +162,12 @@ export function readCapsule(buf: Buffer): ReadCapsuleResult {
 }
 
 /**
- * Is this a well-formed capsule whose payload matches its own header?
- *
- * True exactly when {@link readCapsule} accepts the buffer: the preamble and
- * header parse, the SIGNED flag agrees with `header.signer`, the COMPRESSED flag
- * agrees with `header.payload.compression`, and the payload's size and SHA-256
- * equal the values the header states.
- *
- * What it does NOT check:
- * - **The signature.** When SIGNED is set, any 64-byte trailer passes — the
- *   Ed25519 signature is carried, never verified.
- * - **The header.** Nothing covers the header bytes: its SHA-256 describes the
- *   payload only. Whoever can rewrite the file can change the header (name,
- *   creator, producer, signer) and payload together and recompute the hash.
- *
- * So this detects accidental corruption and truncation of the payload; it is
- * NOT an authenticity or tamper-evidence check, and a `true` result says
- * nothing about who produced the capsule.
+ * Is this a well-formed capsule whose payload matches its own header? True
+ * exactly when {@link readCapsule} accepts it: preamble and header parse, the
+ * SIGNED/COMPRESSED flags agree with the header, and payload size and SHA-256
+ * match. It does NOT verify the signature (any 64-byte trailer passes) and
+ * nothing covers the header bytes. So it detects accidental corruption or
+ * truncation only; it is NOT an authenticity or tamper-evidence check.
  */
 export function verifyCapsuleIntegrity(buf: Buffer): boolean {
   try {

@@ -11,19 +11,11 @@ import { atomicWrite } from './atomic-write.js'
 import { logger } from './logger.js'
 
 /**
- * Embedding-based semantic search for engrams.
- *
- * Uses @huggingface/transformers (ONNX runtime) for local embeddings, routed
- * through the embedder factory at packages/core/src/embedders/index.ts.
- *
- * Default model: BGE-small-en-v1.5 (MIT, 384d, ~130 MB on disk q8).
- * EmbeddingGemma is available via PLUR_EMBEDDER=embedding-gemma. Opt-in API tier:
- * `openai-3-large` (text-embedding-3-large, 3072d) — requires OPENAI_API_KEY.
- *
- * Embeddings are cached per-engram using content hashing to avoid
- * re-computation on subsequent searches. The cache file is stamped with the
- * active embedder name + dim; on mismatch the cache is invalidated and
- * rebuilt.
+ * Embedding-based semantic search for engrams, via @huggingface/transformers (ONNX) through
+ * the embedder factory (embedders/index.ts). Default BGE-small-en-v1.5 (384d);
+ * PLUR_EMBEDDER=embedding-gemma, or opt-in `openai-3-large` (needs OPENAI_API_KEY).
+ * Embeddings are cached per engram by content hash; the cache is stamped with embedder
+ * name + dim and rebuilt on mismatch.
  */
 
 /**
@@ -165,17 +157,11 @@ async function getEmbedder() {
 
 /**
  * Can the semantic leg answer now?
- *
- * - `ready`: the model is loaded in this process.
- * - `cached`: on disk (in the model cache, or under transformers.js's
- *   `localModelPath`) but not loaded — loading it is part of a recall's work,
- *   bounded by the recall deadline, with keyword results kept if it is late.
- * - `missing`: not on disk. A recall never downloads it: it answers by keyword
- *   and says so. `plur doctor` is the way to download it. A long-lived process
- *   that opted in ({@link allowBackgroundModelLoad}) starts one in-process
- *   load in the background, once per process, unless downloads are off.
- * - `unknown`: embeddings off, or an embedder that cannot say — callers
- *   proceed as before.
+ * - `ready`: loaded in this process.
+ * - `cached`: on disk; loading is part of the recall, bounded by its deadline.
+ * - `missing`: a recall never downloads it (keyword only; `plur doctor` downloads). An opted-in
+ *   long-lived process ({@link allowBackgroundModelLoad}) loads once in the background.
+ * - `unknown`: embeddings off or the embedder cannot say.
  */
 export async function semanticModelState(): Promise<'ready' | 'cached' | 'missing' | 'unknown'> {
   const embedder = await getEmbedder()
@@ -616,21 +602,10 @@ function hashStatement(statement: string): string {
 }
 
 /**
- * Merge externally-obtained vectors into the on-disk embeddings cache.
- *
- * Used by the PGLite→SQLite migration: vectors verified fresh
- * against the CURRENT engram text are folded into the cache under this
- * module's own key discipline (`hashStatement` of the search text), so the
- * yaml/sqlite tiers serve them exactly as if they had been computed here.
- * Lives in this file because the cache format — meta header, entry shape,
- * hash function — is deliberately private to it.
- *
- * Existing entries win only when they were computed from the SAME text as
- * the import (equal `hashStatement` of the search text): then the live embed
- * path already wrote a vector at least as fresh. An existing entry keyed to
- * OTHER text is stale — the caller verified the import against the engram's
- * current text — so the import replaces it, avoiding a needless re-embed.
- * Returns how many entries were written.
+ * Merge externally obtained vectors (PGLite→SQLite migration) into the embeddings cache,
+ * keyed by this module's `hashStatement` of the search text — the cache format is private
+ * to this file. An existing entry wins only when computed from the SAME text; one keyed
+ * to other text is stale and replaced. Returns how many entries were written.
  */
 export function mergeEmbeddingsIntoCache(
   storagePath: string,
@@ -845,18 +820,10 @@ async function searchQueryText(query: string): Promise<string> {
 }
 
 /**
- * Cosine of the query with each vector after both are centred on the
- * candidates' mean.
- *
- * Sentence embeddings are anisotropic: every vector shares a large common
- * component, so raw cosine is partly "how typical a memory does this look",
- * and a statement can outrank the answer just by being more typical. Removing
- * the mean (the standard correction, e.g. Mu & Viswanath 2018, "All-but-the-
- * Top") leaves the directions that tell memories apart: what distinguishes
- * this memory from the others in the same store. It changes the order only;
- * the scored search used for similarity thresholds keeps raw cosine. With one
- * or two candidates it cannot change the order at all (for two unit vectors,
- * centring compares q.(a-b) with q.(b-a), the raw comparison).
+ * Cosine of the query with each vector after centring both on the candidates' mean
+ * (Mu & Viswanath 2018, "All-but-the-Top"): removes the shared anisotropic component so
+ * "typical-looking" memories do not outrank the answer. Changes order only; scored
+ * threshold search keeps raw cosine. Cannot change order for one or two candidates.
  */
 function centredCosines(query: Float32Array, vectors: Float32Array[]): number[] {
   const n = vectors.length

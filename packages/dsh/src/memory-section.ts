@@ -1,15 +1,8 @@
 /**
- * The memory block and its per-agent cache.
- *
- * This is the thesis of the plugin. The block becomes a `ctx.systemPrompt`
- * section that dsh re-renders on every assembly, so the memories themselves are
- * in front of the model with no tool call — and, because a prompt section is
- * rendered rather than logged as a message, nothing accretes.
- *
- * The block is assembled from `@plur-ai/core`'s pre-rendered `InjectionResult`
- * strings using the SAME construction as `@plur-ai/mcp`'s session-start output,
- * so cross-host format parity holds by construction rather than by a snapshot
- * test that can drift.
+ * The memory block and its per-agent cache — the thesis of the plugin: a `ctx.systemPrompt` section re-rendered on
+ * every assembly, so memories reach the model with no tool call and nothing accretes.
+ * Built from core's pre-rendered `InjectionResult` strings with the SAME construction as `@plur-ai/mcp`'s
+ * session-start output, so format parity holds by construction.
  *
  * @module
  */
@@ -59,14 +52,8 @@ export function estimateTokens(text: string): number {
 
 /**
  * Render the memory block for the `plur:memory` system-prompt section.
- *
- * Sections are dropped whole rather than truncated mid-engram — a half-rendered
- * engram is worse than an absent one, because the model reads it as a complete
- * statement.
- *
- * Under budget pressure `consider` goes first, then `directives`, and
- * `constraints` never: prohibitions are the last thing standing, not the
- * first thing shed.
+ * Sections are dropped whole, never truncated mid-engram (a half engram reads as complete). Under budget pressure
+ * `consider` goes first, then `directives`; `constraints` never.
  *
  * @param injection - the result of a PLUR injection call.
  * @param budgetTokens - approximate token ceiling for the whole block.
@@ -97,18 +84,9 @@ export function renderBlock(injection: InjectionLike | undefined, budgetTokens: 
     if (estimateTokens(block) <= budget) return block
   }
 
-  // Constraints alone overflow the budget.
-  //
-  // Emitting DIRECTIVES alone would hand back process hygiene while silently
-  // withholding prohibitions, and an agent cannot tell "no rules apply" from
-  // "your rules did not fit". Emitting NOTHING avoids that but loses the
-  // directives too, so a store whose constraints are merely large would get no
-  // memory at all.
-  //
-  // So: say so. A notice costs a couple of dozen tokens, keeps the guarantee
-  // that prohibitions are never dropped in silence, and lets the directives
-  // through. Reached only after every rung that KEEPS constraints has failed,
-  // never as a way of shedding them under pressure.
+  // Constraints alone overflow the budget: emit a short WITHHELD notice plus the directives, so prohibitions are
+  // never dropped in silence ("no rules" vs "rules did not fit") yet the store still gets memory. Reached only after
+  // every rung that keeps constraints has failed.
   if (injection.constraints) {
     const notice = '## CONSTRAINTS\nWITHHELD — the prohibitions for this session did not fit the '
       + 'memory budget. Treat them as UNREAD, not as absent: do not assume an action is permitted '
@@ -126,21 +104,10 @@ export function renderBlock(injection: InjectionLike | undefined, budgetTokens: 
 }
 
 /**
- * Strip structure-forging characters from engram text.
- *
- * Statements are attacker-influenceable — packs are shared, and a user can be
- * talked into learning something — and this plugin promotes them from
- * tool-result trust to SYSTEM-PROMPT authority. Verified against a real
- * assembly, one engram could open its own `## DIRECTIVES` heading, fabricate
- * `## CONSTRAINTS` / `## ALSO CONSIDER` boundaries the model reads as ours,
- * and close and reopen a `<system>` tag.
- *
- * An engram is one assertion, so it is a single line by nature: collapsing
- * newlines removes the ability to forge a block without costing anything
- * legitimate. Leading `#` is neutralised for the same reason — a statement
- * cannot be allowed to look like a heading this plugin wrote. Angle brackets
- * are left alone; they are ordinary in technical notes, and a pseudo-tag with
- * no newline cannot restructure the prompt.
+ * Strip structure-forging characters from engram text. Statements are attacker-influenceable and are promoted here
+ * to SYSTEM-PROMPT authority; without this one engram could forge `## DIRECTIVES`/`## CONSTRAINTS` headings or
+ * close a `<system>` tag. An engram is one line by nature, so newlines collapse and a leading `#` is neutralised.
+ * Angle brackets stay: without a newline a pseudo-tag cannot restructure the prompt.
  *
  * @param text - one pre-rendered group from core.
  * @returns the same content, one engram per line, unable to forge structure.

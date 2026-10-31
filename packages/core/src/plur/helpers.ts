@@ -46,21 +46,11 @@ export function stableJson(v: unknown): string {
 
 /**
  * Total time an ambiguity guard may spend probing remotes, across ALL stores.
- *
- * The per-request bound (`fetchBounded`, 30s) stops one host hanging forever;
- * it does not stop N hosts costing N × 30s. These guards run INSIDE the primary
- * store lock, whose acquire budget is 180s — so four stalled remotes would
- * exhaust it and every waiting writer would throw "Failed to acquire lock".
- * A budget for the WHOLE walk bounds it.
- *
- * 45s: comfortably above one healthy round-trip per store for a handful of
- * stores, comfortably below the lock budget even when every store is stalled.
- *
- * Expiry needs no new policy — it routes into the SAME "cannot tell" branch an
- * unreachable store already takes, and the two callers already differ there by
- * design: `forget` refuses (a mis-targeted retire is irreversible), `feedback`
- * warns and proceeds (a mis-targeted rating is recoverable, and rating is a
- * hot path).
+ * Guards run inside the primary store lock (180s acquire budget), so N stalled
+ * remotes at the per-request 30s bound could starve every waiting writer.
+ * 45s fits a handful of healthy stores and stays well under the lock budget.
+ * Expiry takes the existing "cannot tell" branch: `forget` refuses (retire is
+ * irreversible), `feedback` warns and proceeds (recoverable, hot path).
  */
 export const REMOTE_GUARD_BUDGET_MS = 45_000
 
@@ -190,21 +180,11 @@ export const INGEST_PATTERNS = [
 export const PUSHDOWN_OVERFETCH = 3
 
 /**
- * How many times `recall`'s pushdown may widen its fetch before giving up.
- *
- * 3 rounds at 3x is 27x the requested limit. Derived, not picked: the
- * recoverable rejection ceiling is `1 - OVERFETCH^(-MAX_ROUNDS)` = 1 - 3⁻³ =
- * 26/27 ≈ 96.3%. Residual filters (expiry, min_strength) may reject up to
- * that fraction of every page and a full `limit` still comes back; past it
- * the shortfall is bounded and deterministic — recall returns what the last
- * 27x page yielded rather than escalating into an unbounded scan.
- *
- * Cost note: `PostgresAdapter.searchBM25` computes the FULL candidate set
- * regardless of the fetch limit (its trigram prefilter cannot rank, so SQL
- * LIMIT before scoring would drop true positives), so a widening round re-runs
- * an identical query to take a longer slice. On its own the loop cannot tell
- * `narrowed.length == fetch` from "more rows exist"; adapters that report
- * exhaustion (`searchBM25Exhaustive`) let it stop early.
+ * How many times `recall`'s pushdown may widen its fetch: 3x per round, 27x
+ * total, so residual filters may reject up to 26/27 of every page and a full
+ * `limit` still returns; past that the shortfall is bounded, never an
+ * unbounded scan. `PostgresAdapter.searchBM25` recomputes the full candidate
+ * set each round; adapters reporting exhaustion (`searchBM25Exhaustive`) stop early.
  */
 export const PUSHDOWN_MAX_ROUNDS = 3
 
@@ -220,22 +200,12 @@ export const PRIMARY_AUTO_EMBED_BATCH = 100
 
 
 /**
- * True when a background-pass error means "the store was torn down under
- * us", not "something is wrong".
- *
- * The auto-embed pass is fire-and-track, so a short-lived process (a CLI
- * invocation, any script that closes or drops its store when its work is
- * done) can legitimately tear the store down while a pass is mid-flight. That
- * is a benign cancellation: nothing to fix or retry, and the next engine over
- * a live store converges. Reporting it as a background failure would emit a
- * stray warning, possibly after the process's real output.
- *
- * Patterns, each tied to a specific teardown path:
- *   - Postgres `42P01` (undefined_table) / `3F000` (invalid_schema_name):
- *     `dropSchema()` won the race against the pass's next query.
- *   - "adapter is closed": `close()` beat the pass's next `getPool()`.
- *   - "after calling end": node-postgres's "Cannot use a pool after calling
- *     end on the pool" — same race, seen from a checkout already in flight.
+ * True when a background-pass error means the store was torn down mid-pass (a
+ * benign cancellation in short-lived processes), not a real failure worth a warning.
+ * Patterns, one per teardown path:
+ *   - Postgres `42P01` / `3F000`: `dropSchema()` won the race.
+ *   - "adapter is closed": `close()` beat the next `getPool()`.
+ *   - "after calling end": node-postgres's pool-ended error for an in-flight checkout.
  */
 export function isStoreTeardownError(err: unknown): boolean {
   const code = (err as { code?: string }).code
@@ -250,20 +220,10 @@ export const MAX_CHAIN_DEPTH = 32
 
 
 /**
- * The ancestors of a new engram, nearest first.
- *
- * It is a SHORTCUT, not the truth: where the chain and the history log
- * disagree, the log wins. It exists so a
- * reader can see the lineage without walking a log they may not have — which is
- * exactly the case for a portable record.
- *
- * `supersedes` comes before `derived_from` because a replacement is the nearer
- * relationship: engram C that replaces B, which was derived from A, has B as its
- * immediate ancestor.
- *
- * The walk is bounded and cycle-guarded. Neither should happen — supersession is
- * acyclic by construction — but a chain built from store data that a user can
- * edit by hand has no business hanging on a loop somebody typed.
+ * The ancestors of a new engram, nearest first: a SHORTCUT for readers without
+ * the history log (e.g. portable records); where they disagree, the log wins.
+ * `supersedes` precedes `derived_from` (a replacement is the nearer relation).
+ * The walk is bounded and cycle-guarded, since store data can be hand-edited.
  */
 export function buildChain(
   context: LearnContext | undefined,
@@ -328,18 +288,10 @@ export function buildAttribution(
   const a = context?.attribution
   const out: NonNullable<Engram['attribution']> = {}
 
-  // WHO. Three states, and the third is the point.
-  //
-  //   the caller said so         -> use it (a per-engram override)
-  //   the user configured one    -> use that
-  //   neither                    -> the `unidentified` marker, written OUT
-  //
-  // An absent field cannot be told apart from a record written before identity
-  // was captured at all; the marker says we looked and found nobody.
-  //
-  // Never the operating system account. That writes a real person's name into
-  // shared records because they installed software, not because they chose to
-  // be named.
+  // WHO: the caller's per-engram override, else the configured identity, else
+  // the explicit `unidentified` marker (absent would look like a pre-identity
+  // record). Never the OS account: installing software is not consent to be
+  // named in shared records.
   out.asserted_by = a?.asserted_by ?? configuredIdentity ?? ATTRIBUTION_UNIDENTIFIED
 
   // WHAT WROTE IT. Always recorded, because it is the one fact we always have:

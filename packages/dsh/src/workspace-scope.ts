@@ -75,16 +75,9 @@ export function findWorkspaceScope(cwd: string): WorkspaceScopeDecl | undefined 
 }
 
 /**
- * The workspace reader the plugin wires: a declared
- * scope is adopted only when the directory holding the `.plur.yaml` is trusted
- * (`plur trust <dir>` — core's `Plur.isDirectoryTrusted`, the same check
- * @plur-ai/opencode makes). A cloned repository must not choose which
- * scope — possibly a remote team store — this harness reads and writes.
- *
- * `scope: global` is never adopted, trusted or not: the ambient global store is
- * never this plugin's scope (scope.ts). Either refusal warns once per file and
- * narrows to the configured/derived default. A throwing check fails closed.
- *
+ * The workspace reader the plugin wires: a declared scope is adopted only from a trusted
+ * directory (`Plur.isDirectoryTrusted`), and `scope: global` never. Refusals warn once per
+ * file and narrow to the default; a throwing check fails closed.
  * @param trusts - is this directory trusted?
  * @param warn - where refusals are reported.
  * @returns a reader with {@link readWorkspaceScope}'s contract.

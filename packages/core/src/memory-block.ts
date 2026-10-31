@@ -42,22 +42,13 @@ Guidelines for the learning section:
 - **Do not start from scratch** — check your memories before answering. The answer may already be there.`
 
 /**
- * Render the shared memory system-prompt section: the PLUR memory
- * instructions, plus a "## Your Memories" block with the injected sections
- * (directives, constraints, consider) that fit the token budget.
- *
- * Budget: with a `tokenBudget`, the room left after `usedTokens` and the
- * fixed instructions is `remaining`. Each section is appended WHOLE only if
- * the block with it still fits `remaining` (tokens = ceil(chars / 4)); a
- * section that does not fit is dropped whole, and a later, smaller one may
- * still be appended. The heading is emitted only if it fits too. So the
- * returned text never exceeds `tokenBudget - usedTokens` tokens whenever the
- * instructions alone fit; the instructions are always rendered. Constraints
- * and consider additionally need > 100 tokens left before them. Without a
- * `tokenBudget`, every present section is rendered.
- *
- * Shared by `@plur-ai/claw` and `@plur-ai/opencode` so both render
- * byte-identical output under the same budget rule.
+ * Render the shared memory system-prompt section: the PLUR memory instructions
+ * (always rendered) plus a "## Your Memories" block of the injected sections.
+ * With a `tokenBudget`, each section is appended WHOLE only if it still fits
+ * the remaining budget (tokens = ceil(chars / 4)), else dropped whole; the
+ * heading must fit too, and constraints/consider need > 100 tokens left. So
+ * output never exceeds `tokenBudget - usedTokens` when the instructions fit.
+ * Shared by `@plur-ai/claw` and `@plur-ai/opencode` for byte-identical output.
  */
 export function renderMemoryBlock(params: {
   injection: InjectionResult | null

@@ -60,38 +60,19 @@ function extractMessageText(message: LearnableMessage): string {
 }
 
 /**
- * A bullet that is WHOLLY a bracketed placeholder (`[...]`, nothing else on
- * the line) is never a genuine learning — it is template scaffolding. The
- * injected instruction block (`memory-block.ts`'s `PLUR_MEMORY_INSTRUCTIONS`)
- * contains exactly this shape as literal example text:
- *
- *   - [concise statement of what you learned]
- *   - [another if applicable]
- *
- * Both placeholders are well over the 10-character floor below, so without
- * this filter, any turn that echoes or quotes that block (the model repeats
- * it, a user pastes it, a test fixture reuses it) gets its instructional
- * placeholders harvested by `learnFromTurn` as permanent engrams.
+ * A bullet that is WHOLLY a bracketed placeholder is template scaffolding, never a learning:
+ * `PLUR_MEMORY_INSTRUCTIONS` (memory-block.ts) contains such example bullets, and without
+ * this filter any turn echoing that block would harvest them as engrams.
  */
 const PLACEHOLDER_BULLET_RE = /^\[.+\]$/
 
 /**
- * The per-reply memory line PLUR's instructions ask for
- * (`Memory — recalled N · used: ENG-… · written: ENG-…`, or `Memory — none`),
- * in the forms an agent may write it: plain, in backticks, bold or italics, as
- * a bullet, numbered item or quote, after a 🧠, inside HTML tags, with an em
- * dash, en dash, hyphen or colon. It reports on the turn; it is never a
- * learning.
- *
- * The WHOLE line must have the footer's shape: parts separated by `·`, each
- * `recalled N` (a count, any script's digits), `recalled/used/written: ENG-…`
- * (ids, comma-separated) or `… none`, or `none` / `none recalled` alone. So
- * "Memory: recalled 3 times faster…" or "Memory: used: ENG-123 is obsolete…"
- * stay learnings. Mirrored exactly by `_MEMORY_LINE_RE` in
- * packages/hermes/plur_hermes/learner.py; both are tested on the cases in
- * packages/core/test/fixtures/memory-line-cases.json. Whitespace is written as
- * `[ \t]` (not `\s`) and a leading BOM is stripped before matching, because
- * JavaScript's and Python's `\s` differ on it.
+ * The per-reply memory line (`Memory — recalled N · used: ENG-… · written: ENG-…`, or
+ * `Memory — none`) in any common markup; it reports on the turn and is never a learning.
+ * The WHOLE line must have the footer's shape, so "Memory: recalled 3 times faster…" stays a
+ * learning. Mirrored exactly by `_MEMORY_LINE_RE` in packages/hermes/plur_hermes/learner.py;
+ * both are tested on packages/core/test/fixtures/memory-line-cases.json. Whitespace is
+ * `[ \t]` and a leading BOM is stripped, because JS and Python `\s` differ.
  */
 const ML_MARK = '[*_`]*'
 /**

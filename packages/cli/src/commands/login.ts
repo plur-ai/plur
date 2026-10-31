@@ -22,38 +22,13 @@ export { normaliseHost, fetchMe, personalScopeOf, takeoverMessage, type MeAnswer
 
 /**
  * plur login — enterprise token status and device sign-in.
- *
- * `plur login --status` reports each configured enterprise credential's
- * validity instead of dumping raw config: one row per DISTINCT (url, token)
- * group in `~/.plur/config.yaml` stores (core's `remoteEndpointTokenGroups`),
- * each with the JWT's display-only subject/org + expiry,
- * a live `/api/v1/me` probe (via core's `checkRemoteHealth` — the same probe
- * `plur_doctor` uses), and the locally mounted scopes. Token values are never
- * printed. Exit 0 when every credential is valid; 1 when any is EXPIRED or
- * INVALID (script-friendly).
- *
- * `plur login <host>` signs this device in with the OAuth device flow
- * (RFC 8628), shared with `plur-enterprise init`:
- *   1. POST /api/v1/auth/device { client_id: 'plur-cli', device_name }
- *   2. Print the sign-in page and the code; open the page in a browser unless
- *      this is a headless session (SSH, no display) or --no-open
- *   3. Poll POST /api/v1/auth/token at the server's interval (slow_down adds
- *      5 s for the rest of the run; a 429 waits Retry-After) until the key, a
- *      refusal, or the code's expiry
- *   4. GET /api/v1/me with the key: the personal scope user:<org>:<username>
- *   5. Write the one server entry to ~/.plur/config.yaml through core's
- *      registration (`Plur.registerEnterpriseServer`, the config write path),
- *      then fetch its scopes (`Plur.refreshServerScopes`)
- * The key is never printed or logged and is written only in step 5, only
- * after an `ok` token answer. Nothing is written before then, so ctrl-C
- * leaves config.yaml as it was. `~/.plur/config.json` is never written; a
- * remaining one is moved into config.yaml once (enterprise/legacy-login.ts).
- *
- * Usage:
- *   plur login https://plur.example.com
- *   plur login https://plur.example.com --no-open        # do not open a browser
- *   plur login https://plur.example.com --timeout 300    # stop waiting after 5 min
- *   plur login https://plur.example.com --remove-stale   # remove an entry holding your personal scope
+ * `--status`: one row per distinct (url, token) group with display-only JWT subject/org/expiry,
+ * a live `/api/v1/me` probe (`checkRemoteHealth`) and mounted scopes; tokens are never
+ * printed. Exit 1 if any is EXPIRED or INVALID.
+ * `plur login <host>`: OAuth device flow (RFC 8628): request a code, show/open the sign-in
+ * page, poll for the token (honouring slow_down and Retry-After), read the personal scope
+ * from `/me`, then register the server and refresh its scopes. The key is never printed and
+ * is written only after an `ok` answer, so ctrl-C leaves config.yaml unchanged.
  */
 
 const HELP = `plur login — sign this device in to a PLUR server, or check the tokens you have

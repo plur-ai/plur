@@ -18,20 +18,12 @@ export function hookCommandPrefix(binPath: string): string {
 export type StringHookHost = 'codex' | 'cursor' | 'agy'
 
 /**
- * Windows hook commands never rely on shell quoting, because
- * the editors run them through different shells — Codex through
- * `pwsh -Command`, Cursor reportedly through PowerShell, Antigravity through
- * `cmd /C` with its quotes backslash-escaped — and a quoted path breaks in
- * PowerShell (it is an expression, not a call) and in Antigravity (the
- * escaped quote becomes part of the name).
- *
- * The command is the shim path with forward slashes, unquoted. When the
- * path contains whitespace, its 8.3 short name is used instead
- * (`C:/Users/TESTUS~1/...`), which has none. When no short name is
- * available (8.3 names disabled on the volume), the fallback is `& "<path>"`
- * for the PowerShell editors (Codex, Cursor) and the plain path for
- * Antigravity, for which no quoted form works; `fallback: true` marks it,
- * and `plur doctor` reports it.
+ * Windows hook commands never rely on shell quoting: editors use different
+ * shells (pwsh, PowerShell, `cmd /C` with escaped quotes) and a quoted path
+ * breaks in some. Use the unquoted forward-slash shim path, or its 8.3 short
+ * name if it has whitespace. Without a short name, fall back to `& "<path>"` for
+ * PowerShell editors and the plain path for Antigravity; `fallback: true` marks
+ * it for `plur doctor`.
  */
 export function windowsHookCommand(
   shimPath: string,
@@ -128,20 +120,11 @@ export interface ClaudeHookContext {
 }
 
 /**
- * The launch part of one Claude Code hook.
- *
- * darwin/linux: the shell string, `<shim> <subcommand> [args]`.
- *
- * Windows: the documented exec form — `command` plus `args`, spawned with
- * no shell, so nothing is tokenised or quoted
- * (https://code.claude.com/docs/en/hooks, "exec form and shell form"). The
- * docs require `command` to be a real executable there, not a `.cmd`, and
- * recommend node plus the script path: so `node.exe <CLI js entry>
- * <subcommand>`. Without a js entry (the shim could not be installed), the
- * npx fallback is launched through `cmd.exe`, still in exec form. With
- * `execForm: false` (a Claude Code older than CLAUDE_EXEC_FORM_MIN, or an
- * unknown version with a usable short path) the hook is the unquoted
- * short-path string instead.
+ * The launch part of one Claude Code hook. darwin/linux: the shell string
+ * `<shim> <subcommand> [args]`. Windows: the documented exec form (no shell;
+ * `command` must be a real executable): `node.exe <CLI js entry> <subcommand>`,
+ * or the npx fallback via `cmd.exe` without a js entry. With `execForm: false`
+ * (old or unknown Claude Code) the unquoted short-path string instead.
  */
 export function claudeHookSpec(ctx: ClaudeHookContext, sub: string, ...extra: string[]): { command: string; args?: string[] } {
   if (ctx.plat !== 'win32') return { command: [ctx.shellCmd, sub, ...extra].join(' ') }

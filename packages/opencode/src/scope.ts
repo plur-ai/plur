@@ -81,35 +81,12 @@ export interface EffectiveProjectScope {
 
 /**
  * Decide whether to adopt a `.plur.yaml`'s `scope`/`domain` for this session.
- *
- * A repo's `.plur.yaml` is exactly as authoritative as any other file the
- * repo ships — which is to say, not automatically. `scope` can redirect
- * `injectHybrid`'s recall leg and `learnRouted`'s write leg to a REMOTE store
- * the user configured for a different context (their own team/enterprise
- * store, picked by an attacker-chosen scope string): the user's prompt text
- * would be POSTed under their real token, and an attacker-chosen statement
- * written into a shared scope.
- *
- * Remote-resolving scopes are not refused outright — a user's own repo
- * declaring `scope: group:acme/eng` so recall reaches their team's store is
- * the product working as intended. Instead the user to have said, once, that this DIRECTORY is
- * theirs: `plur trust <dir>` (`Plur.isDirectoryTrusted`), the same
- * `direnv allow` / `git config safe.directory` / VS Code workspace-trust
- * shape developers already know.
- *
- * Trust is checked against the directory the `.plur.yaml` FILE lives in
- * (`configPath`'s directory), not the session's scope root — the file can
- * sit in an ancestor of the scope root (within the same repo), and trust is
- * hierarchical (`isDirectoryTrusted` covers descendants), so trusting the
- * repo root once covers every `.plur.yaml` at or below it.
- *
- * Deliberately narrow: this function decides `scope`/`domain` and nothing
- * else. The same `.plur.yaml` also carries `remote_url` / `remote_token` /
- * `remote_scopes`, which are a different grant — they send prompt text
- * off-box rather than filtering what is read — and go through core's
- * `resolveProjectRemoteFromConfig`, the one gate every adapter shares.
- * `index.ts` calls both against the SAME single read, so the file trust is
- * checked against stays the file whose fields are adopted.
+ * A repo's `.plur.yaml` is not automatically trusted: `scope` can redirect recall and writes
+ * to a REMOTE store under the user's real token. Remote-resolving scopes need the user to
+ * have trusted the directory once (`plur trust <dir>`, `Plur.isDirectoryTrusted`).
+ * Trust is checked against the directory holding the FILE (hierarchical, so trusting the
+ * repo root covers it). Decides only `scope`/`domain`; remote settings go through core's
+ * `resolveProjectRemoteFromConfig`, and `index.ts` passes both the SAME single read.
  */
 export function resolveTrustedScope(
   plur: TrustCheck,
@@ -146,17 +123,10 @@ export interface FolderPolicySource {
 }
 
 /**
- * What the folder map decides for `dir`: `Plur.resolveFolderPolicy`,
- * keyed on the store this plugin opened. A resolver failure must never break
- * the turn, and fails SAFE: the folder is
- * treated like `ask` with no memory and a notice, never `on` because a project
- * marker is there. Core does the same for a folders.yaml it cannot read.
- *
- * The instance is bound to the decision it was given, as the
- * CLI hooks and the MCP server do. Core's repository-default boundary (an
- * unmatched or unknown Git origin keeps unscoped recall and saves local, even
- * for `dial: always` stores) and remote-only mode apply only to a bound
- * instance; an unbound one would dial with the policy switched `on`.
+ * What the folder map decides for `dir` (`Plur.resolveFolderPolicy`). A resolver failure
+ * never breaks the turn and fails SAFE: treated like `ask` with no memory and a notice.
+ * The instance is bound to the decision: the repository-default boundary and remote-only
+ * mode apply only to a bound instance.
  */
 export function folderPolicy(plur: FolderPolicySource, dir: string, warn: (msg: string) => void): FolderPolicy {
   try {

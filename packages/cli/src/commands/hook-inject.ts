@@ -59,29 +59,14 @@ function logRemoteAttempt(entry: {
 }
 
 /**
- * plur hook-inject — Claude Code hook for engram injection + auto session start.
- *
- * Called by UserPromptSubmit hook. First call:
- *   1. Creates a session ID (auto session start — no need for explicit plur_session_start)
- *   2. Reads .plur.yaml for project-level domain/scope defaults
- *   3. Injects relevant engrams based on the user's prompt
- *
- * Subsequent calls check if a reminder is due (every 10 min).
- *
- * With --rehydrate: always injects (used by the SessionStart hook, matcher
- * "compact", after context compaction to restore engrams that were lost).
- * PostCompact cannot carry context in Claude Code, so a PostCompact
- * registration prints nothing.
- *
- * With --event <type>: contextual injection for specific tool events:
- *   --event plan_mode   Full engram injection when entering plan mode
- *   --event skill       Domain-specific engrams based on skill name
- *   --event agent       Agent-scoped engrams for spawned agent
- *   --event subagent    Inject agent-scoped engrams into subagent context
- *
- * Input: JSON on stdin (Claude Code hook format: {prompt, ...} or {compact_summary, ...})
- * Output: JSON on stdout —
- *   {hookSpecificOutput: {hookEventName, additionalContext}} — or empty (exit 0)
+ * plur hook-inject — Claude Code UserPromptSubmit hook: engram injection + auto session start.
+ * First call creates a session ID, reads `.plur.yaml` defaults and injects engrams for the
+ * prompt; later calls check whether a reminder is due (every 10 min).
+ * --rehydrate: always inject (SessionStart, matcher "compact"); PostCompact prints nothing,
+ *   since it cannot carry context.
+ * --event plan_mode|skill|agent|subagent: contextual injection for that tool event.
+ * Input: hook JSON on stdin. Output: `{hookSpecificOutput: {hookEventName, additionalContext}}`
+ * on stdout, or nothing (exit 0).
  */
 
 /**
@@ -234,16 +219,10 @@ function sessionMarkerPath(key: string): string | null {
 }
 
 /**
- * The keys an older hook-inject wrote this session's marker under (not the
- * checkpoint/counter forms, which `legacyHookSessionKeys` also returns).
- *
- * With a payload session_id, only forms derived from that id: the `sid-` key
- * and the uncapped `safeSessionKey(payload)`. Never the env/ppid forms: a ppid
- * marker can never belong to this session (the ppid changes on every prompt),
- * and a stale `<pid>.marker` would make a new session look already started
- * and skip its injection.
- *
- * Without a payload session_id: the uncapped `safeSessionKey(env || ppid)`.
+ * Keys an older hook-inject wrote this session's marker under. With a payload session_id,
+ * only forms derived from it (`sid-` key and uncapped `safeSessionKey(payload)`) — never
+ * env/ppid forms, whose stale marker would make a new session skip injection. Without
+ * one: the uncapped `safeSessionKey(env || ppid)`.
  */
 function legacyMarkerKeys(key: string, input: Record<string, unknown>): string[] {
   const id = input.session_id
@@ -327,16 +306,11 @@ function touchReminder(key: string): void {
 export interface InjectLockHold { path: string; ino: number; token: string }
 
 /**
- * Take the per-session inject lock with O_EXCL. The lock prevents concurrent
- * hooks from loading the embedder at once; `wx` makes creation the test, so
- * two hooks firing together cannot both see "no lock". A lock older than
- * LOCK_STALE_MS belongs to a crashed run and is taken over (one retry).
- *
- *   'acquired'    — ours; the caller MUST release it (in a finally) with
- *                   `releaseInjectLock(hold)`
+ * Take the per-session inject lock with O_EXCL (`wx`), so concurrent hooks never load the
+ * embedder at once. A lock older than LOCK_STALE_MS is taken over (one retry).
+ *   'acquired'    — ours; the caller MUST release it in a finally (`releaseInjectLock(hold)`)
  *   'busy'        — a live run holds it; bail
- *   'unavailable' — cannot lock at all (no trustworthy dir, I/O error);
- *                   proceed unlocked (fail open)
+ *   'unavailable' — cannot lock at all; proceed unlocked (fail open)
  */
 export function takeInjectLock(
   path: string | null,
@@ -462,21 +436,11 @@ export function pidAlive(pid: number): boolean {
 }
 
 /**
- * Deferred wrap-up: recover sessions that ended without wrap-up.
- *
- * Scans <store>/sessions/ for checkpoint files left behind (plur_session_end
- * and hook-session-end both remove theirs). Invariant: a checkpoint is removed
- * only after a durable capture (PlurSpec/R2CLI.lean §2,
- * `removed_only_after_capture`).
- *   - An orphan is captured as an episode first and unlinked only if that
- *     succeeded.
- *   - A corrupt checkpoint is renamed aside (kept, never rescanned).
- *   - A checkpoint touched recently, or whose key is a pid that is still
- *     alive, is left alone: that session may be running in another terminal
- *     between checkpoints (the writer keys by ppid when CLAUDE_SESSION_ID is
- *     unset, the common case).
- *
- * Conservative: only reports metadata (stop count, duration, cwd).
+ * Deferred wrap-up: capture sessions that ended without wrap-up from checkpoints left in
+ * <store>/sessions/. A checkpoint is removed only after a durable capture
+ * (PlurSpec/R2CLI.lean §2, `removed_only_after_capture`); corrupt ones are renamed aside;
+ * recently touched ones, or ones keyed by a live pid, are left alone (session may be running).
+ * Reports metadata only (stop count, duration, cwd).
  */
 export function processDeferredWrapups(
   plur: Pick<Plur, 'capture'> & Partial<Pick<Plur, 'remoteOnlyFolder' | 'resolveFolderPolicy'>>,
@@ -636,16 +600,10 @@ export function settleWithin(p: Promise<unknown>, ms: number): Promise<boolean> 
 }
 
 /**
- * Background build of the embedding cache.
- *
- * On a store with a cold cache, every session's first prompt misses the
- * hybrid deadline. A cut-off search keeps the vectors it computed (appended to
- * `.embeddings-cache.delta.jsonl`); this build finishes the job. After a
- * fallback the hook starts `hook-inject --warm-embeddings`: detached, lowest
- * CPU priority, one at a time per store (the `.embeddings-warming` marker),
- * bounded by PLUR_WARM_CEILING_MS. It runs core's `similaritySearch`, which
- * embeds every active engram through the cache and saves it. That path takes
- * no store write lock at all; the cache file is written atomically.
+ * Background embedding-cache build (`hook-inject --warm-embeddings`), started after a hybrid
+ * deadline fallback on a cold cache: detached, lowest CPU priority, one per store
+ * (`.embeddings-warming` marker), bounded by PLUR_WARM_CEILING_MS. Runs core's
+ * `similaritySearch`; takes no store write lock, and the cache file is written atomically.
  */
 const WARM_MARKER = '.embeddings-warming'
 // 60 min: the cache is saved only once the whole store is embedded, and at the

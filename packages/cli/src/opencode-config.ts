@@ -40,16 +40,10 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * The opencode config directory `plur init` writes into, resolved the way
- * opencode resolves it: `OPENCODE_CONFIG_DIR` when set (opencode loads
- * `opencode.json(c)` from that directory on top of the global one), else the
- * global directory `$XDG_CONFIG_HOME/opencode`, falling back to
- * `~/.config/opencode` (opencode's `packages/core/src/global.ts` joins
- * `xdg-basedir`'s `xdgConfig` with "opencode"; `xdg-basedir` treats an empty
- * `XDG_CONFIG_HOME` as unset). Matching opencode's resolution keeps a user
- * with a custom location from getting a config written where opencode never
- * reads it. No per-project variant: one global engram store, one place to
- * register it.
+ * The opencode config directory `plur init` writes into, resolved as opencode
+ * does: `OPENCODE_CONFIG_DIR`, else `$XDG_CONFIG_HOME/opencode` (empty counts as
+ * unset), else `~/.config/opencode` — so a custom location is never missed.
+ * No per-project variant: one global store, one place to register it.
  */
 export function opencodeConfigDir(env: NodeJS.ProcessEnv = process.env): string {
   if (env.OPENCODE_CONFIG_DIR) return env.OPENCODE_CONFIG_DIR
@@ -285,16 +279,11 @@ export function opencodeMcpCommand(cliVersion: string): string[] {
 }
 
 /**
- * Is this PLUR's legacy `mcp.plur` npx entry, `{ type: 'local', command:
- * ['npx', '-y', '@plur-ai/mcp@<version>'], enabled: true }`? A shell-less
- * spawn on Windows cannot resolve a bare `npx` to `npx.cmd`.
- *
- * Scoped as tightly as `isOwnWin32CmdShimEntry` in mcp-config.ts: a
- * local entry whose command is exactly those three elements with a pinned
- * version. Any other command (another launcher, extra args, another package,
- * an unpinned spec) or a remote entry is the user's and is never touched.
- * Other fields (`environment`, `timeout`, …) do not disqualify the entry:
- * the upgrade replaces `command` only, so they are kept.
+ * Is this PLUR's legacy `mcp.plur` npx entry (`{ type: 'local', command:
+ * ['npx', '-y', '@plur-ai/mcp@<version>'] }`)? Shell-less spawns on Windows
+ * cannot resolve bare `npx`. As tight as `isOwnWin32CmdShimEntry`: exactly
+ * those three elements with a pinned version, else it is the user's and never
+ * touched. Extra fields are kept, since only `command` is replaced.
  */
 function isOwnLegacyNpxEntry(entry: unknown): entry is Record<string, unknown> {
   if (!isPlainObject(entry)) return false
@@ -318,15 +307,10 @@ function sameWin32Path(a: string, b: string): boolean {
 
 /**
  * The `command` to repair PLUR's own win32 node-form `mcp.plur` entry to, or
- * null to leave it alone. The same rules as the Claude Code entry heal,
- * through its own predicates: the entry must be
- * `[<node(.exe)>, <@plur-ai/mcp js entry>]` (`isOwnWin32NodeEntry`); it is
- * rewritten when a path it names is gone (`missingNodeEntryPaths`), or when
- * today's command is itself the node form and names a different js entry.
- * A working entry is never replaced by the npx fallback, and an entry
- * whose node is PATH-resolved (a bare `node`) is never rewritten. Any
- * other shape — another script, extra args, another launcher — is the
- * user's and is never touched.
+ * null. Same rules as the Claude Code heal: only `[<node(.exe)>, <@plur-ai/mcp
+ * js entry>]` (`isOwnWin32NodeEntry`), rewritten when a named path is gone or
+ * the current node form names a different js entry. Never replaces a working
+ * entry with npx, never rewrites a PATH-resolved `node`; other shapes are the user's.
  */
 function staleOwnWin32NodeCommand(entry: unknown, cliVersion: string): string[] | null {
   if (!isPlainObject(entry) || entry.type !== 'local') return null
@@ -349,16 +333,10 @@ function staleOwnWin32NodeCommand(entry: unknown, cliVersion: string): string[] 
 }
 
 /**
- * Resolve the real path to write to. `atomicWrite`'s rename REPLACES whatever
- * sits at the given path — including a symlink itself, which would orphan the
- * file it pointed to and leave a plain file where the symlink was.
- * Dotfiles-managed users symlink `opencode.json` into a dotfiles repo, so
- * resolve to the real target file first and hand atomicWrite THAT path; the
- * symlink survives untouched.
- *
- * Only meaningful when `path` already exists as a symlink; a path that
- * doesn't exist yet (a fresh config) has nothing to resolve, and
- * `realpathSync` would throw ENOENT on it anyway.
+ * Resolve the real path to write to. `atomicWrite`'s rename replaces a symlink
+ * itself (orphaning its target), and dotfiles users symlink `opencode.json`, so
+ * write to the symlink's real target. A path that does not exist yet has
+ * nothing to resolve.
  */
 function resolveWriteTarget(path: string): string {
   try {

@@ -6,23 +6,13 @@ import { makeHttpLlm, llmFromEnv } from '@plur-ai/gateway/harness'
 
 /**
  * plur tensions — scan for contradictions, manage the tension lifecycle.
- *
- * Usage:
- *   plur tensions                              # list persisted tensions (unresolved)
- *   plur tensions --status all                 # include dismissed/resolved
- *   plur tensions --scan                       # LLM scan; NEW detections are persisted
- *   plur tensions --scan --no-persist          # dry-run scan (no records, no suppress-list)
- *   plur tensions --scan --scope project:plur  # narrow to one scope
- *   plur tensions --scan --domain plur.core    # narrow to one domain
- *   plur tensions --scan --min-confidence 0.8  # stricter threshold
- *   plur tensions --scan --max-pairs 100       # check more pairs
- *   plur tensions --scan --batch-size 1        # sequential single-pair judging (no batching)
- *   plur tensions --scan --temporal-discount   # days-apart confidence discount (default off)
- *   plur tensions --scan --model claude-haiku-... --llm-base-url ... --llm-api-key ...
- *   plur tensions confirm T-2026-0703-001      # mark a detection as a real conflict
- *   plur tensions dismiss T-2026-0703-001      # false positive — suppress the pair
- *   plur tensions resolve T-2026-0703-001 --winner ENG-...   # keep winner, retire loser
- *   plur tensions --json                       # machine-readable output
+ *   plur tensions [--status all] [--json]   # list persisted tensions (default: unresolved)
+ *   plur tensions --scan [--no-persist]     # LLM scan; NEW detections persisted (dry-run: none)
+ *     scan filters/tuning: --scope, --domain, --min-confidence, --max-pairs,
+ *     --batch-size 1 (no batching), --temporal-discount (off by default),
+ *     --model, --llm-base-url, --llm-api-key
+ *   plur tensions confirm|dismiss <id>      # real conflict | false positive (suppress pair)
+ *   plur tensions resolve <id> --winner ENG-...   # keep winner, retire loser
  */
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   let scan = false

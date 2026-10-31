@@ -2,19 +2,10 @@ import { readSync } from 'fs'
 import { type GlobalFlags } from '../plur.js'
 
 /**
- * plur hook-correction-detect — UserPromptSubmit hook.
- *
- * Scans the user's prompt for correction-shaped phrases. When a strong
- * pattern matches, emits a system reminder asking the agent to consider
- * calling plur_learn to capture the durable rule before continuing.
- *
- * This closes a known capture gap: agents acknowledge corrections in prose
- * but don't store them as engrams, so the same correction must be repeated
- * in the next session.
- *
- * The hook is purely advisory — it doesn't block, doesn't call plur_learn
- * itself. The agent decides whether the rule is engram material.
- *
+ * plur hook-correction-detect — UserPromptSubmit hook. On a strong
+ * correction-shaped phrase, emits a reminder to consider plur_learn, since
+ * agents often acknowledge corrections without storing them. Advisory only:
+ * never blocks or calls plur_learn itself.
  * Input: JSON on stdin (Claude Code UserPromptSubmit hook format)
  * Output: JSON {hookSpecificOutput: {additionalContext}} when matched, else empty.
  */

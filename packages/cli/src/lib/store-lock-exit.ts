@@ -5,22 +5,12 @@ import { pendingStoreLockOps } from '@plur-ai/core'
 import { getLastPlurInstance } from '../plur.js'
 
 /**
- * Bounded waits a hook does before it force-exits, so `process.exit()` never
- * lands inside one of this process's own store writes.
- *
- * `process.exit()` does not wait for in-flight async work. A hook that exits
- * past a missed hybrid deadline (the abandoned search still records its
- * injection) or on its watchdog timer can be mid-way through taking
- * `engrams.yaml.lock`. Exiting between the O_EXCL open and the token write
- * leaves an EMPTY lock file, and core cannot tell who owns an empty lock, so
- * every later writer (the next hook, the MCP server) waits out its 60s stale
- * threshold.
- *
- * A disk check is not enough on its own: see {@link storeIdle}.
- *
- * Every hook that force-exits goes through here: `hook-inject` (after an
- * abandoned hybrid, and on its watchdog) and `runCodexHook`, which is the exit
- * of every Codex and Antigravity hook.
+ * Bounded waits before a hook force-exits, so `process.exit()` never lands
+ * inside this process's own store write: exiting between the O_EXCL open and
+ * the token write leaves an EMPTY `engrams.yaml.lock` that every later writer
+ * waits out (60s stale threshold). A disk check alone is not enough (see
+ * {@link storeIdle}). Every force-exiting hook uses this: `hook-inject` and
+ * `runCodexHook` (all Codex and Antigravity hooks).
  */
 
 /** The Claude Code hook's bound after an abandoned hybrid, and the Codex/Antigravity exit's (ms). */

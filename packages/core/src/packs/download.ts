@@ -31,19 +31,9 @@ export const PACK_DOWNLOAD_TIMEOUT_MS = 30_000
 
 
 /**
- * Download a pack tar.gz from `url`, extract it to a temp directory, and
- * return the path to the extracted pack directory.
- *
- * The caller is responsible for removing the returned temp directory when done.
- * Use `cleanupDownloadedPack` for that.
- *
- * The archive must be a gzipped tar whose top-level directory is the pack
- * (e.g. `my-pack/SKILL.md`, `my-pack/engrams.yaml`). A flat archive (files
- * at the root without a subdirectory) is also accepted; in that case the
- * extraction root itself is returned as the pack directory.
- *
- * No auth headers are added: with signed-URL delivery the URL is the
- * credential.
+ * Download a pack tar.gz from `url` and extract it to a temp directory; the caller removes
+ * it with `cleanupDownloadedPack`. The pack is the archive's top-level directory, or the
+ * extraction root for a flat archive. No auth headers: a signed URL is the credential.
  */
 export async function downloadAndExtractPack(url: string): Promise<{ packDir: string; tmpRoot: string }> {
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'plur-pack-dl-'))

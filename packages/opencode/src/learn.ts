@@ -1,25 +1,13 @@
 import { extractLearnings, extractSelfReportedLearnings, isCorrection, type ProjectConfig } from '@plur-ai/core'
 
 /**
- * Primary learning path: harvest the assistant's own `🧠 I learned:`
- * self-report block from the turn's accumulated text and persist each
- * bullet. Mirrors claw's `afterTurn` self-report path
- * (`packages/claw/src/context-engine.ts`) — same extraction, same
- * `LearnContext` shape, an opencode-specific `source`.
- *
- * Uses `extractSelfReportedLearnings`, not `extractLearnings`: the latter
- * only processes `role === 'user'` messages and would return `[]` here.
- *
- * Gated on `auto_learn`, the same kill switch `learnFromUserText` respects.
- * This is the path an attacker has to write through: the assistant's own
- * text is what it echoes back after reading a hostile file/webpage/tool
- * output, so a self-report block quoted FROM that content would reach
- * `learnRouted` unless this checks first. Claw gates its equivalent paths
- * the same way.
- * `claim_class: 'inferred'` marks every statement this path writes as the
- * agent's own extraction rather than something a person stated outright —
- * `formatLayer3` renders that distinction (`(inferred)` / `Kind: inferred`)
- * so it never reads as user-taught.
+ * Primary learning path: persist each bullet of the assistant's own
+ * `🧠 I learned:` block, mirroring claw's `afterTurn`
+ * (`packages/claw/src/context-engine.ts`). Uses `extractSelfReportedLearnings`
+ * (`extractLearnings` only reads user messages).
+ * Gated on `auto_learn`: assistant text can echo hostile file/web/tool content,
+ * so this is the path an attacker writes through. Writes `claim_class:
+ * 'inferred'` so `formatLayer3` never presents it as user-taught.
  */
 export async function learnFromTurn(plur: any, texts: string[], projectConfig?: ProjectConfig): Promise<void> {
   if (plur?.config?.auto_learn === false) return
@@ -38,26 +26,13 @@ export async function learnFromTurn(plur: any, texts: string[], projectConfig?: 
 }
 
 /**
- * Secondary learning path: regex-based correction/preference extraction from
- * the user's own turn text — the same text `chat.message` already builds its
- * recall query from. Mirrors claw's `ingest()` real-time path
- * (`packages/claw/src/context-engine.ts`): `extractLearnings` over the user
- * message, persisted at confidence >= 0.7, gated behind two checks claw
- * applies before ever calling `extractLearnings`:
- *
- * - `auto_learn`: read directly off the live `Plur` instance's already-loaded
- *   config (`plur.config`, from `~/.plur/config.yaml` —
- *   `packages/core/src/schemas/config.ts`, default true).
- *
- *   This is NOT the same switch claw's `ContextEngine` honors, despite
- *   sharing a name: claw's `auto_learn` is a constructor option and claw
- *   does not read `config.yaml`. A user who sets `auto_learn: false` in
- *   `~/.plur/config.yaml` gets it honored here but not in claw.
- * - `isCorrection`: claw's real-time-ingest matcher, moved to
- *   `@plur-ai/core` (`packages/core/src/learner.ts`) so both hosts share it.
- *   Far tighter than "some pattern matched" — it requires an explicit
- *   correction shape ("no,", "actually,", "wrong", or an "X, not Y"
- *   construction).
+ * Secondary learning path: `extractLearnings` over the user's own turn text,
+ * persisted at confidence >= 0.7, mirroring claw's `ingest()`
+ * (`packages/claw/src/context-engine.ts`). Two gates:
+ * - `auto_learn` from the live `plur.config` (`~/.plur/config.yaml`, default
+ *   true). Not claw's switch of the same name, which is a constructor option.
+ * - `isCorrection` (`packages/core/src/learner.ts`): requires an explicit
+ *   correction shape ("no,", "actually,", "wrong", or "X, not Y").
  */
 export async function learnFromUserText(plur: any, text: string, projectConfig?: ProjectConfig): Promise<void> {
   if (!text) return

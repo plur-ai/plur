@@ -63,16 +63,9 @@ function assertVersion(version: unknown): asserts version is number {
 }
 
 /**
- * Write schema_version to config.yaml, preserving other fields.
- *
- * Runs under the same `withLock(configPath)` every other config writer takes.
- * Without it, a concurrent read-modify-write that began earlier could write
- * back its stale copy and erase `schema_version`; a migrated store would then
- * read as version 0 and the next run would re-apply every migration.
- *
- * Only ENOENT is treated as "start empty". Any other read error (EACCES, a
- * transient failure) on an EXISTING config would otherwise merge from `{}` and
- * drop every other top-level key, matching why `persistStores` rethrows.
+ * Write schema_version to config.yaml, preserving other fields, under the same `withLock(configPath)` as every
+ * config writer (else a stale concurrent write erases it and migrations re-apply). Only ENOENT means "start
+ * empty"; other read errors throw rather than drop every other key.
  */
 export function setSchemaVersion(configPath: string, version: number): void {
   assertVersion(version)
@@ -241,23 +234,10 @@ export function runMigrations(
   let backupPath: string | null = null
 
   /**
-   * EVERYTHING runs under the corpus lock: reading the version, planning,
-   * backing up, migrating, saving, and stamping the new version.
-   *
-   * Locking only the corpus read-modify-write is not enough: a concurrent `run`
-   * and `rollback` could both read version 2, rollback strips the v1/v2 fields,
-   * and run applies only v3-v5. The store would then report a schema version
-   * that does not match its contents, and nothing would detect it.
-   *
-   * LOCK ORDER is corpus -> config. `setSchemaVersion` takes the config lock
-   * itself, so this nests. That direction is safe because nothing acquires them
-   * the other way round: `addStore` materializes its store file (store lock)
-   * and only THEN calls `persistStores` (config lock), sequentially rather than
-   * nested. Anything added later must keep that order or risk a deadlock.
-   *
-   * `withLock` is NOT reentrant, and `loadEngrams`/`saveEngrams` do not lock
-   * internally (their callers do), so this is the only holder of the corpus
-   * lock for the duration.
+   * EVERYTHING (read version, plan, back up, migrate, save, stamp) runs under the corpus lock, so concurrent run and
+   * rollback cannot leave a version that mismatches the contents.
+   * LOCK ORDER is corpus -> config (`setSchemaVersion` nests the config lock); nothing takes them the other way
+   * round, and new code must keep that order. `withLock` is NOT reentrant and load/saveEngrams do not lock.
    */
   withLock(engramsPath, () => {
     if (options?.dryRun && fs.existsSync(`${engramsPath}.migration.json`)) throw new Error('Interrupted migration needs recovery before a dry run')

@@ -68,17 +68,9 @@ export interface StatusResult {
   /** Injection-provenance event/label counts. */
   history_events?: InjectionEventCounts
   /**
-   * Artifacts `status()` could not read, by name.
-   *
-   * `status()` is the command an operator reaches for WHEN something is wrong,
-   * so it must REPORT a broken artifact rather than die on it. The
-   * refuse-on-corrupt loaders protect the write paths (a write that proceeds
-   * from a phantom-empty store destroys data), but propagating those throws out
-   * of the diagnostic would take it down too. MCP `session_start` awaits
-   * `status()`, so a single truncated file must not block session start.
-   *
-   * Keys are artifact names (`packs`, `episodes`, `tensions`); values are the
-   * loader's message, which already carries the repair instructions.
+   * Artifacts `status()` could not read, by name (`packs`, `episodes`, `tensions`) →
+   * the loader's message with repair instructions. `status()` must REPORT a broken
+   * artifact rather than throw, since MCP `session_start` awaits it.
    */
   store_errors?: Record<string, string>
   /** @deprecated Use `store_errors.packs`. Kept so existing readers still work. */

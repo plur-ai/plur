@@ -74,28 +74,13 @@ export interface ProjectConfig {
 }
 
 /**
- * Walk upward from `startDir` looking for `.plur.yaml` — but stop at the
- * project boundary (`.git` directory) so we don't pick up an unrelated
- * config from a parent directory or from the user's HOME.
- *
- * Why the `.git` boundary: walking up to HOME would let a single `.plur.yaml`
- * in HOME silently route EVERY project's prompts to whatever Enterprise URL it
- * contained. The right boundary is the project itself — defined by `.git`.
- *
- * Termination guarantees:
- *   - Stop at the first `.plur.yaml` we hit (success).
- *   - Stop at the `.git` boundary (project boundary).
- *   - Stop at HOME or filesystem root as a hard ceiling.
- *   - Refuse to consider a `.plur.yaml` that sits IN HOME itself.
- *
- * Inside a repository the walk follows the REAL path (symlinks resolved) up
- * to the real repository root, the same path the
- * marker walk (`findPlurMarker`) takes: a symlinked sub-folder then finds the
- * same `.plur.yaml` its real path does, and never one above the repository.
- * The result is returned in the caller's spelling when an ancestor of the
- * path as typed names the same folder (`/var/...` vs `/private/var/...`), so
- * existing callers see the path they gave. Outside any repository the walk
- * follows the path as typed (`path.resolve`).
+ * Walk upward from `startDir` for `.plur.yaml`, bounded by the project (`.git`)
+ * so a HOME-level file cannot silently route every project to its Enterprise URL.
+ * Stops at the first `.plur.yaml`, the `.git` boundary, or HOME / filesystem
+ * root; a `.plur.yaml` IN HOME itself is refused.
+ * Inside a repository the walk follows the REAL path (as `findPlurMarker`
+ * does), never above the repository root, and returns the caller's spelling
+ * when it names the same folder. Outside a repository it uses `path.resolve`.
  */
 export function findProjectConfigPath(startDir: string = process.cwd()): string | null {
   const home = canonicalize(homedir())
@@ -233,21 +218,11 @@ export function readProjectConfigFromPath(configPath: string | null): ProjectCon
 }
 
 /**
- * Read `.plur.yaml` from the nearest enclosing project directory.
- * Returns `{}` if not found or unparseable.
- *
- * The parser is intentionally minimal (line-by-line) rather than pulling
- * js-yaml into the CLI bundle — config files are short, fields are flat,
- * and dependency-free keeps the CLI bundle tiny. Arrays use comma-
- * separated values OR YAML-style `- item` lines.
- *
- * Accepts an optional `startDir` so callers (notably the MCP server,
- * which lives in core and gets the dir from `process.cwd()`) can override
- * the walk root.
- *
- * A thin wrapper over `findProjectConfigPath` + `readProjectConfigFromPath`.
- * A caller that ALSO needs the path should call those two directly; see
- * `readProjectConfigFromPath` for why separate walks are a TOCTOU.
+ * Read `.plur.yaml` from the nearest enclosing project; `{}` if absent or
+ * unparseable. Minimal line parser (flat fields; arrays comma-separated or
+ * `- item` lines) to keep js-yaml out of the CLI bundle.
+ * A caller that also needs the path must call `findProjectConfigPath` +
+ * `readProjectConfigFromPath` directly: two separate walks are a TOCTOU.
  */
 export function readProjectConfig(startDir: string = process.cwd()): ProjectConfig {
   return readProjectConfigFromPath(findProjectConfigPath(startDir))

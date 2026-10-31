@@ -1,27 +1,12 @@
 /**
- * Chain verification for the history log.
- *
- * Checks the prev/hash linkage the history writer produces and the checkpoints
- * that pin it. A chain nobody verifies proves nothing.
- *
- * ## What this can and cannot establish
- *
- * It detects every edit that does NOT recompute the chain: content tampering
- * (the event no longer hashes to its recorded `hash`), a broken link, a
- * deleted event, a fork, a `prev` pointing at nothing.
- *
- * It cannot, from the log alone, detect a rewrite that recomputes every `prev`
- * and `hash` over the remaining events: that file is internally consistent by
- * construction. This is the ceiling of any self-contained hash chain and the
- * reason checkpoints exist: a checkpoint pins a `chain_head` that a later
- * rewrite cannot reproduce, so `checkpoint_head_missing` catches exactly that
- * case for everything written before the checkpoint. Anchoring a checkpoint
- * externally extends the same argument past the boundary of this file.
- *
- * Verification is never a bare bool. A bool is not anchorable and hides where
- * the chain broke, so the result names each break, each fork, and the
- * unprotected legacy range, and refusal is its own outcome distinct from both
- * "verified" and "broken" (see docs/design/failure-must-be-distinguishable.md).
+ * Chain verification for the history log: prev/hash linkage and checkpoints.
+ * - Detects every edit that does NOT recompute the chain (tampered content,
+ *   broken link, deleted event, fork, dangling `prev`).
+ * - Cannot detect a full recompute from the log alone; checkpoints pin a
+ *   `chain_head` a rewrite cannot reproduce (`checkpoint_head_missing`).
+ * - The result is never a bare bool: it names each break, fork and unprotected
+ *   legacy range, and refusal is its own outcome
+ *   (docs/design/failure-must-be-distinguishable.md).
  */
 import * as fs from 'node:fs'
 import { join } from 'node:path'
@@ -520,14 +505,9 @@ export function verifyChain(root: string, options?: VerifyChainOptions): ChainVe
 }
 
 /**
- * The store's CANONICAL hash, or null when it cannot be computed.
- *
- * Must be the digest a checkpoint records (canonical JSON of the parsed
- * document), or the comparison is meaningless. Raw file bytes are not used:
- * they vary with line endings, YAML emitter and OS.
- *
- * Null rather than throwing: a store may legitimately be absent (nothing has
- * been learned yet), and that is not a verification failure.
+ * The store's CANONICAL hash (canonical JSON of the parsed document — the
+ * digest a checkpoint records; raw bytes vary by platform), or null when it
+ * cannot be computed. An absent store is not a verification failure.
  *
  * @param engramsPath - absolute path to engrams.yaml.
  * @returns the canonical store hash, or null when absent or unparseable.

@@ -1,36 +1,12 @@
 /**
- * Validity-gated daily backups of the engram store.
- *
- * Write-path guards refuse to make a damaged store worse, but they cannot
- * recover bytes a truncation already destroyed. Only a backup can.
- *
- * ## The validity gate
- *
- * Backing up an already-corrupt file is worse than not backing up: it replaces
- * the last good copy with a bad one. A snapshot is only taken when the current
- * file passes every check in {@link validateStore}.
- *
- * ## Where the snapshot is taken
- *
- * Inside `_withStoreLock(paths.engrams, …)`, before `store.load()`, on the first
- * such acquisition per process per day:
- *
- *   - INSIDE the lock, so it cannot copy a half-written file
- *   - BEFORE the load, so it copies the on-disk bytes before any write path can
- *     replace them
- *
- * Not at construction time: read-only instances and `plur status` must not have
- * write side effects.
- *
- * ## Cost
- *
- * On a 50,000-engram / 39 MB store: about 1.4 s for the first write of the day
- * (validate + copy + fsync), and nothing for later writes — short-circuited
- * in-process, and by the state file for other processes the same day.
- *
- * That time is spent while holding the store lock, which reduces the margin
- * against the stale-lock threshold on very large stores. Keep the backup under
- * the lock anyway: moving it out would allow copying a half-written file.
+ * Validity-gated daily backups of the engram store — the only way to recover bytes
+ * a truncation already destroyed.
+ * - Gate: a snapshot is taken only when the file passes {@link validateStore};
+ *   backing up a corrupt file would replace the last good copy.
+ * - Taken INSIDE `_withStoreLock(paths.engrams, …)` (never a half-written file) and
+ *   BEFORE `store.load()`, on the first acquisition per process per day; never at
+ *   construction (read-only instances and `plur status` must not write).
+ * - Cost: ~1.4 s once a day on a 39 MB store, under the lock; keep it there anyway.
  */
 import * as fs from 'fs'
 import * as path from 'path'
@@ -45,17 +21,9 @@ import { withLock } from './file-lock.js'
 export const BACKUP_DIR = 'backups'
 
 /**
- * Keep this many day-granularity snapshots.
- *
- * ## Disk cost
- *
- * Snapshots are uncompressed copies of the whole store, so the retained set
- * costs up to `(KEEP_DAILY + KEEP_WEEKLY) x store size` (e.g. ~113 MB for a
- * 10 MB store, ~431 MB for a 39 MB store).
- *
- * Uncompressed so a human can read and diff what was kept without tooling. If
- * the footprint becomes a problem, shorten the WEEKLY tier first — the daily
- * window is what actually gets restored from.
+ * Keep this many day-granularity snapshots. Snapshots are uncompressed (human-
+ * diffable) full copies, costing up to `(KEEP_DAILY + KEEP_WEEKLY) x store size`;
+ * if that is too much, shorten the WEEKLY tier first.
  */
 const KEEP_DAILY = 7
 
@@ -153,21 +121,11 @@ export function sha256(content: string | Buffer): string {
 }
 
 /**
- * Decide whether a store file is fit to be backed up (or restored from).
- *
- * Checks:
- *
- *   (a) parses
- *   (b) no schema-invalid entries — the loader would silently drop them
- *   (c) count is not far below the last known-good — catches truncation, and is
- *       the ONLY check that can, since a truncated file is perfectly valid YAML
- *       describing a smaller corpus
- *   (d) ids non-empty (a repeated id is resolved by the loader without loss)
- *   (e) non-zero size, and the file ends with a newline as PLUR's writer always
- *       does — a cheap tell for a write cut short
- *
- * `lastGoodCount` is optional because the first ever snapshot has no baseline;
- * (c) is skipped in that case rather than guessed at.
+ * Decide whether a store file is fit to be backed up (or restored from):
+ *   (a) parses; (b) no schema-invalid entries (the loader would drop them);
+ *   (c) count not far below `lastGoodCount` — the ONLY truncation check, skipped
+ *       when there is no baseline; (d) ids non-empty;
+ *   (e) non-zero size and ends with a newline, as PLUR's writer always does.
  */
 export function validateStore(filePath: string, lastGoodCount?: number): StoreValidity {
 
@@ -533,17 +491,9 @@ function idsFromBytes(bytes: Buffer): string[] {
 }
 
 /**
- * Engram ids the append-only history records as created (`engram_created`)
- * after `since` and not retired (`engram_retired`) since (a full ISO instant,
- * compared lexically — ISO-8601 UTC sorts correctly).
- *
- * History is append-only JSONL under `history/`, so concurrent writers do not
- * lose lines. That makes it the right source for "what existed that the backup
- * does not have".
- *
- * This matters most for same-day losses. Snapshots are daily, so everything
- * learned after the morning's snapshot is unprotected by it; naming those
- * engrams is the only way the user learns what a restore costs them.
+ * Engram ids the append-only history records as created (`engram_created`) after
+ * `since` (full ISO instant, compared lexically) and not retired since. History
+ * JSONL loses no lines under concurrency, so it names what a same-day restore loses.
  */
 /** Canonical engram id shape (schemas/engram.ts: `^(ENG|ABS|META)-[A-Za-z0-9-]+$`). */
 const ENGRAM_ID = /^(?:ENG|ABS|META)-[A-Za-z0-9-]+$/
@@ -598,18 +548,10 @@ export function restoreBackup(
   storePath: string,
   opts: { stamp?: string; force?: boolean } = {},
 ): RestoreResult {
-  // Under the store lock, and atomic. Without the lock, a writer committing
-  // between the superseded copy and the overwrite would leave its engram in
-  // NEITHER file; without atomicity, a crash mid-write leaves a partial corpus
-  // the loader refuses.
-  //
-  // `withLock` is the synchronous variant and shares the `<path>.lock` file
-  // protocol with `withAsyncLock`, so a CLI restore waits for an MCP server
-  // mid-write.
-  //
-  // PLANNING and the refusal checks happen inside the lock too, so
-  // `wouldLose` and `unrecoverable` describe the exact corpus being replaced
-  // and a plan is never validated against one state and applied to another.
+  // Under the store lock (a concurrent commit would land in NEITHER file) and atomic
+  // (a partial corpus is refused). `withLock` shares the `<path>.lock` protocol with
+  // `withAsyncLock`, so a CLI restore waits for an MCP server. Planning and refusal
+  // checks run inside the lock too, against the exact corpus being replaced.
   let plan!: RestorePlan
   const superseded = `${storePath}.superseded-${Date.now()}-${randomUUID()}`
   withLock(storePath, () => {

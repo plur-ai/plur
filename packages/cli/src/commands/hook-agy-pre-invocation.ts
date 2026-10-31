@@ -20,52 +20,13 @@ import { resolveProjectRemote, projectRemoteRefusalNotice } from '../lib/project
 import { recordInjected } from '../lib/auto-rate.js'
 
 /**
- * plur hook-agy-pre-invocation — Antigravity `PreInvocation` hook.
- *
- * The whole injection surface for this harness in one event: agy has no
- * SessionStart, no per-prompt event, and no end-of-turn context channel, so
- * session-open batch, per-prompt recall and the learn nudge all ride here.
- *
- * TWO PROBLEMS this hook has to solve that the other harnesses hand us for
- * free:
- *
- * 1. NO PROMPT IN THE PAYLOAD. PreInvocation's stdin is counters and paths
- *    only. The user's text lives in the transcript JSONL the payload points
- *    at (`transcriptPath`) — `lastUserInput()` digs it out. When the
- *    transcript can't be read (format drift, torn write), we degrade to the
- *    generic session batch rather than failing.
- *
- * 2. FIRES SEVERAL TIMES PER TURN. PreInvocation runs before EVERY model
- *    invocation — planning, tool-result digestion, final answer. And
- *    ephemeral messages are shown ONLY to the invocation they were injected
- *    into: after a tool call the memory block is gone. So the turn's rendered
- *    message is CACHED per conversation and re-emitted on every invocation of
- *    the SAME turn — recall runs once per user message, visibility lasts the whole
- *    turn, and nothing accumulates in history because ephemerals never do.
- *
- *    Turn identity is (step_index, text hash), not step_index alone: the
- *    transcript is Antigravity's internal format, and if step_index ever
- *    disappears or restarts, a step-only comparison freezes on turn one and
- *    replays it forever. The text hash breaks that
- *    tie — a different user message is a new turn regardless of what the
- *    step counter says. When the transcript itself is unreadable, the cached
- *    turn is replayed (there is no way to detect a turn boundary without
- *    it), with a stderr line saying so — replaying stale-but-real memory
- *    beats injecting nothing, and the log distinguishes it from healthy
- *    mid-turn replay.
- *
- * GATING: unlike the Claude Code/Cursor/Codex hooks, this does not silently
- * no-op when the cwd has no PLUR project config — agy runs hooks with cwd =
- * the directory containing hooks.json (~/.gemini/config), where
- * isPlurConfigured() can never be true (its walk deliberately skips
- * $HOME-level configs). The install itself is the opt-in here:
- * these hooks exist only because the user ran `plur init --antigravity`,
- * and they fire only inside agy. When the payload names a workspace, the
- * folder map decides for that path: off is silent, ask puts the one
- * question into the first turn of the conversation (replayed within that
- * turn, like memory), and on works as below with the policy's scope.
- *
- * Input:  camelCase JSON — { conversationId, invocationNum, transcriptPath, workspacePaths, ... }
+ * plur hook-agy-pre-invocation — Antigravity `PreInvocation` hook; session batch, recall
+ * and the learn nudge all ride here. The prompt is read from `transcriptPath` (unreadable
+ * → generic batch). It fires before EVERY invocation and ephemerals last one, so the
+ * turn's message is cached and replayed; turn identity is (step_index, text hash).
+ * No isPlurConfigured() gate (cwd is ~/.gemini/config): the install is the opt-in, and
+ * a named workspace follows the folder map (off silent, ask once per turn).
+ * Input: camelCase JSON { conversationId, invocationNum, transcriptPath, workspacePaths, ... }
  * Output: {"injectSteps":[{"ephemeralMessage": "..."}]} or nothing.
  */
 

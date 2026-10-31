@@ -1,24 +1,10 @@
 /**
- * What the leak guard scans, defined once.
- *
- * Two rules keep the write-time scan and the engram-side scans from drifting
- * apart (a field covered by one but not the other would let a secret slip
- * through a rescope or update):
- *
- *  - The write-time HARD scan (`detectSecrets`, throws) covers every
- *    `LearnContext` field classified `content` in the table below. The table
- *    is checked against the interface by the compiler, so a field added to
- *    `LearnContext` without a row here is a type error, not a silent gap.
- *
- *  - The engram-side scans do not enumerate at all. `engramContentFields`
- *    serialises EVERYTHING on the engram except the statement (which every
- *    caller scans separately) and PLUR's own `_`-prefixed bookkeeping keys in
- *    `structured_data`, so a field that reaches the engram by any route is
- *    scanned by construction.
- *
- * `test/leak-surface.test.ts` walks the table with a canary in each content
- * field and checks that both engram constructors (`learn()` and
- * `_buildEngramShape`) put it where `engramContentFields` can see it.
+ * What the leak guard scans, defined once so write-time and engram-side scans cannot drift apart:
+ *  - The write-time HARD scan (`detectSecrets`) covers every `LearnContext` field classified `content` below; the
+ *    compiler checks the table against the interface, so a missing row is a type error.
+ *  - Engram-side scans do not enumerate: `engramContentFields` serialises everything except the statement (scanned
+ *    separately) and PLUR's `_`-prefixed `structured_data` keys.
+ * `test/leak-surface.test.ts` checks both engram constructors with a canary per content field.
  */
 import type { LearnContext } from './types.js'
 import type { Engram } from './schemas/engram.js'

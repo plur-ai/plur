@@ -1,30 +1,12 @@
 /**
- * RemoteOnlyStoreGuard — the storage-layer backstop for remote-only folders.
- *
- * The method guards in `Plur` are the first layer: they refuse with a message
- * that names the folder and the operation. This wrapper is the second: while
- * a `Plur` instance is bound to a remote-only folder, EVERY local store it
- * opens — the primary store and each secondary file store — is wrapped, so a
- * code path nobody thought of still cannot reach a personal row.
- *
- *  (a) Reads see only the folder's own queued saves: primary-store rows whose
- *      `_outbox` is marked `remote_only` for THIS folder. A secondary file
- *      store is personal by definition and reads as empty. Personal rows are
- *      invisible to `load`, `loadCached`, `loadByIds` and
- *      `findActiveByContentHash`.
- *  (b) Writes may only create, change or delete those queued rows. A write
- *      whose result is not such a row (a new personal row, a queued row that
- *      lost its marker) or that touches a hidden row throws
- *      RemoteOnlyWriteError. A whole-corpus `save` re-inserts the hidden rows
- *      exactly as they were, in their original order, so a caller that only
- *      saw the queued rows can never delete the rest.
- *
- * Like ReadonlyStoreGuard this is a WHITELIST, for the reason given there: a
- * member missing from a safety guard must fail closed. The query-adapter
- * surface (`role`, `searchBM25`, …) is deliberately not forwarded, so search
- * pushdown into the full store is never used through this guard.
- * `nextEngramId` is forwarded: it returns an id, not content, and a queued
- * row's id must not collide with a hidden one.
+ * RemoteOnlyStoreGuard — the storage-layer backstop for remote-only folders (the `Plur` method guards are the first
+ * layer). While bound to a remote-only folder, EVERY local store opened is wrapped so no code path reaches a
+ * personal row:
+ *  (a) Reads see only primary rows whose `_outbox` is `remote_only` for THIS folder; secondary file stores read empty.
+ *  (b) Writes may only create, change or delete those rows, else RemoteOnlyWriteError. A whole-corpus `save`
+ *      re-inserts hidden rows unchanged and in order.
+ * A WHITELIST like ReadonlyStoreGuard (a missing member must fail closed); query-adapter members are not forwarded,
+ * so search pushdown is never used. `nextEngramId` is forwarded so queued ids cannot collide with hidden ones.
  */
 import type { Engram } from '../schemas/engram.js'
 import type { PrimaryStore, PrimaryStoreKind, SaveOptions } from './primary-store.js'
@@ -197,17 +179,10 @@ export class QueueHoldStore implements PrimaryStore {
   }
 
   /**
-   * The stored state of every remote-only queued row this store has read or
-   * written, by id. Writers read a row before they write it (under the store
-   * lock), so the write is checked against what that read returned — at no
-   * extra read, so write paths keep their exact load counts. A row
-   * that is NOT known here is read in a targeted way when the incoming row
-   * itself carries the marker (a new queued save, or a retarget of a row this
-   * instance never read), and when an unmarked row's id was never returned by
-   * this store and no whole-corpus read has happened (a writer that did not
-   * read first). After a whole-corpus read, an id it did not return is a new
-   * row. A queue marker is only ever set when a row is created, so a row once
-   * read without one does not gain one later except through this check.
+   * Stored state of every remote-only queued row this store has read or written, by id; writes are checked against
+   * it at no extra read. An unknown row is read in a targeted way when the incoming row carries the marker, or when
+   * its id was never returned and no whole-corpus read happened. Markers are only set on creation, so a row read
+   * without one cannot gain one except through this check.
    */
   private readonly _queued = new Map<string, Engram>()
   /** Ids some read through this store returned, and whether one read all. */

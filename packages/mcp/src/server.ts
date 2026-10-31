@@ -691,32 +691,13 @@ Please:
 }
 
 export async function runStdio(): Promise<void> {
-  // A long-lived memory server must not die from a background fault.
-  // Node's default turns ANY unhandled rejection — an un-awaited retry, a
-  // fire-and-forget probe, a timer callback's fetch — into process death.
-  // Claude Code never restarts an MCP server that dies mid-session, so that
-  // default converts one transient background hiccup into the entire session
-  // running memoryless, surfacing only as "Connection closed" on the next
-  // tool call.
-  //
-  // The two fault kinds get DIFFERENT treatment:
-  //
-  //   - unhandledRejection: survive and log. It comes from detached async
-  //     work, and continuing is safe.
-  //   - uncaughtException: log loudly, then EXIT. Resuming after one is
-  //     unsafe (Node's own docs), a mid-write throw can leave a
-  //     half-serialized transport frame that desyncs every later response,
-  //     and a process that survives while holding the store lock is a LIVE
-  //     lock holder: the cross-process
-  //     stale-lock recovery deliberately never steals from a live pid, so a
-  //     wedged-but-alive server blocks every other writer indefinitely.
-  //     Crash-fast keeps that recovery path working; for a memory server,
-  //     answering WRONGLY is worse than being visibly dead.
-  //
-  // The rejection log is rate-limited: a pathological store can reject in a
-  // tight loop, and the harness captures our stderr to disk.
-  // Registered here, not in createServer, so the test suite's in-process
-  // servers don't swallow the test runner's own failures.
+  // A long-lived memory server must not die from a background fault (Claude Code never
+  // restarts a dead MCP server, so the session would silently run memoryless).
+  //   - unhandledRejection: survive and log (rate-limited; stderr goes to disk).
+  //   - uncaughtException: log loudly, then EXIT. Resuming is unsafe, and a live wedged
+  //     process holding the store lock is never stolen from by stale-lock recovery.
+  // Registered here, not in createServer, so in-process test servers don't swallow
+  // the test runner's own failures.
   const LOG_WINDOW_MS = 60_000
   const LOG_MAX_PER_WINDOW = 20
   let logWindowStart = 0

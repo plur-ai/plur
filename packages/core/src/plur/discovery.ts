@@ -60,21 +60,10 @@ export interface DiscoveryMethods {
   getWritableRemoteScopes(): Array<{ scope: string; url: string }>
 
   /**
-   * Group configured remote stores by distinct URL, returning one entry per URL
-   * with the token to query it. Tokens should be identical across a URL's
-   * entries (same user, same instance); the first is used.
-   *
-   * "Distinct" is keyed on {@link normalizeEndpointUrl}: `https://x.com`,
-   * `https://x.com/` and `https://x.com/sse` are ONE endpoint, not three — an
-   * exact-string key would probe the same server once per spelling and split
-   * its registered-scope view across the copies. The FIRST configured
-   * spelling is what gets reported/queried; stored values are never rewritten.
-   *
-   * Public so the remote-recall leg's callers and tests can enumerate
-   * endpoint identity — but note recall dialing groups by (url, token) via
-   * `_remoteRecallHosts`, NOT by url alone: this method's first-token-wins
-   * collapse is only safe for probes (`/me`, health) where any of the tokens
-   * answers the identity question.
+   * One entry per distinct remote URL (keyed by {@link normalizeEndpointUrl},
+   * first configured spelling reported) with its first token. First-token-wins
+   * is safe only for identity probes (`/me`, health); recall dialing groups by
+   * (url, token) via `_remoteRecallHosts`.
    */
   _distinctRemoteEndpoints(): Array<{ url: string; token?: string }>
 
@@ -97,16 +86,10 @@ export interface DiscoveryMethods {
   remoteEndpointTokenGroups(): Array<{ url: string; token?: string; scopes: string[]; tokenEnv?: string }>
 
   /**
-   * Discover which scopes each configured remote token is authorized for, via
-   * `GET /api/v1/me`. For each distinct remote URL, reports the
-   * server-authorized scope set and which of those are not yet registered
-   * locally — the gap that lets a user authorized for N teams see only the
-   * one(s) they happened to register.
-   *
-   * Read-only: never mutates config. Each `/me` is raced against a timeout and
-   * failures are captured per URL (`ok:false`) so one unreachable endpoint
-   * never sinks discovery for the others. Restricted to a single URL via
-   * `opts.url`.
+   * Discover which scopes each remote token is authorized for (`GET /api/v1/me`)
+   * and which are not yet registered locally. Read-only; each call is
+   * timeout-raced and failures are per URL, so one bad endpoint never sinks the
+   * rest. `opts.url` restricts it to one URL.
    */
   discoverRemoteScopes(opts?: { url?: string; timeoutMs?: number }): Promise<RemoteScopeDiscovery[]>
 
@@ -120,42 +103,13 @@ export interface DiscoveryMethods {
   _probeMe(url: string, token: string | undefined, timeoutMs: number, scope?: string): Promise<MeResponse>
 
   /**
-   * Discover each server entry's scopes from `GET /api/v1/me` and write the
-   * discovery cache into config.yaml.
-   *
-   * Only server entries are touched: a store entry with a `scopes` list and an
-   * `enterprise` block. Per-scope entries are left alone; with none, this
-   * returns [] without a request. Whether an answer replaces the cached list
-   * is {@link acceptDiscoveredScopes}' decision: a failed, unauthorised,
-   * not-synced or degraded answer never replaces a non-empty cache, and then
-   * only `discovery.status` and `discovery.checked_at` are written — `scope`,
-   * `scopes` and `discovery.discovered_at` stay exactly as they were.
-   *
-   * On an accepted answer it writes `scopes`, the compatibility `scope` (the
-   * accepted personal `user:<org>:<username>` scope, when there is one) and a
-   * fresh `discovery` block. It never writes `enterprise` or `pinned_scopes`;
-   * `scope_settings` changes only through {@link persistScopeMetadata}, and
-   * only when the server says its metadata is `ok`.
-   *
-   * An answer that changes nothing but the timestamps writes nothing: the
-   * timestamp it would set (`discovered_at` for an accepted answer,
-   * `checked_at` for a refused one) is refreshed at most once a day, so the
-   * 7-day stale-cache checks still see an unchanged answer as fresh.
-   *
-   * The requests run in parallel and one server's failure never affects
-   * another's outcome. The write is a raw read-modify-write of the server
-   * entries under the config lock, so every other key of the entry (unknown
-   * keys too) is kept as it is on disk.
+   * Refresh server entries (`scopes` + `enterprise`) from `GET /api/v1/me` into config.yaml,
+   * in parallel. {@link acceptDiscoveredScopes} decides: a failed or degraded answer never
+   * replaces a non-empty cache. Never writes `enterprise`/`pinned_scopes`; `scope_settings`
+   * only via {@link persistScopeMetadata}. Timestamp-only changes are written at most daily;
+   * raw read-modify-write under the config lock, keeping unknown keys.
    */
-  /**
-   * The endpoints {@link refreshServerScopes} probes, keyed by normalized url:
-   * the server entries in config.yaml that carry a `scopes` list and an
-   * `enterprise` block, each with its configured url and the cached
-   * `discovery.status` and `discovery.checked_at` of its first entry. Reads the file, never the network.
-   * The MCP server uses it so an endpoint is either refreshed in the
-   * background or probed by the legacy session-start path, never neither, and
-   * so a server with an empty scope cache still has a status.
-   */
+  /** Endpoints {@link refreshServerScopes} probes (file only, no network), so each is refreshed or probed, never neither. */
   _serverDiscoveryEndpoints(): Map<string, { url: string; status?: string; checked_at?: string }>
 
   refreshServerScopes(opts?: { url?: string; timeoutMs?: number; onConfigWrite?: (before: string | null, after: string) => void }): Promise<ServerDiscoveryOutcome[]>
@@ -188,20 +142,11 @@ export interface DiscoveryMethods {
   remoteTokenExpiries(now?: number): Array<{ url: string; scopes: string[]; enterprise?: boolean; expiresAt: string | null; expiresInDays: number | null; expired: boolean }>
 
   /**
-   * Probe each configured remote credential's auth/reachability by
-   * calling `GET /api/v1/me` (raced against a timeout), combined with a local
-   * JWT-expiry read. Distinguishes 'auth_expired' (token rejected or JWT exp
-   * passed → reauth) from 'unreachable' (network/timeout/5xx). Read-only; one
-   * bad endpoint never affects the others. Powers `plur_doctor`'s remote check
-   * and `plur login --status`, so neither reports "healthy" when the
-   * remote auth is dead.
-   *
-   * Probes per distinct (url, token) group ({@link remoteEndpointTokenGroups}),
-   * not per URL: each token's validity is independent, and a first-token-wins
-   * collapse would report a URL as ok while its second configured token was
-   * expired. Also surfaces display-only JWT claims (`tokenSubject`,
-   * `tokenOrg` — unverified) and, on a successful probe, the server-confirmed
-   * `username`/`orgId`/`grantedScopes` from `/me`.
+   * Probe each remote credential via `GET /api/v1/me` (timeout-raced) plus a
+   * local JWT-expiry read: 'auth_expired' (reauth) vs 'unreachable'. Read-only;
+   * per (url, token) group ({@link remoteEndpointTokenGroups}), since each token
+   * expires independently. Powers `plur_doctor` and `plur login --status`. JWT
+   * claims are display-only and unverified; `/me` fields are server-confirmed.
    */
   checkRemoteHealth(opts?: { timeoutMs?: number }): Promise<RemoteHealth[]>
 
@@ -219,20 +164,11 @@ export interface DiscoveryMethods {
   registerDiscoveredScopes(opts?: { url?: string; timeoutMs?: number }): Promise<RegisterDiscoveredResult[]>
 
   /**
-   * The single source of truth for the "authorized but unregistered" OFFER
-   * offer, shared by the `plur scopes` CLI and the session-start hint. Returns
-   * the shared-family scopes the token is authorized for that are neither
-   * registered nor dismissed, deduped across remotes, each with its
-   * self-describing metadata description when the server serves it.
-   *
-   * Personal-family scopes are excluded here (they can't be registered from
-   * discovery — see {@link registerScope}), so the offer only ever shows
-   * scopes the user can actually act on.
-   *
-   * Also returns any `failures` (remotes whose /me could not be reached / whose
-   * token was rejected) so the caller can distinguish "genuinely nothing to
-   * offer" from "couldn't reach the server" — the CLI must not report an empty
-   * offer when it simply failed to talk to the remote.
+   * Single source of truth for the "authorized but unregistered" offer (CLI
+   * `plur scopes` and the session-start hint): shared-family scopes the token
+   * may use that are neither registered nor dismissed, deduped, with
+   * descriptions. Personal scopes are excluded (not registrable). `failures`
+   * lets callers tell "nothing to offer" from "could not reach the server".
    */
   offerableScopes(opts?: { url?: string; timeoutMs?: number }): Promise<{
     scopes: Array<{ scope: string; url: string; description?: string }>
@@ -284,69 +220,32 @@ export interface DiscoveryMethods {
   persistDismissedScopes(list: string[]): void
 
   /**
-   * Sync server-authoritative scope metadata (covers/description/sensitivity)
-   * from /me discoveries into the matching local config store entries.
-   *
-   * Without it listScopeMetadata() would return empty covers and
-   * suggestScope() would be inert for remote scopes. Called after any /me pull
-   * (session_start, registerDiscoveredScopes, registerScope).
-   * Personal-family scopes are skipped — they are never routing targets.
-   * No-op when nothing changed (avoids spurious config writes).
-   *
-   * TRUST RULE for `sensitivity`: remote-served
-   * sensitivity may only TIGHTEN the write-time leak guard, never loosen it.
-   * The guard checks `allow` BEFORE `forbid` and `allow` admits arbitrary
-   * strings, so persisting a remote `allow:['secrets','infra']` verbatim would
-   * let a hostile/compromised enterprise endpoint silently disarm the guard at
-   * the next session_start. Therefore:
-   *   - a remote `allow` is NEVER persisted (dropped, along with any unknown
-   *     nested sensitivity fields the remote sent);
-   *   - only the remote `forbid` is persisted, sanitized to the known
-   *     SENSITIVITY_CATEGORIES (empty-after-sanitize falls to the safe
-   *     default, mirroring ScopeSensitivitySchema);
-   *   - a hand-edited `allow` in local config.yaml is preserved and remains
-   *     honored by the guard — a deliberate LOCAL decision.
-   *
-   * The change-detector compares what WILL actually be persisted
-   * (post-sanitization, post-merge) against the loaded entry, so an unchanged
-   * server state is a true no-op — no write, no mtime bump, no config-reload
-   * storm on every session_start. When `forbid` DOES change, the affected
-   * scopes are named to persistStores (`serverSensitivityScopes`) so
-   * mergeStoresForWriteback's raw-forbid restore doesn't discard the update.
+   * Sync server scope metadata (covers/description/sensitivity) from /me into
+   * matching local store entries, so suggestScope() works for remote scopes.
+   * Skips personal-family scopes; writes nothing when the persisted result is unchanged.
+   * TRUST RULE: remote sensitivity may only TIGHTEN the leak guard. A remote
+   * `allow` is never persisted (it would let a hostile endpoint disarm the guard);
+   * only `forbid` is, sanitized to SENSITIVITY_CATEGORIES. A hand-edited local
+   * `allow` is kept. Changed `forbid` scopes are passed to persistStores
+   * (`serverSensitivityScopes`) so the writeback merge does not discard them.
    */
   persistScopeMetadata(discoveries: RemoteScopeDiscovery[], onConfigWrite?: (before: string | null, after: string) => void): void
 
   /**
-   * Set a session-level default scope — the fallback in learn/learnRouted when
-   * no explicit scope is provided.
-   *
-   * Omit `session` and this sets the process-wide slot: one
-   * session per instance, one scope. That is right for the CLI and for an MCP
-   * server handling one session at a time.
-   *
-   * Pass `session` and the scope is isolated to that session key. Any
-   * deployment where one `Plur` serves concurrent sessions MUST do this and
-   * thread the same key through `LearnContext.session` — otherwise the scope is
-   * a single shared field, and a `setSessionScope` from one session decides
-   * where another session's in-flight write lands. Passing `null` for a keyed
-   * session pins it to "no session scope" (unscoped writes auto-route), which
-   * is distinct from never having registered it (inherits the process slot).
+   * Set the session default scope used by learn/learnRouted when none is given.
+   * Without `session` it sets the process-wide slot (CLI, one-session MCP).
+   * A `Plur` serving concurrent sessions MUST pass `session` and thread the same
+   * key through `LearnContext.session`, or one session decides where another's
+   * write lands. `null` for a keyed session means "no scope" (auto-route), unlike
+   * an unregistered key, which inherits the process slot.
    */
   setSessionScope(scope: string | null, opts?: { session?: string }): void
 
   /**
-   * Adjust the session default scope MID-session — `setSessionScope`
-   * plus observability: appends a `session_scope_changed` history event so the
-   * scope active at any point in a session can be reconstructed retrospectively
-   * (which scope routed a given engram, whether an agent oscillates scopes).
-   *
-   * `setSessionScope` stays the raw, silent primitive — session bootstrap
-   * (every `plur_session_start`) uses it without flooding history; deliberate
-   * mid-session changes go through here. Same registry, same keying rules:
-   * omit `session` for the process slot, pass it for per-session isolation
-   * (ADR-0004 — one `Plur` serving concurrent sessions MUST key).
-   *
-   * Returns the previous and new effective scope for the targeted slot.
+   * Adjust the session default scope MID-session: `setSessionScope` plus a
+   * `session_scope_changed` history event, so the active scope can be
+   * reconstructed later. `setSessionScope` stays the silent primitive for
+   * bootstrap. Same keying rules (ADR-0004). Returns previous and new scope.
    */
   adjustSessionScope(scope: string | null, opts?: { session?: string; reason?: string; trigger?: 'set' | 'clear' }): { previous: string | null; next: string | null }
 

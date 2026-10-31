@@ -39,19 +39,11 @@ export interface RoutingMethods {
   _refuseScopeConflict(scope: string): void
 
   /**
-   * True when `scope` is backed by a REMOTE store — i.e. a `stores` entry with a
-   * `url` (data leaves this machine) whose scope exactly matches; for a personal
-   * scope, when the ONE selected store is a url store. Used for routing
-   * decisions (auto-route refusal, `readIdFor`). The secret scan does NOT use
-   * it: it uses {@link _hasUrlStoreForScope}, which ignores the selection.
-   *
-   * Pure CONFIG lookup (no driver instantiation, no network, no side effects)
-   * because this runs on every learn(). It uses `_resolveRemoteStoreForScope`'s
-   * exact-scope-match rule (no prefix matching), but deliberately does not
-   * mirror its readonly skip: a readonly URL store is not
-   * a write target, yet its scope names a remote namespace, so the leak guard
-   * still scans writes into it. That can only demote more, never let more out.
-   * Where "a write here reaches the remote" is the question, use
+   * True when `scope` is backed by a REMOTE store: a url `stores` entry with an
+   * exact scope match (for personal scopes, the selected store). Pure config
+   * lookup, since it runs on every learn(). Unlike `_resolveRemoteStoreForScope`
+   * it counts readonly url stores, which can only demote more. The secret scan
+   * uses {@link _hasUrlStoreForScope}; for "does a write reach the remote" use
    * {@link _isRemoteWriteScope}.
    */
   /** @internal */
@@ -96,16 +88,10 @@ export interface RoutingMethods {
   /** @internal */
   _scopedUrlEntry(scope: string, outcome: string): StoreEntry | undefined
 
+  /** The store a scoped pin PATCHes: {@link _scopedUrlEntry} over writable stores; two writable servers conflict. */
   /**
-   * The store a scoped pin PATCHes: {@link _scopedUrlEntry}
-   * over the writable stores only, so a readonly store listed for the same
-   * scope never competes and two writable servers are a
-   * refused conflict.
-   */
-  /**
-   * The stores a scoped pin resolves over: every path store (a local store
-   * keeps its place in the personal selection, even readonly) and the
-   * writable url stores (a readonly url store never receives the PATCH).
+   * The stores a scoped pin resolves over: every path store (even readonly)
+   * and the writable url stores.
    */
   /** @internal */
   _pinCandidateStores(): StoreEntry[]
@@ -152,19 +138,10 @@ export interface RoutingMethods {
   _refuseRemotePersonalAutoRoute(scope: string): boolean
 
   /**
-   * Find which store owns an engram by ID. For namespaced IDs, strips prefix to find in store.
-   *
-   * `storeScope` — the loader's `_storeScope` stamp of the row, when the caller
-   * holds one — names the store exactly. `storePrefix` is three letters, so
-   * two store scopes can share one (group:plur/eng and group:plur/ops are both
-   * GPL) and a namespaced id alone then names both; ids commonly collide
-   * across stores, so the first store with the bare id may be the wrong one.
-   * A stamped row is never the primary's.
-   *
-   * The stored id may itself carry the prefix (a row from another client or
-   * a sync): namespacing on load is idempotent, so the loaded id IS the stored
-   * id, and the stripped form is not in the file.
-   * Both forms are tried; `originalId` is the id as the store file has it.
+   * Find which store owns an engram by ID (namespaced IDs are stripped).
+   * `storeScope` (the row's `_storeScope` stamp) names the store exactly, since
+   * three-letter prefixes collide; a stamped row is never the primary's. Both
+   * prefixed and stripped forms are tried; `originalId` is the id as stored.
    */
   /** @internal */
   _findEngramStore(id: string, storeScope?: string): Promise<{ path: string; readonly: boolean; originalId: string } | null>
@@ -203,30 +180,13 @@ export interface RoutingMethods {
   _sharedPrefixRefusal(id: string, verb: string, prefix: string, scopes: string[]): Error
 
   /**
-   * Resolve a namespaced id to the ONE store it names, before any action on
-   * it. Returns the id to act with — the current
-   * prefix form for the store that holds the row — or the id unchanged when it
-   * carries no store prefix or no configured store matches it.
-   *
-   * The walks that act on a namespaced id (forget, feedback, pin, update) visit
-   * every store whose prefix the id carries and act on the first that holds the
-   * stripped id. That is only safe when the prefix names one store. Two cases
-   * name several, and both are resolved here by asking each candidate store for
-   * the row:
-   *   - an id in the OLD three-letter form ({@link legacyStorePrefix}), which
-   *     every team store of one org shared;
-   *   - one scope configured on two stores (two servers, or a path store and a
-   *     url store), which share a prefix by construction.
-   *
-   * A url store "holds" the row only when the row's scope falls within the
-   * store's scope: one server serves every scope the token can read, so a
-   * driver for scope A answers for a row in scope B, and acting through A is
-   * would let a readonly B row be retired. When several stores hold the SAME
-   * row (one server, nested scopes), the store whose scope is the row's own —
-   * or else the most specific — is the one named. Distinct rows in different
-   * stores are ambiguous and refused; so is a candidate that could not be
-   * reached, since it might hold another row with this id. Nothing is changed
-   * before this returns.
+   * Resolve a namespaced id to the ONE store it names before any action, by
+   * asking each candidate store for the row. Needed when a prefix names several
+   * stores: the legacy three-letter form ({@link legacyStorePrefix}) or one scope
+   * on two stores. A url store holds a row only if the row's scope is within the
+   * store's scope (else a readonly row could be retired via another driver); the
+   * row's own or most specific scope wins. Distinct rows or an unreachable
+   * candidate are refused. Changes nothing.
    */
   /** @internal */
   _resolveNamespacedId(id: string, verb: string): Promise<string>

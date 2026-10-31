@@ -59,22 +59,11 @@ export const ProvenanceSchema = z.object({
 }).describe('Origin and signing chain. STABLE for origin/chain/license; signature is RESERVED (see ENGRAM-STANDARD-v1.md §7).')
 
 /**
- * Who is answerable for an engram.
- *
- * Every field is optional and every field is omitted rather than guessed. A
- * record with no agent is valid PROV; a record with a guessed agent is worse
- * than one with none.
- *
- * `asserted_by` holds an address, and deliberately does not say which kind.
- * The provenance standard treats an agent identifier as an ordinary address,
- * so a local name, a Decentralized Identifier and a process identifier are all
- * acceptable. When no identity is configured, the writer supplies the
- * well-known `UNIDENTIFIED` value rather than leaving the field out: absence is
- * ambiguous between "nobody was identified" and "this predates identity
- * capture", and the marker distinguishes them.
- *
- * The identity is NEVER taken from the operating system account. That would
- * write a personal name by default without anyone choosing to share it.
+ * Who is answerable for an engram. Every field is optional and omitted rather
+ * than guessed. `asserted_by` is any address (local name, DID, process id).
+ * With no identity configured the writer uses `UNIDENTIFIED`, distinguishing
+ * "nobody identified" from "predates identity capture". The identity is NEVER
+ * taken from the OS account (that would share a personal name by default).
  */
 export const ATTRIBUTION_UNIDENTIFIED = 'unidentified'
 
@@ -247,33 +236,14 @@ export const InsightFieldSchema = z.object({
 )
 
 // === Convention: ETL extraction provenance ===
-//
-// ETL extractors emit engrams carrying classifier-time provenance in
-// `structured_data.extraction`:
-//
-//   structured_data:
-//     extraction:
-//       confidence: 0.85        # 0-1 classifier score, frozen at extraction
-//       source_commit: "abc123" # git SHA at extraction time (reproducibility)
-//       extractor_version: "0.1.0"  # CLI version (schema-migration handle)
-//
-// This is a CONVENTION riding in the existing `structured_data` extension bag,
-// deliberately NOT wired into EngramSchema (promote to a first-class sub-object
-// only when a consumer needs to query/filter on it). The schema below is a
-// validation helper for producers/consumers of the convention. `.passthrough()`
-// keeps unknown keys so newer extractors can add fields without invalidating
-// older consumers.
-//
-// THREE DISTINCT "confidence" SEMANTICS — do not conflate:
-//   1. `structured_data.extraction.confidence` (here): 0-1 CLASSIFIER score,
-//      frozen at extraction time. Never updated after write.
-//   2. `computeConfidence()` (src/confidence.ts): 0-1 score DERIVED at read
-//      time from feedback_signals (+ consolidation bonus). Changes as feedback
-//      accumulates.
-//   3. `episodic.confidence`: 1-10 integer SUBJECTIVE certainty of an episodic
-//      memory.
-// Mixing them (e.g. seeding feedback-derived scores from extraction confidence)
-// would corrupt the feedback loop.
+// Extractors put `structured_data.extraction = { confidence (0-1, frozen),
+// source_commit, extractor_version }`. A convention in the extension bag, NOT
+// part of EngramSchema; the schema below validates it, `.passthrough()` keeps new fields.
+// Three distinct "confidence" values — never conflate (seeding one from another
+// corrupts the feedback loop):
+//   1. `extraction.confidence`: classifier score, frozen at write.
+//   2. `computeConfidence()` (src/confidence.ts): derived from feedback at read time.
+//   3. `episodic.confidence`: 1-10 subjective certainty.
 export const ExtractionProvenanceSchema = z.object({
   confidence: z.number().min(0).max(1).optional()
     .describe('0-1 classifier confidence at extraction time. Frozen at write; distinct from feedback-derived computeConfidence() and from episodic.confidence.'),
@@ -306,17 +276,10 @@ export function getExtractionProvenance(
 }
 
 // === Measurement context ===
-//
-// Captures the configuration under which a numeric or benchmark-derived claim
-// was measured, so evidence gathered under configuration A is not silently
-// asserted for configuration B (e.g. a wall-clock ratio measured on local git
-// that inverts on a hosted forge). `measured_under` makes the context explicit
-// so tension-aware retrieval can store differing-condition measurements as
-// refinements rather than contradictions.
-//
-// Kept deliberately loose (.passthrough()) so future fields can be added by
-// producers without invalidating consumers. All fields optional: absent =
-// unknown, not "not applicable".
+// The configuration a numeric/benchmark claim was measured under, so evidence
+// from configuration A is not asserted for B, and differing-condition
+// measurements are stored as refinements, not contradictions.
+// `.passthrough()` for forward compatibility; all fields optional (absent = unknown).
 
 export const MeasuredUnderSchema = z.object({
   /** Model or system variant under which the measurement was taken (e.g. 'claude-opus-4', 'gpt-4o'). */

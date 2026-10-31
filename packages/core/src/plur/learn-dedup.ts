@@ -65,37 +65,13 @@ export interface LearnDedupMethods {
   _isTeamStoreBound(e: Engram): boolean
 
   /**
-   * Copy-on-promote. `hit` is an engram the ladder would broaden to
-   * global, but either it is bound for a team store (what is in a team store
-   * stays there) or a global engram with the same text already exists. Leave
-   * `hit` in its scope, store and file, and credit a `global` engram in the
-   * LOCAL primary store instead — the existing twin if there is one, else a
-   * copy created now.
-   *
-   * A team engram still QUEUED for its store
-   * (an `_outbox` row in the primary store) also records the recurrence on
-   * itself — count and source only; its scope, commitment and outbox entry
-   * are kept — before the global copy is created or credited.
-   *
-   * The copy links back with `derived_from: <hit id>` (the existing lineage
-   * field) and its first source carries `promoted_from: <hit scope>`.
-   * Commitment is escalated as the ladder would, up to
-   * `recurrence.max_commitment`. The
-   * copy is appended directly — never given an `_outbox` marker — and its
-   * scope is `global`, which no team store serves, so it is never pushed.
-   *
-   * Carried from `hit`: statement, type, domain, tags, rationale, the validity
-   * window (`valid_from`/`valid_until` — an expiring team engram must not yield
-   * a copy that never expires), `knowledge_anchors` and `dual_coding` (content
-   * that cites and explains the statement). NOT carried: `pinned` — a pin is
-   * the owner's own injection-budget choice and is quota-gated, so a
-   * teammate's pin must not spend it — and `relations`, whose edges name
-   * team-store ids and whose `supersedes` edges have side effects; the copy's
-   * one edge is `derived_from`.
-   *
-   * Uses the same id allocation and storage seams as `learn()`: on a store
-   * with the write-path seams it asks the store for the id and never loads the
-   * corpus.
+   * Copy-on-promote: `hit` would broaden to global but is bound for a team store (which keeps its content) or has a
+   * global twin. Leave `hit` as is and credit a `global` engram in the LOCAL primary store — the twin, else a new copy.
+   * - A team engram still queued (`_outbox`) also records the recurrence on itself (count and source only).
+   * - The copy has `derived_from: <hit id>`, `promoted_from` on its first source, commitment escalated up to
+   *   `recurrence.max_commitment`, no `_outbox` marker, scope `global` — so it is never pushed.
+   * - Carried: statement, type, domain, tags, rationale, validity window, `knowledge_anchors`, `dual_coding`.
+   *   NOT carried: `pinned` (owner's quota), `relations` (team ids). Uses `learn()`'s id/storage seams (no corpus load).
    */
   /** @internal */
   _promoteTeamCopy(hit: Engram, engrams: Engram[], scope: string, context: LearnContext | undefined, twin: Engram | null): Promise<Engram>
@@ -112,18 +88,10 @@ export interface LearnDedupMethods {
   /** @internal */
   _findGlobalTwin(hit: Engram, engrams: Engram[]): Promise<Engram | null>
 
-  /** Record a cross-scope recurrence: append source, increment counters,
-   * escalate commitment, and broaden scope to 'global' once the threshold
-   * is crossed — except for a row still queued for a remote store (`_outbox`),
-   * whose scope is never changed. Returns the (possibly
-   * broadened) engram.
-   *
-   * Escalation ladder (graduated, not all-at-once):
-   * - 1st cross-scope hit:   record source + recurrence_count++  (no scope/commitment change)
-   * - 2nd+ cross-scope hit:  + broaden scope → 'global'
-   *                          + escalate commitment one step (leaning → decided → locked)
-   *
-   * Locked engrams stop escalating (you can't promote past locked).
+  /** Record a cross-scope recurrence: append source, increment counters, escalate commitment, broaden scope.
+   * - 1st cross-scope hit: record source + recurrence_count++ only.
+   * - 2nd+: broaden scope to 'global' and escalate commitment one step (leaning → decided → locked; locked stops).
+   * A row still queued for a remote store (`_outbox`) never changes scope. Returns the (possibly broadened) engram.
    */
   /** @internal */
   _recordCrossScopeRecurrence(hit: Engram, engrams: Engram[], scope: string, context: LearnContext | undefined): Promise<Engram>

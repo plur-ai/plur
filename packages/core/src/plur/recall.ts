@@ -51,17 +51,10 @@ export interface RecallMethods {
   recallWithMeta(query: string, options?: Omit<RecallOptions, 'mode' | 'llm'>): Promise<{ engrams: Engram[]; remote: RecallRemoteReport; results_complete: boolean; local_complete?: boolean }>
 
   /**
-   * The primary store, when it can also answer queries itself.
-   *
-   * A `role: 'primary'` adapter IS the source of truth and the query engine at
-   * once (ADR-0005), so a search can be pushed into it. A `role: 'index'`
-   * adapter is derived from a separate store and is driven through the existing
-   * index path instead; returning one here would bypass the sync bookkeeping
-   * that keeps it honest.
-   *
-   * Returns null for the default YAML store, which has no query engine — that
-   * path keeps loading and ranking in memory, which is the right answer for a
-   * file.
+   * The primary store, when it can also answer queries itself (`role: 'primary'`,
+   * ADR-0005), so a search can be pushed into it. Never returns a `role: 'index'`
+   * adapter: that would bypass the index sync bookkeeping. Returns null for the
+   * default YAML store, which loads and ranks in memory.
    */
   /** @internal */
   _primaryQueryAdapter(): StorageAdapter | null
@@ -154,37 +147,12 @@ export interface RecallMethods {
   _pgliteSemanticRecall(query: string, limit: number, filtered: Engram[], restrict?: Pick<RecallOptions, 'scope' | 'scopes'>): Promise<Engram[]>
 
   /**
-   * Semantic recall pushed into a primary query store's vector index — the
-   * `recall()` pushdown's vector twin, so the Postgres tier does not load and
-   * embed the corpus in memory (the O(N) path the tier exists to escape).
-   *
-   * Shape mirrors `recall()`'s BM25 pushdown:
-   *   - scope/scopes/visibilityGrants go INTO the k-NN query (dilution guard —
-   *     see `_pgliteSemanticRecall`'s comment; same reasoning).
-   *   - residual filters (expiry, min_strength) run here on the rows that
-   *     came back — SQL cannot evaluate them.
-   *   - secondary-store and pack engrams cannot be in the store's table, so
-   *     they are scored in memory (they are small and already file-backed)
-   *     and merged BY SCORE: both sides are cosine similarity from the same
-   *     embedder — the store computes `1 - cosine_distance`, clamped here to
-   *     [0,1] exactly as `embeddingSearchWithScores` clamps its side — so the
-   *     merge is the same metric, not an approximation.
-   *
-   * Completeness gate: one `listEngramsMissingEmbeddings(1)` anti-join probe
-   * per call. While ANY active engram lacks an embedding, vector hits would
-   * be drawn from whatever subset happens to be embedded — correct-looking,
-   * silently incomplete — so this degrades to the in-memory path for THIS
-   * query and kicks the background backfill instead of waiting for it. The
-   * probe is also what makes a store migrated in with existing rows converge:
-   * the first semantic recall starts the backfill even if nothing was ever
-   * written through this instance.
-   *
-   * Deliberately WITHOUT `includeStale`: a stale vector still returns
-   * its engram, merely ranked by older text, so it is not the silent
-   * incompleteness this gate is about. Opening the gate on staleness would put
-   * every semantic recall on the O(N) fallback until the backfill drained —
-   * one edited engram degrading the whole store. Edits kick the backfill from
-   * the write path, so they converge without this gate's help.
+   * Semantic recall pushed into a primary query store's vector index (mirrors
+   * `recall()`'s BM25 pushdown): scope/scopes/visibilityGrants go INTO the k-NN
+   * query; residual filters run here; secondary-store and pack engrams are
+   * scored in memory and merged by the same clamped cosine metric.
+   * Completeness gate: while ANY active engram lacks an embedding, fall back to
+   * the in-memory path and kick the backfill (stale embeddings do not trip it).
    */
   /** @internal */
   _primarySemanticRecall(adapter: StorageAdapter, query: string, limit: number, options?: Omit<RecallOptions, 'mode' | 'llm'>): Promise<Engram[]>
@@ -252,18 +220,12 @@ export interface RecallMethods {
   _matchOldFormId(engrams: Engram[], id: string): Engram | null
 
   /**
-   * Get several engrams by ID. The primary store is read by primary
-   * key; only ids it does not hold fall back to the full walk over stores and
-   * packs, once. Ids that exist nowhere are simply absent from the result.
-   *
-   * Remote stores: the walk only peeks at their in-process cache, which is
-   * empty in a fresh process (a hook). With `remoteCapability`, ids still
-   * missing after the walk are fetched BY ID from each url store whose server
-   * advertises that capability, and whose namespace prefix the id carries.
-   * A store without the capability is never asked. Bounded:
-   * one GET per id (the REST surface has no batch-by-id route), in parallel,
-   * at most {@link GET_BY_IDS_REMOTE_CAP} per store, each on the driver's
-   * bounded fetch. Without the option nothing is fetched.
+   * Get several engrams by ID: primary store by key first, then one full walk
+   * over stores and packs for the rest. Missing ids are absent from the result.
+   * With `remoteCapability`, ids still missing are fetched by id from url stores
+   * that advertise that capability and whose namespace prefix the id carries:
+   * one GET per id, in parallel, at most {@link GET_BY_IDS_REMOTE_CAP} per store.
+   * Without the option nothing is fetched remotely.
    */
   getByIds(ids: string[], options?: { remoteCapability?: string }): Promise<Engram[]>
 
@@ -287,58 +249,30 @@ export interface RecallMethods {
 
   /** Filter engrams by scope/domain/strength (shared by both modes) */
   /**
-   * Predicates a store CANNOT answer, applied after a pushdown narrows.
-   *
-   * `searchBM25` filters status/scope/domain/scopes in SQL. Temporal validity
-   * and `min_strength` are not columns it can filter on — validity depends on
-   * the caller's clock, and strength lives inside the JSONB payload — so they
-   * have to run here, on the rows that came back.
-   *
-   * Deliberately a shared helper rather than a copy of the tail of
-   * `_filterEngrams`: two implementations of "which engrams count" would let
-   * the pushdown branch silently disagree with `list()`.
+   * Predicates a store CANNOT answer (temporal validity, `min_strength`),
+   * applied after a pushdown narrows. Shared with `_filterEngrams` on purpose,
+   * so the pushdown branch cannot disagree with `list()`.
    */
   /** @internal */
   _applyResidualFilters(engrams: Engram[], options?: RecallOptions & { include_expired?: boolean }): Engram[]
 
   /**
    * Mounted-scope visibility grants: the deduplicated scopes of every
-   * `config.yaml` `stores:` entry — path AND url entries alike. Mounting a
-   * store with your own token is the consent act, so its scope passes a
-   * project-scope VISIBILITY filter exactly like the personal family (see
-   * `makeVisibilityPredicate` in scope-util.ts). Always on, no config knob.
-   *
-   * STRICTLY visibility-only: these are threaded into the `scope` visibility
-   * filter (in-memory predicate + `StorageFilter.visibilityGrants` SQL
-   * pushdown) and MUST NEVER be folded into `options.scopes` — that list is
-   * the authorization decision and grants never widen it.
+   * `config.yaml` `stores:` entry (path and url). Mounting a store with your own
+   * token is the consent act (see `makeVisibilityPredicate` in scope-util.ts).
+   * Visibility-only: these MUST NEVER be folded into `options.scopes`, which is
+   * the authorization decision; grants never widen it.
    */
   /** @internal */
   _grantedScopes(): string[]
 
   /**
-   * Candidates for the hybrid path — narrowed by the store when that is
-   * PROVABLY equivalent, otherwise the full filtered corpus.
-   *
-   * For a Postgres primary query store, `_filterEngrams()` is a full scan:
-   * `indexTier` resolves to 'none' when a primary query store is present
-   * (ADR-0005 — such an adapter IS both the source of truth and the query
-   * engine), so it loads everything. `plur_recall` defaults to hybrid, so that
-   * would be one whole-corpus read per query.
-   *
-   * Narrowing before RRF would normally be a RECALL-QUALITY change — the vector
-   * leg can only rank what it is given. This one is not, because it narrows only when the adapter
-   * reports `exhausted`: the returned rows are then not a sample but everything
-   * the store holds for that filter, so ranking over them is identical to
-   * ranking over the full corpus BY CONSTRUCTION. Not exhausted, and it falls
-   * back to `_filterEngrams`.
-   *
-   * The filters are passed through in full. `searchBM25Exhaustive` takes
-   * `{ limit } & StorageFilter`, and StorageFilter carries every field
-   * `_filterEngrams` applies — status, scope, scopes, visibilityGrants,
-   * domain — so this cannot silently drop an authorization filter. That parity
-   * is the precondition for the whole approach; if it ever stops holding, this
-   * must revert to `_filterEngrams` rather than narrow.
+   * Candidates for the hybrid path, narrowed by the store only when that is
+   * provably equivalent, otherwise the full filtered corpus. Narrows only when
+   * the adapter reports `exhausted` (the rows are everything for that filter),
+   * so ranking is identical to ranking the full corpus. All filters (status,
+   * scope, scopes, visibilityGrants, domain) are passed through; if that parity
+   * ever breaks, this must revert to `_filterEngrams` rather than narrow.
    */
   /** @internal */
   _hybridCandidates(query: string, options?: RecallOptions & { include_expired?: boolean }): Promise<Engram[]>
@@ -347,17 +281,11 @@ export interface RecallMethods {
   _filterEngrams(options?: RecallOptions & { include_expired?: boolean }): Promise<Engram[]>
 
   /**
-   * The post-recall bookkeeping, held to the recall's deadline.
-   *
-   * Freshness bookkeeping is not the answer to the read, and a read must not
-   * queue behind a writer for it (a normal lock wait can be minutes, behind
-   * another process's write or a sync). So the lock is tried for
-   * {@link RECALL_BOOKKEEPING_LOCK_WAIT_MS}; if it is not
-   * taken by then the refresh is skipped (the next recall of the same engrams
-   * does it). Once the lock is held the write runs, but the reply waits for it
-   * only until the deadline; past that it finishes in the background.
-   * Uncontended, nothing changes: the lock is taken in milliseconds and the
-   * refresh lands before the reply.
+   * The post-recall freshness bookkeeping, held to the recall's deadline: a read
+   * must not queue behind a writer. The lock is tried for
+   * {@link RECALL_BOOKKEEPING_LOCK_WAIT_MS}; if not taken, the refresh is skipped
+   * (the next recall does it). Once held, the reply waits for the write only
+   * until the deadline; past that it finishes in the background.
    */
   /** @internal */
   _reactivateWithinDeadline(results: Engram[], deadlineAt: number): Promise<void>
@@ -396,25 +324,12 @@ export const recallMethods: RecallMethods & ThisType<Plur> = {
 
     const localLeg = async (): Promise<Engram[]> => {
 
-      // Push the search into the store when the store can answer it, instead of
-      // loading the corpus into memory (the cost the Postgres tier exists to
-      // avoid).
-      //
-      // Scope, domain and the permitted-scope allow-list go INTO the query, so
-      // `limit` is not spent on rows the caller may not see.
-      //
-      // The rest of `_filterEngrams`'s work still has to happen here:
-      //
-      //   - temporal validity (an expired engram must not be returned as current)
-      //   - `min_strength`
-      //   - engrams merged in from `config.stores` (team/enterprise stores)
-      //   - pack engrams
-      //
-      // The adapter cannot answer those — it queries one table and knows nothing
-      // about packs, secondary stores, or the caller's clock. So the pushdown is
-      // a NARROWING step, not a replacement: it returns a superset, and the
-      // remaining predicates are applied here. `limit` is applied last, after all
-      // of them, so a row removed by expiry does not consume a slot.
+      // Push the search into the store when it can answer it, instead of loading
+      // the corpus. Scope, domain and the permitted-scope allow-list go INTO the
+      // query so `limit` is not spent on rows the caller may not see.
+      // The pushdown is a NARROWING step: temporal validity, `min_strength`,
+      // `config.stores` engrams and pack engrams are still applied here, and
+      // `limit` is applied last so an expired row does not consume a slot.
       // remote-only: the primary store is never queried, so no pushdown.
       const adapter = this._remoteOnly ? null : this._primaryQueryAdapter()
       if (adapter) {
@@ -428,17 +343,9 @@ export const recallMethods: RecallMethods & ThisType<Plur> = {
           visibilityGrants: this._grantedScopes(),
           domain: options?.domain,
         }
-        // Widen and retry rather than trust a fixed multiplier.
-        //
-        // The over-fetch exists because the residual filters below (expiry,
-        // min_strength) remove rows the adapter cannot evaluate, and a row
-        // dropped after a LIMIT is a result the caller silently never sees. A
-        // FIXED 3x is only enough while those filters remove less than two
-        // thirds of the page; past that the caller asks for N, the store holds
-        // N matching rows, and recall quietly returns fewer.
-        //
-        // So: if filtering consumed the page AND the adapter returned a full one
-        // (meaning it was truncated, so more rows exist), widen and ask again.
+        // Widen and retry rather than trust a fixed multiplier: residual filters
+        // drop rows after the LIMIT, so if filtering consumed the page AND the
+        // adapter returned a full (truncated) page, widen and ask again.
         // Bounded, because each round is a real query.
         let narrowed: Engram[] = []
         let surviving: Engram[] = []
@@ -471,27 +378,12 @@ export const recallMethods: RecallMethods & ThisType<Plur> = {
         const extra = this._applyResidualFilters(outsiders, options)
         let results: Engram[]
         if (extra.length > 0) {
-          // Rank the union TOGETHER, rather than appending the outsiders:
-          // appended, a team engram that is the best match would never appear
-          // whenever the primary store holds `limit` matches (the normal case).
-          //
-          // Scored with the UNION's statistics: the store supplies corpus-wide
-          // figures for the primary side, and `extendCorpusStats` folds the
-          // outsiders in exactly — they are already materialised in memory, so
-          // their `df`/length contributions cost one tokenisation pass.
-          //
-          // Primary-only stats are not a bounded approximation: a query term
-          // absent from the primary corpus would price at log(N/1) — maximally
-          // rare regardless of how common it is in the store it lives in.
-          //
-          // The fold takes the PRE-residual outsiders, deliberately asymmetric
-          // with the `extra` that gets ranked: the primary side's `corpusStats`
-          // counts every active row — SQL cannot evaluate expiry or
-          // min_strength — so folding only residual-surviving outsiders would
-          // describe a hybrid corpus (full primary + filtered outsiders) and
-          // under-weight outsider vocabulary whenever outsiders are expired or
-          // weak. Both sides contribute the same population: post-scope,
-          // pre-residual.
+          // Rank the union TOGETHER: appended, the best team engram would never
+          // appear whenever the primary store holds `limit` matches.
+          // Score with the UNION's statistics (`extendCorpusStats` folds the
+          // outsiders in); primary-only stats would price a term absent from the
+          // primary corpus as maximally rare. Fold the PRE-residual outsiders, to
+          // match the primary side's stats (post-scope, pre-residual).
           const queryTokens = ftsTokenize(query)
           const primaryStats = adapter.corpusStats
             ? await adapter.corpusStats(queryTokens, pushdownFilter)
@@ -831,18 +723,10 @@ export const recallMethods: RecallMethods & ThisType<Plur> = {
     const embLimit = Math.min(filtered.length, wantReranker ? Math.max(limit * 3, 50) : limit * 2)
     let pgHits: Engram[] = []
     try {
-    // The scope restriction goes INTO the k-NN query, not onto its results.
-    //
-    // Intersecting an unrestricted neighbour list afterwards stays correct but
-    // is INCOMPLETE: `limit` is spent on rows the caller may not see, so a
-    // principal whose permitted scopes are a small share of the corpus asks
-    // for N results and silently gets far fewer (the dilution failure
-    // `ScopeRestriction` exists to prevent).
-    //
-    // `scope` + mounted-scope visibilityGrants go in for the same
-    // reason: `filtered` already honours them, so a k-NN restricted to
-    // `scopes` alone spends `limit` on rows the intersection below is about
-    // to discard — and a granted team engram never surfaces via the vector
+    // The scope restriction goes INTO the k-NN query, not onto its results:
+    // otherwise `limit` is spent on rows the caller may not see and a narrowly
+    // scoped principal silently gets far fewer results. `scope` and mounted-scope
+    // visibilityGrants go in too, so granted team engrams surface via the vector
     // leg. Same filter shape searchBM25/loadFiltered get.
       const hits = await this.pgliteAdapter.searchVector(queryVec, embLimit, {
         scopes: restrict?.scopes,
@@ -884,18 +768,10 @@ export const recallMethods: RecallMethods & ThisType<Plur> = {
       return embeddingSearch(filtered, query, limit, this.paths.root)
     }
     try {
-    // The scope restriction goes INTO the k-NN query, not onto its results.
-    //
-    // Intersecting an unrestricted neighbour list afterwards stays correct but
-    // is INCOMPLETE: `limit` is spent on rows the caller may not see, so a
-    // principal whose permitted scopes are a small share of the corpus asks
-    // for N results and silently gets far fewer (the dilution failure
-    // `ScopeRestriction` exists to prevent).
-    //
-    // `scope` + mounted-scope visibilityGrants go in for the same
-    // reason: `filtered` already honours them, so a k-NN restricted to
-    // `scopes` alone spends `limit` on rows the intersection below is about
-    // to discard — and a granted team engram never surfaces via the vector
+    // The scope restriction goes INTO the k-NN query, not onto its results:
+    // otherwise `limit` is spent on rows the caller may not see and a narrowly
+    // scoped principal silently gets far fewer results. `scope` and mounted-scope
+    // visibilityGrants go in too, so granted team engrams surface via the vector
     // leg. Same filter shape searchBM25/loadFiltered get.
       const hits = await this.pgliteAdapter.searchVector(queryVec, Math.max(limit * 3, 50), {
         scopes: restrict?.scopes,
@@ -1212,32 +1088,15 @@ export const recallMethods: RecallMethods & ThisType<Plur> = {
     } else {
       const adapter = this._remoteOnly ? null : this._primaryQueryAdapter()
       if (adapter && typeof adapter.loadFiltered === 'function' && !this.pgliteAdapter) {
-        // Primary-store adapter (e.g. Postgres) supports server-side
-        // filtered load. Use it instead of _loadAllEngrams + in-memory filter:
-        // one scoped query replaces a full table read on every recallHybrid call.
-        //
-        // The `typeof loadFiltered` check is LOAD-BEARING, not defensive noise:
-        // _primaryQueryAdapter() duck-types on role + searchBM25 only, so a
-        // store can qualify while implementing just the query surface (a test
-        // mock, say). Such a store must take the fallback read below, not
-        // crash here.
-        //
-        // `!pgliteAdapter` is a BELT, not a live branch: the two cannot both be
-        // set. `pgliteAdapter` is constructed only when `indexTier === 'pglite'`,
-        // and that tier is chosen only when `hasPrimaryQueryStore` is false —
-        // i.e. exactly when `_primaryQueryAdapter()` returns null. So whenever
-        // `adapter` is non-null, `pgliteAdapter` is already null by construction.
-        //
-        // Kept because the invariant lives in the constructor's tier selection,
-        // far from here, and the consequence of it changing is silent: the
-        // PGLite hybrid path needs the full corpus (packs + remote stores) that
-        // _loadAllEngrams provides, so taking this branch with PGLite active
-        // would narrow the corpus rather than fail. Pinned by
-        // `filter-engrams-primary-pushdown.test.ts`.
-        //
-        // Temporal validity and min_strength are applied below, same as every
-        // other path. _engramsOutsidePrimaryStore applies active/scope/domain
-        // filters to packs and remote secondary stores.
+        // Primary-store adapter (e.g. Postgres): one scoped server-side query
+        // replaces a full table read on every recallHybrid call.
+        // - `typeof loadFiltered` is load-bearing: a store can qualify with only
+        //   the query surface and must take the fallback read below.
+        // - `!pgliteAdapter` cannot be false here by construction (tier
+        //   selection), but is kept: PGLite needs the full corpus, so this branch
+        //   would silently narrow it. Pinned by `filter-engrams-primary-pushdown.test.ts`.
+        // Temporal validity and min_strength are applied below;
+        // _engramsOutsidePrimaryStore filters packs and remote secondary stores.
         const primaryRows = await adapter.loadFiltered({
           status: 'active',
           scope: options?.scope,

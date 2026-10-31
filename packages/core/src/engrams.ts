@@ -30,46 +30,13 @@ export class EngramStoreUnreadableError extends Error {
 }
 
 /**
- * Read engrams from a YAML store.
- *
- * ## Why a parse failure THROWS instead of returning []
- *
- * A missing file really is an empty store, so that returns `[]` — the only way
- * a first run can work. A file that exists but will not parse (e.g. git merge
- * conflict markers after `plur sync`) is a different fact. Every `Plur` write
- * is load -> mutate -> save, and `save` replaces the WHOLE file, so returning
- * `[]` for it would make the next write persist a near-empty corpus and lose
- * every prior engram.
- *
- * So: unreadable is not empty. Callers that genuinely want "treat unreadable as
- * empty" — a diagnostic counter, a best-effort probe — must catch
- * {@link EngramStoreUnreadableError} and say so at the call site.
- *
- * Corruption classes that do not make `yaml.load` throw are refused too:
- *
- *   - a ZERO-LENGTH file: `yaml.load('')` returns `undefined`, not an error.
- *     This is the canonical artifact of a power cut (see the fsync note on
- *     `atomicWrite`).
- *   - a file that parses to a mapping with NO `engrams` key — a truncation that
- *     happens to land on a document boundary, or a half-written header.
- *
- * PLUR cannot tell an empty corpus from a destroyed one, and guessing wrong in
- * that direction is unrecoverable.
- *
- * Individually invalid ENTRIES are not dropped. They are QUARANTINED:
- * kept out of the returned array (callers must not reason about entries that
- * do not typecheck) but preserved verbatim so {@link saveEngrams} writes them
- * back. A malformed engram is a partial-data problem; deleting it to tidy up
- * the file is a data-loss problem, and the second is worse.
+ * Read engrams from a YAML store. A missing file is `[]`. An existing file that does not parse, is zero-length or
+ * has no `engrams` key THROWS {@link EngramStoreUnreadableError} — every write saves the whole file, and PLUR cannot
+ * tell an empty corpus from a destroyed one. Invalid entries are QUARANTINED and written back by {@link saveEngrams}.
  */
 /**
- * The shape rule for an engram store document — THE one definition, shared by
- * every reader of a store file: this loader, sync's push-set strip (sync.ts
- * `readEngramList`) and the backup gate (backup.ts `validateStore`). A reader
- * with a looser rule (e.g. accepting a bare top-level array) could commit and
- * push a file PLUR itself cannot load.
- *
- * Returns the raw entries of `engrams:`, or throws {@link EngramStoreUnreadableError}.
+ * The one shape rule for an engram store document, shared with sync's `readEngramList` and backup's `validateStore`
+ * (a looser reader could push a file PLUR cannot load). Returns the raw `engrams:` entries, or throws.
  */
 export function engramStoreEntries(filePath: string, content: string, byteLength: number): unknown[] {
   if (byteLength === 0) {
@@ -159,16 +126,9 @@ export function sameEngramContent(a: unknown, b: unknown): boolean {
 export interface IdRename { from: string; to: string }
 
 /**
- * The fresh id a clashing copy gets: `<id>-D<8 hex of sha256(content)>`, with
- * `-2`, `-3`, … appended only if that is already taken.
- *
- * DETERMINISTIC on purpose. The rename happens when a reader detects the clash,
- * and several readers read one file (the loader, the PGLite index, a second
- * process) before anyone writes it back. Derived from the copy's own content,
- * every one of them arrives at the same id without coordinating, and reading
- * the file twice records one rename, not two. Keeps the original id as a prefix
- * so the date and the history trail stay legible, and matches the schema's id
- * pattern (`^(ENG|ABS|META)-[A-Za-z0-9-]+$`).
+ * The fresh id a clashing copy gets: `<id>-D<8 hex of sha256(content)>`, plus `-2`, `-3`, … if taken.
+ * Deterministic on purpose: several readers detect the same clash before anyone writes back, and all must arrive
+ * at the same id. Keeps the original id as prefix and matches `^(ENG|ABS|META)-[A-Za-z0-9-]+$`.
  */
 export function freshDuplicateId(id: string, entry: unknown, taken: ReadonlySet<string>): string {
   const h = createHash('sha256').update(canonicalJson(entry)).digest('hex').slice(0, 8)
@@ -179,22 +139,13 @@ export function freshDuplicateId(id: string, entry: unknown, taken: ReadonlySet<
 }
 
 /**
- * THE duplicate-id rule: keep both, rename one. One rule for every reader — the loader, the PGLite index, the
- * Postgres writer; the backup gate accepts what this resolves.
+ * THE duplicate-id rule, shared by the loader, the PGLite index and the Postgres writer: keep both, rename one.
+ * Two synced machines learning on the same day mint the same id, so clashes happen without manual edits.
  *
- * Two different engrams can carry one id without anyone editing a file:
- * `generateEngramId` mints `max(same-day suffix)+1` per machine, so two synced
- * machines that learn on the same day mint the same id. Without one shared
- * rule, readers disagree on which copy is "the" engram and the other copy
- * cannot be reached by id at all.
+ * - The FIRST copy keeps the id; a later copy with different content gets {@link freshDuplicateId}.
+ * - A later copy identical to a kept copy is dropped and counted in `exactDuplicates`.
  *
- * - The FIRST copy keeps the id.
- * - A LATER copy with different content gets {@link freshDuplicateId}.
- * - A later copy identical to a kept copy of that id is an exact duplicate, not
- *   a clash: it is dropped (nothing is lost) and counted in `exactDuplicates`.
- *
- * Pure. Callers record `renames` (see {@link recordIdRenames}). `alsoTaken`
- * reserves ids that are not in `entries` (e.g. quarantined rows).
+ * Pure. Callers record `renames` ({@link recordIdRenames}); `alsoTaken` reserves ids not in `entries`.
  */
 export function resolveDuplicateIds<T extends { id: string }>(
   entries: readonly T[],
@@ -367,16 +318,9 @@ function rawHeldMergeRenames(root: string): IdRename[] | null {
 }
 
 /**
- * The engram renames a sync's record merge made to COMMITTED
- * engrams while records were held aside. Held records were written on this
- * machine, so a reference in them to the old id meant this machine's engram,
- * which has the new id once that merge is committed. The map is saved with the
- * held records BEFORE the merge commit, so a process killed right after the
- * commit still has it on restart.
- *
- * It applies only once the merge is concluded: while `.git/MERGE_HEAD` exists
- * the merge was interrupted before its commit, the store still has the old
- * ids, and the restart aborts that merge (empty list here).
+ * Engram renames a sync's record merge made to committed engrams while records were held aside; references in the
+ * held records are rewritten with them. Saved with the held records BEFORE the merge commit so a crash after the
+ * commit keeps it. Applies only once the merge is concluded: while `.git/MERGE_HEAD` exists this returns [].
  */
 export function readHeldMergeRenames(root: string): IdRename[] {
   if (fs.existsSync(path.join(root, '.git', 'MERGE_HEAD'))) return []
@@ -553,15 +497,8 @@ export class RecordStoreUnreadableError extends Error {
 
 /**
  * Read a bare-array record file (episodes.yaml, tensions.yaml), or throw.
- *
- * Same risk as the engram store: every writer rewrites the whole array, so
- * returning `[]` for an unparseable or wrongly-shaped file would make the next
- * capture persist that emptiness.
- *
- * Missing file is still `[]` — that is a genuinely empty store. An EXISTING
- * file that says nothing intelligible is an error. Individually invalid entries
- * are QUARANTINED and handed back to the caller so they can be written out
- * again, never dropped.
+ * Missing file is `[]`; an existing file that does not parse or has the wrong shape throws, since writers rewrite
+ * the whole array. Invalid entries are QUARANTINED and returned to the caller to be written back, never dropped.
  */
 export function parseRecordArrayFile<T>(
   filePath: string,
@@ -690,25 +627,11 @@ function setExactDuplicates(filePath: string, n: number): void {
 }
 
 /**
- * Entries that failed schema validation on the last load of a given file.
+ * Entries that failed schema validation on the last load of each file, keyed by resolved path so a save can put
+ * them back (module-level so load/save signatures stay unchanged).
  *
- * Keyed by resolved path so a save can put them back. This is deliberately
- * module-level rather than threaded through every caller: `loadEngrams` and
- * `saveEngrams` are called by many write paths that all follow load -> mutate ->
- * save on the same file, and changing all of their signatures to carry an
- * opaque payload they never inspect would be far more invasive — and far easier
- * to get wrong — than one map keyed on the thing they already agree about.
- *
- * PRECONDITION, not a self-healing property: a writer must `loadEngrams` the
- * same path before it saves. `saveEngrams` re-attaches whatever this map holds
- * for that path from the last load IN THIS PROCESS — it does not re-parse the
- * file. Every in-tree writer satisfies the precondition
- * because they all load under the lock immediately before saving, so the
- * entries are fresh in practice; the point of stating it as a precondition is
- * that a future writer which saves WITHOUT a preceding load would either
- * re-inject a stale quarantine set or, with an empty map, drop quarantined
- * rows. An id that has since become valid is de-duplicated against the
- * outgoing array, so the failure mode is confined to that one case.
+ * PRECONDITION: a writer must `loadEngrams` the same path in this process before it saves — `saveEngrams` does not
+ * re-parse. Saving without a preceding load re-injects a stale set or drops quarantined rows.
  */
 const quarantineByPath = new Map<string, unknown[]>()
 
@@ -776,16 +699,9 @@ export interface SaveEngramsOptions {
 const SHRINK_TOLERANCE = 0.1
 
 /**
- * Per store file: the baseline of the current run of undeclared shrinks, and
- * the record count this process last wrote there. In process only — no new
- * persisted state; a restart starts a new run.
- *
- * `last` is how a run ends when someone ELSE writes the file: if the count on
- * disk is no longer what this process wrote (another process, a sync pull, a
- * hand edit), this process cannot judge that change, so the baseline restarts
- * at the file as it now is. Otherwise a legitimate removal made elsewhere would
- * leave a stale, higher baseline here and refuse this process's next small
- * removal.
+ * Per store file, in process only: the baseline of the current run of undeclared shrinks and the record count
+ * this process last wrote. If the disk count is no longer `last` (someone else wrote), the baseline restarts at
+ * the file as it is now, so a removal made elsewhere cannot block this process's next small removal.
  */
 interface ShrinkRun { base: number; last: number }
 const shrinkRuns = new Map<string, ShrinkRun>()
@@ -881,17 +797,10 @@ export function assertShrinkAllowed(filePath: string, outgoingCount: number): vo
 }
 
 /**
- * The guard itself: throws, or returns the run state to record once the write
- * lands. Branch for branch `ratchetBase` in `PlurSpec.R2Persist.Shrink`:
- *
- *   - nothing to compare against (no file)          -> allowed, new run at `out`
- *   - `out >= disk` (not a shrink)                   -> allowed, new run at `out`
- *   - a shrink: baseline = the run's, if the file is
- *     still what this process last wrote, else disk -> allowed iff
- *                                                      `out >= 90% of baseline`
- *
- * Since the baseline is never below the file's count, a write allowed here is
- * always allowed by a per-write rule too (theorem `new_implies_old`).
+ * The guard: throws, or returns the run state to record once the write lands (mirrors `ratchetBase` in
+ * `PlurSpec.R2Persist.Shrink`). No file or `out >= disk` -> allowed, new run at `out`. A shrink is allowed iff
+ * `out >= 90%` of the baseline (the run's if the file is still what this process wrote, else disk). The baseline
+ * is never below the file's count, so this is never looser than a per-write rule (theorem `new_implies_old`).
  */
 function judgeShrink(filePath: string, outgoingCount: number): ShrinkRun {
   const key = resolveKey(filePath)
@@ -909,17 +818,9 @@ function judgeShrink(filePath: string, outgoingCount: number): ShrinkRun {
 }
 
 /**
- * Count engram records currently on disk, or `null` when there is nothing to
- * compare against (no file yet, or a directory — a misconfiguration the write
- * itself fails on, not a data-loss risk).
- *
- * An EXISTING file it cannot count THROWS {@link EngramStoreUnreadableError}:
- * `null` would let every write through, replacing a store with merge-conflict
- * markers, a zero-byte file, or one this process cannot read by whatever array
- * the caller held. The caller's earlier `loadEngrams` saw the file as it was
- * then, not the file being replaced now. Same rule as the loader: PLUR cannot
- * tell an empty corpus from a destroyed one, so it does not overwrite either. A caller
- * that declared `allowShrink` never reaches this.
+ * Count engram records on disk, or `null` when there is nothing to compare against (no file, or a directory).
+ * An EXISTING file it cannot count THROWS {@link EngramStoreUnreadableError}: `null` would let a write replace a
+ * corrupt or unreadable store. Callers that declared `allowShrink` never reach this.
  */
 function countEngramsOnDisk(filePath: string): number | null {
   let text: string
@@ -943,21 +844,11 @@ function countEngramsOnDisk(filePath: string): number | null {
 }
 
 /**
- * Exact number of records in an `engrams:` block sequence, by scanning for
- * record-start lines — no YAML parse.
- *
- * Counting has to be cheap because it runs on EVERY guarded write, and
- * `_reactivateResults` makes every `recall()` a write. This never builds an
- * object graph.
- *
- * Exactness matters more than speed here — the result can refuse a write — so
- * this returns `null` rather than a guess whenever the document is not a shape
- * it fully understands, and the caller parses instead:
- *
- *   - the top-level `engrams:` key must be present as a block key;
- *   - its items are the lines at the sequence's own indent starting with `- `;
- *   - a `- ` appearing inside a nested list or a multi-line scalar is NOT a
- *     record start, so both are skipped explicitly rather than counted.
+ * Exact number of records in an `engrams:` block sequence by scanning record-start lines, without a YAML parse
+ * (this runs on every guarded write, and every `recall()` writes).
+ * Exactness matters more than speed: return `null` (caller parses) for any shape not fully understood. Requires a
+ * top-level block `engrams:` key; items are `- ` lines at the sequence indent; `- ` inside nested lists or
+ * multi-line scalars is skipped.
  */
 function countRecordStarts(text: string): number | null {
   const lines = text.split('\n')
@@ -1103,18 +994,9 @@ export function loadAllPacks(packsDir: string): LoadedPack[] {
 }
 
 /**
- * The id a pack row is loaded under: its own id with the pack named after it
- * (`ENG-2026-10-18-001` in pack `deploy-tips` → `ENG-2026-10-18-001-pack-deploy-tips`).
- *
- * Pack rows keep the ids their author's store minted, and ids are minted per
- * store from the date and a daily sequence — so an ordinary pack made the same
- * day carries the very ids my own memories have, and a hostile author can pick
- * them on purpose. Unnamespaced, such a row would be shown to the agent under
- * one of my memory ids. Every read path that hands out a pack row uses this id, so a
- * pack row can never answer to an id my store mints, and two packs that ship
- * the same id stay apart. The original id stays readable inside it.
- *
- * Idempotent, and the result always fits the engram id alphabet.
+ * The id a pack row is loaded under: `<id>-pack-<pack slug>` (e.g. `ENG-2026-10-18-001-pack-deploy-tips`).
+ * Pack ids are minted in the author's store and can equal (accidentally or on purpose) ids of my own memories, so
+ * every read path namespaces them; two packs shipping one id also stay apart. Idempotent; fits the id alphabet.
  */
 export function packEngramId(id: string, packName: string): string {
   const suffix = `-pack-${packIdSlug(packName)}`
@@ -1182,17 +1064,10 @@ export function matchLegacyPackId<T extends { id: string }>(
 }
 
 /**
- * A pack's rows as every read path hands them out: each under its pack id
- * ({@link packEngramId}), and every reference one row makes to ANOTHER ROW OF
- * THE SAME PACK (relations, engram associations, `derived_from`, `abstract`)
- * rewritten to that row's pack id too.
- *
- * Renaming the rows alone would break the pack's own graph: an old rule saying
- * `superseded_by: [ENG-PACK-NEW]` would point at an id no loaded row answers
- * to, so supersession, spreading and lookup of the target would all miss, and
- * the obsolete rule would be injected beside its correction. A reference to an id the
- * pack does not ship is left as it is. Returns copies; the pack file is never
- * touched, so feedback write-back keeps saving the author's own ids.
+ * A pack's rows as read paths hand them out: each under {@link packEngramId}, with every reference to ANOTHER ROW
+ * OF THE SAME PACK (relations, associations, `derived_from`, `abstract`) rewritten too, so supersession and lookup
+ * inside the pack keep working. References to ids the pack does not ship are left alone. Returns copies; the pack
+ * file is never touched, so feedback write-back keeps the author's ids.
  */
 export function namespacePackEngrams(engrams: Engram[], packName: string): Engram[] {
   const own = new Set(engrams.map(e => e.id))
@@ -1217,17 +1092,9 @@ export function namespacePackEngrams(engrams: Engram[], packName: string): Engra
 }
 
 /**
- * Namespace a store-local id the way the read paths hand it back.
- *
- * A store's ids are prefixed with `ENG-{storePrefix(scope)}-` on load so ids
- * from different stores cannot collide locally. The write path has to return
- * the same shape, or a caller that records what it just wrote is holding an id
- * no read path ever produced. Idempotent: an already-namespaced id is
- * returned unchanged, so the two call sites can't double-prefix each other.
- *
- * An id carrying this scope's legacy three-letter prefix (see
- * {@link legacyStorePrefix}) is upgraded to the current prefix rather than
- * wrapped a second time — a store file can hold such an id verbatim.
+ * Namespace a store-local id the way read paths hand it back (`ENG-{storePrefix(scope)}-…`), so a write returns
+ * an id a read could produce. Idempotent; an id with this scope's legacy prefix ({@link legacyStorePrefix}) is
+ * upgraded rather than wrapped twice.
  */
 export function namespaceEngramId(id: string, scope: string): string {
   const prefix = storePrefix(scope)
@@ -1288,20 +1155,10 @@ export function legacyStorePrefix(scope: string): string {
 }
 
 /**
- * The namespace prefix of a store: the readable three letters of
- * {@link legacyStorePrefix} plus eight letters of a SHA-256 digest of the whole
- * scope (e.g. 'group:plur/eng' → 'GPL' + eight letters), so two scopes that
- * share the first three do not share a prefix.
- *
- * Derived from the scope alone, on purpose: every read and write path that
- * namespaces an id holds the scope, while several hold no store entry, and a
- * prefix one path cannot compute would let save and recall drift apart. Two configured stores with the SAME scope (one scope on two
- * servers, or a path store and a url store) share a prefix; the action paths
- * resolve such an id to the one store that holds the row, and refuse it as
- * ambiguous when more than one does.
- *
- * Letters only, so ids keep matching `^(ENG|ABS|META)-[A-Za-z0-9-]+$` and the
- * `[A-Z]+` readers.
+ * A store's namespace prefix: the three letters of {@link legacyStorePrefix} plus eight letters of SHA-256(scope),
+ * so scopes sharing three letters still differ. Derived from the scope alone because every id path holds the scope
+ * but not always the store entry. Two stores with the SAME scope share a prefix; action paths resolve to the one
+ * store holding the row and refuse ambiguity. Letters only, to keep matching `^(ENG|ABS|META)-[A-Za-z0-9-]+$`.
  */
 export function storePrefix(scope: string): string {
   const digest = createHash('sha256').update(scope).digest()
@@ -1314,25 +1171,13 @@ export function storePrefix(scope: string): string {
 }
 
 /**
- * Generate the next local engram id.
- *
- * Canonical format: `ENG-YYYY-MM-DD-NNN` — full ISO-8601 date separators,
- * identical to the id shape the enterprise server assigns, so an engram gets
- * the same id whether it is minted locally or server-side. The legacy compact
- * form (`ENG-YYYY-MMDD-NNN`) remains valid — every parser accepts both forms
- * (see spec/ENGRAM-STANDARD-v1.md §3.3) — but is never minted.
- *
- * The per-day sequence counts BOTH forms, so a store upgraded mid-day
- * continues numbering after its compact-form ids instead of restarting at 001.
+ * Generate the next local engram id: `ENG-YYYY-MM-DD-NNN` (same shape as server-minted ids). The legacy
+ * `ENG-YYYY-MMDD-NNN` form is still parsed (spec/ENGRAM-STANDARD-v1.md §3.3) and counted in the day's sequence,
+ * but never minted.
  */
 /**
- * The canonical id prefix for today, `ENG-YYYY-MM-DD-`.
- *
- * Exported so the one place that mints ids from a corpus
- * ({@link generateEngramId}) and the one that delegates minting to the store
- * (`PrimaryStore.nextEngramId`) cannot drift apart on the format — a store
- * queried with a prefix the engine does not itself use would allocate ids in a
- * namespace nothing else counts.
+ * Today's id prefix `ENG-YYYY-MM-DD-`, shared by {@link generateEngramId} and `PrimaryStore.nextEngramId` so the
+ * format cannot drift.
  */
 export function engramIdDatePrefix(now: Date = new Date()): string {
   return `ENG-${now.toISOString().slice(0, 10)}-`
@@ -1354,19 +1199,9 @@ export function generateEngramId(existing: Engram[], alsoAllocated: Iterable<str
     const n = suffixOf(e.id)
     if (n !== null && n > max) max = n
   }
-  // Ids that were minted and are no longer in the corpus.
-  //
-  // The corpus is not a record of what has been ALLOCATED, only of what
-  // currently exists — `compact()` removes rows and frees their ids, so the
-  // next `learn()` mints an id a different engram already had. Everything
-  // keyed by id that outlives the corpus entry then merges two lives into one:
-  // history narrates a single story out of two, a restore diff reads a
-  // substitution as an edit, and a `supersedes` edge silently re-targets.
-  //
-  // Callers pass the ids this store has minted (from the append-only history
-  // log, which never forgets). Purely additive: this can only raise `max`, so
-  // an incomplete list degrades to corpus-only allocation and can never cause
-  // a collision that corpus-only allocation would have avoided.
+  // Also count ids minted earlier that are no longer in the corpus (`compact()` frees ids): reusing one would merge
+  // two engrams' history, restore diffs and `supersedes` edges. Callers pass ids from the append-only history log.
+  // Purely additive — it can only raise `max`, so an incomplete list never causes a new collision.
   for (const id of alsoAllocated) {
     const n = suffixOf(id)
     if (n !== null && n > max) max = n

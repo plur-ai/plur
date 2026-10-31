@@ -73,24 +73,10 @@ export function registerCapture(ctx: Context, deps: CaptureDeps): void {
     }, onError))
   })
 
-  // NO learn-before-compaction.
-  //
-  // The idea is right — a compaction boundary is the last moment the discarded
-  // range can still be read — but the only extractor available is core's
-  // rule-based `ingest()`, and it is not safe to run unattended:
-  //
-  //   * `ingest()` WRITES unless `extract_only: true`, and defaults the scope
-  //     to `global`. Called from a hook whose whole point is running while
-  //     nobody watches, that puts one project's conversation into the store
-  //     every other project reads from.
-  //   * Its patterns capture only the tail after a trigger word, so
-  //     `(?:always|never|must|should)\s+(.+?)` turns "Never mention that Acme
-  //     is churning" into the engram "mention that Acme is churning" — a
-  //     prohibition stored as an instruction, rendered under CONSTRAINTS.
-  //   * `learn()` dedups on exact content hash only, so near-duplicates from
-  //     repeated compactions of one growing session accumulate.
-  //
-  // Those are acceptable for `plur ingest`, where a human reads the candidates
-  // before anything is written. They are not acceptable here; doing it
-  // properly needs an extractor that understands negation.
+  // NO learn-before-compaction. The only extractor, core's rule-based `ingest()`,
+  // is unsafe unattended: it writes to `global` by default (cross-project leak),
+  // its tail-after-trigger patterns turn prohibitions into instructions
+  // ("Never mention X" → "mention X"), and exact-hash dedup lets repeated
+  // compactions pile up near-duplicates. Fine for `plur ingest` with a human
+  // reviewing; here it needs a negation-aware extractor.
 }

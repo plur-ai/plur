@@ -1,17 +1,10 @@
 /**
- * PLUR memory for DeepSeek Harness.
- *
- * Engrams reach the model through a `ctx.systemPrompt` section that dsh
- * re-renders on every assembly, NOT through an appended `user/message`.
- *
- * That distinction is load-bearing. dsh projects injected user messages into
- * derived history verbatim (`deriveEventMessage` returns `event.data` with no
- * `form` check) and nothing removes them, so tail injection would accrete a
- * fresh block on every step until compaction — silently inflating the user's
- * context and bill. `form: 'snapshot'` does NOT prevent this; it is a
- * presentation label a client renderer reads to pick an icon. Do not
- * "simplify" this back into appending to `PreStepDecision.messages`.
- * See docs/specs/2026-08-14-dsh-plugin-design.md §1.
+ * PLUR memory for DeepSeek Harness. Engrams reach the model through a
+ * `ctx.systemPrompt` section re-rendered on every assembly, NOT an appended
+ * `user/message`: dsh keeps injected user messages in history verbatim, so tail
+ * injection would accrete a block every step (`form: 'snapshot'` does not
+ * prevent this). Do not "simplify" this into appending to
+ * `PreStepDecision.messages`. See docs/specs/2026-08-14-dsh-plugin-design.md §1.
  *
  * @module @plur-ai/dsh
  */
@@ -126,21 +119,12 @@ export function apply(ctx: Context, config: Config, injected?: PlurClient): void
     return trustRemedy(dir, support, config.path || process.env.PLUR_PATH)
   }))
   const live = new Map<string, AgentState>()
-  // ONE queue for the whole plugin's ENGRAM WRITES — learn, capture, and the
-  // tools.
-  //
-  // It is not, and does not claim to be, a serialization guarantee over every
-  // store touch. `refreshBlock` calls `injectHybrid` outside it once per turn,
-  // and that IS a write — core bumps `injection_count`, which on the YAML
-  // backend rewrites the corpus (measured at 714ms on a 60-engram store).
-  // Routing it through the queue would make a slow store stall the next turn's
-  // recall behind the previous one, which is the opposite of keeping recall
-  // off the turn path. Correctness is core's `_withStoreLock`; this queue is
-  // about not interleaving OUR writes.
-  //
-  // A write keeps its slot past the soft `timeoutMs` (a tool answers
-  // UNAVAILABLE then, the write goes on) until it settles or the hard cap
-  // elapses; then the queue moves on and says so (guard.ts WRITE_HARD_CAP_MS).
+  // ONE queue for the plugin's ENGRAM WRITES (learn, capture, tools), so OUR
+  // writes do not interleave; store correctness is core's `_withStoreLock`.
+  // `refreshBlock`'s per-turn `injectHybrid` (also a write) stays outside it,
+  // so a slow store cannot stall the next turn's recall. A write keeps its slot
+  // past the soft `timeoutMs` until it settles or the hard cap elapses
+  // (guard.ts WRITE_HARD_CAP_MS).
   const queue = createWriteQueue({
     hardCapMs: Math.max(WRITE_HARD_CAP_MS, config.timeoutMs),
     onRelease: (ms) => {

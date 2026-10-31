@@ -30,15 +30,9 @@ export interface ScopeResolver {
 }
 
 /**
- * Build the per-agent scope resolver.
- *
- * Precedence: the session workspace's own declared scope, then the configured
- * default. The ambient global store is never a fallback — a third-party harness
- * must not inherit every engram the user has ever stored merely by being
- * installed. A broken or unreadable workspace file narrows to the default rather
- * than widening, because failing open on a privacy boundary is the wrong
- * direction to fail.
- *
+ * Build the per-agent scope resolver: the workspace's declared scope, else the configured
+ * default — never the ambient global store. A broken workspace file narrows to the default
+ * (fail closed on a privacy boundary).
  * @param config - carries the configured default scope.
  * @param readWorkspaceScope - reads a workspace's declared scope, if any.
  * @returns the resolver.
@@ -88,13 +82,8 @@ export function createScopeResolver(
 }
 
 /**
- * Build the read filter for one resolved scope.
- *
- * Always sets `scopes`, core's authorization allow-list. `scope` alone is a
- * visibility filter that passes the whole personal family and does not
- * isolate: with only `scope`, a `project:beta` injection would surface
- * `project:alpha`'s engrams.
- *
+ * Build the read filter for one resolved scope. Always sets `scopes` (core's authorization
+ * allow-list): `scope` alone passes the whole personal family and does not isolate.
  * @param scope - the session's resolved scope.
  * @param includeGlobal - whether global engrams accompany it.
  * @returns the options every read should spread.
@@ -107,15 +96,9 @@ export function readScope(scope: string, includeGlobal: boolean): { scope: strin
 }
 
 /**
- * Derive a scope from a workspace path.
- *
- * The directory NAME alone collides: `~/clients/acme/api` and
- * `~/clients/northwind/api` both become `project:api`, pooling two clients'
- * engrams — and `api`, `web`, `server`, `docs` are the common cases, so this is
- * the normal outcome rather than an edge one. A short digest of the full path
- * disambiguates while keeping the name readable, which matters because this
- * string is what a user sees in `plur ui` and types into `.plur.yaml`.
- *
+ * Derive a scope from a workspace path: the directory name plus a short digest of the full
+ * path, since bare names (`api`, `web`) collide across clients. Kept readable because users
+ * see it in `plur ui` and type it into `.plur.yaml`.
  * @param cwd - the workspace directory.
  * @returns the derived scope.
  */

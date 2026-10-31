@@ -253,18 +253,8 @@ export interface DayCount {
 }
 
 /**
- * Engrams written per day, over a trailing window.
- *
- * Emits a contiguous run of days including empty ones, so the chart shows gaps
- * as gaps rather than silently compressing them into a misleadingly busy series.
- *
- * Dates come from {@link createdOn}, not `temporal.learned_at` — see that
- * function for why.
- *
- * Only WRITES are charted. A local store keeps no per-event recall log, only
- * cumulative counters, so a matching "recalled per day" band cannot be derived
- * without inventing data. The never-recalled share in {@link memoryStats}
- * carries that signal instead.
+ * Engrams written per day over a trailing window, including empty days so gaps show as gaps. Dates come from
+ * {@link createdOn}. Only writes are charted: local stores keep no per-event recall log (see {@link memoryStats}).
  *
  * @param rows - all engrams in scope.
  * @param days - window length in days, ending today.

@@ -1,16 +1,10 @@
 /**
- * `plur manifest` — the session memory manifest: which engrams were in
- * one session's context, with hashes anyone can check later.
- *
- * Usage:
+ * `plur manifest` — which engrams were in one session's context, with checkable hashes.
  *   plur manifest --session <id>                 Print the manifest (canonical JSON)
  *   plur manifest --session <id> --out <file>    Write it to a file
  *   plur manifest --session <id> --anchor        Also store it on Swarm (needs receipts.store: swarm)
- *
- * The manifest holds ids and hashes only: never engram text, scope names, tags
- * or domains. Anchoring uploads exactly those bytes to a public network
- * through the provenance gateway's free tier; it never happens unless the user
- * set `receipts.store: swarm` in config.yaml.
+ * Ids and hashes only — never text, scopes, tags or domains. Anchoring (public, via the
+ * gateway's free tier) never happens unless `receipts.store: swarm` is set.
  */
 import { writeFileSync } from 'fs'
 import { createPlur, type GlobalFlags } from '../plur.js'

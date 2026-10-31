@@ -4,20 +4,13 @@ import { isDeepStrictEqual } from 'util'
 
 /**
  * A broken folders.yaml, pinpointed and — where the fix is unambiguous —
- * repaired. Pure text in, text out: no filesystem here, so the same
- * checks serve the loader, the MCP gate, `plur doctor`, `plur folders list`
- * and `plur folders repair`.
- *
- * Every message names the line (and column, when there is one) and says what
- * is wrong in plain words. It quotes at most the KEY on that line, and only
- * when the key is a plain identifier: never a path, a scope or any other value
- * from the file, which may be private.
- *
- * The repair is line-based, so every comment survives: it only re-indents
- * lines, renames a misspelled top-level key, corrects a `plur:` mode whose case
- * or one letter is wrong (when exactly one mode matches), or gives an empty
- * file the minimal valid map. Anything else is reported as needing a hand fix
- * and nothing is changed — there is no half repair.
+ * repaired. Pure text in, text out, shared by the loader, the MCP gate,
+ * `plur doctor` and `plur folders list|repair`.
+ * - Messages name the line (and column) and quote at most a plain-identifier
+ *   KEY, never a path, scope or other value (which may be private).
+ * - The repair is line-based (comments survive): re-indent, rename a misspelled
+ *   top-level key, fix a near-miss `plur:` mode, or fill an empty file.
+ *   Anything else needs a hand fix and nothing changes — no half repair.
  */
 
 // The one schema the loader, the MCP gate and the repair share. `plur` may be
@@ -978,16 +971,12 @@ function inlineYaml(v: unknown): string | null {
 }
 
 /**
- * The folder map's text with only the changed entries' lines rewritten:
- * every comment, blank line and untouched entry stays as the user wrote it,
- * the way `plur folders repair` edits lines in place. A changed entry keeps
- * each of its lines whose key and value did not change (an inline comment
- * there survives); the rest of its lines are rewritten in its own
- * indentation. A removed entry loses its own lines only; new entries go after
- * the last one. Null when the text is not a plain, valid block list this can
- * edit safely (a flow list, a block scalar, an entry not written as
- * `- key: value`, or a count that does not match) — the caller then writes
- * the whole map. The caller checks the result reads back as intended.
+ * The folder map's text with only the changed entries' lines rewritten, the
+ * way `plur folders repair` edits in place: comments, blank lines and untouched
+ * entries (and unchanged lines inside changed ones) stay. Removed entries lose
+ * only their lines; new entries go after the last one. Null when the text is
+ * not a plain valid block list of `- key: value` entries — the caller then
+ * writes the whole map and checks the result reads back as intended.
  */
 export function editFolderMapText(text: string, edit: FolderMapTextEdit): string | null {
   if (!checkFolderMapText(text).ok) return null

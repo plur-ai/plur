@@ -1,36 +1,13 @@
 import { openSync, readSync, fstatSync, statSync, closeSync, writeSync, constants } from 'fs'
 
 /**
- * Signal detection for the Stop-hook memory check (hook-learn-check).
- *
- * The memory check forces one extra model turn, which is noise for the user
- * when there is nothing to learn. So it fires when the user's LAST typed
- * message reads as a correction,
- * preference or standing rule aimed at how the agent works, or a
- * decision-board answer, plus a fallback (every PLUR_LEARN_FALLBACK_INTERVAL-th
- * Stop) for the corrections no phrase here catches.
- *
- * The rule of the list: a nudge costs a forced turn every time it fires, a
- * miss costs one memory the fallback may still catch. So a phrase is on the
- * list only if it is rarely anything BUT a correction or a rule addressed at
- * the agent. A word is not enough: "narobe", "falsch", "the wrong X",
- * "lieber", "vedno" and "immer" are everyday words in bug reports and
- * narrative ("Nekaj je narobe s prijavo", "returns the wrong status code",
- * "Lieber Gregor,", "Immer wenn ich …"). Each fires only in the shape that
- * addresses the agent ("to je narobe", "you used the wrong flag", "lieber
- * nimm …", "vedno uporabi …", "immer pnpm verwenden").
- *
- * Measured on test/fixtures/learn-signal-corpus.ts (en/sl/de, weighted to
- * hard cases); test/learn-signal-corpus.test.ts holds precision >= 85% and
- * recall >= 71%.
- *
- * Before matching (normaliseForSignal): typographic quotes become ASCII;
- * code fences, <pasted-content> and echo blocks, `>` quoted lines, quoted
- * "…" spans, indented code, diff lines and log-like lines (`Error: …`, stack
- * frames, timestamps, `[warn]`) are dropped — pasted text is not the user
- * speaking. Then the text is bounded to its last 4,000 characters, where the
- * typed part usually is. Questions are skipped (a trailing "ok?" tag does
- * not make a rule a question).
+ * Signal detection for the Stop-hook memory check (hook-learn-check), which
+ * costs a forced turn: fires on a LAST typed message that is a correction,
+ * preference, standing rule or decision-board answer, plus a fallback every
+ * PLUR_LEARN_FALLBACK_INTERVAL-th Stop.
+ * - Phrases are listed only in agent-addressed shapes ("narobe", "immer" alone are not).
+ * - test/learn-signal-corpus.test.ts holds precision >= 85%, recall >= 71%.
+ * - normaliseForSignal drops pasted/quoted/code/log text, keeps the last 4,000 chars.
  */
 
 // Matching is diacritic-insensitive: Slovenian is often typed without
@@ -331,17 +308,11 @@ function readTail(path: string): string | null {
 }
 
 /**
- * The last message the human typed, from a Claude Code transcript (JSONL; the
- * Stop payload's `transcript_path`), and whether the agent called plur_learn
- * after it. The transcript format is internal to Claude Code; the fields used
- * here match real transcripts:
- *   - skipped: isMeta, isSidechain, tool results (toolUseResult,
- *     sourceToolAssistantUUID, tool_result blocks), origin.kind other than
- *     "human", promptSource "system", and echo lines (<command-name>,
- *     <local-command-stdout>, <bash-…>, <task-notification>, …)
- *   - a compaction summary (isCompactSummary, or its text prefix on older
- *     builds) or a compact_boundary line ends the search: what precedes it
- *     is history, not the last message.
+ * The last human-typed message in a Claude Code transcript (JSONL, the Stop
+ * payload's `transcript_path`) and whether plur_learn was called after it.
+ *   - skipped: isMeta, isSidechain, tool results, non-"human" origin.kind,
+ *     promptSource "system", and command/notification echo lines
+ *   - a compaction summary or compact_boundary line ends the search
  * Reads at most the trailing TRANSCRIPT_TAIL_BYTES of a regular file;
  * anything unreadable or unparseable is null, never an error.
  */

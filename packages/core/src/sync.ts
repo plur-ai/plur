@@ -197,17 +197,8 @@ function stageStoreFiles(root: string): number {
 }
 
 /**
- * Refuse to stage while any store file is in an unmerged (conflicted) state.
- *
- * `git add -A -f` on an unmerged path does not resolve the conflict — it marks
- * it resolved and stages the bytes as they are, conflict markers included, and
- * the blob would then be committed AND pushed. Since staging is the step that
- * turns a conflicted working tree into a commit, this is the right place to
- * stop.
- *
- * `--diff-filter=U` is checked against the store allowlist only: an unrelated
- * conflicted file elsewhere in the repo is not sync's business (unlike
- * `hasConflictMarkers`, a `git grep` across ALL tracked files).
+ * Refuse to stage while any store file is unmerged: `git add -A -f` would mark it resolved and commit and push
+ * the conflict markers. Checks only the store allowlist; unrelated conflicted files are not sync's business.
  */
 function assertNoUnmergedStoreFiles(root: string): void {
   const unmerged = gitSafe(['diff', '--name-only', '--diff-filter=U'], root)
@@ -392,16 +383,9 @@ function readSiblingList(root: string, file: string): unknown[] | null {
 }
 
 /**
- * Keep-predicate for sibling-file records: a record is pushed only when
- * EVERY engram id referenced anywhere in it resolves to the remote's push set.
- * Shape-agnostic by design — the id scan runs over the whole serialized
- * record, so it covers structured fields (`engram_a`/`engram_b`/`resolved_by`)
- * and ids embedded in free text (episode summaries) alike, and
- * candidates.yaml needs no schema of its own. A referenced id that is personal/
- * private (stripped from the push) OR unknown (deleted, foreign) fails the test
- * — strip-on-doubt, because a false keep is a leak and a false drop is not.
- * Records with no engram references are kept: they are not derived from any
- * engram the filter withheld.
+ * Keep-predicate for sibling-file records: push a record only when EVERY engram id anywhere in its serialization
+ * is in the push set (shape-agnostic, covers free text). Personal/private or unknown ids fail — strip-on-doubt,
+ * since a false keep is a leak. Records with no engram references are kept.
  */
 function siblingKeep(pushedIds: Set<string>): (record: unknown) => boolean {
   return (record: unknown) => {
@@ -566,25 +550,12 @@ function hasConflictMarkers(root: string): boolean {
 type WithheldFile = HeldFile
 
 /**
- * Hold withheld records aside across a pull.
- *
- * HEAD holds strip(W) by design, so whenever the working tree W holds a record
- * the push set withholds, W differs from HEAD in a tracked file — permanently.
- * `git pull` refuses to touch a dirty tracked file, so every remote change to
- * engrams.yaml would be refused for as long as one scope:local engram exists,
- * and every later push would fail non-fast-forward.
- *
- * Hold the withheld records aside instead: reset each such file to its staged
- * (= committed, stripped) blob so the tree is clean, pull, then put the held
- * records back. Nothing withheld reaches a commit.
- *
- * CRASH SAFETY: the held records are written to `.git/plur-held.json`
- * (fsynced; inside `.git`, so never staged) BEFORE any file is reset, and that
- * file is deleted only after every record is back. Held in memory only, a
- * signal during the (up to 30 s) pull — `finally` does not run on
- * SIGINT/SIGTERM/SIGKILL — would delete every scope:local engram. While the
- * file exists every reader counts its records as part of the store
- * (`loadEngrams`), and the next sync or store write restores them.
+ * Hold withheld records aside across a pull. HEAD holds the stripped store, so a working tree with withheld records
+ * is permanently dirty and `git pull` would refuse; reset each such file to its staged blob, pull, then restore.
+ * Nothing withheld reaches a commit.
+ * CRASH SAFETY: held records are written to fsynced `.git/plur-held.json` BEFORE any reset and deleted only after
+ * every record is back (`finally` does not run on signals). While it exists, readers count its records as part of
+ * the store and the next sync or write restores them.
  */
 function holdWithheld(root: string, remoteType: SyncRemoteType): WithheldFile[] {
   const files: WithheldFile[] = []
@@ -631,26 +602,13 @@ function missingSiblingRecords(current: readonly unknown[], held: readonly unkno
 }
 
 /**
- * Put held records back after a pull (successful, failed, or interrupted and
- * now being recovered). Safe to run again on its own output.
- *
- * - The file is as it was before the hold (the process died before resetting
- *   it) → nothing to do.
- * - The pull did not change the file → write the saved bytes back verbatim.
- * - The pull changed it → the new file plus every held record not already in
- *   it. A same-id record from another machine (both minted the same day) is a
- *   DIFFERENT engram: the held LOCAL record is re-id'd
- *   ({@link mergeHeldRecords}), since it was never pushed and nothing outside
- *   this machine refers to it; the pulled record keeps the id; the rename is
- *   recorded in history, and held sibling records that name the old id follow
- *   it.
- * - The file is unreadable now (the remote pushed a file the loader refuses):
- *   if HEAD carries that pulled version, it is KEPT and the file is returned as
- *   `unresolved` — its held records stay in the recovery file until the file is
- *   readable again. Writing the pre-pull bytes back here would put a revert of
- *   the remote's change in the working tree, which the next sync would commit
- *   and push. Only when HEAD still holds the pre-pull blob (nothing was
- *   integrated) do the saved bytes go back.
+ * Put held records back after a pull (successful, failed, or being recovered). Idempotent.
+ * - File unchanged since before the hold → nothing; unchanged by the pull → saved bytes back verbatim.
+ * - Changed by the pull → new file plus held records not in it; a same-id clash re-ids the held LOCAL record
+ *   ({@link mergeHeldRecords}), records the rename and makes held sibling references follow.
+ * - Unreadable now: if HEAD carries the pulled version it is KEPT and returned `unresolved` (held records stay in
+ *   the recovery file); writing pre-pull bytes would commit a revert. Only when HEAD still holds the pre-pull blob
+ *   do the saved bytes go back.
  */
 function restoreWithheld(root: string, files: WithheldFile[], merged: readonly IdRename[] = []): { renames: IdRename[]; rewrote: string[]; unresolved: WithheldFile[] } {
   // engrams.yaml first: its renames are applied to held sibling records.
@@ -792,16 +750,9 @@ function readSiblingsBeforePull(root: string): Map<string, unknown[]> {
 }
 
 /**
- * On a PERSONAL remote sibling files are committed, not held, so the
- * held-record rewrite in {@link restoreWithheld} never sees them: an episode
- * or tension this machine wrote about its local engram would keep naming the
- * old id, which after the pull belongs to the other machine's engram — the
- * reference would silently change meaning. Rewrite the references in every
- * sibling
- * record that was already here before the pull; records the pull brought are
- * left alone (their references mean the pulled engram). Returns the files
- * rewritten; the caller commits them, so the correction reaches the user's
- * own remote.
+ * On a PERSONAL remote sibling files are committed, not held, so rewrite references to renamed local engrams in
+ * sibling records that predate the pull (records the pull brought are left alone); otherwise a reference would
+ * silently point at the other machine's engram. Returns the files rewritten for the caller to commit.
  */
 function rewriteLocalSiblingRefs(root: string, renamed: ReadonlyMap<string, string>, before: Map<string, unknown[]>): string[] {
   const rewrote: string[] = []
@@ -1046,17 +997,10 @@ function renameLocalClashes(base: unknown[], ours: unknown[], theirs: unknown[])
 }
 
 /**
- * Sibling records (reviews, episodes, candidates) both sides added under one id
- * with different content. Review ids are a per-day sequence (`T-YYYY-MMDD-NNN`),
- * so two offline devices mint the same next id for two DIFFERENT reviews; the
- * so two offline devices mint the same next id for two DIFFERENT reviews, and
- * a field merge in {@link mergeRecordLists} would blend them into one record
- * and lose the other review. Same rule as engrams (keep both, rename one):
- * store refers to a sibling record's id, so no reference has to follow.
- *
- * A review of the SAME engram pair is one review detected on both devices
- * (`recordTensions` keeps one record per pair), not a clash: it is merged by
- * {@link mergeReview}, keeping the furthest lifecycle state.
+ * Sibling records (reviews, episodes, candidates) both sides added under one id with different content. Review ids
+ * are a per-day sequence, so offline devices mint the same id for different reviews; a field merge would lose one.
+ * Same rule as engrams: keep both, rename one (nothing refers to sibling ids). A review of the SAME engram pair is
+ * one review, merged by {@link mergeReview} keeping the furthest lifecycle state.
  */
 function renameSiblingClashes(file: string, base: unknown[], ours: unknown[], theirs: unknown[]): unknown[] {
   const idOf = (r: unknown) => (r as { id?: unknown } | null)?.id

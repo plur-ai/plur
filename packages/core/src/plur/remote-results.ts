@@ -29,40 +29,13 @@ import type {
 
 export interface RemoteResultsMethods {
   /**
-   * Strict scope-relevance dialing.
-   *
-   * For each configured (url, token) endpoint group, the dialed scope set is
-   * the subset of its granted scopes relevant to the current project/work:
-   *   (a) shared (group:/project:/…) scopes sharing the ORG segment with the
-   *       session's project scope — org of `project:plur/plur-ai/enterprise`
-   *       is `plur`, so every `group:plur/…` + `project:plur/…` scope on that
-   *       host is relevant;
-   *   (b) the host's personal-family (`user:*`, …) scopes ONLY when an org
-   *       context exists implicating that host.
-   *   (c) a personal `user:` scope the caller passed (or the session's own
-   *       registration — not the inherited process default) adds the ONE
-   *       entry whose scope matches it, case-folded, exact-case preferred.
-   *       It adds no other entry; `dial: always` and a `.plur.yaml` remote
-   *       project can still add theirs.
-   * When `options.scopes` is given, nothing outside it is dialed (`[]` →
-   * nothing), whichever rule selected the entry.
-   * No project/work context implicating a remote store → ZERO remote calls.
-   * A host whose relevant subset is empty is NOT dialed — a host for one org
-   * is never dialed from another org's work (cross-org exfiltration is
-   * prevented by construction).
-   *
-   * Overrides: per-store `dial: never` removes the entry from dialing;
-   * `dial: always` forces its host to be dialed with that entry's scope,
-   * context or not. A `.plur.yaml` `remote_url`/`remote_token`
-   * (`options.remote_project`, hook path) IS the org context for its host —
-   * project config wins: a matching mounted group dials with the project's
-   * token when one is supplied, and an unmounted project endpoint dials
-   * standalone with the project's `remote_scopes`.
-   *
-   * Grouping is by (url, token), not url alone — `_distinctRemoteEndpoints`'s
-   * "tokens should be identical" assumption is unchecked, and differing
-   * tokens per host mean one POST per token. `remoteEndpointTokenConflicts`
-   * feeds the doctor warning for that misconfiguration.
+   * Strict scope-relevance dialing, per (url, token) endpoint group:
+   *   (a) shared scopes sharing the ORG segment with the session's project scope;
+   *   (b) the host's personal-family scopes ONLY when an org context implicates it;
+   *   (c) a caller-passed or session-registered `user:` scope adds its ONE matching entry.
+   * `options.scopes` bounds everything (`[]` → nothing). No implicating context
+   * → ZERO remote calls; one org's host is never dialed from another org's work.
+   * Overrides: `dial: never|always`; a `.plur.yaml` remote project is its host's org context.
    */
   /** @internal */
   _remoteRecallHosts(options?: { scope?: string; scopes?: string[]; context_scopes?: string[]; session?: string; remote_project?: RemoteProjectConfig }): RemoteRecallHost[]
@@ -135,18 +108,11 @@ export interface RemoteResultsMethods {
   _remoteInjectCandidates(remote: RemoteRecallResult | undefined, options?: InjectOptions): { engrams: Engram[]; boosts: Map<string, number> } | undefined
 
   /**
-   * Per-host remote recall degradation status, fed by the last
-   * outcomes this process observed — NOT by driver caches or fresh probes.
-   * MCP surfaces attach a `remote_stores` block from this when any host is
-   * non-ok (or silently scope-narrowed); plur_doctor renders remediation.
-   *
-   * Every entry carries `observed_at` and `age_ms`. An observation is
-   * evidence about the moment it was taken, and this map is only written by
-   * hosts a recall actually DIALED — a recall that dials nothing leaves the
-   * previous entry untouched. Callers that speak in the present tense
-   * ("serving local only") must pass `freshOnly` so a stale failure stops
-   * being reported as the live state; callers that are explicitly historical
-   * (doctor's "last live recall") should read everything and render the age.
+   * Per-host remote recall degradation status, from the last outcomes this
+   * process observed (not driver caches or fresh probes); only DIALED hosts
+   * update it. Every entry carries `observed_at` and `age_ms`. Present-tense
+   * callers ("serving local only") must pass `freshOnly`; historical callers
+   * (doctor's "last live recall") read everything and render the age.
    */
   remoteStoreStatus(opts?: { freshOnly?: boolean; now?: number }): RemoteStoreStatusEntry[]
 
@@ -161,15 +127,9 @@ export interface RemoteResultsMethods {
 
   /**
    * Record that a non-recall interaction with `url` just SUCCEEDED, clearing a
-   * cached network-class failure for that host.
-   *
-   * Otherwise `plur_doctor` could contradict itself in one report: a live
-   * probe says "reachable" while a cached recall outcome beneath it says the
-   * host timed out. A store that just answered a request is not unreachable,
-   * and the fresher observation wins.
-   *
-   * Only {@link PROBE_CLEARABLE_STATES} are cleared — see that constant for
-   * why an authorization or endpoint-support failure must survive a probe.
+   * cached network-class failure so `plur_doctor` does not contradict its own
+   * live probe. Only {@link PROBE_CLEARABLE_STATES} are cleared; authorization
+   * and endpoint-support failures must survive a probe.
    */
   noteRemoteHostReachable(url: string): void
 
@@ -181,16 +141,10 @@ export interface RemoteResultsMethods {
   remoteEndpointTokenConflicts(): Array<{ url: string; tokens: number }>
 
   /**
-   * Engrams a primary-store pushdown cannot see: secondary (team/project)
-   * stores from `config.stores`, and installed packs.
-   *
-   * `searchBM25` queries ONE table while `_loadAllEngrams` merges these in;
-   * without this, the Postgres tier would answer `recall()` from the primary
-   * store alone and silently drop team-store results that `recallHybrid`
-   * returns.
-   *
-   * Scope and domain are applied here to mirror what the SQL side does to the
-   * primary rows; the residual filters are applied by the caller.
+   * Engrams a primary-store pushdown cannot see: `config.stores` secondary
+   * stores and installed packs. Without this, the Postgres tier's `recall()`
+   * would silently drop team-store results. Scope and domain are applied here to
+   * mirror the SQL side; residual filters are applied by the caller.
    */
   /** @internal */
   _engramsOutsidePrimaryStore(options?: RecallOptions): Promise<Engram[]>

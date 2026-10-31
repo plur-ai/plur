@@ -12,28 +12,14 @@ import { dirname, resolve } from 'path'
 import { folderOnCommand } from './tools.js'
 
 /**
- * The folder map's `off` decision in the MCP server.
- *
- * The editor hooks and the opencode plugin go silent in a folder the user
- * marked `plur: off` in `<PLUR home>/folders.yaml`. The MCP server is the
- * other way in: an agent can call plur_learn or plur_recall itself. So before
- * any of the tools below runs, the server resolves the folder policy for the
- * editor's workspace, and in an `off` folder it answers — without an error —
- * that PLUR is off here, and touches no store at all: no local file, no
- * outbox row, no request to a remote store.
- *
- * Gated: every tool that reads or writes engrams or episodes, or returns
- * their text (FOLDER_GATED_TOOLS). Not gated: the admin and diagnostic tools
- * (ADMIN_UNGATED_TOOLS) and plur_admin's `help`. Some admin tools still read
- * stores to count or probe them (status, doctor, stores_list); none returns
- * engram text. Every registered tool is in exactly one of the two sets (a
- * test holds this), so a new tool cannot slip through ungated unnoticed.
- *
- * A folder map that exists but cannot be read or parsed fails SAFE: the gated
- * tools do nothing and name the file and the problem. An undecided (`ask`)
- * folder gets the folder question instead of memory (createFolderGate);
- * `on` folders run normally. The gate never writes folders.yaml itself
- * (core's one-time trust.yaml import can create it on the first read).
+ * The folder map's `off` decision in the MCP server. In a folder marked
+ * `plur: off` in `<PLUR home>/folders.yaml`, gated tools answer (not error)
+ * that PLUR is off and touch no store: no local file, outbox row or remote request.
+ * - Gated: FOLDER_GATED_TOOLS (anything reading, writing or returning engram or
+ *   episode text). Ungated: ADMIN_UNGATED_TOOLS and plur_admin `help`. Every
+ *   tool is in exactly one set (a test holds this).
+ * - An unreadable folder map fails SAFE; `ask` folders get the folder question
+ *   (createFolderGate). The gate never writes folders.yaml itself.
  */
 export const FOLDER_GATED_TOOLS: ReadonlySet<string> = new Set([
   // write engrams
@@ -196,28 +182,13 @@ export interface RootsServer {
 }
 
 /**
- * The editor's workspace for the folder map: every `file://` root the client
- * lists over MCP `roots/list` (when it declares the roots capability), plus
- * the server's cwd — the folder the editor started it in, which is also where
- * readTrustedProjectConfig looks for `.plur.yaml`.
- *
- * `dirs()` resolves to null when the roots could not be fetched (an error or
- * the 2 s timeout) or a declared root does not resolve to a local folder. The
- * caller then FAILS CLOSED for that call ({@link workspaceUnknownAnswer}) — it
- * never falls back to cwd alone, which would run memory in a workspace the
- * user may have turned off.
- *
- * The roots answer is cached, with three rules:
- *  - with a client that declares `roots.listChanged`, every caller awaits the
- *    SAME in-flight request, so a call made while it is pending never runs on
- *    a partial picture; without it, each call sends its own request, so a call
- *    made after a workspace switch never joins a request sent before it;
- *  - a failed or timed-out request is never cached: the next call asks again;
- *  - an answer is cached only when the client declared `roots.listChanged`;
- *  - `roots/list_changed` bumps a generation; an answer that arrives for an
- *    older generation is discarded and the caller asks again.
- *
- * Self-contained and exported so other server entry points can share it.
+ * The editor's workspace: every `file://` root from MCP `roots/list` (when
+ * declared) plus the server's cwd. `dirs()` resolves to null when roots cannot
+ * be fetched (error, 2 s timeout) or a root is not a local folder; the caller
+ * then FAILS CLOSED ({@link workspaceUnknownAnswer}), never falling back to cwd.
+ * Caching: only with `roots.listChanged` (callers share the in-flight request);
+ * failures are never cached; `roots/list_changed` bumps a generation and stale
+ * answers are discarded. Exported for other server entry points.
  */
 export function createWorkspaceDirs(
   server: RootsServer,
@@ -375,22 +346,13 @@ export function ancestorHosts(now: number = Date.now()): FolderAskHost[] {
 }
 
 /**
- * THE default write scope for an unscoped write in this workspace — the one
- * resolver every path that picks a default
- * uses: plur_learn, plur_learn_batch, plur_session_end's learns,
- * plur_session_start and plur_session_scope clear.
- *
- * Inputs: every client root, none left out; with no roots, the server's
- * start folder. Each is realpath-resolved first, so a link gets the decision
- * of the folder it points at (its folder map entry, and the `.plur.yaml`
- * found from the real path). Each must resolve to `on` with a scope — the
- * map's, else a trusted `.plur.yaml`'s for that folder — and all to the SAME
- * scope. Anything else gives null, and null means no scope (the write stays
- * on this machine), with no fallback after it:
- *  - two inputs with different scopes, or one with no scope;
- *  - the home folder, a folder above it or a filesystem root (each covers
- *    every folder under it);
- *  - an input that cannot be resolved, or any error.
+ * THE default write scope for an unscoped write in this workspace, used by
+ * every default-picking path (learn, learn_batch, session_end, session_start,
+ * session_scope clear). Inputs are all client roots (else the start folder),
+ * realpath-resolved; each must resolve to `on` with a scope (map, else trusted
+ * `.plur.yaml`) and all to the SAME scope. Otherwise null (write stays local),
+ * with no fallback: mixed or missing scopes, home / above-home / filesystem
+ * root inputs, unresolvable inputs, or any error.
  */
 export function workspaceWriteScope(plur: Plur, ws: Workspace): WorkspaceScopeDecision {
   // The rule lives in core (workspaceFolderScope) so the CLI, whose one input
@@ -417,37 +379,14 @@ function isFilesystemRoot(dir: string): boolean {
 }
 
 /**
- * The folder map in the MCP server, per MCP session (one per createServer):
- * `off` (folderOffAnswer) and `ask`.
- *
- * In a workspace whose folder resolves to `ask` (undecided, or a `.plur.yaml`
- * asking for settings not yet trusted), a gated tool touches no memory and
- * answers with the folder question the editor hooks ask: one command per
- * answer, each with its own nonce from core, bound to this MCP session (the
- * command names it with `--session`, and a nonce redeemed from another
- * session or naming none is refused). The question and its nonces are built
- * once per folder and returned on every gated call until the user answers;
- * they are re-issued only after the nonce lifetime. The server never writes
- * the folder map: the user (or the agent, after the user's explicit answer)
- * runs the command, and the next call resolves the folder again and follows
- * the new decision. Yes → memory on, with the answer's scope as this
- * session's default write scope when nothing set one. Never here → off.
- *
- * "Not now" has a command too, because the server cannot see the chat:
- * `plur folders set <folder> --not-now --nonce <n> --session <id>` consumes
- * its nonce and writes nothing. Once it is gone from this session's nonce
- * file, the folder is off for the rest of this session, without the question.
- * The folder stays undecided, so another session asks again.
- *
- * Precedence across the workspace folders: off > ask > on. `off` is checked
- * on every folder, the server's cwd included. The question is asked only
- * about folders that are not the home folder, a filesystem root or above
- * home (an answer there would cover every folder under it): the client's
- * roots that are not such, when there are any (the cwd is wherever the client
- * started the process); otherwise the cwd, unless it is such. A filesystem
- * root is never asked about. `end()` deletes the session's unanswered nonces; the
- * stdio server calls it on stdin end and on SIGTERM / SIGINT, and nonce files
- * of sessions killed outright are swept once expired.
+ * The folder map per MCP session (one per createServer): `off` and `ask`.
+ * - `ask`: gated tools return the folder question; each answer's nonce is bound
+ *   to this session (`--session`), reused until answered or expired.
+ * - The server never writes the folder map; the next call after the user's
+ *   command re-resolves. "Not now" (`--not-now`) writes nothing: off for this session.
+ * - Precedence off > ask > on, `off` checked on every folder incl. cwd; home,
+ *   above-home and filesystem roots are never asked about.
+ * - `end()` deletes unanswered nonces (stdin end, SIGTERM/SIGINT); orphans expire.
  */
 export function createFolderGate(plur: Plur, opts: { sessionId?: string; hosts?: () => FolderAskHost[] } = {}): {
   sessionId: string

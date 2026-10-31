@@ -4,21 +4,10 @@
  */
 
 /**
- * The Claude Code timeout for the synchronous `hook-inject` registrations
- * (UserPromptSubmit and SessionStart matcher "compact"), in seconds.
- *
- * Both are sync so the first reply of a session, a one-shot `claude -p`, and
- * the first reply after compaction see memory. A sync hook blocks the prompt,
- * so this is a hard budget, and hook-inject bounds its own work below it:
- * hybrid search on an 8s soft deadline (`injectWithFallback`), then BM25, and
- * a 15s self-watchdog (`HOOK_CEILING_DEFAULT_MS`) that exits 0 before Claude
- * Code would kill the hook and report an error.
- *
- * On a 10,000-engram store with a warm embedding cache a first prompt takes
- * about 2.5s; with no embedding cache the hybrid deadline is missed and BM25
- * serves the turn in about 9s. 20s covers that with room to spare, matches
- * Antigravity's budget and stays below Codex's 25s. See
- * docs/runbooks/hook-timeouts.md.
+ * Claude Code timeout (seconds) for the synchronous `hook-inject` registrations (UserPromptSubmit, SessionStart
+ * "compact"), sync so first replies see memory. hook-inject stays below it: hybrid search on an 8s soft deadline,
+ * then BM25, and a 15s self-watchdog (`HOOK_CEILING_DEFAULT_MS`) that exits 0 first. A cold 10,000-engram store
+ * takes ~9s; 20s leaves room, matches Antigravity and stays below Codex's 25s. See docs/runbooks/hook-timeouts.md.
  */
 export const CLAUDE_INJECT_TIMEOUT_S = 20
 

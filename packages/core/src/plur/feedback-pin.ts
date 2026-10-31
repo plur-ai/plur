@@ -18,19 +18,10 @@ import { type MutationOutcome } from './types.js'
 export interface FeedbackPinMethods {
   /**
    * Update feedback_signals and adjust retrieval_strength. Searches primary, stores, then packs.
-   *
-   * Pass `scope` to route directly to a specific store and bypass the first-match-wins
-   * walk. Use scope: "primary" to target the local primary store, or a remote
-   * scope string (e.g. "group:plur/plur-ai/engineering") to target that remote.
-   * Without scope, an ID that exists in both the local store and a warmed remote cache
-   * is an error — the caller must disambiguate rather than relying on resolution order.
-   *
-   * `options.source: 'auto'` marks a verdict an editor hook inferred
-   * from the reply text. It adjusts ranking only — `commitment` is never
-   * advanced. A remote store receives it only when its server advertises the
-   * `feedback.source` capability in `/me` (and so promises the same rule);
-   * any other remote is skipped. The ambiguity guard below does not dial a
-   * cold remote for it, because hooks must not wait on the network.
+   * `scope` routes directly ("primary" or a remote scope); without it, an id present both
+   * locally and in a warmed remote cache is an error — the caller must disambiguate.
+   * `options.source: 'auto'` (hook-inferred) adjusts ranking only, never `commitment`; it is
+   * sent only to remotes advertising `feedback.source` in `/me`, and never dials a cold remote.
    */
   feedback(id: string, signal: 'positive' | 'negative' | 'neutral', scope?: string, options?: { source?: FeedbackSource }): Promise<MutationOutcome>
 
@@ -46,23 +37,11 @@ export interface FeedbackPinMethods {
   _logInjectionOutcome(engramId: string, signal: 'positive' | 'negative' | 'neutral', source?: FeedbackSource): void
 
   /**
-   * Save extracted meta-engrams to the engram store. Skips IDs that already
-   * exist.
-   *
-   * This runs the same scope-security guard as learn/updateEngram before
-   * persisting each meta:
-   *  - HARD `detectSecrets` check (mirrors learn/learnRouted) — a raw secret
-   *    (API key, token, …) in a meta at a shared scope THROWS unless
-   *    `config.allow_secrets`.
-   *  - SOFT `_offendingHitsForScope` demotion (mirrors the explicit-update /
-   *    learnAsync demotion paths) — infra-sensitive content (public IP, internal
-   *    host, …) at a shared scope is DEMOTED in place to local/private and
-   *    stamped with `_demoted{from,to,patterns}` rather than written at the
-   *    requested shared scope. Local write, so demotion is coherent.
-   *
-   * In-tree metas use personal scopes (global/local), for which
-   * `_offendingHitsForScope` returns [], so the guard only acts on a
-   * shared-scope meta.
+   * Save extracted meta-engrams, skipping ids that already exist, behind the same
+   * scope-security guard as learn/updateEngram:
+   *  - HARD `detectSecrets`: a raw secret at a shared scope THROWS unless `config.allow_secrets`.
+   *  - SOFT `_offendingHitsForScope`: infra-sensitive content at a shared scope is DEMOTED
+   *    to local/private and stamped with `_demoted{from,to,patterns}`.
    */
   saveMetaEngrams(metas: Engram[]): Promise<{ saved: number; skipped: number }>
 
@@ -87,20 +66,13 @@ export interface FeedbackPinMethods {
   _updateEngramReturning(updated: Engram): Promise<Engram | null>
 
   /**
-   * An update that changes the scope of a row still queued for a remote store
-   * (`_outbox` on the STORED row) behaves like `rescope()`:
-   *   - new scope local-family (`isLocalOnlyScope`, config-aware) → the
-   *     pending delivery is cancelled;
-   *   - new scope has a writable URL store → `_outbox` is retargeted to it
-   *     (attempts reset). The leak guard has already run against the new
-   *     scope (`_guardExplicitUpdate` above); a demotion lands on `local` and
-   *     so takes the first branch;
-   *   - otherwise (no store, or only a readonly one) → cancelled, with a warning;
-   *   - a scope two servers claim → the update is refused (ScopeConflictError)
-   *     before anything is written. The target comes from resolveScopeTarget.
-   * The queue entry is read from the STORED row, never the caller's object,
-   * and so is `_retireRemote` — a caller-set value of either
-   * would otherwise direct a push or a remote DELETE. Mutates `toWrite`.
+   * When an update changes the scope of a row still queued for a remote (`_outbox`):
+   *   - new scope local-family → pending delivery cancelled;
+   *   - new scope has a writable URL store → `_outbox` retargeted (attempts reset);
+   *   - no or only readonly store → cancelled with a warning;
+   *   - scope claimed by two servers → refused (ScopeConflictError) before any write.
+   * `_outbox` and `_retireRemote` are read from the STORED row, never the caller's
+   * object, which could otherwise direct a push or remote DELETE. Mutates `toWrite`.
    */
   /** @internal */
   _reconcileQueuedScope(stored: Engram, toWrite: Engram): void
@@ -132,37 +104,12 @@ export interface FeedbackPinMethods {
   hardTierCap(): number
 
   /**
-   * Refuse a write that would grow the hard pinned tier past
-   * {@link hardTierCap}. The ONE check every write path that can produce a
-   * hard-tier engram goes through: `learn()`, both halves of `learnRouted()`'s
-   * remote route, `setPinned()`, `updateEngram()` and `saveMetaEngrams()`.
-   *
-   * MUST be called while holding the primary store lock. A cap is a
-   * read-modify-write on a shared total: checked outside the lock, N
-   * concurrent hard-tier writes each read the same total, each conclude they
-   * fit, and all commit. `listPinned` takes no lock of its own, so calling it
-   * here does not re-enter.
-   *
-   * Cost is `estimateTokens` — the function injection charges the budget
-   * with — over the engram AS IT WILL BE COMMITTED, so admission, accounting
-   * and injection agree. It counts only what is rendered into the prompt; an
-   * unrendered field (`abstract`, `structured_data`, `tags`, …) costs nothing
-   * because it reaches no model.
-   *
-   * What the total counts: every hard-tier engram this client can see —
-   * the primary store, file-backed stores, and remote stores as far as their
-   * read cache holds them (`_loadRemoteCached` is a synchronous peek and may be
-   * cold). A remote store's hard tier can also be written by other clients,
-   * which no local check can serialise against. That is why injection enforces
-   * the same cap again (`fillTokenBudget`) and reports any overflow in
-   * `omitted_pinned` as `hard-tier-cap`: this check keeps the local tier honest,
-   * the injection-time cap is the one that cannot be bypassed.
-   *
-   * A write that does not GROW the tier is always allowed — an unrelated update
-   * to a hard-tier engram must not fail because the tier is (already) full.
-   *
-   * @param pendingTokens hard-tier tokens accepted earlier in the same locked
-   *   batch that `listPinned` cannot see yet.
+   * Refuse a write that would GROW the hard pinned tier past {@link hardTierCap} — the one
+   * check every hard-tier write path uses. MUST be called holding the primary store lock
+   * (a cap is a read-modify-write on a shared total). Cost is `estimateTokens` over the
+   * engram as committed, matching injection. Remote rows count only as far as their cache
+   * holds them, so injection enforces the cap again (`fillTokenBudget`, `hard-tier-cap`).
+   * @param pendingTokens hard-tier tokens accepted earlier in the same locked batch.
    * @returns the candidate's cost if it counts toward the tier, else 0.
    */
   /** @internal */
@@ -189,40 +136,13 @@ export interface FeedbackPinMethods {
   }>
 
   /**
-   * Recompute `content_hash` for primary-store engrams whose hash no longer
-   * describe their statement.
-   *
-   * ## Why this lives in core rather than in the CLI
-   *
-   * A raw load → mutate → save against `paths.engrams` is a whole-corpus
-   * read-modify-write on an UNLOCKED snapshot: a correctly-locked concurrent
-   * writer that appends between the load and the save loses its engram with no
-   * error, and the shrink guard cannot see it because the count is unchanged.
-   * So the repair goes through the same seam every other write uses:
-   * `_withStoreLock` (which also fires the daily backup) and the
-   * `_loadTargeted`/`_updateEngrams` capability pair, so a store that can do a
-   * targeted UPDATE is not asked to replace its whole corpus to rewrite one
-   * field.
-   *
-   * ## Why the primary store, not `list()`
-   *
-   * `list()` merges packs in and drops inactive/expired rows: it would count
-   * pack entries this repair does not own, and hide stale hashes on retired
-   * engrams. A retired engram with a stale hash still matters —
-   * `findActiveByContentHash` is not the only reader, and a resurrected row
-   * carries the bad hash with it.
-   *
-   * STALE and MISSING are reported separately because they are different
-   * conditions: a stale hash is actively wrong and absorbs unrelated writes,
-   * a missing one is inert until something matches on it.
-   *
-   * UNHASHABLE is the third category, and it is a refusal rather than a
-   * finding. A statement that normalizes to nothing hashes to the SHA-256 of
-   * the empty string — the same value every other such statement gets — so
-   * writing it would enrol the engram in a mutual-absorption set. These are
-   * listed and skipped.
-   *
-   * Read-only unless `apply` is set.
+   * Recompute `content_hash` for primary-store engrams whose hash no longer describes
+   * their statement. Read-only unless `apply` is set.
+   * - Goes through `_withStoreLock` and `_loadTargeted`/`_updateEngrams`: an unlocked
+   *   load-mutate-save would silently lose a concurrent append.
+   * - Primary store, not `list()`: packs are not ours, and retired rows' hashes matter too.
+   * - Reports STALE (actively wrong) and MISSING (inert) separately; UNHASHABLE statements
+   *   (normalize to empty, so all share one hash) are listed and skipped.
    */
   repairContentHashes(opts?: { apply?: boolean }): Promise<{
     scanned: number
@@ -325,21 +245,10 @@ export const feedbackPinMethods: FeedbackPinMethods & ThisType<Plur> = {
       const engram = engrams.find(e => e.id === id)
       if (!engram) return false
 
-      // Ambiguity guard: without an explicit scope, refuse when the same
-      // bare ID exists in a warmed remote cache. Silent wrong-target writes are
-      // indistinguishable from correct ones; the caller must pass scope to resolve.
-      // A COLD cache must not silently downgrade to first-match-wins:
-      // `_loadRemoteCached` is a synchronous peek with no fetch, so the guard
-      // peeks first (free), then probes live once per remote only when that
-      // store's cache is cold — session_start warms the cache, so in normal
-      // operation this costs nothing.
-      //
-      // Unlike forget(), an unreachable store does NOT block the write. A
-      // mis-targeted feedback signal is recoverable and rating is a hot path;
-      // refusing here would trade a real cost for a reversible risk. Warn
-      // instead, so the unverified case is visible rather than silent.
-      // The collision probe runs BEFORE this lock; only a row
-      // that appeared in between is probed here.
+      // Ambiguity guard: without a scope, refuse when the bare id also exists remotely —
+      // a wrong-target write looks like a correct one. Peek the cache first, probe live only
+      // when it is cold. Unlike forget(), an unreachable store only warns: a mis-targeted
+      // rating is recoverable. Only rows that appeared since the pre-lock probe are probed here.
       if (!scope && !probedOutsideLock) {
         this._decideFeedbackProbes(id, await this._probeIdCollisions(id, { skipLive: auto }), warnings)
       }
@@ -695,29 +604,12 @@ export const feedbackPinMethods: FeedbackPinMethods & ThisType<Plur> = {
     })
     if (localResult) return localResult
 
-    // Remote routing. Awaited, and the outcome reported.
-    //
-    // Not fire-and-forget: a failed write must not be reported as success, a
-    // non-2xx (RemoteStore.patch throws on anything but 404) must not become an
-    // unhandled rejection that terminates a long-lived MCP server, and a 404
-    // must not be reported as `true`.
-    //
-    // Refusal rule (same as `forget()`): when the id is NAMESPACED to this store
-    // (`_stripRemotePrefix` stripped its prefix), the target is unambiguous, so a
-    // refusal (auth, validation, transport) is thrown as-is — reporting it as
-    // "not found" would claim an absence that was never verified. A BARE id is
-    // ambiguous across stores, so the walk keeps the graceful contract pinned by
-    // `set-pinned-remote.test.ts`: try the next store, and report null/false
-    // rather than a success that did not happen.
-    // An id NAMESPACED to a configured store names that store, so only the
-    // store(s) it is namespaced to are candidates — otherwise store A's guard
-    // could refuse an update of store B's engram, or B's content be sent to A.
-    // A bare id keeps the full walk (ownership unknown).
-    // `storePrefix` is short, so two store scopes can share one and a namespaced
-    // id then names both. Disambiguate on the full store scope — the loader's
-    // `_storeScope` stamp when the caller passes the row it got from us, else the
-    // store whose scope holds the row's scope. Neither narrows to nothing: an
-    // unmatched hint keeps `namedBy`.
+    // Remote routing: awaited and reported — never fire-and-forget (a failure must not
+    // read as success, a rejection must not crash the server, a 404 is not `true`).
+    // A NAMESPACED id names its store(s): only those are candidates and a refusal is
+    // thrown as-is. A BARE id walks every store, returning null/false rather than a fake
+    // success (set-pinned-remote.test.ts). Shared short prefixes are disambiguated on the
+    // full store scope; an unmatched hint keeps `namedBy`.
     const writableRemotes = (this.config.stores ?? []).filter(e => !!e.url && e.readonly !== true &&
       // remote-only: team stores only.
       (!this._remoteOnly || this._isDeliverableTeamScope(e.scope)))
@@ -966,20 +858,11 @@ export const feedbackPinMethods: FeedbackPinMethods & ThisType<Plur> = {
       // act on a bare id only when its row there is in a team scope.
       if (this._remoteOnly && !(await this._remoteRowOwnedByTeam(driver, this._stripRemotePrefix(id, entry.scope)))) continue
       try {
-        // Awaited, and the SERVER's engram is returned, so the caller gets a real
-        // Engram and a refusal reaches the `catch` below.
-        // Send the BOOLEAN, including an explicit `false`. Locally the engram is
-        // rewritten WHOLE, so `undefined` drops the key; here the object is a
-        // PARTIAL update and `JSON.stringify` omits `undefined`, so an unpin sent
-        // as `undefined` would be an empty PATCH that changes nothing on the server.
-        // Record the prior pin state BEFORE the PATCH, so a refused hard-tier
-        // pin can be reverted to what it was rather than to a forced unpin —
-        // and so re-pinning an engram that was already pinned (which cannot
-        // grow the tier) is never refused. Read from the driver's cache when
-        // it holds the row, else one GET; only for a pin, never an unpin.
-        // A bare id: one server answers for every scope it holds, so make sure
-        // the row is this store's before patching it through this store —
-        // a readonly store's row must not be pinned through a writable one.
+        // Awaited; the server's engram is returned and a refusal reaches the `catch`.
+        // Send the BOOLEAN, including `false`: a PATCH omits `undefined`, so an unpin would
+        // change nothing. Record the prior pin state first (cache, else one GET; pins only)
+        // so a refused pin reverts correctly and re-pinning is never refused.
+        // A bare id must be this store's row: a readonly store's row must not be pinned here.
         if (!scopedEntry && serverId === id) {
           const current = typeof driver.getById === 'function'
             ? await driver.getById(serverId).catch(() => null)

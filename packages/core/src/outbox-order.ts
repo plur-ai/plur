@@ -1,16 +1,8 @@
 /**
- * Ordering for an outbox flush: a supersedes TARGET must be pushed before the
- * engram that supersedes it.
- *
- * The server assigns its own id on push, so a `supersedes` naming a LOCAL id
- * means nothing there. `flushOutbox` builds a local→server map as it goes, and
- * a correction can only use it if its target went first.
- *
- * This needs a topological sort, not `Array.prototype.sort` with a pairwise
- * comparator: a comparator that is non-zero only for directly related pairs is
- * not a strict weak ordering, so a chain (A supersedes B supersedes C) can come
- * out with B before its target C, stalling the flush permanently. Kept pure
- * and exported so it can be tested directly with adversarial input orders.
+ * Ordering for an outbox flush: a supersedes TARGET must be pushed before the engram
+ * that supersedes it, since `flushOutbox` maps local→server ids as it goes.
+ * Needs a topological sort: a pairwise comparator is not a strict weak ordering and
+ * can misorder chains, stalling the flush. Kept pure and exported for testing.
  */
 
 /**

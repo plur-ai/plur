@@ -12,17 +12,10 @@ import { type PrivacyScanResult, scanPrivacy } from './privacy.js'
 
 export interface ExportOptions {
   /**
-   * Write provenance records alongside the pack. **On by default.**
-   *
-   * A pack is how engrams leave one machine and reach another, so this is the
-   * trust boundary: the one place a provenance record defends against anyone.
-   * It follows the practice every software supply chain settled on: a bill of
-   * materials is produced as part of the build and travels inside the artifact,
-   * rather than being something a publisher remembers to ask for.
-   *
-   * This deliberately does NOT follow the `provenance.generate` config setting,
-   * which governs per-engram records inside your own store and defaults to
-   * `never`. Those are two different questions. Pass `false` to opt out.
+   * Write provenance records alongside the pack. **On by default.** A pack is
+   * the trust boundary, so its bill of materials travels inside the artifact.
+   * Deliberately independent of the `provenance.generate` config setting
+   * (per-engram records in your own store, default `never`). Pass `false` to opt out.
    */
   provenance?: boolean
   name: string
@@ -30,21 +23,11 @@ export interface ExportOptions {
   description?: string
   creator?: string
   /**
-   * The licence on the pack as a collection. **Required.**
-   *
-   * Export is where a licence stops being decoration. Inside one store nobody
-   * needs it; the moment a pack reaches a stranger it is the first thing they
-   * have to know, and it is the level where a right plausibly exists at all —
-   * have to know, and it is the level where a right plausibly exists at all:
-   *
-   * So this is the one decision export will not make on the author's behalf.
-   * Falling back to the schema's `cc-by-sa-4.0` would ship a copyleft grant
-   * nobody chose, over other people's memories, to a stranger. Callers with no
-   * opinion should set `provenance.default_license` in config, which is a
-   * choice made once rather than no choice at all.
-   *
-   * `unlicensed` is accepted, and is itself a choice: it says plainly that no
-   * grant is being made. That is a different act from omitting the field.
+   * The licence on the pack as a collection. **Required:** the one decision
+   * export will not make for the author. Falling back to the schema's
+   * `cc-by-sa-4.0` would ship a copyleft grant nobody chose; callers with no
+   * opinion should set `provenance.default_license` in config. `unlicensed` is
+   * accepted and says plainly that no grant is made (unlike omitting the field).
    */
   license?: string
   domain?: string
@@ -100,16 +83,10 @@ export interface ExportResult {
 
 
 /**
- * Reject a pack name that would escape the directory it is meant to go in.
- *
- * The name becomes a directory under the output path, so `../escape` would
- * walk out of it.
- *
- * The name also becomes part of the identifiers inside the provenance record
- * (`engram:pack/<name>@<version>`), where a slash or a space is not legal.
- *
- * Rejecting is right rather than quietly rewriting: a pack that lands somewhere
- * other than where its name said is worse than one that refuses to be built.
+ * Reject a pack name that would escape its output directory (`../escape`) or
+ * is not legal inside provenance identifiers (`engram:pack/<name>@<version>`).
+ * Rejecting, not rewriting: a pack landing somewhere other than its name says
+ * is worse than one that refuses to build.
  */
 export function assertSafePackName(name: string): void {
   if (!name || !name.trim()) {
@@ -258,19 +235,10 @@ export function exportPack(
       } as NonNullable<Engram['provenance']>
     }
     // PLUR's own `structured_data` bookkeeping does not leave either.
-    //
-    // `PLUR_BOOKKEEPING_KEYS` is EXEMPT from every scan, and that exemption is
-    // right: `_outbox.target_url` legitimately carries the host topology the
-    // infra detector flags, so scanning it would falsely demote every
-    // remote-origin or auto-routed engram on update. But exempt from the scan
-    // has to mean stripped from the export, or the one thing nothing checks is
-    // also the one thing that ships. These keys hold internal hosts, internal
-    // scope names, and `_demoted.patterns`, which would tell a recipient WHICH
-    // CLASS OF SECRET was once in that engram.
-    //
-    // One set decides both halves: a key in it is unscanned and removed, a key
-    // outside it is scanned and kept. User-set keys (including a `_`-prefixed
-    // one a caller named themselves) are content, are scanned, and stay.
+    // `PLUR_BOOKKEEPING_KEYS` is exempt from every sensitivity scan (it carries
+    // host topology legitimately), so it MUST be stripped from the export: it
+    // holds internal hosts, scope names and `_demoted.patterns`. One set decides
+    // both halves; user-set keys (even `_`-prefixed) are scanned and kept.
     const userSd = userStructuredData(cleaned.structured_data)
     if (userSd === undefined) delete (cleaned as { structured_data?: unknown }).structured_data
     else cleaned.structured_data = userSd as Record<string, unknown>

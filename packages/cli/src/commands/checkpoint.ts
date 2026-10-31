@@ -1,22 +1,11 @@
 /**
- * `plur checkpoint` — emit a checkpoint history event.
- *
- * A checkpoint commits to the current state of the store: it records the
- * SHA-256 of engrams.yaml bytes, the active engram count, and chains onto
- * the last event in the hash-chain history log. Once a checkpoint is
- * externally anchored (e.g. published to a ledger), every prior history event
- * becomes tamper-evident — modifying any event breaks every later chain link.
- *
- * This is the CLI surface for Integrity Strength L2 checkpointing.
- *
+ * `plur checkpoint` — emit a checkpoint history event (Integrity Strength L2):
+ * store hash and active count, chained onto the last event, so prior history is
+ * tamper-evident once anchored. Exits 1 if the line could not be written.
  * Usage:
  *   plur checkpoint                 Emit a checkpoint and print its hash
- *   plur checkpoint --session <id>  Record the session it belongs to, so
- *                                   `plur manifest --session <id>` includes it
+ *   plur checkpoint --session <id>  Record its session (for `plur manifest --session <id>`)
  *   plur checkpoint --json          Emit and print full payload as JSON
- *
- * Exits 1 when the checkpoint line could not be written: a hash that no log
- * contains must never be offered for anchoring.
  */
 import { join } from 'path'
 import { existsSync } from 'fs'

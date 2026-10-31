@@ -311,16 +311,10 @@ function httpEndpoint(url: string): string | null {
 }
 
 /**
- * The git scope sources in `<plurRoot>/config.yaml`: one per company server
- * entry (a string `url` and an `enterprise` object — the entries discovery
- * writes). Reads the file only; no network, never throws. Fields come from the
- * entry's `discovery` cache; a field of the wrong shape is dropped (a
- * `gitlab_host` outside the host grammar becomes null, an unknown status
- * becomes 'never', a `scopes` value that is not a list becomes []), never the
- * entry: a malformed entry still takes part in the freshness check, so its
- * stale cache cannot be skipped. A `url` that is not a valid http(s) url gives
- * `server: ''` and no scopes: it can only make the answer `unknown`, never a
- * scope. The token and the url's userinfo never reach a source.
+ * The git scope sources in `<plurRoot>/config.yaml`: one per company server entry (string `url` + `enterprise`
+ * object). Reads only, never throws. Wrong-shaped fields are dropped, never the entry, so a stale cache still takes
+ * part in the freshness check; an invalid url gives `server: ''` and no scopes. Tokens and url userinfo never reach
+ * a source.
  */
 export function loadGitScopeSources(plurRoot: string): GitScopeSource[] {
   let raw: unknown

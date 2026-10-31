@@ -8,23 +8,13 @@ import { cachedServerLines } from '../lib/server-session.js'
 import { cleanupLegacyProjectAtSessionStart } from '../lib/legacy-plur-yaml.js'
 
 /**
- * plur hook-codex-session-start — Codex `SessionStart` hook.
- *
- * Fires on startup, resume, clear and compact (the `source` field says
- * which). Advisory: Codex never blocks session creation on a hook, so this
- * only marks the sentinel and delivers an opening batch of engrams.
- *
- * Delivery is the ordinary `hookSpecificOutput.additionalContext` channel;
- * unlike Cursor, Codex does not drop it at conversation creation, so no
- * `.mdc`-style workaround is needed.
- *
- * Synchronous, hybrid-first with a BM25 fallback on a soft deadline (see
- * `injectWithFallback`). It must not be async: Codex delivers an async hook's
- * context at the next safe point, not to the triggering turn — in
- * `codex exec` that means never.
- *
- * Input:  JSON on stdin — { session_id, cwd, hook_event_name, model, permission_mode, source }
- * Output: JSON on stdout — { hookSpecificOutput: { hookEventName, additionalContext } }
+ * plur hook-codex-session-start — Codex `SessionStart` hook (startup, resume,
+ * clear, compact; see `source`). Advisory: marks the sentinel and delivers an
+ * opening batch via `hookSpecificOutput.additionalContext`.
+ * Synchronous, hybrid-first with a BM25 fallback on a soft deadline
+ * (`injectWithFallback`). It must not be async: Codex delivers async hook
+ * context late (in `codex exec`, never).
+ * Input: stdin JSON { session_id, cwd, hook_event_name, model, permission_mode, source }.
  */
 export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   await runCodexHook('codex session-start', async () => {

@@ -1,23 +1,11 @@
 /**
- * One place that decides whether a project's `.plur.yaml` may route this
- * session's prompt text to the host it names.
- *
- * Both `remote_url` and `remote_token` come from the file, so an untrusted
- * (e.g. cloned) repository could otherwise supply the destination AND the
- * credential and have every prompt POSTed to a host it chose. Remote settings
- * are therefore adopted only from a directory approved with `plur trust <dir>`.
- *
- * Every integration that reads `.plur.yaml` must go through this helper rather
- * than reading the remote fields itself: the gate travels WITH the capability,
- * so an adapter either gets a remote config it may use or a refusal it must
- * surface. It lives in core so adapters that cannot import the CLI can use it;
- * the CLI re-exports it from `lib/project-remote.ts`.
- *
- * `scope` and `domain` are deliberately NOT gated here. They are local
- * visibility filters that send nothing anywhere, so a project using
- * `.plur.yaml` purely for scoping is unaffected. (An adapter may still gate
- * them for its own reasons — e.g. a scope can name a store that is already
- * registered remotely.)
+ * The one place that decides whether a project's `.plur.yaml` may route prompt text to the
+ * host it names. `remote_url` and `remote_token` both come from the file, so an untrusted
+ * repo could choose destination AND credential; remote settings are adopted only from a
+ * directory approved with `plur trust <dir>`.
+ * Every integration must use this helper rather than reading the fields itself (the CLI
+ * re-exports it from `lib/project-remote.ts`). `scope` / `domain` are NOT gated here:
+ * they are local filters that send nothing.
  */
 import { dirname } from 'path'
 import { findProjectConfigPath, readProjectConfigFromPath, type ProjectConfig } from './project-config.js'
@@ -47,17 +35,10 @@ export interface ProjectRemote {
 }
 
 /**
- * Decide whether an ALREADY-READ project config's remote settings may be used.
- *
- * For callers that resolved the `.plur.yaml` path themselves and read from
- * that resolved path — the opencode plugin does, because it adopts
- * `scope`/`domain` from the same read and a second walk would be a TOCTOU
- * between the file trust is checked against and the file whose fields are
- * adopted. Callers with no path in hand want `resolveProjectRemote` below.
- *
- * Fails CLOSED: any error checking trust drops the remote leg rather than
- * dialing. The trust check runs only when the remote fields are actually
- * present, so a project without them pays nothing.
+ * Decide whether an ALREADY-READ project config's remote settings may be used, for callers
+ * that read the resolved path themselves (a second walk would be a TOCTOU). Callers with no
+ * path use `resolveProjectRemote`. Fails CLOSED: any trust-check error drops the remote leg.
+ * The check runs only when remote fields are present.
  */
 export function resolveProjectRemoteFromConfig(
   plur: TrustChecker,

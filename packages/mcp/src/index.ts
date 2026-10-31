@@ -43,21 +43,10 @@ const MCP_SERVER_CONFIG = {
 // --- Pack-upgrade helpers ---
 
 /**
- * Compare two semver strings (e.g. "1.0.0" vs "1.1.0"). Returns negative if
- * a < b, 0 if equal, positive if a > b. Tolerates missing patch segments
- * (treats "1.0" as "1.0.0"). Strips prerelease suffixes — "1.0.0-rc1" is
- * compared as "1.0.0", which means a prerelease compares EQUAL to its base
- * release. Adequate for the controlled pack ecosystem; for prerelease
- * support add a dedicated semver lib.
- *
- * Non-numeric leading segments (e.g. "v1.0.0", "abc.1.0") parse as 0 — so
- * "v1.0.0" compares as [0,0,0]. This is intentional: we'd rather accept the
- * pack and treat it as version-zero than throw. The `extractManifestVersion`
- * regex normally strips the leading `v`; this is a defense-in-depth fallback.
- *
- * Calendar versioning (e.g. "2025.04") parses correctly as numeric segments,
- * but a calendar-versioned pack will compare as far-future against semver-
- * versioned bundled packs and never receive upgrades. Packs ship semver.
+ * Compare two semver strings: negative if a < b, 0 if equal, positive if a > b.
+ * Missing patch counts as 0; prerelease/build suffixes are stripped (so "1.0.0-rc1"
+ * equals "1.0.0"). Non-numeric segments parse as 0 rather than throwing. Calendar
+ * versions would compare as far-future and never upgrade — packs ship semver.
  */
 export function compareSemver(a: string, b: string): number {
   const stripPrerelease = (v: string): string => v.split('-')[0].split('+')[0]
@@ -376,23 +365,14 @@ function stripPlurHooks(entries: HookEntry[]): HookEntry[] {
 }
 
 /**
- * Merge PLUR hooks into Claude Code settings. No I/O apart from
- * reading plur-hook.meta.json for the exec-form check.
- * A hook is PLUR's only when isPlurHookSpec says so: the whole command is
- * PLUR's launcher (the shim, with any slash direction or quoting, or the npx
- * fallback, or on Windows the exec form `plur init` writes) followed by a
- * `hook-*` subcommand and plain arguments.
- * - No PLUR hook present: append the full set ('installed').
- * - PLUR hooks present: remove PLUR's hooks from PostCompact, which cannot
- *   carry context, one hook at a time, dropping an entry only when
- *   it has no hooks left. If a PLUR rehydrate was among them, add the
- *   SessionStart(compact) entry unless one is there ('healed'). A file with
- *   PLUR hooks but no rehydrate (the global file `plur init --project` writes) gets
- *   none added. Nothing else changes, so a fuller
- *   `plur init` install is not replaced by this smaller set.
- * - Otherwise 'already', and the settings come back unchanged.
- * User hooks are never removed or reordered, including a user hook that
- * shares an entry with a PLUR hook.
+ * Merge PLUR hooks into Claude Code settings (only I/O: reading plur-hook.meta.json).
+ * A hook is PLUR's only when isPlurHookSpec says so.
+ * - No PLUR hook: append the full set ('installed').
+ * - PLUR hooks present: remove PLUR's PostCompact hooks (dropping emptied entries) and,
+ *   if a rehydrate was among them, add SessionStart(compact) unless present ('healed').
+ *   Nothing else changes, so a fuller `plur init` install is never replaced.
+ * - Otherwise 'already', settings unchanged.
+ * User hooks are never removed or reordered, even when sharing an entry with PLUR's.
  */
 export function applyPlurHooks(
   settings: Settings,

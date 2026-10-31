@@ -1,17 +1,8 @@
 /**
- * `plur outbox` — see what the remote-write queue is holding.
- *
- * The outbox is not a file or a queue directory. It is
- * `structured_data._outbox` nested inside ordinary engrams in `engrams.yaml`,
- * so without this command queued writes for an unreachable team store are
- * invisible.
- *
- * Read-only by default. `--flush` is the explicit action, mirroring the
- * `plur_outbox` MCP tool so the two surfaces cannot drift.
- *
- * The target URL is never printed — `listOutbox` does not return it. It is the
- * one field here that names a credentialed endpoint, and `target_scope`
- * already answers "which store is behind?", which is the question being asked.
+ * `plur outbox` — see what the remote-write queue (`structured_data._outbox` inside
+ * engrams in `engrams.yaml`) is holding. Read-only by default; `--flush` mirrors the
+ * `plur_outbox` MCP tool. The target URL (a credentialed endpoint) is never printed;
+ * `target_scope` identifies the store.
  */
 import { summarizeOutbox, describeNeedsAction, describeHeld } from '@plur-ai/core'
 import { createPlur, type GlobalFlags } from '../plur.js'

@@ -6,31 +6,13 @@ import { safeSessionKey } from './session-key.js'
 import { ensureSessionDir, sessionDirSafeToSweep, sessionDirTrusted, ticketCounter } from './codex-hook-io.js'
 
 /**
- * Shared stdin-reading and sentinel-path helpers for the four hook-cursor-*
- * commands. Split out from any single hook file because all four need the
- * exact same conversation-id resolution and directory layout.
- *
- * Known structural limitations:
- *
- * 1. NO PER-CONVERSATION SCOPING of delivered content. Sentinel/reminder
- *    state IS scoped per `conversation_id`, but the payload lands in
- *    `.cursor/rules/plur-context.mdc` / `plur-reminder.mdc` — one file per
- *    WORKSPACE, loaded into every open composer. Two simultaneous
- *    conversations in the same workspace overwrite what the other sees.
- *    Cursor's rules-file mechanism has no per-conversation channel.
- * 2. conversation_id REUSE is not detected. A sentinel/reminder/stop-count
- *    file is trusted by existence alone; if Cursor reissues an id (a fork
- *    sharing its parent's id, or recycling after a restart), the new
- *    conversation inherits the old one's state.
- * 3. NO COORDINATION with the Claude Code hook family if both act on the
- *    same editor session (Cursor can load Claude Code config too) — two
- *    independent sentinel schemes, two plur.inject() calls, no shared
- *    "already handled this turn" signal.
- * 4. MID-CONVERSATION RULE-FILE REWRITES are not confirmed to be re-read.
- *    Cursor loads `alwaysApply: true` rules at conversation creation; whether
- *    a later rewrite (hook-cursor-post-tool.ts's reminder, a second
- *    hook-cursor-session-start.ts run) is picked up live, or the rules are
- *    snapshotted once, is not established.
+ * Shared stdin-reading and sentinel-path helpers for the four hook-cursor-* commands.
+ * Known limitations:
+ * 1. Delivered content is per WORKSPACE (`.cursor/rules/plur-*.mdc`), not per conversation: concurrent
+ *    conversations overwrite each other.
+ * 2. conversation_id reuse is not detected; a reissued id inherits the old state.
+ * 3. No coordination with Claude Code hooks if both act on one Cursor session.
+ * 4. Whether Cursor re-reads a rule file rewritten mid-conversation is not established.
  */
 
 export function readStdinJson(): Record<string, unknown> {
@@ -217,21 +199,10 @@ export function removeGeneratedContextRules(dir: string): void {
 }
 
 /**
- * Write recalled engram content to the dynamic context rule file. Cursor
- * drops `additional_context` from both `sessionStart` and `postToolUse` (it
- * "runs async before the composer handle is fully created"), but its rules
- * engine reliably loads `alwaysApply: true` rules AT CONVERSATION CREATION.
- * So this is the PRIMARY delivery mechanism for hook-cursor-session-start.ts
- * and hook-cursor-post-tool.ts; both still emit `additional_context` too,
- * which is harmless and takes effect if Cursor delivers it.
- *
- * Whether a REWRITE of this file mid-conversation is re-read is not
- * confirmed; see limitation 4 in this file's header.
- *
- * Takes an explicit `path` (default `cursorContextRulePath()`) so callers can
- * target a DIFFERENT rule file — see `cursorReminderRulePath()`. Reminders
- * have their own file so they never overwrite the session's recalled
- * engrams; Cursor loads each rule file independently and additively.
+ * Write recalled engram content to a dynamic context rule file — the PRIMARY delivery path, because Cursor drops
+ * `additional_context` but loads `alwaysApply: true` rules at conversation creation (hooks still emit
+ * `additional_context`). Mid-conversation re-reads are unconfirmed (limitation 4 above). `path` lets reminders use
+ * their own file (`cursorReminderRulePath()`) so they never overwrite recalled engrams.
  */
 export function writeContextRule(content: string, path: string = cursorContextRulePath()): void {
   mkdirSync(dirname(path), { recursive: true })

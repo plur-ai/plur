@@ -8,35 +8,13 @@ import { logger } from './logger.js'
 
 /**
  * Carry embedding vectors out of an orphaned PGLite store into the JSON
- * embeddings cache the yaml/sqlite tiers read.
- *
- * The `engram_embeddings` table is PGLite's only vector storage. Without this
- * port, leaving that tier empties the embeddings cache and the whole corpus
- * re-embeds in the background — minutes of CPU, with hybrid recall degraded
- * to BM25 until it finishes. This ports every vector that is still valid.
- *
- * "Still valid" is checked twice, because the two stores key vectors
- * differently and neither key transfers:
- *
- *   - FRESHNESS: the PGLite row's `content_hash` (md5 of the engram's
- *     search text, `embeddingContentHash`) must match the md5 of the
- *     engram's CURRENT text in YAML. A vector computed from older text is
- *     skipped — porting it would silently poison ranking, and the
- *     background embed pass regenerates it anyway. Rows with no
- *     content_hash are skipped for the same reason: they cannot be verified.
- *   - DIMENSION: the vector's length must match the ACTIVE embedder's dim.
- *     A 768d bge-base store feeding a 384d bge-small cache would corrupt
- *     every similarity score; the cache's own meta header would reject the
- *     file wholesale, but checking per-vector gives an honest count
- *     instead.
- *
- * The JSON cache then re-keys accepted vectors under its own discipline
- * (sha256-16 of the search text) via `mergeEmbeddingsIntoCache` — the md5
- * never enters the cache.
- *
- * Read-only with respect to the PGLite store: nothing is deleted here.
- * Deleting `store.pglite/` afterwards is the user's call (doctor and the
- * CLI report both say so). Safe to re-run — existing cache entries win.
+ * embeddings cache the yaml/sqlite tiers read, so leaving that tier does not
+ * force a full re-embed. A vector is ported only if:
+ *   - FRESHNESS: its `content_hash` matches the md5 of the engram's CURRENT
+ *     search text (`embeddingContentHash`); stale or unhashed rows are skipped.
+ *   - DIMENSION: its length matches the ACTIVE embedder's dimension.
+ * The cache re-keys accepted vectors itself (`mergeEmbeddingsIntoCache`).
+ * Read-only on PGLite (deleting `store.pglite/` is the user's call); re-runnable.
  */
 
 export interface PgliteEmbeddingsExportReport {
@@ -123,18 +101,10 @@ export async function exportPgliteEmbeddingsToCache(
     )
     await (db as unknown as { waitReady: Promise<void> }).waitReady
 
-    // Discover WHICH SCHEMA the table lives in rather than assuming public.
-    // When the adapter ran with the AGE extension loaded, AGE prepends
-    // ag_catalog to the search_path during its init, so every table the
-    // adapter created landed in `ag_catalog` — invisible to a plain
-    // search_path=public connection. Stores built without AGE have it in
-    // public. pg_tables.schemaname is trusted catalog output; quote_ident is
-    // applied anyway since it costs one function call.
-    // Read ALL schemas holding the table, in a deterministic order: a store
-    // that ran both with and without AGE has the table in both ag_catalog and
-    // public, and picking one could read an empty or stale copy. No
-    // tie-break is needed: the per-row freshness check below decides which
-    // rows are valid, whichever schema they came from.
+    // Discover WHICH SCHEMA the table lives in: with the AGE extension loaded,
+    // tables land in `ag_catalog`, otherwise in public. Read ALL schemas
+    // holding it, deterministically ordered; the per-row freshness check below
+    // decides which rows are valid. quote_ident is applied anyway.
     const loc = await db.query(
       "SELECT quote_ident(schemaname) AS s FROM pg_tables WHERE tablename = 'engram_embeddings' ORDER BY schemaname",
     )

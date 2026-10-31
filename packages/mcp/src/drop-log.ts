@@ -3,23 +3,12 @@ import { dirname, join } from 'path'
 import { atomicWrite, withLock } from '@plur-ai/core'
 
 /**
- * Forensic log for MCP argument-payload drops.
- *
- * The failure signature — a tool call arriving with an EMPTY arguments object
- * (`received_fields: []`) — is intermittent and originates client-side, before
- * the frame reaches this server (the wire-protocol tests show the server
- * handles the same payloads correctly). It cannot be reproduced on demand, so
- * each occurrence is recorded as it happens, with the wire-level facts an
- * upstream client report needs.
- *
- * Contract:
- *  - NO VALUES, ever. Records carry field NAMES and frame metadata only. A
- *    whole-payload drop has no values by definition; a partial drop does, and
- *    those never enter this file — engram statements can contain anything.
- *  - Bounded. The file is trimmed to the newest {@link PAYLOAD_DROP_LOG_MAX_ENTRIES}
- *    records on every write, so a pathological client cannot grow it unbounded.
- *  - Best-effort. A diagnostics write must never break the tool call it is
- *    diagnosing — every failure path is swallowed.
+ * Forensic log for MCP argument-payload drops (a tool call arriving with
+ * `received_fields: []`), an intermittent client-side failure recorded as it
+ * happens for upstream reports.
+ *  - NO VALUES, ever: field NAMES and frame metadata only.
+ *  - Bounded to the newest {@link PAYLOAD_DROP_LOG_MAX_ENTRIES} records.
+ *  - Best-effort: every failure is swallowed so the tool call never breaks.
  */
 
 /**
@@ -53,18 +42,10 @@ export interface PayloadDropRecord {
   /** Schema-required field NAMES that were missing. */
   missing_fields: string[]
   /**
-   * The subset of {@link missing_fields} that is array-typed.
-   *
-   * This is the discriminator that makes the log falsifiable. A partial drop
-   * missing an array is the client-drop shape; one missing only scalars is
-   * usually an ordinary caller error. Both are recorded, so "every partial drop
-   * involves an array" is not true by construction. Empty array = scalar-only.
-   *
-   * OPTIONAL because older records do not carry it, and `readPayloadDropLog`
-   * returns those too. `undefined` is not `[]`: it means "unknown, and
-   * array-shaped by construction" (older writers recorded nothing else),
-   * whereas `[]` is a measured scalar-only drop. Anything computing the ratio
-   * must exclude `undefined` rather than count it as zero.
+   * The array-typed subset of {@link missing_fields}: missing arrays are the
+   * client-drop shape, scalar-only misses usually caller error; `[]` means
+   * scalar-only. OPTIONAL for older records, where `undefined` means unknown
+   * (array-shaped by construction); ratios must exclude `undefined`.
    */
   missing_array_params?: string[]
   /** JSON-RPC request id, when the SDK exposes it. */

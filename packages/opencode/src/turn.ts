@@ -1,25 +1,12 @@
 /**
- * Assistant text accumulated for the current turn, per session.
- *
- * Two properties of `message.part.updated` (see
- * `scripts/probes/opencode-plugin-probe.mjs`):
- *
- * 1. **Updates are cumulative snapshots of one part, not deltas.** The same
- *    part id arrives repeatedly with growing text (`""` -> `"1"` ->
- *    `"1\n2\n3..."`). `append` is therefore keyed by part id, latest text
- *    wins — a blind push-per-event would store every intermediate snapshot,
- *    risking the `🧠 I learned:` marker appearing both truncated and
- *    complete in the same joined buffer.
- * 2. **The event also fires for the user's own submitted message part**, not
- *    just the assistant's streamed response. `markUserMessage` records which
- *    messageID belongs to the current turn's user message so `append` can
- *    exclude its parts — otherwise the user's prompt text would be captured
- *    as "assistant text" and fed to the self-report parser every turn.
- *
- * `session.idle` fires more than once per turn, so the take is one-shot — the
- * buffer goes stale after a take and only becomes fresh again when the next
- * turn appends text. Otherwise the learner would run twice over one
- * transcript and write the same engram twice.
+ * Assistant text accumulated for the current turn, per session. About
+ * `message.part.updated` (see `scripts/probes/opencode-plugin-probe.mjs`):
+ * 1. **Updates are cumulative snapshots, not deltas**, so `append` is keyed by
+ *    part id and the latest text wins.
+ * 2. **It also fires for the user's own message part**; `markUserMessage`
+ *    records that messageID so `append` excludes it from the parser input.
+ * `session.idle` fires more than once per turn, so the take is one-shot: the
+ * buffer is stale until the next turn appends (no duplicate engram writes).
  */
 export class TurnBuffer {
   private parts = new Map<string, Map<string, string>>() // sessionID -> partID -> latest text

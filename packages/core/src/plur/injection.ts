@@ -295,20 +295,11 @@ export const injectionMethods: InjectionMethods & ThisType<Plur> = {
     }
 
     // Permitted-scope allow-list — AUTHORIZATION, applied before selection.
-    //
-    // `options.scope` below is a VISIBILITY filter and deliberately passes the
-    // whole personal family through (`local`, `global`, `user:*`, `agent:*`),
-    // which is right for a single user and wrong for a multi-tenant caller:
-    // without this, every principal's personal engrams reach every other
-    // principal's context. `inject()` is what a session calls on every prompt.
-    //
-    // Exact membership, matching `ScopeRestriction`: absent = unrestricted,
-    // `[]` = nothing (never widened), non-empty = the list itself with no
-    // hierarchy expansion.
-    //
-    // Packs are filtered too: their engrams carry scopes and reach the same
-    // output, and an allow-list with an exemption is not an allow-list. A
-    // caller that wants pack content in scope names it.
+    // `options.scope` is only a VISIBILITY filter that passes the whole
+    // personal family; without this, a multi-tenant caller would leak every
+    // principal's personal engrams into others' context. Exact membership like
+    // `ScopeRestriction`: absent = unrestricted, `[]` = nothing, else the list
+    // with no hierarchy expansion. Packs are filtered too (no exemption).
     const permitted = options?.scopes
     const inScope = (e: Engram): boolean => permitted === undefined || permitted.includes(e.scope)
     // Pack engrams are carried by `packs`, NOT by this array.
@@ -396,38 +387,21 @@ export const injectionMethods: InjectionMethods & ThisType<Plur> = {
         })()
       : undefined
 
-    // Log a co_injection provenance event: which engrams fired together for
-    // which query context. Data source for co-fires-with edges and
-    // temporal-replay self-labeling. Compact by design (IDs + query hash,
-    // never statements); best-effort, so a history write failure never breaks
-    // injection.
-    //
-    // Cross-process dedup. Hooks spawn fresh processes (empty address
-    // space each time), so an in-memory map cannot see the other process's
-    // injection. The check reads the HISTORY FILE — durable, shared across
-    // processes. Keyed on query_hash + sorted engram IDs (not hash alone)
-    // because the same query can legitimately select different engrams after
-    // a write.
+    // Log a co_injection provenance event (which engrams fired together for
+    // which query): IDs + query hash only, never statements; best-effort, a
+    // history write failure never breaks injection. Dedup is cross-process via
+    // the HISTORY FILE (hooks are fresh processes), keyed on query_hash + sorted
+    // engram IDs, since one query can select different engrams after a write.
     if (injected_ids.length > 0) {
       // Cross-process dedup of the co_injection history event. The
       // injection_count increment below follows the same verdict.
       const queryHash = computeQueryHash(task)
 
-      // The check and the append are ONE critical section, or this does not
-      // dedup anything.
-      //
-      // The duplicates come from hook processes that spawn milliseconds apart,
-      // exactly the window in which both read the tail before either appends.
-      // O_APPEND makes the write atomic, not the read-decide-append sequence.
-      //
-      // Its OWN lock file, not the chain-stamping lock taken inside
-      // appendHistory: withLock is file-based and not reentrant, so sharing it
-      // would make every co_injection fail to acquire and skip the dedup. This
-      // lock serialises the dedup DECISION, the other the chain STAMP; they
-      // nest in one direction only (this one outside).
-      //
-      // Short backoff: the section is a tail read and an append, so the stock
-      // 100 ms first backoff would oversleep by orders of magnitude.
+      // The check and the append are ONE critical section, or nothing is
+      // deduped (hook processes spawn milliseconds apart).
+      // Its OWN lock file, not appendHistory's chain-stamping lock: withLock is
+      // not reentrant. They nest one way only (this one outside). Short backoff,
+      // since the section is just a tail read and an append.
       const historyDir = join(this.paths.root, 'history')
       // Whether THIS call is the one that recorded the injection. Decided inside
       // the lock, read afterwards by the injection_count block so both counters

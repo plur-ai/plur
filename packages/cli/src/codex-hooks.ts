@@ -3,20 +3,10 @@ import { dirname } from 'path'
 import { isPlurHookCommand } from './lib/hook-command.js'
 
 /**
- * Support for Codex's `~/.codex/hooks.json`.
- *
- * Structurally IDENTICAL to Claude Code's `.claude/settings.json` hooks
- * section — `hooks[event]` is an array of `{matcher, hooks: [...]}` wrapper
- * objects — which is why this file can be so much smaller than
- * `cursor-hooks.ts` (Cursor nests one level shallower and needed its own
- * merge implementation).
- *
- * Codex accepts hooks from either `~/.codex/hooks.json` or a `[hooks]` table
- * in `~/.codex/config.toml`, and warns when both exist for the same layer
- * ("loading hooks from both … prefer a single representation"). We write the
- * JSON file: it needs no TOML dependency, it reuses the shape the Claude
- * Code builders already emit, and it keeps PLUR's hooks out of the file the
- * user hand-edits for models and MCP servers.
+ * Support for Codex's `~/.codex/hooks.json` — structurally identical to Claude Code's
+ * settings.json hooks section. We write this JSON file rather than a `[hooks]` table in
+ * config.toml (Codex warns if both exist): no TOML dependency, and PLUR's hooks stay
+ * out of the file the user hand-edits.
  */
 
 export interface CodexHookSpec {
@@ -38,18 +28,9 @@ export interface CodexHooksConfig {
 
 /**
  * Build PLUR's Codex hook contribution, given the resolved shim/CLI command.
- *
- * NOTHING HERE MAY SET `async: true`. Codex supports async hooks, but an
- * async hook's `additionalContext` is delivered at the "next safe point" —
- * i.e. NOT to the turn that triggered it. For a `codex exec` one-shot that
- * means never. Claude Code's `hook-inject` is synchronous for the same
- * reason. These hooks are synchronous —
- * hybrid-first with a BM25 fallback on a soft deadline (`injectWithFallback`)
- * — and `codex-hooks.test.ts` asserts the no-async invariant.
- *
- * Timeouts are SECONDS here (Codex's unit), not the milliseconds Gemini CLI
- * uses. Codex's own default is 600s; ours are deliberately tight so a wedged
- * hook cannot hang a turn.
+ * NOTHING HERE MAY SET `async: true`: async `additionalContext` arrives after the
+ * triggering turn (never, for `codex exec`). `codex-hooks.test.ts` asserts this.
+ * Timeouts are SECONDS (Codex's unit), deliberately tight so a wedged hook cannot hang a turn.
  */
 export function buildCodexHooks(cmd: string): Record<string, CodexHookEntry[]> {
   return {

@@ -1,33 +1,12 @@
 /**
- * Per-store reranker fit check.
- *
- * Cross-encoders are trained on specific domains (ms-marco-MiniLM-L6 on MS
- * MARCO passage retrieval; bge-reranker-v2-m3 on multilingual retrieval).
- * On out-of-domain stores the model can produce uninformative or
- * inverted scores — activating it by default could be net-negative.
- *
- * This module measures whether a reranker *separates* relevant (query, doc)
- * pairs from irrelevant ones on the user's actual engrams. The algorithm:
- *   1. Sample up to `sampleSize` engrams from the store.
- *   2. Synthesize a probe query from each engram's own statement (the same
- *      keyword-extraction reranker-eval uses).
- *   3. POSITIVE pair = (probe, its OWN engram) — the document is exactly what
- *      the probe asks about, so a healthy relevance reranker scores it high.
- *      NEGATIVE pair = (probe, a DIFFERENT engram, cross-domain when possible) —
- *      unrelated, so a healthy reranker scores it low.
- *   4. Compute separability = (mean_positive - mean_negative) / span.
- *   5. Gate: separability ≥ MIN_SEPARABILITY → fit.
- *
- * Positives must pair a probe with the engram it came from: a cross-encoder
- * scores query→document RELEVANCE, not topical co-membership, so two distinct
- * same-domain facts score no higher than cross-domain negatives even on a
- * healthy reranker.
- *
- * A fit score of 1.0 means the model perfectly separates relevant from
- * irrelevant. 0.0 means it gives the same scores to both — useless.
- * Negative means it inverts relevance — harmful.
- *
- * No LLM access is required. The check runs fully local in ~seconds.
+ * Per-store reranker fit check: does a cross-encoder separate relevant from irrelevant
+ * pairs on the user's own engrams? (Out-of-domain models can invert scores.)
+ * 1. Sample up to `sampleSize` engrams; synthesize a probe query from each statement.
+ * 2. POSITIVE = (probe, its OWN engram); NEGATIVE = (probe, a different, preferably
+ *    cross-domain engram). Positives must be the source engram: cross-encoders score
+ *    relevance, not topical co-membership.
+ * 3. separability = (mean_positive - mean_negative) / span; fit when ≥ MIN_SEPARABILITY.
+ * 1.0 = perfect, 0.0 = useless, negative = harmful. Fully local, no LLM.
  */
 
 import type { RerankerAdapter } from './types.js'

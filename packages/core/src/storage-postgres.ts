@@ -1,61 +1,12 @@
 /**
  * PostgresAdapter — server Postgres as BOTH the store and the index (ADR-0005).
- *
- * This is the case the `role` flag (ADR-0003) exists to express. Every
- * other backend in the repo is a *derived index*: YAML owns the bytes, the
- * backend holds a rebuildable copy, and a write to YAML leaves it stale until
- * `syncFromYaml()` runs. Here there is nothing to derive from — the rows in
- * Postgres ARE the source of truth, and the same engine answers the queries.
- * So this class implements two interfaces at once:
- *
- *   - {@link AsyncPrimaryStore} — persistence. `load` / `loadCached` / `save`.
- *   - {@link StorageAdapter} with `role: 'primary'` — query. `loadFiltered` /
- *     `count` / `searchBM25` / `searchVector` / `upsertEmbedding`.
- *
- * It deliberately does NOT implement `syncFromYaml()` / `reindex()`. Calling
- * either would be asking a store to rebuild itself from a file it does not
- * have; `requiresIndexSync()` returns false for this role precisely so no
- * caller tries.
- *
- * ## Integration with `Plur`
- *
- * `PrimaryStore` is async, so `new Plur({ store: new PostgresAdapter(...) })`
- * works directly (`test/postgres-primary-store.test.ts`). With a primary query
- * store injected, `Plur.recall()` calls `searchBM25` / `corpusStats` on this
- * class (`test/postgres-recall-quality.test.ts`).
- *
- * Core populates `engram_embeddings` on this tier: every primary-store write
- * kicks a background auto-embed pass that finds un-embedded rows with the
- * set-based {@link listEngramsMissingEmbeddings} anti-join (never a per-id
- * probe), and the first semantic recall backfills a store migrated in with
- * existing rows. See ADR-0005.
- *
- * ## Vector search is the one place behaviour can differ
- *
- * The in-memory path is exact. At server scale exact is not affordable, so this
- * adapter can run an approximate HNSW index — and says so through
- * {@link StorageAdapter.vectorIndex}, which is a declared property rather than
- * an implementation detail. Two things follow, both handled here:
- *
- *   1. `hnsw.ef_search` is set per query to at least the requested limit (see
- *      {@link efSearchFor}). pgvector's default is 40, which is BELOW most
- *      useful limits — an HNSW scan visits at most `ef_search` candidates, so
- *      the default silently caps a `LIMIT 50` query at 40 rows.
- *   2. The scan is followed by a `status = 'active'` predicate the index cannot
- *      evaluate, which removes candidates *after* the fact. `efSearchFor`
- *      carries headroom for that.
- *
- * See ADR-0005 for the recall target and how it would be measured.
- *
- * ## Schema
- *
- * Mirrors the PGLite adapter's on purpose — `engrams` (hot filter columns +
- * `data` JSONB) and `engram_embeddings` (one vector per engram, cascading on
- * delete). Keeping them the same is what lets a corpus move between tiers and
- * lets the two adapters be tested against each other.
- *
- * `pg` is an OPTIONAL dependency, imported lazily: a personal install must not
- * pay for a driver it will never open.
+ * - Implements {@link AsyncPrimaryStore} (persistence) and {@link StorageAdapter}
+ *   with `role: 'primary'` (query): the rows ARE the source of truth.
+ * - Deliberately no `syncFromYaml()` / `reindex()`: there is no file to rebuild from.
+ * - Vector search may use approximate HNSW (declared via `vectorIndex`); `hnsw.ef_search`
+ *   is raised per query via {@link efSearchFor}, since pgvector's default 40 caps results.
+ * - Schema mirrors the PGLite adapter so corpora move between tiers and the two are tested together.
+ * - `pg` is an optional dependency, imported lazily.
  */
 import { AsyncLocalStorage } from 'node:async_hooks'
 import type { Engram } from './schemas/engram.js'
@@ -128,16 +79,10 @@ const HNSW_INDEX_NAME = 'engram_embeddings_hnsw'
 const SAVE_CHUNK_SIZE = 500
 
 /**
- * Refuse an UPDATE batch that carries one id twice. Otherwise the outcome
- * depends on the chunk boundary: two copies inside one {@link SAVE_CHUNK_SIZE}
- * chunk raise "ON CONFLICT DO UPDATE command cannot affect row a second time",
- * two copies in different chunks silently keep the later one.
- *
- * Only `updateMany` refuses. Its rows name EXISTING engrams to replace, so
- * renaming one copy would insert a new row rather than update anything — two
- * different replacements for one row is a caller bug, and it surfaces. `save()`
- * — the whole-corpus write a store load feeds — follows the shared duplicate
- * rule instead.
+ * Refuse an UPDATE batch that carries one id twice: otherwise the outcome depends
+ * on chunk boundaries (a Postgres error within one chunk, last-wins across chunks).
+ * Only `updateMany` refuses — two replacements for one existing row is a caller bug.
+ * `save()` follows the shared duplicate rule instead.
  */
 function refuseDuplicateIds(op: string, engrams: readonly Engram[]): void {
   const dups = duplicateEngramIds(engrams)
@@ -150,18 +95,11 @@ function refuseDuplicateIds(op: string, engrams: readonly Engram[]): void {
 }
 
 /**
- * "Keep both, rename one": a whole-corpus batch carrying one id on two
- * different engrams keeps both — the later copy under the loader's fresh id
- * ({@link resolveDuplicateIds}, the one rule every reader follows); an exact
- * duplicate is written once. Independent of chunking, since it
- * runs on the whole batch before anything is written. A batch from
- * `loadEngrams` is already resolved (and its renames recorded in history), so
- * this only acts on a batch that did not come through the loader. The
- * renames are handed to the rename listener after the write commits
- * ({@link PostgresAdapter.addRenameListener}); every `Plur` instance attached to
- * the adapter subscribes and records `engram_rekeyed` in its own history root,
- * so no rename is log-only while an engine is attached. A bare adapter has no
- * history root: there the log line is the only record.
+ * "Keep both, rename one" for a whole-corpus batch: a second engram with the same id
+ * gets the loader's fresh id ({@link resolveDuplicateIds}); exact duplicates are written once.
+ * Runs on the whole batch, so it is independent of chunking. Renames go to rename
+ * listeners after commit ({@link PostgresAdapter.addRenameListener}); with none attached
+ * the log line is the only record.
  */
 function resolveSaveBatch(engrams: Engram[]): { engrams: Engram[]; renames: IdRename[] } {
   const { engrams: out, renames } = resolveDuplicateIds(engrams)
@@ -293,16 +231,9 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
    */
   private trigramAvailable: boolean | undefined
   /**
-   * Every client currently checked out of either pool.
-   *
-   * `close()` needs this because `pool.end()` DRAINS: it waits for checked-out
-   * clients to come back. Two sites hold one for a long time — `initSchema`
-   * for its DDL sequence, and `withExclusiveAccess` across arbitrary caller
-   * work — so a drain-based `close()` racing either of them would wait
-   * forever.
-   *
-   * With the set, `close()` destroys outstanding clients instead of waiting for
-   * them, and `end()` then resolves immediately.
+   * Every client checked out of either pool. `close()` destroys these instead of
+   * letting `pool.end()` drain, because `initSchema` and `withExclusiveAccess` can
+   * hold a client long enough that a drain would wait forever.
    */
   private readonly liveClients = new Set<any>()
   private readonly vectorDim: number
@@ -522,17 +453,10 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
   }
 
   /**
-   * Create the schema, serialised across processes by an advisory lock.
-   *
-   * Without the lock, N processes cold-starting against one fresh database all
-   * run `CREATE ... IF NOT EXISTS` at once and most of them die on a catalog
-   * unique violation — the pgvector one surfacing as a misleading "install the
-   * extension as a superuser". A server deployment starting its replicas has
-   * exactly this shape.
-   *
-   * The lock is taken on ONE pooled client and every statement runs on that
-   * same client: holding a connection for the lock while the DDL asks the pool
-   * for a second one deadlocks whenever `maxConnections` is 1.
+   * Create the schema, serialised across processes by an advisory lock (concurrent
+   * `CREATE ... IF NOT EXISTS` fails on catalog unique violations).
+   * The lock and every DDL statement run on ONE pooled client: asking the pool for a
+   * second connection while holding the lock deadlocks when `maxConnections` is 1.
    */
   private async initSchema(): Promise<void> {
     const client = await this.acquire(this.pool)
@@ -586,21 +510,10 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
     await this.ddl(client, `CREATE INDEX IF NOT EXISTS idx_engrams_domain ON "${this.schema}".engrams(domain)`)
     await this.ddl(client, `CREATE INDEX IF NOT EXISTS idx_engrams_source ON "${this.schema}".engrams(source)`)
 
-    // --- BM25 pushdown ---
-    //
-    // Two columns, because the matching rule has two arms and they need
-    // different indexes:
-    //
-    //   forward  t.includes(qt)   -> `search_text LIKE '%qt%'`, served by a GIN
-    //                               trigram index. This is the arm that finds
-    //                               `transferWithAuthorization` from `auth`, and
-    //                               it is why this needs pg_trgm rather than
-    //                               tsvector: a prefix query cannot express an
-    //                               infix match.
-    //   reverse  qt.startsWith(t) -> `tokens && ARRAY[<prefixes of qt>]`, served
-    //                               by a GIN array index. The prefixes are
-    //                               enumerable at query time because qt is
-    //                               known.
+    // --- BM25 pushdown --- two columns, one per arm of the matching rule:
+    //   forward  t.includes(qt)   -> `search_text LIKE '%qt%'`, GIN trigram index
+    //                               (needs pg_trgm: tsvector cannot express infix matches).
+    //   reverse  qt.startsWith(t) -> `tokens && ARRAY[<prefixes of qt>]`, GIN array index.
     await this.ddl(client, `ALTER TABLE "${this.schema}".engrams ADD COLUMN IF NOT EXISTS tokens TEXT[]`)
     await this.ddl(client, `ALTER TABLE "${this.schema}".engrams ADD COLUMN IF NOT EXISTS search_text TEXT`)
     // Which tokenizer produced `tokens` / `search_text` for this row.
@@ -806,32 +719,12 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
   }
 
   /**
-   * Tear down both pools. After this resolves, no connection remains open.
-   *
-   * Two things make that harder than `pool.end()`.
-   *
-   * First, `createPool` assigns `this.pool` only AFTER awaiting the driver
-   * import, so a `close()` landing in that window would see `null`, skip the
-   * teardown, and leave the pool that arrives a moment later with nothing
-   * holding a reference to end it. So construction in flight is adopted, not
-   * ignored.
-   *
-   * Second, `pool.end()` DRAINS — it waits for checked-out clients. `initSchema`
-   * holds one for its DDL, and `withExclusiveAccess` holds one across arbitrary
-   * caller work, so draining could wait forever. Outstanding clients are therefore
-   * DESTROYED: `release(err)` with a truthy argument makes the pg driver's
-   * pool internals `_remove` the connection rather than return it to idle, so
-   * `end()` has nothing to wait for.
-   *
-   * One wait IS accepted: adopting in-flight construction transitively awaits
-   * schema init — `createPool` resolves only after `initSchema` settles — so a
-   * `close()` that lands during a cold start blocks until the adapter's own
-   * DDL completes or rejects. That is bounded, adapter-owned work, unlike a
-   * caller-held client.
-   *
-   * A caller mid-`withExclusiveAccess` sees its connection die. That is the
-   * consequence of closing during exclusive work — a caller error either way —
-   * and it is strictly better than hanging.
+   * Tear down both pools; afterwards no connection remains open.
+   * - Pool construction in flight is adopted (awaited), so a pool assigned after the
+   *   driver import is not leaked. This transitively waits for schema init — bounded work.
+   * - Checked-out clients are DESTROYED (`release(err)`), not drained: `pool.end()` would
+   *   otherwise wait forever on a client held by `initSchema` or `withExclusiveAccess`.
+   * A caller mid-`withExclusiveAccess` sees its connection die — better than hanging.
    */
   async close(): Promise<void> {
     // Refuse new work first, so nothing starts building behind the teardown.
@@ -972,19 +865,9 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
 
   /**
    * Subscribe to the id renames `save()` makes under the shared duplicate rule.
-   * Every subscriber is called, after the transaction
-   * commits, so a rename is reported only once it is stored. Returns the
-   * unsubscribe function.
-   *
-   * A SET of listeners, not one slot: several `Plur` instances may share one
-   * adapter, and each records the rename in its own history root — with a
-   * single slot the last one registered would silently take the others'
-   * records. `Plur` subscribes in its
-   * constructor and unsubscribes in `close()`.
-   *
-   * With NO subscriber (a bare adapter no engine is attached to) there is no
-   * history root to record in; the rename is then only logged — see
-   * {@link resolveSaveBatch}.
+   * Every listener is called after commit; returns the unsubscribe function.
+   * A set, not one slot: several `Plur` instances may share an adapter and each records
+   * renames in its own history root. With no subscriber the rename is only logged.
    */
   addRenameListener(fn: (renames: IdRename[]) => void): () => void {
     this.renameListeners.add(fn)
@@ -994,16 +877,9 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
   private readonly renameListeners = new Set<(renames: IdRename[]) => void>()
 
   /**
-   * Replace the store's contents with `engrams`.
-   *
-   * Upsert-then-prune rather than truncate-then-insert, for one specific
-   * reason: `engram_embeddings` cascades on delete, so deleting every engram
-   * row would destroy every embedding and force a full re-embed of an unchanged
-   * corpus. Upserting leaves surviving engrams' embeddings in place and lets
-   * the cascade remove exactly the ones whose engram genuinely went away.
-   *
-   * Atomic: one transaction, so a concurrent reader sees the old corpus or the
-   * new one, never a half-applied replace.
+   * Replace the store's contents with `engrams`, in one transaction.
+   * Upsert-then-prune, not truncate-then-insert: `engram_embeddings` cascades on delete,
+   * so truncating would destroy every embedding and force a full re-embed.
    */
   async save(batch: Engram[]): Promise<void> {
     const { engrams, renames } = resolveSaveBatch(batch)
@@ -1166,18 +1042,9 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
   }
 
   /**
-   * Escape a query token for use inside a `LIKE` pattern.
-   *
-   * `ftsTokenize` splits on non-`\w`, and `_` IS a `\w` character, so it
-   * survives tokenization and arrives here as LIKE's single-character wildcard.
-   * Unescaped, the token `snake_case` matches `snakeXcase`
-   * (`'snakeXcase' LIKE '%snake_case%'` is true). Worse, `_` can match
-   * the space that separates two tokens in `search_text`, so the predicate
-   * matches across a token boundary, which `termMatches` never does.
-   *
-   * That makes `df` count under a different rule than `tf`, which is not BM25
-   * and which nothing would report. `%` cannot survive tokenization, but it is
-   * escaped anyway so this does not depend on that staying true.
+   * Escape a query token for a `LIKE` pattern. `_` survives `ftsTokenize` and would act
+   * as a wildcard (even matching the space between tokens), making `df` count under a
+   * different rule than `tf`. `%` is escaped too, so this does not rely on tokenization.
    */
   private static escapeLike(qt: string): string {
     return qt.replace(/[\\%_]/g, c => `\\${c}`)
@@ -1185,18 +1052,9 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
 
   /**
    * Re-derive `tokens` / `search_text` for rows written by an older tokenizer.
-   *
-   * Needed because nothing else does it. `save()` re-derives the whole corpus,
-   * but a row store does not take that path in ordinary use: `learn()` prefers
-   * the `append` seam and `feedback()` prefers `updateMany`, each touching one
-   * row and leaving every other row's version untouched. Without this, a store
-   * upgraded across a tokenizer change would sit on the local-scoring fallback
-   * indefinitely — correct, but having permanently lost the pushdown.
-   *
-   * Set-based per batch, and `toRow` is the single derivation used by every
-   * write path, so a backfilled row is byte-identical to a freshly saved one.
-   *
-   * Returns the number of rows re-derived, so a caller (the CLI) can report it.
+   * Needed because `append` and `updateMany` touch single rows, so without this an
+   * upgraded store would stay on the local-scoring fallback forever. Uses `toRow`, the
+   * single derivation every write path uses. Returns the number of rows re-derived.
    */
   async backfillTokens(batchSize = 500): Promise<number> {
     const pool = await this.getPool()
@@ -1262,26 +1120,11 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
   }
 
   /**
-   * Whether any in-scope active row was tokenized by a different tokenizer than
-   * the one now in force.
-   *
-   * DEGRADES rather than throwing, unlike the NULL-tokens guard beside it, and
-   * the difference is blast radius. NULL tokens mean a row predating the
-   * column — a narrow, already-broken population. A version mismatch describes
-   * EVERY row of EVERY existing store the moment the tokenizer changes, so
-   * throwing would take `recall()` down completely on upgrade, including for
-   * ASCII-only stores that contain nothing this affects and have nothing wrong
-   * with them. Trading a silent wrong answer for a total outage is not a fix.
-   *
-   * Returning `undefined` and taking the local path is what the StorageAdapter
-   * contract already prescribes: "an implementation that cannot reproduce the
-   * rule should return `undefined` rather than a best effort". The local path
-   * re-derives tokens from `data` with the current tokenizer, so its answers
-   * are correct — merely slower — and a `save()` restores the pushdown with no
-   * further intervention.
-   *
-   * Warned once per adapter, not per query: on a stale store this is true of
-   * every call, and an operator needs the instruction once, not in a loop.
+   * Whether any in-scope active row was tokenized by a different tokenizer version.
+   * DEGRADES (callers return `undefined`, taking the local path) rather than throwing:
+   * a version change stales every row at once, and throwing would take `recall()` down.
+   * The local path re-derives tokens, so answers stay correct; a `save()` restores the
+   * pushdown. Warned once per adapter, not per query.
    */
   private async tokensAreStale(opts?: StorageFilter): Promise<boolean> {
     const pool = await this.getPool()
@@ -1323,21 +1166,11 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
   }
 
   /**
-   * Corpus-wide N and per-term df.
-   *
-   * Counted under exactly `termMatches` from fts.ts, expressed as SQL:
-   *
+   * Corpus-wide N and per-term df, counted under exactly `termMatches` from fts.ts:
    *   forward  t.includes(qt)    ->  search_text LIKE '%' || qt || '%'
    *   reverse  qt.startsWith(t)  ->  tokens && ARRAY[<prefixes of qt>]
-   *
-   * The equivalence of the first line holds because `search_text` is the
-   * tokens joined by a space and a query token can never contain a space —
-   * `ftsTokenize` splits on it. So a substring hit in the joined string implies
-   * a substring hit in some token, and conversely.
-   *
-   * Returns `undefined` rather than an approximation when the pushdown cannot
-   * be answered exactly. Per the interface contract, an approximate df is worse
-   * than the local fallback.
+   * The forward form is exact because query tokens never contain a space.
+   * Returns `undefined` rather than an approximation when it cannot answer exactly.
    */
   async corpusStats(queryTokens: string[], opts?: StorageFilter): Promise<CorpusStats | undefined> {
     const pool = await this.getPool()
@@ -1355,23 +1188,10 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
       return { N: rows[0]?.n ?? 0, df: new Map(), avgDocLength: rows[0]?.avg_len ?? 0 }
     }
 
-    // A row written before this column existed has NULL tokens and would count
-    // as matching nothing, quietly deflating every df. Refuse rather than
-    // report a number that is wrong in an invisible direction.
-    //
-    // Served by a PARTIAL INDEX (see `initSchema`), so this is a cheap index
-    // probe rather than a sequential scan on every BM25 call.
-    //
-    // Scoped by the SAME filter as the statistics themselves: a NULL-token row
-    // the caller is not permitted to see must not block their query, and
-    // conversely a row they ARE permitted to see must not be missed because the
-    // probe looked somewhere else.
-    //
-    // Deliberately NOT cached after the first pass. Caching would assume this
-    // adapter is the only writer, and a Postgres primary store is shared: an
-    // older build writing to the same schema can introduce NULL-token rows at
-    // any time, and a latched flag would then skip the check exactly when it
-    // mattered. `LIMIT 1` because "are there any?" is the question.
+    // Refuse when any in-scope active row has NULL tokens (predates the column): it
+    // would silently deflate every df. Cheap partial-index probe, scoped by the SAME
+    // filter as the statistics. Deliberately NOT cached: the store is shared, and an
+    // older writer can add NULL-token rows at any time.
     const staleF = buildFilterClause({ ...(opts ?? {}), status: 'active' })
     const { rows: stale } = await pool.query(
       `SELECT 1 FROM "${this.schema}".engrams ${staleF.where} AND tokens IS NULL LIMIT 1`,
@@ -1525,16 +1345,9 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
 
   /**
    * Cosine vector search over active engrams.
-   *
-   * The `SET LOCAL hnsw.ef_search` is the load-bearing line. pgvector defaults
-   * it to 40; an HNSW scan visits at most that many candidates, so without this
-   * a `limit` above 40 comes back short — and the `status = 'active'` join
-   * predicate, which the index cannot evaluate, trims the result further after
-   * the scan. {@link efSearchFor} covers both: never below `limit`, with
-   * headroom for the post-filter.
-   *
-   * `SET LOCAL` scopes the setting to the transaction, so a pooled connection
-   * is never left with another query's tuning on it.
+   * `SET LOCAL hnsw.ef_search` is load-bearing: pgvector's default 40 caps the scan, and the
+   * `status = 'active'` predicate trims further; {@link efSearchFor} covers both.
+   * `SET LOCAL` keeps the setting off other queries on the pooled connection.
    */
   async searchVector(
     query: Float32Array,
@@ -1544,20 +1357,10 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
     const pool = await this.getPool()
     const t = this.activeVecType
     const literal = vectorLiteral(query)
-    // EVERY restriction goes IN the k-NN predicate, never on the rows that
-    // come back. Post-filtering measures LIMIT against the unrestricted
-    // neighbour list, so a principal permitted a small share of the corpus
-    // asks for N and silently gets far fewer, with permitted rows sitting
-    // just below the cut.
-    //
-    // Keep the `opts` parameter: TypeScript accepts a narrower arity than the
-    // interface declares, so dropping it would silently ignore `scopes` — an
-    // authorization filter.
-    //
-    // `scope` + `visibilityGrants` go in the predicate for the same dilution
-    // reason, through `buildFilterClause`, the ONE copy of the scope rules.
-    // The filter's columns are unambiguous in this join: `engram_embeddings`
-    // carries only `engram_id`, `embedding` and `content_hash`.
+    // EVERY restriction (scope, visibilityGrants) goes IN the k-NN predicate, never on
+    // returned rows: post-filtering silently returns far fewer than LIMIT.
+    // Keep the `opts` parameter — dropping it would silently ignore `scopes`, an
+    // authorization filter. `buildFilterClause` is the ONE copy of the scope rules.
     const { where, params } = buildFilterClause({
       status: 'active',
       scopes: opts?.scopes,
@@ -1617,23 +1420,11 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
          SET embedding = EXCLUDED.embedding, content_hash = EXCLUDED.content_hash`,
       [engramId, vectorLiteral(vector), contentHash ?? null],
     )
-    // Backfill the ENGRAM row's hash if it has none.
-    //
-    // `IS NULL` guarded: `deriveRow` owns this value on every real write, and
-    // overwriting it here would erase the evidence of an edit and make the
-    // engram look permanently current.
-    //
-    // Two SEPARATE statements, deliberately NOT one transaction: a transaction
-    // spanning `engram_embeddings` and `engrams` holds locks on both, and the
-    // background auto-embed pass then deadlocks (40P01) against anything
-    // acquiring them the other way round.
-    //
-    // A transaction would buy nothing, because a partial application is
-    // already self-healing in BOTH directions. Embedding written, backfill lost: `e.content_hash IS
-    // NULL` still selects the row next pass. Backfill written, embedding lost:
-    // the embedding row is missing or carries the old hash, so the missing arm
-    // or the mismatch arm selects it. Either way the next pass finishes the job,
-    // which is the property the whole staleness design already relies on.
+    // Backfill the ENGRAM row's hash only if NULL: `deriveRow` owns it on real writes,
+    // and overwriting would hide an edit.
+    // Two separate statements, NOT one transaction: locking both tables deadlocks (40P01)
+    // against the background auto-embed pass. A partial application self-heals — the
+    // next pass selects the row via the NULL, missing or mismatch arm.
     if (contentHash !== undefined) {
       await pool.query(
         `UPDATE "${this.schema}".engrams SET content_hash = $2
@@ -1644,24 +1435,11 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
   }
 
   /**
-   * Active engrams whose embedding is missing or stale, up to `limit`.
-   *
-   * Without `includeStale`, only rows with no embedding. With it, also rows
-   * whose engram has no stored hash, or whose embedding's `content_hash`
-   * differs from the engram row's — two STORED hashes, both written by
-   * `embeddingContentHash`. This method is the loop condition of the backfill
-   * pass, so a predicate that never goes false for a row would spin on it;
-   * `_autoEmbedPrimaryStore` additionally refuses to revisit an id within one
-   * pass, so a drift degrades to a logged warning rather than an infinite loop.
-   *
-   * ONE set-based anti-join: loading the corpus and probing `hasEmbedding` per
-   * id would be O(N) round trips on every write, worse at the corpus size that
-   * selects this tier than the missing embeddings (ADR-0005). Both sides of
-   * the join are the tables' primary keys, so `LIMIT 1` — the completeness
-   * probe the semantic read path issues — is an index-only anti-join.
-   *
-   * `ORDER BY e.id` so concurrent auto-embed passes in different processes
-   * walk the gap in the same order and converge instead of thrashing.
+   * Active engrams whose embedding is missing (or, with `includeStale`, whose stored
+   * hashes are absent or differ), up to `limit`. This is the backfill loop condition;
+   * `_autoEmbedPrimaryStore` also refuses to revisit an id within a pass.
+   * ONE set-based anti-join on primary keys — never per-id probes (ADR-0005).
+   * `ORDER BY e.id` so concurrent passes converge instead of thrashing.
    */
   async listEngramsMissingEmbeddings(limit: number, opts?: { includeStale?: boolean }): Promise<Engram[]> {
     assertPositiveInt(limit, 'limit')
@@ -1741,20 +1519,12 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
 }
 
 /**
- * Filter → SQL WHERE clause.
- *
- * Lifted verbatim from `PGLiteAdapter.buildFilterClause` so the two backends
- * cannot answer the same filter differently — in particular the two scope
- * rules, which are the ones with teeth:
- *
- *   (1) personal-family pass-through — ALL non-shared scopes (`local`,
- *       `global`, `user:*`, `agent:*`, …), not just `global`.
- *   (2) segment-aware membership — the requested scope exactly, or a
- *       descendant on a REAL delimiter (`:` / `/`), never a sibling that merely
- *       shares a string prefix.
- *
- * The two copies must move together; the cross-adapter parity test enforces
- * that.
+ * Filter → SQL WHERE clause, copied from `PGLiteAdapter.buildFilterClause` so the two
+ * backends cannot diverge. The scope rules with teeth:
+ *   (1) personal-family pass-through — ALL non-shared scopes, not just `global`.
+ *   (2) segment-aware membership — exact scope or a descendant on a real `:` / `/`
+ *       delimiter, never a mere string-prefix sibling.
+ * The two copies must move together; the cross-adapter parity test enforces that.
  */
 export function buildFilterClause(filter: StorageFilter): { where: string; params: any[] } {
   const conditions: string[] = []
@@ -1808,22 +1578,10 @@ export function buildFilterClause(filter: StorageFilter): { where: string; param
 }
 
 /**
- * Turn a stored row into an `Engram`, applying schema defaults.
- *
- * node-postgres returns JSONB already parsed; a string is tolerated anyway.
- *
- * Like the YAML path, every row goes through `EngramSchemaPassthrough.safeParse`,
- * which fills in defaults for absent optional fields, so both loaders agree on
- * what a valid engram looks like. A row written by an older version, by a
- * migration, or by any tool that talks to the table directly may lack fields
- * (e.g. `associations`, which `recall()` dereferences). `save()` writes
- * whatever object it is given, and nothing on the write path enforces the
- * schema either.
- *
- * `passthrough` keeps unknown fields, so this normalises without discarding
- * anything the schema does not know about. A row that cannot be parsed at all
- * is returned as-is rather than dropped: losing an engram silently is worse
- * than passing along one that is odd, and the caller's own guards still apply.
+ * Turn a stored row into an `Engram` via `EngramSchemaPassthrough.safeParse`, so rows
+ * lacking fields (older versions, direct table writes) get the same defaults as the
+ * YAML path, and unknown fields are kept. JSONB may arrive parsed or as a string.
+ * An unparseable row is returned as-is rather than silently dropped.
  */
 function parseRow(row: { data: any }): Engram {
   const raw = typeof row.data === 'string' ? JSON.parse(row.data) : row.data

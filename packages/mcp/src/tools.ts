@@ -50,17 +50,12 @@ function formatAge(ageMs: number | undefined): string {
 }
 
 /**
- * Attach per-host remote degradation to a tool response — ONLY when a host is
- * non-ok or was silently scope-narrowed (`dropped_scopes`). Structured block
- * plus ONE prose `warning` line (agent-directed strings from the shared core
- * table — consequence + agent action), mirroring the hybrid-degraded warning
- * pattern. Healthy hosts attach nothing.
+ * Attach per-host remote degradation (non-ok or `dropped_scopes`) as a structured block plus ONE prose `warning`
+ * line from the shared core table. Healthy hosts attach nothing.
  */
 /**
- * Say, for THIS call, what the remote (server) leg did and whether the
- * results are complete. Added fields only — `results`, `count`, `mode`,
- * `remote_stores` and `warning` keep their shape. `remote_stores` reports the
- * latest outcome per host for the whole process; `remote` is this call.
+ * Report what the remote leg did for THIS call (`remote`) and whether results are complete. Added fields only;
+ * `remote_stores` stays the per-process latest outcome per host.
  */
 function attachRecallReport(
   response: Record<string, unknown>,
@@ -471,19 +466,9 @@ export function validateToolArgs(
       .map((i) => String(i.path[0] ?? ''))
       .filter((k: string) => k.length > 0)
 
-    // The drop has TWO shapes. The partial drop keeps the early scalar fields
-    // and silently discards trailing ones (e.g. a long `summary` plus an
-    // `engram_suggestions` array arriving as `{summary}` alone); that shape
-    // correlates with array-typed fields, so the array-workaround hint stays
-    // on it.
-    //
-    // The WHOLE-payload drop is NOT array-specific — scalar-only calls drop
-    // too, and the strongest correlation is multiple tool_use blocks batched
-    // into one client message. It is transient: retrying the IDENTICAL call
-    // succeeds. So the empty branch does not key on the tool having an array
-    // param, and its guidance is "retry the same payload, alone in the
-    // message" — not "reshape your arrays": the payload was never evaluated,
-    // so there is nothing in it to fix.
+    // Two drop shapes. A PARTIAL drop discards trailing fields and correlates with arrays, so it keeps the array hint.
+    // A WHOLE-payload drop is not array-specific (it correlates with batched tool_use blocks) and is transient, so
+    // the guidance is "retry the identical payload alone in the message", not "reshape your arrays".
     const missingArrayParams = missingFields
       .filter((k: string) => (schema.properties as any)?.[k]?.type === 'array')
 
@@ -666,17 +651,9 @@ mcpCanary.expect({
 })
 
 /**
- * Session injection telemetry — tracks pack-level engram injection counts per
- * session. Keyed by session_id → map of pack_name → engram count, surfaced at
- * plur_session_end.
- *
- * The Map is process-scoped (one MCP server = one long-running process serving
- * sequential sessions). Entries are cleaned up when session_end runs, so memory
- * does not accumulate across sessions. A TTL guard caps memory if session_end
- * is never called (hook crash, forced kill, etc.).
- *
- * Structure: session_id → { pack_name → injection_count, __total_injections → N }
- * The __total_injections key counts how many inject calls happened (not engrams).
+ * Session injection telemetry: session_id → { pack_name → engram count, __total_injections → inject calls },
+ * surfaced at plur_session_end. Process-scoped; entries are removed at session_end, and a TTL guard caps memory if
+ * session_end never runs.
  */
 interface SessionTelemetry {
   pack_counts: Record<string, number>
@@ -791,16 +768,9 @@ function learnDecision(engram: { id: string; write_count?: number }): { decision
 }
 
 /**
- * The `.plur.yaml` scope/domain this server may adopt.
- *
- * A project config is honoured only from a directory the user trusted with
- * `plur trust <dir>` — the same rule every adapter applies. Otherwise a cloned
- * repo's `scope: group:acme/eng` would become the session default and an
- * unscoped personal note would land in a team scope. Trust is checked against
- * the directory the FILE is in, from the same single read whose fields are
- * adopted, and fails closed. An ignored file yields `warning` (naming the file
- * and the trust command), which session_start surfaces; it is also written to
- * stderr once per file per process.
+ * The `.plur.yaml` scope/domain this server may adopt: only from a directory trusted with `plur trust <dir>`, else a
+ * cloned repo could redirect personal notes into a team scope. Trust is checked on the file's own directory from the
+ * same read, and fails closed. An ignored file yields `warning` (surfaced at session_start, stderr once per file).
  */
 const _warnedUntrustedConfigs = new Set<string>()
 
@@ -1040,16 +1010,9 @@ const NO_SESSION_SLOT_WARNING =
   'dialing context. Call plur_session_start (then plur_session_scope with its session_id) to scope a session.'
 
 /**
- * The session a WRITE or INJECT passes to core.
- *
- * Explicit `session_id` first, else the lone open session — the same as
- * `_resolveInjectionSession`. When neither resolves (no id, and zero or several
- * sessions open) this returns core's `NO_SESSION` instead of `undefined`:
- * `undefined` would make core fall back to the process-default slot, which
- * holds the default of whichever session STARTED LAST — possibly a team scope
- * — so an id-less write from one session could land in another's scope. With
- * `NO_SESSION` no session default applies and the write takes the unscoped
- * path (auto-route / `unscoped_default`).
+ * The session a WRITE or INJECT passes to core: explicit `session_id`, else the lone open session, else core's
+ * `NO_SESSION` — never `undefined`, which would fall back to the last-started session's default (possibly a team
+ * scope) and leak an id-less write into another session's scope.
  */
 function _resolveWriteSession(args: Record<string, unknown>): string {
   return _resolveInjectionSession(args) ?? NO_SESSION
@@ -1072,24 +1035,13 @@ function _knownSession(id: string, plur: Plur, viaServer: boolean): boolean {
 }
 
 /**
- * The session a WRITE passes to core. Every path that picks a default for an
- * unscoped write comes through here.
- *
- *  - A session explicitly set by plur_session_scope op:"set" keeps its scope:
- *    the user's explicit choice.
- *  - A default from plur_session_start holds only while the workspace's roots
- *    are the ones the session started with; when they changed, this write uses
- *    the workspace's answer instead (the default is not changed, so going
- *    back to the same roots restores it).
- *  - Otherwise, and with no session (none open, several open and none named,
- *    or an id this process never registered — never the process slot), the
- *    workspace's answer: the scope every root agrees on, or no scope at all.
- *
- * The workspace is resolved here, immediately before core admits the write,
- * so a call that passed the folder gate before the roots changed still uses
- * the current roots. An explicit `scope` on the call still wins in core.
- * Without a FolderScopeContext (the tools used outside the server) the
- * session alone decides.
+ * The session a WRITE passes to core; every default for an unscoped write comes through here.
+ * - A scope set by plur_session_scope op:"set" is kept.
+ * - A plur_session_start default holds only while the workspace roots are unchanged; otherwise this write uses the
+ *   workspace's answer (the default itself is not changed).
+ * - No session (none, several unnamed, or unknown id — never the process slot): the scope every root agrees on, or
+ *   none. Roots are resolved right before core admits the write. An explicit `scope` still wins in core; without a
+ *   FolderScopeContext the session alone decides.
  */
 async function _writeSession(args: Record<string, unknown>, plur: Plur, base?: string | undefined, read = false, explicitDestinations = false): Promise<string> {
   const explicit = typeof args.session_id === 'string' && args.session_id.length > 0 ? args.session_id : undefined
@@ -1177,39 +1129,13 @@ function _recordInjectionTelemetry(session_id: string | undefined, injected_pack
 
 export type ToolProfile = 'full' | 'lean' | 'cursor'
 
-// The day-to-day tools a Cursor user needs, plus every tool marked
-// `destructiveHint: true` — everything else (packs install/list, sync,
-// timeline, meta-engrams, ingest, capture, ...) is reachable through
-// plur_admin instead of its own top-level tool slot. Cursor caps a workspace
-// at ~40 MCP tools total across every server, and PLUR's full tool surface
-// alone would exceed that budget.
-//
-// Destructive tools are kept OUT of plur_admin's dispatch (enforced in the
-// handler): a client that gates confirmation prompts or audit trails off MCP
-// tool annotations could not tell "delete a pack and all its engrams" apart
-// from "check status" once both are wrapped behind the same generic dispatch
-// tool, whose single static annotation (`{ title: 'Admin dispatch',
-// readOnlyHint: false }`) can't carry a per-action risk signal. The handler
-// refuses any target with `destructiveHint: true` and points at the direct
-// tool.
-//
-// Every removal needs an explicit, gated act: every tool that can RETIRE or
-// DELETE memory is `destructiveHint: true` and therefore listed here:
-// plur_forget, plur_packs_uninstall, plur_tensions_purge, plur_tensions
-// (action:"resolve" retires the losing engram — exactly forget's effect) and
-// plur_validate_meta (a third failed validation retires a non-top
-// meta-engram). plur_rescope is deliberately NOT here: a rescope always leaves
-// a copy, so it is a move, not a removal (see its annotation).
-//
-// Every tool that deletes a memory or overwrites its text is marked
-// destructive, and the gateway can never delete or overwrite.
-// plur_report_failure is listed for that reason: procedure evolution replaces
-// a procedure's text with what its checker returns. plur_learn_batch is not:
-// batch learning never overwrites, so it stays an ordinary gateway action.
-// 14 core tools + plur_admin = 15 exposed.
-// Exported so server.ts's plur://guide resource builds its cursor-profile
-// redirect note FROM this set instead of a second copy of the list that could
-// drift.
+// Cursor caps a workspace at ~40 MCP tools, so its profile exposes the day-to-day tools plus every
+// `destructiveHint: true` tool; everything else goes through plur_admin (14 core tools + plur_admin = 15).
+// Destructive tools are kept OUT of plur_admin's dispatch (enforced in the handler): its single static annotation
+// cannot signal per-action risk to clients that gate confirmations on annotations. Every tool that retires,
+// deletes or overwrites memory is destructive (forget, packs_uninstall, tensions_purge, tensions resolve,
+// validate_meta, report_failure); plur_rescope (leaves a copy) and plur_learn_batch (never overwrites) are not.
+// Exported so server.ts's plur://guide builds from this set instead of a second copy.
 export const CURSOR_CORE_TOOL_NAMES: ReadonlySet<string> = new Set([
   'plur_session_start',
   'plur_session_end',
@@ -1240,16 +1166,9 @@ function summarizeToolDescription(description: string): string {
 }
 
 /**
- * The action inventory clause for plur_admin's tool description, grouped by
- * name family (the token after `plur_`) so ~30 names scan as a categorized
- * list instead of a wall. GENERATED from the same action list the dispatcher
- * routes on — never hand-maintained: hand-kept text drifts silently the moment
- * a tool is added or renamed, and this description is the one place a client
- * that only reads tools/list can learn the surface.
- *
- * If the registry ever outgrows what a description can reasonably carry, the
- * clause degrades to family names + counts and points at `help` — a truncated
- * enumeration reads as complete, which is worse than an honest summary.
+ * plur_admin's action inventory clause, grouped by name family. GENERATED from the dispatcher's action list, never
+ * hand-maintained (it is the only place a tools/list reader learns the surface). If too long it degrades to family
+ * names + counts pointing at `help` — a truncated list would read as complete.
  */
 function describeActionInventory(actions: string[]): string {
   const families = new Map<string, string[]>()
@@ -1653,25 +1572,10 @@ function getAllToolDefinitions(): ToolDefinition[] {
           session_id: _resolveInjectionSession(args),
           llm,
         }
-        // Route through learnRouted FIRST so remote-scope writes get the
-        // server-assigned engram id; otherwise the caller would hold a local
-        // placeholder id, and a later forget(id)/feedback(id) would fail
-        // because the engram only exists on the server under the server's id.
-        // For local-scope writes, learnRouted defers to sync learn() so dedup
-        // behavior is unchanged. learnRouted is PRIMARY (try), and the
-        // synchronous learn() is a defense-in-depth FALLBACK (catch) —
-        // learnAsync is NOT used on this path.
-        // Runtime scope nudge: when the caller passes no scope and the engram
-        // lands at a PERSONAL scope WITHOUT being auto-routed, while a team
-        // store IS configured, team knowledge silently never reaches the
-        // shared store. Surface that at the moment it happens — non-fatal,
-        // informational, and only when there is a team store to route to
-        // (silent on personal installs). Un-scoped writes default to "global"
-        // and auto-route on a confident covers match (stamping
-        // structured_data._routed). The hint fires on ANY non-shared
-        // (personal-family) landing scope — "local", "global", "user:*",
-        // "agent:*" — and stays silent when the write was auto-routed or an
-        // explicit scope was passed.
+        // learnRouted is PRIMARY so remote writes return the server-assigned id (a local placeholder breaks later
+        // forget/feedback); sync learn() is the defense-in-depth FALLBACK; learnAsync is not used here.
+        // Scope nudge: with a team store configured, an unscoped write that lands in a personal-family scope
+        // (local, global, user:*, agent:*) without auto-routing gets a non-fatal hint; silent otherwise.
         const explicitScope = typeof args.scope === 'string' && args.scope.length > 0
         const scopeHint = (engramScope: string, wasRouted: boolean, delivery: string): { scope_hint?: string } => {
           // Fire on any non-shared landing scope, not just {local,global}, so a

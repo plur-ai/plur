@@ -80,22 +80,13 @@ function remoteOf(group: StoreEntry[]): ScopeTarget {
 }
 
 /**
- * Resolve where a write to `scope` goes, given the configured (expanded)
- * stores. Pure: no driver, no network, no config reload.
- *
- * Rules, in order:
- * 1. A personal `user:` scope that exactly names a store → the ONE selected
- *    entry (`personalStoreEntry`: local first, then writable url, then
- *    readonly url).
- * 2. Exact-scope url entries, grouped by server. Two or more servers →
- *    `conflict`; one → `remote`.
- * 3. No exact url entry, but a company server (an entry with an `enterprise`
- *    block) whose `discovery.org_id` is the scope's org → `unauthorized`.
+ * Resolve where a write to `scope` goes, given the expanded stores. Pure. In order:
+ * 1. A personal `user:` scope naming a store → the ONE `personalStoreEntry`.
+ * 2. Exact-scope url entries: two or more servers → `conflict`; one → `remote`.
+ * 3. Else a company server whose `discovery.org_id` is the scope's org → `unauthorized`.
  * 4. A path entry with the exact scope → `local` with it.
  * 5. Else `local`.
- *
- * Matching is exact throughout: a store whose scope merely contains `scope`
- * does not route it.
+ * Matching is exact: a store whose scope merely contains `scope` does not route it.
  */
 export function resolveScopeTarget(scope: string, stores: readonly StoreEntry[]): ScopeTarget {
   if (scope.toLowerCase().startsWith('user:') && stores.some(s => s.scope === scope)) {

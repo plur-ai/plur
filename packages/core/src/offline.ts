@@ -1,31 +1,11 @@
 /**
- * The offline switch: when the machine is declared offline, PLUR starts no
- * network call of its own: the npm update check (which otherwise runs once at
- * start and stops for good when it cannot connect, see version-check.ts) and
- * the model download. A service the user configured by hand (a team server, an
- * OpenAI embedder, a pack URL) is still contacted when the user uses it.
- *
- * Apart from that one update check, PLUR never probes for whether it is
- * online. The environment can say "offline" up front, so not even that one
- * attempt is made:
- *
- *   - PLUR_OFFLINE=1 — PLUR's own switch.
- *   - HF_HUB_OFFLINE=1 / TRANSFORMERS_OFFLINE=1 — the offline conventions PLUR
- *     already honours for the embedding model. Someone who set them has told
- *     their tools the machine is offline, so PLUR does not reach the npm
- *     registry either.
- *
- * The update check alone can also be turned off with PLUR_NO_UPDATE_CHECK=1,
- * or NO_UPDATE_NOTIFIER=1 (the convention npm's own update notifier uses).
- *
- * When that one update check cannot connect, the process is offline from then
- * on. The state is kept here, not in the update checker, so every network call
- * PLUR starts on its own (the update check, the model download) stops, as if
- * the environment had said "offline". A model already on disk is still used.
- * Every automatic model download (the embedders and the transformers
- * cross-encoder rerankers) goes through one guard, refuseMissingModelOffline in
- * embedders/transformers-base.ts, which reads offlineNow(). Services the user
- * configured (team stores, remote embedders, pack URLs, telemetry) do not read it.
+ * The offline switch: when offline, PLUR starts no network activity of its own (the npm
+ * update check, model downloads); services the user configured are still contacted on use.
+ * - PLUR_OFFLINE=1, or HF_HUB_OFFLINE=1 / TRANSFORMERS_OFFLINE=1, declares offline up front.
+ * - PLUR_NO_UPDATE_CHECK=1 or NO_UPDATE_NOTIFIER=1 disables only the update check.
+ * - If the update check cannot connect, the process is offline from then on (state lives
+ *   here). Models on disk are still used. Every automatic model download goes through
+ *   refuseMissingModelOffline (embedders/transformers-base.ts), which reads offlineNow().
  */
 
 const truthy = (v: string | undefined): boolean =>

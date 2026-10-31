@@ -1,27 +1,12 @@
 /**
- * Build a provenance record for an engram.
- *
- * A record answers, for one engram: what produced it, what it came from, who is
- * answerable, when, and under what terms it may be reused. It is written as
- * JSON-LD using the W3C PROV vocabulary, so software that has never heard of us
- * can read it.
- *
- * Specification: `spec/ENGRAM-PROVENANCE-PROFILE.md`.
- * Worked examples, checked against two outside tools: `spec/examples/`.
- *
- * Three rules this file exists to enforce.
- *
- * **It is a view, not a store.** The record is built from the engram plus the
- * history log, on demand. Nothing new becomes a source of truth. If the record
- * and the stores disagree, the stores win. See ADR-0002.
- *
- * **A record you send must stand on its own.** Whoever receives an engram has
- * none of our files, so a portable record carries everything it depends on and
- * refers to nothing outside itself.
- *
- * **Never invent an agent.** Where the actor is unknown, the relationship is
- * omitted. A record with no agent is valid and honest. A record with a guessed
- * agent is worse than one with none, because it looks like evidence.
+ * Build a provenance record for an engram: what produced it, what it came from,
+ * who is answerable, when, and under what reuse terms — as JSON-LD in the W3C
+ * PROV vocabulary. Spec: `spec/ENGRAM-PROVENANCE-PROFILE.md`; examples:
+ * `spec/examples/`.
+ * - **A view, not a store:** built on demand from the engram plus the history
+ *   log; if record and stores disagree, the stores win (ADR-0002).
+ * - **A record you send stands on its own:** it refers to nothing outside itself.
+ * - **Never invent an agent:** an unknown actor means the relationship is omitted.
  */
 import type { Engram } from './schemas/engram.js'
 import type { HistoryEvent } from './history.js'
@@ -168,14 +153,8 @@ const LICENCE_POLICY: Record<string, { uid?: string; permit: string[]; require: 
 }
 
 /**
- * Extra fields for a particular field of work.
- *
- * Fields such as medical data, land registries or supply chains each have
- * facts worth recording that mean nothing to the others. The standard allows
- * this, and unknown fields survive a round trip untouched.
- *
- * Four rules keep it safe, and `assertDomainFields` enforces the first two:
- *
+ * Extra fields for a particular field of work (medical, land registry, ...);
+ * unknown fields survive a round trip. Rules (`assertDomainFields` enforces 1–2):
  *   1. A domain adds fields under ITS OWN prefix, never `prov:` or `engram:`.
  *   2. A domain never redefines an existing term to mean something else.
  *   3. A reader keeps fields it does not recognise, and does not fail on them.
@@ -341,15 +320,10 @@ function bornAt(engram: Engram): string | undefined {
 }
 
 /**
- * Has this memory NOT been cleared to leave this machine?
- *
- * Withheld when its visibility is `private`, OR when its scope does not leave
- * the machine — not a shared scope (`isSharedScope`) and not backed by a
- * remote store (`remoteBacked`) — and its visibility is not explicitly
- * `public`. An explicit `public` is the share act: it clears a personal-family
- * engram (`global`, `local`, `user:*`, `agent:*`), which is what a pack is made
- * of.
- *
+ * Has this memory NOT been cleared to leave this machine? Withheld when its
+ * visibility is `private`, OR when its scope does not leave the machine (not
+ * `isSharedScope`, not `remoteBacked`) and visibility is not explicitly
+ * `public` — `public` is the share act that clears a personal-family engram.
  * A missing scope counts as one that does not leave (fail closed).
  * Model: spec/formal/PlurSpec/R2CoreA.lean §1 (`withheld_iff`).
  */
@@ -426,17 +400,10 @@ function licencePolicy(name: string | undefined, withheld = false): Node | undef
 }
 
 /**
- * Turn a name for somebody into a valid identifier in the record.
- *
- * Two cases.
- *
- * A value that is ALREADY a web-style address (a Decentralized Identifier
- * `did:`, a web address, or a `urn:`) is one in its own right and is kept
- * as is; prefixing it would produce a different, meaningless identifier.
- *
- * Anything else becomes a local name under our own prefix, with characters an
- * identifier may not contain escaped: a raw space is not legal, and a strict
- * reader may reject the whole document over it.
+ * Turn a name for somebody into a valid identifier in the record. A value that
+ * is already an address (`did:`, a web address, `urn:`) is kept as is; anything
+ * else becomes a local name under our prefix with illegal characters escaped
+ * (a raw space can make a strict reader reject the whole document).
  */
 function agentId(name: string): string {
   // Normalise first. The same name typed on two machines can arrive in two
@@ -596,18 +563,10 @@ export function buildProvenanceRecord(
     'engram:describes': { '@id': `engram:${id}` },
     'engram:recordIsSelfContained': portable,
   }
-  // How much history this record covers, required by the profile's section 9.
-  //
-  // Without it a reader cannot tell a record built from a full log from one
-  // built from a log that had been rotated, truncated, or was simply not
-  // consulted — and those produce the same document. "No retirement recorded"
-  // then reads as "not retired", when it may only mean "we did not look that
-  // far back". The value is the month of the newest event the record was built
-  // from, matching the `history/YYYY-MM.jsonl` files it comes out of.
-  //
-  // Omitted, not faked, when no events were supplied: `engram:historyEvents: 0`
-  // says the record describes the engram alone, which is a different claim from
-  // covering a period and finding nothing in it.
+  // How much history this record covers (profile section 9): the month of the
+  // newest event, matching `history/YYYY-MM.jsonl`, so "no retirement recorded"
+  // is not misread as "not retired" for a truncated log. Omitted, not faked,
+  // when no events were supplied (`engram:historyEvents: 0`).
   const stamps = events.map(e => e.timestamp).filter(t => typeof t === 'string').sort()
   bundle['engram:historyEvents'] = events.length
   if (stamps.length) bundle['engram:historyThrough'] = stamps[stamps.length - 1].slice(0, 7)
@@ -842,25 +801,12 @@ export interface PackProvenanceInput {
 }
 
 /**
- * Build a provenance record for a whole pack.
- *
- * A pack is how engrams leave one machine and reach another, so this is where
- * provenance stops being a nicety. The recipient has our engrams and none of our
- * history, so this record stands entirely on its own.
- *
- * It answers a question no single engram can: **is this pack worth anything?**
- *
- * Who assembled it, when, out of what — and, from the engrams inside it, how
- * many were stated by a person versus inferred by a model, what dates they span,
- * and whether every engram carries a licence. Two packs of the same size are not
- * equal if one is direct statements from a named expert and the other is machine
- * guesses from an unknown source.
- *
- * On integrity: the pack's own hash covers the manifest and `engrams.yaml` only,
- * per the standard. A provenance file added to the pack is therefore NOT covered
- * by it. So the dependency runs the other way — this record carries the pack's
- * hash, and commits to the pack rather than the pack committing to it. Change
- * the pack and the hash in this record no longer matches.
+ * Build a provenance record for a whole pack. The recipient has none of our
+ * history, so this record stands entirely on its own and answers whether the
+ * pack is worth anything: who assembled it, when, from what, how many engrams
+ * were stated vs inferred, what dates they span, whether every one is licensed.
+ * Integrity: the pack's hash covers only the manifest and `engrams.yaml`, so
+ * this record carries the pack's hash (it commits to the pack, not the reverse).
  */
 export function buildPackProvenanceRecord(
   pack: PackProvenanceInput,
@@ -1290,18 +1236,11 @@ export function summariseProvenance(record: Node): ProvenanceSummary {
         && !forbidden.includes('odrl:distribute')
     }
 
-    // A grant NOBODY MADE does not answer a permission question.
-    //
-    // The record still reports `cc-by-sa-4.0`, because §2.3 of the standard
-    // makes a schema default part of the data model: a consumer must read an
-    // absent field as holding its default, and the JSON-LD has no business
-    // contradicting that.
-    //
-    // But these two booleans answer "may I?", and a default nobody chose must
-    // not answer yes, just as an unrecognised licence does not.
-    //
-    // `configuredDefault` and `inheritedFromPack` still answer, because a
-    // person decided in both cases — once in advance, or once for the pack.
+    // A grant NOBODY MADE does not answer a permission question. The record
+    // still reports the schema default licence (§2.3: an absent field reads as
+    // its default), but "may I?" must not be answered yes by a default nobody
+    // chose. `configuredDefault` and `inheritedFromPack` still answer: a person
+    // decided in both cases.
     if (licenceSource === 'schemaDefault') {
       fields.may_reuse_commercially = false
       fields.may_redistribute = false

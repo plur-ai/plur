@@ -12,19 +12,10 @@ import { protectOwnerOnly, type OwnerOnlyExec } from '@plur-ai/core'
 export type Backup = (source: string, data: Buffer) => string
 
 /**
- * A backup writer for `backupDir`. Before the first backup, the folder is
- * created (or an existing one checked) and made owner-only, and that is
- * verified: 0700 on Unix (a symlink, a non-folder or a folder owned by
- * another account is refused), an owner-only ACL on Windows. Each backup is
- * created owner-only from the outset — opened with mode 0600 on Unix, and on
- * Windows created empty and given an owner-only ACL before the content is
- * written — so a secret is never readable by anyone else, not even briefly.
- * An existing backup is never overwritten: a second backup of the same file
- * gets a numbered name. When protection cannot be established the writer
- * throws, and the target is refused with nothing changed. The Windows rule is
- * core's `protectOwnerOnly` — one implementation for config.yaml,
- * these backups and the installer's key file. `plur login` backs up
- * config.yaml and config.json through it too (sign-in-shared.ts).
+ * A backup writer for `backupDir`. The folder is made and verified owner-only first (0700 on Unix — symlinks,
+ * non-folders or foreign owners refused; an owner-only ACL on Windows via core's `protectOwnerOnly`). Each backup
+ * is owner-only from creation, so a secret is never readable by others even briefly; existing backups are never
+ * overwritten (numbered names). If protection cannot be established it throws and nothing changes.
  */
 export function backupWriter(
   backupDir: string,

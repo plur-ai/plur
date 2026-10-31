@@ -1,24 +1,12 @@
 /**
  * PrimaryStore — the source-of-truth persistence seam.
- *
- * `StorageAdapter` cannot take this role: it is an *index* interface
- * (`loadFiltered` / `searchBM25` / `searchVector` / `syncFromYaml` /
- * `reindex`) with no write operations at all. The split is:
- *
  *   PrimaryStore    — persistence. Owns the bytes. Read and write.
- *   StorageAdapter  — query. Either derived from a PrimaryStore (`role: 'index'`)
- *                     or backed by the same engine as one (`role: 'primary'`).
+ *   StorageAdapter  — query only (no writes). Either derived from a PrimaryStore
+ *                     (`role: 'index'`) or backed by the same engine (`role: 'primary'`).
  *
- * YAML is the default (`YamlPrimaryStore`). ADR-0001 (YAML as source of truth)
- * is a *choice of implementation* here rather than an assumption baked into
- * the caller.
- *
- * The contract is asynchronous so a network-backed store (there is no
- * synchronous Postgres client for Node) can satisfy it.
- *
- * `invalidate()` stays synchronous. It drops a local cache; it does not touch
- * the backing medium, and making it async would add an interleaving point that
- * buys nothing.
+ * YAML (`YamlPrimaryStore`) is the default; ADR-0001 is an implementation choice here.
+ * The contract is async so a network-backed store can satisfy it; `invalidate()`
+ * stays sync because it only drops a local cache.
  */
 import type { Engram } from '../schemas/engram.js'
 
@@ -40,51 +28,21 @@ export interface SaveOptions {
 /**
  * ## Implementer contract: what the engine cannot protect you from
  *
- * The engine guards the write path in three places: the YAML loader refuses
- * an unreadable file, `saveEngrams` refuses an undeclared shrink, and
- * `_writeEngrams` refuses an undeclared *empty* corpus on any backend. All
- * three rest on the same assumption — that SOMETHING the store says can be
- * trusted.
- *
- * An implementation whose `load()` under-reports (returns `[]`, or a partial
- * set, for a store that is not actually empty) and which implements neither
- * `append`/`updateMany` nor a truthful count defeats every one of them by
- * construction: read-modify-write is the only shape available, the engine has
- * no second opinion to check the read against, and the resulting `save()`
- * legitimately looks like "the corpus is now this small". There is nothing
- * left to guard with.
- *
- * So an implementation MUST do at least one of:
- *
- *   - implement `append` and `updateMany`, so single-engram changes never
- *     become whole-corpus replaces (what `PostgresAdapter` and
- *     `MemoryPrimaryStore` do); or
- *   - make `load()` fail loudly rather than under-report, so the engine can
- *     refuse instead of persisting a lie (what `YamlPrimaryStore` does via
- *     `EngramStoreUnreadableError`).
- *
- * Every store shipped in this package satisfies one or both. A custom store
- * that satisfies neither is outside what the engine can defend.
+ * The engine's write guards (unreadable-file refusal, shrink guard, empty-corpus
+ * refusal) all trust what the store reports. A `load()` that under-reports, with
+ * no `append`/`updateMany`, defeats every one of them. An implementation MUST either:
+ *   - implement `append` and `updateMany` (as `PostgresAdapter`, `MemoryPrimaryStore`); or
+ *   - make `load()` fail loudly rather than under-report (as `YamlPrimaryStore`
+ *     via `EngramStoreUnreadableError`).
  */
 export interface PrimaryStore {
   /**
-   * Queue background work until the current transaction commits. Stores
-   * without transactions may omit this capability.
-   *
-   * Contract for callers:
-   * - Register SYNCHRONOUSLY from inside the protected function (the `fn` of
-   *   `withExclusiveAccess`), before it returns or throws. That is the only
-   *   registration guaranteed to run, and it runs once, after the commit is
-   *   confirmed, outside the transaction's connection.
-   * - Work registered after the protected function has ended but before the
-   *   commit is confirmed — from a detached promise, or while COMMIT is in
-   *   flight — is DROPPED with a warning, even if the commit then succeeds.
-   *   The store cannot tell such a late registration from one made after a
-   *   rollback, so it errs towards not running work for a write that may not
-   *   have landed.
-   * - Outside any protected operation, or after a confirmed commit, the
-   *   callback runs at once.
-   * - Work registered in an operation that rolls back never runs.
+   * Queue background work until the current transaction commits (optional).
+   * - Register SYNCHRONOUSLY inside the `fn` of `withExclusiveAccess`; only that
+   *   registration is guaranteed to run, once, after the commit, outside the transaction.
+   * - Work registered after `fn` ends but before the commit is confirmed is DROPPED
+   *   with a warning (indistinguishable from post-rollback). Rolled-back work never runs.
+   * - Outside any protected operation, or after a confirmed commit, it runs at once.
    */
   afterCommit?(callback: () => void): void
 
@@ -92,21 +50,11 @@ export interface PrimaryStore {
   readonly kind: PrimaryStoreKind
 
   /**
-   * This store's `load()` FAILS rather than under-reporting.
-   *
-   * Set it only if a read that cannot see the whole corpus throws instead of
-   * returning a short array — `YamlPrimaryStore` qualifies because
-   * `loadEngrams` raises {@link EngramStoreUnreadableError} rather than
-   * treating an unparseable file as empty.
-   *
-   * It is the second of the two ways to satisfy the implementer contract above,
-   * and it is checked at attachment: a store that declares neither this nor the
-   * `append`/`updateMany` pair is refused, because nothing the engine can
-   * observe would distinguish a genuinely small corpus from a bad read.
-   *
-   * Declaring it falsely is worse than not declaring it — it tells the engine a
-   * short read can be trusted, which is precisely the assumption that destroys
-   * corpora.
+   * This store's `load()` FAILS rather than under-reporting (e.g. `YamlPrimaryStore`
+   * raises {@link EngramStoreUnreadableError}). It is the second way to satisfy the
+   * implementer contract and is checked at attachment: a store declaring neither
+   * this nor `append`/`updateMany` is refused. Never declare it falsely — that tells
+   * the engine a short read can be trusted, which destroys corpora.
    */
   readonly refusesUnreadable?: boolean
 
@@ -145,74 +93,29 @@ export interface PrimaryStore {
   invalidate(): void
 
   /**
-   * Run `fn` with EXCLUSIVE access to this store, across every process that
-   * shares it. Optional; when absent the caller falls back to its own
-   * path-based file lock.
-   *
-   * ## Why this is on the store
-   *
-   * `Plur`'s write methods are read-modify-write: load the corpus, change one
-   * engram, save the corpus. That is only safe under mutual exclusion. A
-   * path-based lock (an in-process mutex plus an `O_EXCL` lock file on the
-   * LOCAL filesystem) is correct for `YamlPrimaryStore`, where the path being
-   * locked IS the data. It protects nothing when the data lives in a shared
-   * database: two containers share neither the mutex nor the lock file, so
-   * both load, both mutate, and both save — and because `save()` replaces the
-   * whole corpus, the loser does not merely lose its own update, it DELETES
-   * rows the winner committed. Even a *read-only* `recall()` is exposed,
-   * because it updates activation, which is itself a write.
-   *
-   * So the lock has to be the store's business. A store that spans processes
-   * implements this with something those processes actually share — a Postgres
-   * advisory lock, a row lock, a lease. A single-file store can leave it
-   * undefined and keep the file lock.
-   *
-   * Implementations MUST be reentrant-safe from the caller's perspective in the
-   * sense that `fn` may itself call `load`/`save` on the same store, and MUST
-   * release on throw.
+   * Run `fn` with EXCLUSIVE access across every process sharing this store.
+   * Optional; when absent the caller falls back to its path-based file lock.
+   * Writes are read-modify-write of the whole corpus (even `recall()` writes
+   * activation), and a local file lock protects nothing for a shared database, so a
+   * cross-process store must lock with something shared (advisory lock, lease).
+   * MUST allow `fn` to call `load`/`save` on the same store, and MUST release on throw.
    */
   withExclusiveAccess?<T>(fn: () => Promise<T>): Promise<T>
 
   /**
-   * Replace exactly these engrams, leaving every other row untouched.
-   * Optional; when absent the caller falls back to a whole-corpus `save()`.
-   *
-   * `save()` is a full replace — it rewrites every row and deletes anything
-   * absent from the array. That is the right contract for "here is the corpus",
-   * and the wrong one for "these three engrams changed".
-   *
-   * It matters most on the read path. `recall()` updates activation on the
-   * engrams it returned; under `save()` that rewrites the ENTIRE corpus on
-   * every read while holding the global write lock (hundreds of ms at a few
-   * thousand engrams, seconds at the sizes where a row store is selected), so
-   * every writer queues behind every reader.
-   *
-   * Implementations MUST NOT delete rows absent from `engrams`, and MUST be
-   * safe to call inside `withExclusiveAccess`.
+   * Replace exactly these engrams, leaving every other row untouched. Optional;
+   * when absent the caller falls back to a whole-corpus `save()`, which would
+   * rewrite the whole corpus on every `recall()` under the write lock.
+   * MUST NOT delete rows absent from `engrams`; MUST be safe inside `withExclusiveAccess`.
    */
   updateMany?(engrams: Engram[]): Promise<void>
 
   /**
-   * Insert exactly one NEW engram, leaving every other row untouched.
-   * Optional; when absent the caller falls back to a whole-corpus `save()` of
-   * the corpus it already holds — never a fresh load-and-reparse.
-   *
-   * The companion to {@link updateMany} for the write path: `learn()`
-   * constructs a brand-new engram, and on a row store that should be a
-   * single-row INSERT, not a corpus replace. It is deliberately NOT expressed
-   * as `updateMany([engram])`: `updateMany` is an upsert, so a duplicate id
-   * would silently overwrite an unrelated existing row. `append` carries the
-   * "this row is new" intent, and an implementation SHOULD surface an id
-   * collision as an error rather than absorb it.
-   *
-   * `YamlPrimaryStore` intentionally does not implement it. A single-file
-   * store rewrites the whole file either way, and every in-engine caller
-   * already holds a freshly loaded corpus under the store lock — the fallback
-   * reuses that corpus, so implementing `append` here would only add a second
-   * full parse of a file the caller just parsed.
-   *
-   * Implementations with a read cache MUST invalidate it after writing, and
-   * MUST be safe to call inside `withExclusiveAccess`.
+   * Insert exactly one NEW engram, leaving other rows untouched. Optional; when absent
+   * the caller saves the corpus it already holds. Not `updateMany([engram])`: that is
+   * an upsert and would overwrite on a duplicate id — SHOULD surface a collision as an
+   * error. `YamlPrimaryStore` omits it (it rewrites the whole file anyway).
+   * MUST invalidate any read cache after writing; MUST be safe inside `withExclusiveAccess`.
    */
   append?(engram: Engram): Promise<void>
 
@@ -228,101 +131,33 @@ export interface PrimaryStore {
   loadByIds?(ids: string[]): Promise<Engram[]>
 
   /**
-   * The engram carrying this content hash IN THIS SCOPE with
-   * `status === 'active'`, or `null`. Optional; when absent the caller falls
-   * back to scanning the loaded corpus.
-   *
-   * The status filter is the predicate, not a nicety: re-learning a RETIRED
-   * statement must create a fresh engram rather than resurrect the retired one,
-   * and the local half of a completed rescope is retired precisely so its hash
-   * cannot pull the statement back. An implementation that
-   * matches retired rows undoes both.
-   *
-   * `learn()` asks one question before it writes anything: "do we already have
-   * this exact statement in this scope?" On a single YAML file, answering it by
-   * scanning the parsed corpus is free — the file was parsed either way. On a
-   * row store it is a full table scan standing in for an index lookup on
-   * `(content_hash, scope)`, paid on every learn, at the corpus size where a row
-   * store gets selected in the first place (see {@link updateMany}).
-   *
-   * ### Scope-bound, deliberately
-   *
-   * A hash match in ANOTHER scope is a different engram, and returning it would
-   * disclose it. Implementations MUST restrict the lookup to `scope` exactly —
-   * not a prefix, not a parent, not "any scope this caller could read".
-   *
-   * That has a consequence worth stating plainly rather than discovering:
-   * `learn()`'s CROSS-scope recurrence check (the same statement
-   * re-learned under a different scope graduates the existing engram toward
-   * `global` + `locked` instead of creating a second row) asks the opposite
-   * question, and this seam is defined so it cannot answer it. So when a store
-   * implements this method, the primary-store half of cross-scope recurrence is
-   * SKIPPED: a same-hash engram in another scope is not found, and the new
-   * statement becomes a new engram in its own scope. Secondary stores and packs
-   * are unaffected — they are scanned in memory either way.
-   *
-   * That is the intended outcome, not a tolerated loss. A store that wants this
-   * seam is one where scopes are a permission boundary; silently broadening one
-   * tenant's engram to `global` because another tenant learned the same
-   * sentence is precisely what such a store must not do. A store that wants
-   * cross-scope graduation should not implement this method, and pays the
-   * corpus scan that makes it possible.
-   *
-   * @see nextEngramId — the other half of the `learn()` seam; both are required
-   *   before the engine will skip the corpus load.
+   * The engram with this content hash IN THIS SCOPE and `status === 'active'`, or
+   * `null`. Optional; when absent the caller scans the loaded corpus.
+   * - The status filter is required: re-learning a retired statement (incl. the
+   *   retired half of a rescope) must create a fresh engram, not resurrect it.
+   * - MUST restrict to `scope` exactly (not prefix/parent): another scope's match is
+   *   a different engram and returning it would disclose it.
+   * - Implementing it skips primary-store cross-scope recurrence (graduation to `global`) by design.
+   * @see nextEngramId — the other half of the `learn()` seam; both are required to skip the corpus load.
    */
   findActiveByContentHash?(hash: string, scope: string): Promise<Engram | null>
 
   /**
-   * The next unused engram id for `datePrefix` (e.g. `'ENG-2026-08-03-'`).
-   * Optional; when absent the caller falls back to deriving it from the loaded
-   * corpus.
-   *
-   * The performance half is the obvious one — `generateEngramId` scans the
-   * whole corpus for the maximum suffix, which a row store answers with
-   * `SELECT MAX(...) WHERE id LIKE '<datePrefix>%'`.
-   *
-   * ### The sharper half is collision safety
-   *
-   * `generateEngramId` derives its suffix from a SNAPSHOT and the engine then
-   * calls {@link append}. Those are the same concern from opposite ends:
-   * `append` says an implementation *SHOULD surface an id collision as an error
-   * rather than absorb it*, which is the last line of defence for an id that
-   * was already stale when it was minted. A store whose `append` is really an
-   * upsert has no such defence and silently overwrites the loser of a race.
-   * The engine's store lock contains this within one process; it is not a
-   * property callers should have to rely on, and it does not survive two
-   * processes sharing one database.
-   *
-   * `nextEngramId` moves allocation to the party that can make it atomic —
-   * for a row store, a sequence or an `INSERT ... RETURNING` in the same
-   * transaction. Implementations SHOULD make allocation collision-safe under
-   * concurrency rather than returning a value derived from a stale read.
-   *
-   * ### Contract
-   *
-   * - The returned id MUST begin with `datePrefix` and MUST be unused in this
-   *   store.
-   * - The engine passes the canonical `ENG-YYYY-MM-DD-` form. A store also
-   *   holding legacy `ENG-YYYY-MMDD-` ids may account for them but need not:
-   *   the two forms cannot collide as strings.
-   * - Allocation is scoped to the PRIMARY store. Unlike the fallback, ids held
-   *   by installed packs are not consulted — `append`'s collision check is the
-   *   backstop.
-   *
+   * The next unused engram id for `datePrefix` (e.g. `'ENG-2026-08-03-'`). Optional;
+   * when absent the caller derives it from the loaded corpus snapshot.
+   * SHOULD allocate atomically (sequence, `INSERT ... RETURNING`): a snapshot-derived
+   * id can be stale across processes.
+   * - The returned id MUST begin with `datePrefix` and MUST be unused in this store.
+   * - Legacy `ENG-YYYY-MMDD-` ids cannot collide with the canonical form as strings.
+   * - Pack ids are not consulted; `append`'s collision check is the backstop.
    * @see findActiveByContentHash — the other half of the `learn()` seam.
    */
   nextEngramId?(datePrefix: string): Promise<string>
 
   /**
-   * Cheap, approximate size of the store — for choosing a backend, never for
-   * reporting a count to a user.
-   *
-   * MUST NOT load or parse the corpus: the whole point is to decide which
-   * backend to build *before* paying the cost the wrong backend would impose.
-   * `YamlPrimaryStore` derives it from the file size; an in-memory store knows
-   * it exactly. Optional so an implementation with no cheap estimate can stay
-   * silent, in which case backend selection treats the store as small.
+   * Cheap, approximate store size — for choosing a backend, never for user-facing
+   * counts. MUST NOT load or parse the corpus. Optional; when absent backend
+   * selection treats the store as small.
    *
    * @see resolveBackendTier in `../backend-selection.js`
    */

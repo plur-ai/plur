@@ -1,22 +1,9 @@
 /**
- * Outbox entry classification.
- *
- * A queued team write fails for one of two kinds of reason, and they want
- * opposite treatment:
- *
- *   - `retrying`     — the network, a 5xx, a 429, a timeout. The next flush
- *                      may well succeed, so it keeps retrying.
- *   - `needs_action` — 401, 403, 404, 422, an explicit "cannot write to scope"
- *                      refusal, or no writable store registered for the scope.
- *                      Retrying cannot fix any of these; a person has to.
- *
- * Classifying the entry lets session start, `plur status`, `plur doctor` and
- * `plur outbox` report a permanently refused write in one line.
- *
- * Pure: reads the entry's recorded failure, never the network, and never
- * changes the entry. When the evidence is ambiguous the answer is `retrying`,
- * because a false `needs_action` would turn doctor red and back off an entry
- * that may be about to succeed.
+ * Outbox entry classification, so session start, status, doctor and `plur outbox` report a refused write in one line:
+ *   - `retrying`     — network, 5xx, 429, timeout: the next flush may succeed.
+ *   - `needs_action` — 401, 403, 404, 422, a scope write refusal, or no writable store: a person must act.
+ * Pure: reads the recorded failure only. Ambiguous evidence → `retrying` (a false `needs_action` turns doctor red
+ * and backs off an entry that may succeed).
  */
 
 export type OutboxState = 'retrying' | 'needs_action'

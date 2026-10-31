@@ -19,43 +19,14 @@ import { safeSessionKey } from './session-key.js'
 import { ensureSessionDir, sessionDirSafeToSweep, cleanupStaleSessionFiles } from './codex-hook-io.js'
 
 /**
- * Automatic rating of injected engrams at the end of a turn, shared by every
- * editor's end-of-turn hook (`plur hook-auto-rate --editor <name>`).
- *
- * Two halves:
- *
- * 1. The inject hooks call {@link recordInjected} with the ids they injected,
- *    keyed by (editor, the editor's own session id). Only ids are stored —
- *    never engram text — in a vetted per-user directory (the same checks the
- *    Codex/Cursor/Antigravity session dirs get).
- * 2. The end-of-turn hook calls {@link autoRateTurn} with the reply text. Ids
- *    injected this session and not yet rated are loaded, rated against the
- *    reply by core's `rateInjectedEngrams`, and every verdict at or above 0.6
- *    is sent as `source: 'auto'` feedback — ranking only, never commitment.
- *    Each engram gets at most one automatic verdict per session: a rated id is
- *    recorded and not rated again, so one engram quoted in every reply of a
- *    long session is not pushed up on every turn.
- *
- * Fast path: when nothing was injected this session (or everything injected
- * has been rated) and auto-capture is off, no store is opened at all — the
- * cost is one small file read.
- *
- * The hook never does the store work itself. It appends the turn to a
- * per-session queue and hands it to a detached background worker
- * (`plur hook-auto-rate --worker`), then returns. On a large store the store
- * work takes seconds to tens of seconds of synchronous YAML parsing and
- * writing; done inside the hook it would overrun the editor's budget, be
- * killed part-way, and could leave the store lock behind. The worker is not
- * bound by the editor's timeout, runs one at a time per session, and never
- * exits while a store write is in flight.
- *
- * At most one verdict per engram per session: an id is recorded as rated
- * BEFORE its feedback is applied (write-ahead). A worker killed between the
- * two loses that one signal; it can never apply it twice.
- *
- * Switches (environment, the same convention as PLUR_REMOTE_RECALL):
- *   PLUR_AUTO_RATE=0|false|off   turns automatic rating off (on by default)
- *   PLUR_AUTO_CAPTURE=1|true|on  turns automatic capture on (off by default)
+ * Automatic rating of injected engrams at the end of a turn, shared by every editor (`plur hook-auto-rate`).
+ * 1. Inject hooks call {@link recordInjected} with ids only (never text), per (editor, session), in a vetted dir.
+ * 2. The end-of-turn hook queues the reply for a detached worker (`--worker`), which rates unrated ids with core's
+ *    `rateInjectedEngrams` and sends verdicts >= 0.6 as `source: 'auto'` feedback (ranking only). The hook never
+ *    does store work: it would overrun the editor's budget and could leave the lock behind.
+ * At most one verdict per engram per session: ids are recorded as rated BEFORE feedback (write-ahead).
+ * Fast path: nothing to rate and capture off → no store opened. Env: PLUR_AUTO_RATE=0|false|off disables rating;
+ * PLUR_AUTO_CAPTURE=1|true|on enables capture.
  */
 
 export type AutoRateEditor = 'claude' | 'codex' | 'cursor' | 'agy'
@@ -265,17 +236,9 @@ function heldByOlderWorker(path: string): boolean {
 }
 
 /**
- * Take over a worker lock judged stale, atomically. Mirrors core's
- * `stealLock` (store/async-lock.ts): CLAIM the file by renaming it to a unique
- * name — only one contender's rename can succeed — then check that the
- * claimed file is the one judged stale. If it is not (another contender
- * already took over, and this is now their live lock), put it back with an
- * exclusive create and report failure. A plain unlink here would delete a
- * lock another worker had created in the meantime — the pattern the formal
- * model refutes (`InjectLock.old_removes_live`).
- *
- * Returns true only when the stale lock judged by `expected` was removed.
- * Exported for tests.
+ * Take over a worker lock judged stale, atomically, mirroring core's `stealLock`: CLAIM by renaming to a unique
+ * name, verify it is the stale one, else restore it with an exclusive create. Never a plain unlink — that can
+ * delete a newly created live lock (`InjectLock.old_removes_live`). Returns true only if the stale lock was removed.
  */
 export function takeOverStaleWorkerLock(path: string, expected: string): boolean {
   const claim = `${path}.steal.${process.pid}.${Math.random().toString(36).slice(2, 10)}`

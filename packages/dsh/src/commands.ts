@@ -1,15 +1,9 @@
 /**
- * The `/plur` and `/plur-memory` human commands.
- *
- * Dispatch without spending a model turn, so a user can check memory health or
- * read their engrams without persuading the model to call a tool.
- *
- * The host contract is `CommandDefinition` from `@deepseek-ai/dsh-commands`:
- * the executable field is **`handler`**, and it returns a `CommandResult` — a
- * union discriminated on `kind`, not a bare string. Registration with any other
- * shape throws, and Cordis contains the throw inside the injected child fiber,
+ * The `/plur` and `/plur-memory` human commands, dispatched without a model turn.
+ * Host contract: `CommandDefinition` from `@deepseek-ai/dsh-commands` — the
+ * executable field is **`handler`** and it returns a `CommandResult` union
+ * discriminated on `kind`. Any other shape throws inside Cordis's child fiber,
  * so the command silently fails to register.
- *
  * @module
  */
 import type { Context } from '@deepseek-ai/cordis'

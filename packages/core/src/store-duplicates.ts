@@ -56,16 +56,11 @@ export function classifyStoreDuplicates(stores: StoreEntry[], primaryEngramsPath
 }
 
 /**
- * Remove every local store entry in config.yaml whose file is the primary
- * engrams file (`plur stores prune`). Returns the removed entries; an
- * empty list means nothing matched and the file was not touched.
- *
- * Only those entries are removed, and every other byte of config.yaml is kept:
- * the file is edited as text (a re-dump would drop comments and reformat), and
- * the result is re-parsed and must equal the original with exactly those
- * entries gone. If the `stores:` list is not in a shape this can edit safely
- * (flow style, anchors, …) it throws and changes nothing. The write is atomic
- * (tmp + fsync + rename) under the config lock.
+ * Remove every local store entry in config.yaml whose file is the primary engrams file
+ * (`plur stores prune`); returns the removed entries (empty → file untouched).
+ * Edited as text to keep every other byte; the result is re-parsed and must equal the
+ * original minus those entries, else (flow style, anchors, …) it throws and changes
+ * nothing. Atomic write under the config lock.
  */
 export function removePrimaryStoreEntries(configPath: string, primaryEngramsPath: string): StoreEntry[] {
   return withLock(configPath, () => {

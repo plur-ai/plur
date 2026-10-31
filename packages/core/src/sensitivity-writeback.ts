@@ -1,18 +1,11 @@
 /**
- * The writeback rule for a store's `sensitivity`, shared by per-scope entries
- * (`mergeStoresForWriteback`) and server entries (`collapseExpandedStores`).
- *
- * `rawValue` is the on-disk value, read fresh and unvalidated: it can be
- * anything a hand-edit put there, so it only counts when it is a plain object.
- * `typed` is the parsed value, whose `forbid` was normalized at load (unknown
- * categories dropped).
- *
- *   - Nested unknown keys of the raw value survive (one-level deep merge).
- *   - The raw `forbid` is restored verbatim, so a forward-compatible category
- *     a newer client wrote is never erased by the first writeback.
- *   - `authoritative` (the server just synced this scope's policy from `/me`):
- *     the typed `forbid` wins, or the server's change would be discarded.
- *   - No typed value: the raw value is kept as it is.
+ * The writeback rule for `sensitivity`, shared by `mergeStoresForWriteback` and
+ * `collapseExpandedStores`. `rawValue` (fresh from disk, unvalidated) counts only
+ * if a plain object; `typed` had unknown `forbid` categories dropped at load.
+ * - Nested unknown raw keys survive (one-level merge).
+ * - The raw `forbid` is restored verbatim, so newer categories are never erased,
+ *   unless `authoritative` (server policy just synced from `/me`): typed wins.
+ * - No typed value: the raw value is kept.
  */
 export function mergeSensitivityForWriteback(
   rawValue: unknown,

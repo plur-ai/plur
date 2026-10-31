@@ -1,26 +1,11 @@
 /**
- * EmbeddingGemma adapter — Google EmbeddingGemma-300M via @huggingface/transformers.
- *
- * 768-dim native (with Matryoshka tiers at 512/256/128), ~300M params, ~300MB
- * on disk with int8/q8 quantisation. Apache 2.0.
- *
- * Model id: onnx-community/embeddinggemma-300m-ONNX — the community ONNX
- * conversion. The ONNX graph ships two outputs: last_hidden_state [B,T,768]
- * and sentence_embedding [B,768]. Only sentence_embedding is the complete
- * official stack: mean pooling + Dense(768→3072) + Dense(3072→768) + L2
- * normalisation. Mean-pooling last_hidden_state in JS skips the two Dense
- * layers and produces vectors in a different space, so the model is loaded
- * via AutoModel (not the feature-extraction pipeline) and sentence_embedding
- * is read directly.
- *
- * Role prefixes: EmbeddingGemma is trained with asymmetric prefixes per its
- * model card — "task: search result | query: " for search queries and
- * "title: none | text: " for stored documents ("query: "/"passage: " is the
- * E5 convention, not EmbeddingGemma's). Callers pass role='query' for search;
- * omitting role defaults to the document prefix.
- *
- * q8 weights (~300 MB) match published EmbeddingGemma benchmark numbers and
- * keep the first-run download manageable.
+ * EmbeddingGemma adapter — Google EmbeddingGemma-300M via @huggingface/transformers
+ * (onnx-community/embeddinggemma-300m-ONNX, q8 ~300 MB, 768-dim, Apache 2.0).
+ * Only the `sentence_embedding` output includes the official Dense layers and L2 norm,
+ * so the model is loaded via AutoModel and that output read directly — never
+ * mean-pool `last_hidden_state`.
+ * Role prefixes per the model card: "task: search result | query: " for queries,
+ * "title: none | text: " for documents (the default when `role` is omitted).
  */
 import type { EmbedderAdapter, EmbedRole } from './types.js'
 import { importTransformers, resolveLoadCacheDir, modelPresence, envOf, refuseMissingModelOffline, localOnlyOptions } from './transformers-base.js'

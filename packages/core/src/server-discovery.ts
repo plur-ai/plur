@@ -1,24 +1,12 @@
 /**
- * Server scope discovery — pure decision rules.
- *
- * `acceptDiscoveredScopes` decides, from one GET /api/v1/me answer (or the
- * error it threw), whether a server entry's cached `scopes` list is replaced
- * and with what. It never touches the network or the config file.
- *
- * Rules:
- * - A failed, unauthorised, timed-out or network answer never replaces the
- *   cache (not even an empty one).
- * - `scopes_status: 'ok'` replaces the cache with the server's list, even [].
- * - A malformed scope list (`MeResponse.scopes_malformed`: missing, null, not
- *   an array, or with an invalid member) is `degraded`: it never replaces a
- *   non-empty cache. Only an explicit, valid `[]` clears one.
- * - `scopes_status: 'not_synced'`, or an older server (no `scopes_status`)
- *   answering an empty list, replaces only an empty cache (with []).
- * - An answer with no `org_id` cannot be checked against an org, so every
- *   scope is rejected (`org-prefix`) and the answer is `degraded`: it never
- *   replaces a non-empty cache.
- * - Accepted scopes are filtered to the server's org; a scope another server
- *   entry already serves is refused.
+ * Server scope discovery — pure rules for whether one GET /api/v1/me answer (or its error) replaces a server
+ * entry's cached `scopes`. No network, no config writes.
+ * - Failed, unauthorised, timed-out or network answers never replace the cache.
+ * - `scopes_status: 'ok'` replaces it with the server's list, even [].
+ * - A malformed list (`scopes_malformed`) or an answer with no `org_id` (every scope rejected, `org-prefix`) is
+ *   `degraded` and never replaces a non-empty cache; only an explicit valid `[]` clears one.
+ * - `not_synced`, or an older server answering [] without `scopes_status`, replaces only an empty cache.
+ * - Accepted scopes are filtered to the server's org; a scope another entry already serves is refused.
  */
 import { isDeepStrictEqual } from 'node:util'
 import type { MeResponse } from './store/remote-store.js'
@@ -296,26 +284,12 @@ function keptReason(r: Record<string, unknown>, scope: string, token: string | u
 }
 
 /**
- * Fold the per-scope entries on one server into that server's one entry (pure).
- *
- * `rawStores` must hold exactly one server entry whose url has the canonical
- * endpoint identity of `serverUrl` (otherwise this throws: which entry the
- * scopes belong to cannot be told). `token`/`tokenEnv` are that entry's key
- * as stored on disk. A per-scope url entry (no `path`, no `scopes`) on the same
- * server is folded when its stored `token_env`, `token` and `readonly` equal the
- * server entry's (and its scope passes the grammar and any explicit `shared`
- * matches the scope's): it leaves the array, its scope joins `pinned_scopes`
- * (so a later discovery that omits it cannot drop it), and its metadata (every
- * key that is not identity, credentials or routing) goes to
- * `scope_settings[scope]`, over a value already there for the same key. Every
- * other entry is returned unchanged; the input array is not modified.
- *
- * A write takes the first entry in config order that serves its scope, so the
- * fold keeps every route as it was: the server entry stays where it is (moving
- * it ahead of an entry that serves one of its scopes with another key would
- * move that scope onto this key), and an entry is folded only when no entry
- * that stays — another key, another server or a path — serves its scope
- * (`scope-served-elsewhere`).
+ * Fold the per-scope entries on one server into that server's one entry (pure; input not modified).
+ * `rawStores` must hold exactly one entry with `serverUrl`'s canonical endpoint identity, else this throws.
+ * A per-scope url entry on that server is folded when its `token_env`, `token` and `readonly` match (and its scope
+ * is valid): its scope joins `pinned_scopes` and its other metadata goes to `scope_settings[scope]`.
+ * Routes never change: the server entry keeps its position, and an entry is not folded when an entry that stays
+ * serves its scope (`scope-served-elsewhere`).
  */
 export function foldStoresIntoServerEntry(
   rawStores: unknown[], serverUrl: string, token: string | undefined, tokenEnv: string | undefined,
@@ -439,19 +413,11 @@ function legacyJwt(value: unknown): boolean {
 
 /**
  * Register a server entry in a raw `stores` array (pure).
- *
- * - No server entry for the url's canonical endpoint identity: one is added,
- *   `{ url, token | token_env, scope: personalScope, enterprise, scopes: [] }`.
- * - Exactly one: it is updated in place. A different key replaces the key of
- *   that entry only (a `token_env` reference replaces an inline key and the
- *   other way round); `opts.enterprise` is merged into its `enterprise` block;
- *   a different `personalScope` becomes its compat `scope` through
- *   {@link withCompatScope} (the old compat scope's top-level metadata moves to
- *   its `scope_settings`). Every other key of the entry is kept.
- * - More than one: refused (throws), like key rotation and discovery.
- *
- * Then {@link foldStoresIntoServerEntry} folds the per-scope entries that hold
- * the entry's key. `unchanged` means the result equals the input.
+ * - None for the url's endpoint identity: add `{ url, token | token_env, scope: personalScope, enterprise, scopes: [] }`.
+ * - Exactly one: update in place — replace its key, merge `opts.enterprise`, set a new compat `scope` via
+ *   {@link withCompatScope}; keep every other key.
+ * - More than one: throws.
+ * Then {@link foldStoresIntoServerEntry} folds per-scope entries with the same key. `unchanged` = result equals input.
  */
 export function registerServerEntry(rawStores: unknown[], reg: ServerRegistration): {
   stores: unknown[]; status: 'added' | 'updated' | 'unchanged'; report: Omit<FoldReport, 'queued_by_scope'>; entry: Record<string, unknown>

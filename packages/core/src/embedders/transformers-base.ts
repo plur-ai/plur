@@ -1,14 +1,7 @@
 /**
- * Shared base for @huggingface/transformers-backed adapters.
- *
- * Centralises the lazy pipeline load + the embed/embedBatch shape so each
- * concrete adapter only declares its model id, dim, pooling strategy, and
- * dtype. This is the path that handles MiniLM, BGE-small, BGE-base, and
- * (if the transformers runtime supports it) EmbeddingGemma.
- *
- * Each adapter caches its pipeline as a module-local Map so two instances of
- * the same name share the model instance — important because each load is
- * 100MB+ of WASM / ONNX setup.
+ * Shared base for @huggingface/transformers-backed adapters: lazy pipeline load plus embed/embedBatch, so each
+ * adapter declares only model id, dim, pooling and dtype. Pipelines are cached per name in a module-local Map,
+ * since each load is 100MB+ of WASM/ONNX setup.
  */
 import { join } from 'path'
 import { existsSync, readFileSync } from 'fs'
@@ -216,24 +209,10 @@ async function loadPipeline(modelId: string, dtype: TransformersAdapterConfig['d
       process.env.HF_HUB_DISABLE_XET ??= '1'
       const transformers = await importTransformers()
 
-      // Let the caller place the model cache.
-      //
-      // transformers.js derives its cache directory from the PACKAGE LOCATION
-      // (`<package>/.cache`) and reads no environment variable — HF_HOME and
-      // TRANSFORMERS_CACHE are both ignored (see its src/env.js). The only
-      // lever is `env.cacheDir`, set before the first pipeline() call, which
-      // happens here. Without it, a model installed from npm lives inside
-      // node_modules and every `npm ci` deletes it (re-download per deploy;
-      // air-gapped hosts cannot work at all).
-      //
-      // That failure is quiet: embed() returning null is a deliberate
-      // degradation — hybrid recall drops to BM25-only and new records are
-      // written without vectors, with nothing raised.
-      //
-      // Precedence: explicit PLUR var, then the HF convention (honoured here
-      // even though the library ignores it, because operators reasonably expect
-      // it to work), then the library default. A model already complete in the
-      // library default cache is used from there when the override has none.
+      // Let the caller place the model cache. transformers.js ignores HF_HOME/TRANSFORMERS_CACHE and caches inside
+      // its package, so `npm ci` would delete the model and embeddings would silently degrade to BM25-only; the only
+      // lever is `env.cacheDir` before the first pipeline() call. Precedence: PLUR var, then HF convention, then the
+      // library default; a model complete in the default cache is used from there when the override has none.
       const weights = weightsFileFor(dtype)
       const cacheDir = await resolveLoadCacheDir(modelId, weights)
       const env = envOf(transformers)

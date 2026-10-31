@@ -5,36 +5,14 @@ import { createHash } from 'crypto'
 import { safeSessionKey } from './session-key.js'
 
 /**
- * Shared helpers for the hook-agy-* commands (Antigravity CLI, `agy`).
- *
- * Antigravity's hook contract is a THIRD shape — not Claude Code/Codex's and
- * not Gemini CLI's. The authoritative reference is the CLI's own bundled doc
- * at `~/.gemini/antigravity-cli/builtin/skills/agy-customizations/docs/hooks.md`
- * (the public web docs are thinner):
- *
- *   - stdin payloads are camelCase protojson: `conversationId`, `stepIdx`,
- *     `toolCall`, `transcriptPath` — not snake_case.
- *   - Injection is `{"injectSteps":[{"ephemeralMessage": "..."}]}` from
- *     PreInvocation — there is no additionalContext field anywhere.
- *   - PreToolUse verdicts are a FLAT `{decision, reason}` — no
- *     hookSpecificOutput envelope — and unlike Codex, `allow`/`ask`/
- *     `force_ask` are accepted alongside `deny`.
- *   - There are only five events and NO session-start event; PreInvocation
- *     fires before EVERY model invocation (several times per user turn), so
- *     injection has to dedupe per user turn itself — see
- *     `lastUserInput()` / the step marker in hook-agy-pre-invocation.
- *   - Timeouts are seconds (default 30). Exit codes: 0 = parse stdout, 2 =
- *     system block with stderr as reason, anything else = non-fatal warning.
- *   - No trust gate: hooks run on first invocation, unlike Codex.
- *
- * Sentinels live in their own directory, separate from the Claude Code,
- * Cursor and Codex hook families: one project can be open in several
- * harnesses at once, and two guards disagreeing about whether a session
- * started is worse than each nudging once.
- *
- * Generic stdin/exit plumbing (readStdinJson, runCodexHook's exit-0
- * guarantee, injectWithFallback) is imported from codex-hook-io.ts rather
- * than duplicated.
+ * Helpers for the hook-agy-* commands (Antigravity CLI); contract per its bundled
+ * `~/.gemini/antigravity-cli/builtin/skills/agy-customizations/docs/hooks.md`):
+ *   - stdin is camelCase protojson; injection is `{"injectSteps":[{"ephemeralMessage": ...}]}`.
+ *   - PreToolUse verdicts are a FLAT `{decision, reason}`; allow/ask/force_ask/deny.
+ *   - NO session-start event; PreInvocation fires before EVERY model call, so
+ *     injection dedupes per user turn itself (see `lastUserInput()`).
+ *   - Timeouts in seconds; exit 0 = parse stdout, 2 = block, else warning. No trust gate.
+ * Sentinels live in their own directory, separate from other harnesses' hooks.
  */
 
 export { readStdinJson, runCodexHook as runAgyHook, injectWithFallback, isPlurSessionStartTool } from './codex-hook-io.js'
@@ -222,21 +200,12 @@ export interface AgyUserInput {
 const TRANSCRIPT_READ_CAP = 4 * 1024 * 1024
 
 /**
- * The most recent user message in an Antigravity conversation transcript.
- *
- * PreInvocation's stdin payload carries NO prompt text — only counters and
- * paths — so per-prompt recall has to come from the transcript file the
- * payload points at (`transcriptPath`). The file is JSONL; user turns look
- * like:
- *
- *   {"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT",
- *    "status": "DONE", "content": "<USER_REQUEST>\n...actual text...</USER_REQUEST>"}
- *
- * Returns the LAST such entry, with the <USER_REQUEST> wrapper stripped, or
- * null when the file is missing/unreadable/contains no user turn. Callers
- * treat null as "inject the generic session batch, or stay silent" — never
- * as an error: the transcript format is Antigravity's internal file and can
- * change under us, and a hook must degrade, not break.
+ * The most recent user message in an Antigravity transcript (`transcriptPath`,
+ * JSONL), since PreInvocation's payload carries no prompt text. User turns have
+ * `"type": "USER_INPUT"` with content wrapped in `<USER_REQUEST>…</USER_REQUEST>`.
+ * Returns the LAST one, unwrapped, or null when missing/unreadable/absent.
+ * Callers treat null as "generic batch or silence", never an error: the format
+ * is Antigravity-internal, and a hook must degrade, not break.
  */
 export function lastUserInput(transcriptPath: string): AgyUserInput | null {
   let raw: Buffer

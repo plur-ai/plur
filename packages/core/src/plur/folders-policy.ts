@@ -49,18 +49,9 @@ export interface FoldersPolicyMethods {
   autoDiscoveryEnabled(): boolean
 
   /**
-   * True when `dir` (or an ancestor of it) has been explicitly trusted via
-   * `trustDirectory` / `plur trust`.
-   *
-   * This is the gate an ADAPTER (opencode, claw, ...) should check before
-   * adopting behaviour-changing configuration it finds on disk — a
-   * `.plur.yaml` `scope`/`domain`, for instance — from a directory it did not
-   * create and the user may not have vetted. It is deliberately NOT about
-   * whether the scope is local or remote: a remote/team store is the
-   * legitimate reason a project declares a scope at all, so the gate is on
-   * the DIRECTORY, the same way `direnv allow` / `git config safe.directory`
-   * / VS Code workspace trust gate on the directory rather than on what the
-   * config inside it says.
+   * True when `dir` or an ancestor was explicitly trusted (`trustDirectory` / `plur trust`). Adapters must check
+   * this before adopting on-disk config such as a `.plur.yaml` scope/domain. The gate is on the DIRECTORY, not on
+   * whether the scope is local or remote (team stores are the legitimate reason to declare one).
    */
   isDirectoryTrusted(dir: string): boolean
 

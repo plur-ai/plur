@@ -49,30 +49,12 @@ export const PlurPlugin: Plugin = async (ctx) => {
   // The folder-map decision, the folder asked about and the .plur.yaml read
   // are all for the folder opencode is open in.
   const folderDir = resolveFolderDir(ctx ?? {})
-  // `_plur` is a test-only injection seam, not part of the host contract —
-  // narrowly typed here rather than widening `ctx` itself.
-  //
-  // `autoDiscover: false`: the default constructor
-  // behaviour walks `cwd` looking for a `.plur/engrams.yaml` and, if found,
-  // registers it as a STORE in the user's GLOBAL `~/.plur/config.yaml` —
-  // silently (a `logger.info` suppressed at the default `warning`
-  // threshold), permanently (it outlives the session and is read by every
-  // other PLUR adapter too), and with the scope the discovered file's own
-  // `.plur.yaml` names, including `global`. `cwd` here is the session's git
-  // root — exactly where a cloned, hostile repo would ship both files. A
-  // plugin loaded into someone else's agent host must not perform a
-  // cwd-derived disk side effect that writes the user's global config as a
-  // side effect of merely being loaded.
-  //
-  // The construction below is wrapped: this block sits BEFORE the plugin has
-  // returned its hook map, so no `safe()` wrapper is reachable yet, and
-  // `new Plur()` can throw (e.g. a hostile `.plur.yaml` naming a scope that
-  // collides with one the user already registered). A throw here would reject
-  // this factory's promise, which fails opencode's PLUGIN LOAD, not just
-  // memory. Return an all-no-op hook map instead: no memory this session, but
-  // the agent's turn is never at risk. The folder decision and the
-  // `.plur.yaml` read run per turn in `folderState()`, inside each hook's
-  // `safe()`.
+  // `_plur` is a test-only injection seam, not part of the host contract.
+  // `autoDiscover: false`: discovery would silently and permanently register a cwd
+  // `.plur/engrams.yaml` in the user's GLOBAL config — a hostile cloned repo could ship it.
+  // Construction is wrapped: no `safe()` exists yet, and a throw here would fail opencode's
+  // plugin load. On failure return an all-no-op hook map. Folder decisions run per turn
+  // in `folderState()`, inside `safe()`.
   let plur: Plur
   try {
     plur = (ctx as { _plur?: Plur })?._plur
@@ -101,23 +83,13 @@ export const PlurPlugin: Plugin = async (ctx) => {
   const warnOnce = (msg: string) => { if (!warnedOnce.has(msg)) { warnedOnce.add(msg); warn(msg) } }
 
   /**
-   * What this session does in its folder, resolved per turn so a decision
-   * made mid-session (the user answering the folder question with
-   * `plur folders set`) applies from the next prompt:
-   *
-   *  - `off` → nothing: no recall, no question, no learning;
-   *  - `ask` → no memories; the first turn of each session carries the one
-   *    question, the next one a reminder, then nothing (`chat.message`);
-   *  - `on`  → the session scope is the map's scope, else a TRUSTED
-   *    `.plur.yaml`'s (the resolver decides both; a map scope beats the
-   *    hint). That scope is also what makes core dial the team store.
-   *
-   * The `.plur.yaml` is read once here, from one resolved path: its REMOTE
-   * settings go through core's gate, the one every adapter passes, and its
-   * domain is adopted only
-   * when the policy came from that file and its directory is trusted — both
-   * checked against this same read, so the file trust is checked against is
-   * the file whose fields are adopted.
+   * What this session does in its folder, resolved per turn (so `plur folders set` applies
+   * from the next prompt):
+   *  - `off` → no recall, no question, no learning;
+   *  - `ask` → no memories; the first turn asks once, the next reminds (`chat.message`);
+   *  - `on`  → the map's scope, else a TRUSTED `.plur.yaml`'s; this scope dials the team store.
+   * The `.plur.yaml` is read once: remote settings go through core's gate, and its domain is
+   * adopted only from a trusted file — both checked against this same read.
    */
   function folderState(): { policy: FolderPolicy; settings: { scope?: string; domain?: string }; remote: ProjectRemote | null } {
     const policy = folderPolicy(plur, folderDir, warnOnce)

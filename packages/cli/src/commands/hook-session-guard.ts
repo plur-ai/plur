@@ -8,20 +8,10 @@ import { ensureSessionDir, ownFileExists } from '../lib/codex-hook-io.js'
 
 /**
  * plur hook-session-guard — PreToolUse hook that blocks all tools until
- * plur_session_start has been called.
- *
- * Uses a sentinel file at /tmp/plur-session-{session_id} to track whether
- * the session has been started. The sentinel is created by hook-session-mark
- * (PostToolUse on mcp__plur__plur_session_start).
- *
- * Deadlock prevention: if the guard has blocked more than
- * MAX_BLOCKS_BEFORE_FALLBACK tool calls without a session starting (e.g.
- * because the MCP server failed to start), it stops blocking and warns
- * via stderr instead. This prevents permanent deadlock while still
- * enforcing the session start flow under normal conditions.
- *
+ * plur_session_start has been called (sentinel /tmp/plur-session-{session_id}, written
+ * by hook-session-mark). After MAX_BLOCKS_BEFORE_FALLBACK blocks it stops blocking and
+ * warns on stderr, so a failed MCP server cannot deadlock the session.
  * Exempt tools (allowed without session): ToolSearch, mcp__plur__plur_session_start
- *
  * Input: JSON on stdin (Claude Code PreToolUse hook format)
  * Output: JSON with permissionDecision: "deny" if session not started
  */

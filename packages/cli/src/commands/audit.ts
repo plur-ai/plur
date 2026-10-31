@@ -7,23 +7,13 @@ import { homedir } from 'os'
 import { scanForInversions } from '@plur-ai/core'
 
 /**
- * plur audit — content-layer health check.
- *
- * Sibling to `plur doctor` (infra layer). Walks a runtime's working memory,
- * recalls related engrams for each entry, and flags conflicts, duplicates,
- * orphan claims, and stale snapshots.
- *
- * Usage:
+ * plur audit — content-layer health check (sibling to `plur doctor`): flags
+ * conflicts, duplicates, orphan claims and stale snapshots in working memory.
  *   plur audit                          # claude-code (default)
  *   plur audit --source claude-code     # ~/.claude/projects/<...>/memory/
- *   plur audit --source claw            # stub — OpenClaw working-memory schema not stable yet
- *   plur audit --source hermes          # stub — see packages/hermes/plur_hermes/audit_adapter.py
- *   plur audit --source engrams         # scan the engram store itself for negation-inversion
- *                                        # truncation fragments, rather than comparing
- *                                        # auto-memory files against engrams. Heuristic and
- *                                        # read-only: see scanForInversions' docstring.
- *   plur audit --json
- *   plur audit --limit 5                # recall depth per entry
+ *   plur audit --source claw|hermes     # stubs (see packages/hermes/plur_hermes/audit_adapter.py)
+ *   plur audit --source engrams         # read-only scan of the store for negation-inversion fragments
+ *   plur audit --json | --limit 5       # JSON output; recall depth per entry
  */
 
 interface MemoryEntry {

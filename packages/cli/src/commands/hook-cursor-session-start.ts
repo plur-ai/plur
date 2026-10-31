@@ -11,39 +11,14 @@ import { cachedServerLines } from '../lib/server-session.js'
 import { cleanupLegacyProjectAtSessionStart } from '../lib/legacy-plur-yaml.js'
 
 /**
- * plur hook-cursor-session-start — Cursor `sessionStart` hook.
- *
- * Fires once when a new composer conversation is created. Cursor's own docs
- * describe this as fire-and-forget — "session creation is not blocked even
- * when continue is false" — so nothing here can gate anything; it only
- * writes the sentinel hook-cursor-guard checks and delivers an initial batch
- * of recalled engrams.
- *
- * Delivery mechanism: Cursor can drop `additional_context` from
- * `sessionStart` through a race condition ("runs async before the composer
- * handle is fully created"). This hook writes recalled content into the
- * DYNAMIC rules file via `writeContextRule()` as the PRIMARY channel
- * (Cursor's rules engine loads `alwaysApply: true` rules AT CONVERSATION
- * CREATION), and ALSO emits `additional_context` (harmless, and works
- * automatically if Cursor fixes the race). Whether a later REWRITE of this
- * same file is re-read before the conversation ends is not confirmed — see
- * writeContextRule's docstring and cursor-hook-io.ts's "Known structural
- * limitations" item 4.
- *
- * BM25-only, deliberately (as in hook-inject.ts's --event branch). Cursor's
- * hook schema has no documented async/fire-and-forget option, so this hook
- * cannot dodge a slow cold start — it has to BE fast. Hybrid search loads
- * the BGE embedder (~20s cold once the store passes a few thousand
- * engrams); BM25 alone takes under a second on a store that size. Do not
- * change this to try hybrid first.
- *
- * Does not fire for background/cloud agents (VM provisioned after prompt
- * submit) — hook-cursor-post-tool covers that path instead, by marking the
- * sentinel when plur_session_start is called explicitly.
- *
- * Input: JSON on stdin — { conversation_id | session_id, is_background_agent, composer_mode }
- * Output: JSON on stdout — { additional_context } (Cursor's sessionStart-specific field, secondary channel)
- * Side effect: writes `.cursor/rules/plur-context.mdc` (primary channel)
+ * plur hook-cursor-session-start — Cursor `sessionStart` hook (fire-and-forget
+ * on Cursor's side, so it gates nothing). Writes the sentinel hook-cursor-guard
+ * checks, and recalled engrams into `.cursor/rules/plur-context.mdc` via
+ * `writeContextRule()` (primary: Cursor can drop `additional_context` in a
+ * race); also emits `{ additional_context }` on stdout.
+ * BM25-only, deliberately: the hook must BE fast and hybrid's cold embedder load
+ * is far too slow. Do not change this to try hybrid first. Not fired for
+ * background/cloud agents; hook-cursor-post-tool covers those.
  */
 
 export async function run(_args: string[], flags: GlobalFlags): Promise<void> {

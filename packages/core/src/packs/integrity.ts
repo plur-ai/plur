@@ -24,21 +24,11 @@ export interface IntegrityCheck {
 
 
 /**
- * Compare the integrity value a pack SHIPPED against what its contents hash to.
- *
- * Export writes the hash into an `INTEGRITY` file; recomputing a fresh hash at
- * install and recording that would only show "we computed a hash", not "the
- * hash matched".
- *
- * Hash the pack AS RECEIVED. Install later hashes the staged, sanitised copy,
- * which legitimately differs when the privacy scan drops an engram; comparing
- * against that would raise a mismatch on packs nobody touched.
- *
- * A pack that ships no `INTEGRITY` is 'absent', not 'ok'. Nothing was checked.
- *
- * This detects accidental corruption and casual editing. It is NOT a defence
- * against a determined sender, who edits the contents and the `INTEGRITY` file
- * together: nothing here is signed. Say that plainly wherever this is shown.
+ * Compare the integrity value a pack SHIPPED (its `INTEGRITY` file) against what its
+ * contents hash to, AS RECEIVED — not the sanitised staged copy, which can legitimately
+ * differ. No `INTEGRITY` file is 'absent', not 'ok'.
+ * Detects corruption and casual edits only: nothing is signed, so a sender can edit
+ * both together. Say that plainly wherever this is shown.
  */
 export function verifyPackIntegrity(packDir: string): IntegrityCheck {
   const file = path.join(packDir, 'INTEGRITY')
@@ -81,13 +71,9 @@ export function verifyPackIntegrity(packDir: string): IntegrityCheck {
  * The v1 pack hash (ENGRAM-STANDARD-v1.md §5.5, legacy form):
  *   H1 = SHA256( bytes(SKILL.md) || bytes(engrams.yaml) )
  * recorded as `sha256:<hex>`. Returns the bare hex.
- *
- * Kept so that every pack and registry row carrying a v1 value still verifies
- * (`packIntegrityMatches`). Do NOT use it for new values: the concatenation is
- * unframed, so it is not injective. Bytes moved across the file boundary keep
- * the hash, a missing SKILL.md hashes like an empty one, and a deprecated
- * `manifest.yaml` is not covered at all. New values are v2
- * (`computePackIntegrity`).
+ * Kept only so existing v1 values verify (`packIntegrityMatches`). Do NOT use it for
+ * new values: the unframed concatenation is not injective and skips `manifest.yaml`;
+ * use v2 (`computePackIntegrity`).
  */
 export function computePackHash(packDir: string): string {
   return packHashV1FromParts(readPackIntegrityParts(packDir, ['SKILL.md', 'engrams.yaml']))
@@ -146,21 +132,13 @@ export function packIntegrityV2FromParts(parts: PackIntegrityParts): string {
 
 
 /**
- * The v2 pack integrity value (ENGRAM-STANDARD-v1.md §5.5), as the string it is
- * recorded as: `sha256:v2:<64 lowercase hex>`.
- *
+ * The v2 pack integrity value (ENGRAM-STANDARD-v1.md §5.5): `sha256:v2:<64 lowercase hex>`.
  *   H2 = SHA256( part(SKILL.md) || part(manifest.yaml) || part(engrams.yaml) )
  *   part(n) = n || 0x00 || decimal(byte length) || 0x00 || bytes   if the file exists
  *           = n || 0x00 || "-" || 0x00                              if it does not
- *
- * Every part is named and length-prefixed, and an absent part is spelled
- * differently from an empty one, so the input can be parsed back unambiguously:
- * two packs with the same value have byte-identical parts. That is what makes
- * it usable as a content-addressable identifier for a pack's hashed parts,
- * which v1 (`computePackHash`) is not.
- *
- * `provenance/` and `INTEGRITY` are not covered, as in v1. Raw file bytes; never
- * re-serialize before hashing.
+ * Named, length-prefixed parts make it unambiguous, so it can serve as a content
+ * address (v1 cannot). `provenance/` and `INTEGRITY` are not covered. Hash raw file
+ * bytes; never re-serialize first.
  */
 export function computePackIntegrity(packDir: string): string {
   return packIntegrityV2FromParts(readPackIntegrityParts(packDir))
@@ -277,31 +255,14 @@ export function expectedInstalledIntegrity(source: string | undefined, packDir: 
 
 
 /**
- * Re-baseline installed packs' registry integrity from v1 to v2 (§5.5).
- *
- * A v1 match is NOT evidence that a pack is unchanged: v1 cannot see bytes
- * moved across the SKILL.md / engrams.yaml boundary, nor a `manifest.yaml`
- * added beside SKILL.md. So a row whose pack still
- * matches v1 is handled in one of two ways:
- *
- *   - its recorded `source` is still a local pack directory: the pack is
- *     re-verified against what installing that source produces, and
- *     re-baselined only if it matches (`baseline: 'source-verified'`), else
- *     left as v1 (`skipped-modified`, `reason: 'differs-from-source'`);
- *   - otherwise the v2 value is recorded but marked
- *     `integrity_carried_from: 'v1'` (`baseline: 'carried-from-v1'`), and
- *     `listPacks` reports it as carried. It inherits v1's trust; it certifies
- *     nothing.
- *
- * A pack that no longer matches its v1 value keeps it and goes on reporting
- * `modified`. Nothing else in the row changes, and a pack's shipped
- * `INTEGRITY` file is never touched (it is the producer's value, §5.5.1).
- *
- * Staging (`*.installing-*`) and displaced (`*.replacing-*`) directories and
- * non-directories are skipped, and an entry that vanishes mid-walk is skipped
- * rather than aborting the run. The hashing is done WITHOUT the registry lock;
- * only a real run takes it, briefly, to write rows whose value is still the one
- * it planned from. A dry run never takes it. Idempotent.
+ * Re-baseline installed packs' registry integrity from v1 to v2 (§5.5). A v1 match is
+ * NOT proof the pack is unchanged, so a still-matching row is either:
+ *   - re-verified against its local `source` dir: `source-verified`, else left v1
+ *     (`skipped-modified`, `differs-from-source`); or
+ *   - recorded as v2 with `integrity_carried_from: 'v1'` (`carried-from-v1`; certifies nothing).
+ * A v1 mismatch stays `modified`; the shipped `INTEGRITY` file is never touched.
+ * Skips staging/displaced dirs and vanished entries. Hashes WITHOUT the registry lock;
+ * a real run takes it briefly to write rows still matching its plan. Idempotent.
  */
 export function migratePackIntegrity(
   packsDir: string,

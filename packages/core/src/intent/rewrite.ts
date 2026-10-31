@@ -1,39 +1,12 @@
 /**
- * Deterministic intent-aware query rewriting.
- *
- * Works alongside the intent classifier and per-intent ranking profiles:
- * a deterministic (regex/lexicon, no LLM, no I/O) transform of the query
- * text that feeds the LEXICAL (BM25) leg of hybrid recall.
- *
- * Only the BM25 leg gets the rewritten query. The embedding leg and the
- * cross-encoder reranker keep the original natural-language query —
- * embedding/cross-encoder models are trained on questions; BM25 is not.
- *
- * Why scaffolding hurts BM25 here: `ftsScore` uses substring matching
- * (`t.includes(qt) || qt.startsWith(t)`), so interrogative tokens are not
- * inert — "what" matches "whatsapp", "how" matches "showed" — and every
- * scaffold token that substring-matches anything consumes IDF budget and
- * pulls in distractors.
- *
- * Rules (all deterministic):
- *   1. Question-shaped queries (trailing "?" or leading interrogative) get
- *      interrogative scaffolding stripped: what/which/who/where/when/why/
- *      how/whose/whom + the auxiliaries did/does/do. Role words like
- *      "user" and "assistant" are content-bearing in a memory store and
- *      are NEVER stripped.
- *   2. Temporal-intent queries additionally drop RELATIVE temporal phrases
- *      ("yesterday", "last week", "three days ago", "recently") — they
- *      cannot lexically match stored statements; the temporal ranking
- *      profile (recency boost) is the mechanism that handles them.
- *      Absolute anchors (ISO dates, "Apr 15") are KEPT — engram temporal
- *      fields are part of the BM25 search text and match them literally.
- *
- * Safety contract (graceful degradation, mirroring the classifier):
- *   - the final rewrite must keep >= MIN_CONTENT_TOKENS content tokens,
- *     otherwise the ORIGINAL query is returned unchanged;
- *   - non-question queries pass through untouched by rule 1;
- *   - PLUR_QUERY_REWRITE=off disables the feature entirely (checked by
- *     callers via {@link isQueryRewriteDisabled}).
+ * Deterministic query rewriting (no LLM, no I/O) for the LEXICAL (BM25) leg only;
+ * embeddings and the reranker keep the original. Substring matching makes
+ * interrogatives non-inert ("what" matches "whatsapp"), so:
+ *   1. Question-shaped queries lose interrogatives and did/does/do; role words
+ *      like "user"/"assistant" are NEVER stripped.
+ *   2. Temporal queries drop RELATIVE phrases; absolute anchors are KEPT.
+ * Fewer than MIN_CONTENT_TOKENS left returns the ORIGINAL query;
+ * PLUR_QUERY_REWRITE=off disables it ({@link isQueryRewriteDisabled}).
  */
 import { classifyQuery, type QueryIntent } from './classifier.js'
 import { ftsTokenize } from '../fts.js'
@@ -124,17 +97,11 @@ function stripRelativeTemporal(query: string): string {
 }
 
 /**
- * Rewrite a query for the LEXICAL (BM25) leg of hybrid recall.
- *
- * Deterministic and synchronous — safe on the hot path (< 1ms). When the
- * rewrite would leave fewer than {@link MIN_CONTENT_TOKENS} content tokens
- * (per `ftsTokenize`), the ORIGINAL query is returned unchanged: a thin
- * query is left alone rather than gutted.
- *
+ * Rewrite a query for the LEXICAL (BM25) leg of hybrid recall. Synchronous and
+ * hot-path safe; returns the ORIGINAL query when fewer than
+ * {@link MIN_CONTENT_TOKENS} content tokens (per `ftsTokenize`) would remain.
  * @param query  The user's query, verbatim.
- * @param intent Optional pre-computed intent (avoids re-classifying when the
- *               caller already ran `classifyQuery`). Auto-classifies when
- *               omitted.
+ * @param intent Optional pre-computed intent; auto-classified when omitted.
  */
 export function rewriteLexicalQuery(query: string, intent?: QueryIntent): string {
   const original = query ?? ''

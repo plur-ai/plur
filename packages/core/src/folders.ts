@@ -18,38 +18,14 @@ import type { StoreEntry } from './schemas/config.js'
 import { findGitRoot, gitDefaultScope, type GitScopeSource, type GitScopeOutcome, type OriginRead } from './git-origin.js'
 
 /**
- * The folder map: `<PLUR home>/folders.yaml` holds the user's own
- * decisions about folders — on / off / ask, a default write scope, and
- * `trusted` (the grant a legacy `trust.yaml` also holds).
- *
- * `.plur.yaml` stays what it was: the repo's REQUEST. It cannot express map
- * entries; only this file, written only through the CLI, holds decisions.
- *
- * ```yaml
- * version: 1
- * folders:
- *   - path: ~/work/**
- *     scope: group:example/eng   # on, with a default write scope
- *   - path: ~/work/secret/**
- *     plur: off                  # nothing at all here
- *   - path: /src/team-repo
- *     trusted: true              # this tree's .plur.yaml may use its remote
- *   - path: ~/client/**
- *     plur: remote-only          # memory only on the team server, in `scope`
- *     scope: group:example/client
- * ```
- *
- * `remote-only`: the folder's memory lives only
- * on the team server. Its `scope` must be served by a url store. In such a
- * folder an unscoped write goes to that scope, a personal or local-only scope
- * is refused, and recall/inject read that scope (dialled) plus installed
- * packs, never the personal local store. The Plur instance enforces it once
- * bound to the folder (`Plur.bindFolder`).
- *
- * A new file starts from the commented template (renderFolderMapText,
- * folder-map-text.ts): an example of every setting. Every later write edits
- * only the entries it changed and keeps the user's comments and order
- * (editFolderMapText).
+ * The folder map: `<PLUR home>/folders.yaml` holds the user's own decisions about
+ * folders — on / off / ask / remote-only, a default write `scope`, and `trusted`.
+ * It is written only through the CLI; a repo's `.plur.yaml` is only a REQUEST.
+ * `remote-only`: memory lives only on the team server in `scope` (served by a url
+ * store); unscoped writes go there, personal/local scopes are refused, recall reads
+ * that scope plus packs, never the local store (enforced by `Plur.bindFolder`).
+ * New files start from renderFolderMapText (folder-map-text.ts); later writes edit
+ * only changed entries and keep comments and order (editFolderMapText).
  */
 
 export type FolderMode = 'on' | 'off' | 'ask' | 'remote-only'
@@ -208,22 +184,12 @@ export function expandHome(p: string, home: string): string {
 // ---------------------------------------------------------------------------
 
 /**
- * The spellings of a stored entry a check accepts. The checked folder is
- * always compared in its canonical form only.
- *
- * Fails CLOSED (the trust rule; this module is its single home): a
- * stored entry is compared exactly as written — made absolute, `.`/`..`
- * normalised, never resolved on disk. Resolving it at compare time, or even
- * its parent, would follow a symlink planted after the decision was recorded
- * (a trusted folder, or its parent, swapped for a link elsewhere) and apply
- * the decision to wherever it now points.
- *
- * `~` is the user's home, not a stored path, so it expands against both the
- * home as given and its canonical form (a symlinked home, /var vs
- * /private/var). Nothing after `~` is resolved.
- *
- * `lax` (used only for `off`, where matching MORE is the safe direction) also
- * accepts the entry with its parent, or all of it, canonicalised.
+ * The spellings of a stored entry a check accepts; the checked folder is always
+ * canonical. Fails CLOSED (this module is the trust rule's single home): a stored
+ * entry is made absolute and normalised but NEVER resolved on disk, so a symlink
+ * planted after the decision cannot redirect it. `~` expands against both the home
+ * as given and its canonical form. `lax` (only for `off`, where matching more is
+ * safe) also accepts the entry with its parent, or all of it, canonicalised.
  */
 function entryForms(entryPath: string, home: string, lax: boolean, literalPath = false): string[] {
   const homes = entryPath === '~' || entryPath.startsWith('~/') || entryPath.startsWith('~\\')
@@ -607,16 +573,11 @@ function utcStamp(d: Date): string {
 }
 
 /**
- * `plur folders repair`. Plans the repair of a broken folders.yaml
- * and, with `apply`, performs it under the folder-map lock: a backup
- * `folders.yaml.plur-backup-<UTC>` next to the file (the original bytes),
- * an atomic write of the repaired text (to the symlink's target when the map
- * is a symlink, so the link stays a link), then a re-check from disk.
- *
- * Only unambiguous fixes are made (see planFolderMapRepair); when any problem
- * needs a hand fix, nothing is written at all. `expect`, when given, must be
- * the text the caller showed the user (its dry run's `before`): if the file
- * changed since, nothing is written.
+ * `plur folders repair`: plan the repair of a broken folders.yaml and, with `apply`,
+ * perform it under the folder-map lock — backup `folders.yaml.plur-backup-<UTC>`,
+ * atomic write (through a symlink to its target), then re-check from disk.
+ * Only unambiguous fixes; if any problem needs a hand fix nothing is written. If
+ * `expect` (the dry run's `before`) no longer matches the file, nothing is written.
  */
 export function repairFolderMap(root: string, opts: { apply: boolean; expect?: string; now?: Date }): FolderMapRepairResult {
   const file = folderMapPath(root)
@@ -806,24 +767,14 @@ export function folderOffEntries(dir: string, opts: FolderPolicyOptions): Folder
 }
 
 /**
- * Decide what PLUR does in `dir`:
- *  1. any matching `off` entry → off;
- *  0. a folders.yaml that cannot be read → ask, reason 'malformed-map';
- *  1b. the most specific entry with an explicit mode is `remote-only` →
- *      remote-only, with that entry's scope (else the most specific map
- *      scope); a repo marker, or an entry that only sets `trusted`/`scope`,
- *      never overrides it;
- *  2. a `.plur.yaml`:
- *     - TRUSTED (a covering `trusted: true` entry), or requesting nothing →
- *       on; a map `scope` beats its hint; its remote only
- *       when trusted;
- *     - UNTRUSTED and requesting a scope, domain or remote → its hints are
- *       ignored. A map decision for the folder applies (step 4); otherwise
- *       ask, with `reason: 'untrusted-plur-yaml'` and what it `requested`.
- *       The ask flow's "yes" writes `trusted: true` (plus a scope if chosen);
- *  3. a project MCP config → on;
- *  4. the most specific matching map entry;
- *  5. otherwise ask (including `$HOME`).
+ * Decide what PLUR does in `dir`, first match wins:
+ *  1. any matching `off` entry → off; an unreadable folders.yaml → ask ('malformed-map');
+ *  2. most specific explicit-mode entry is `remote-only` → remote-only (markers and
+ *     trusted/scope-only entries never override it);
+ *  3. a `.plur.yaml`: trusted or requesting nothing → on (map `scope` beats its hint,
+ *     its remote only when trusted); untrusted with requests → hints ignored, map
+ *     decision applies, else ask with `reason: 'untrusted-plur-yaml'`;
+ *  4. a project MCP config → on;  5. the most specific map entry;  6. else ask (incl. `$HOME`).
  */
 export function resolveFolderPolicy(dir: string, opts: FolderPolicyOptions): FolderPolicy {
   const policy = resolveExplicitFolderPolicy(dir, opts)
@@ -1044,19 +995,11 @@ export function coversHomeOrRoot(dir: string, home: string = homedir()): boolean
 }
 
 /**
- * THE default scope of a workspace — the one resolver the MCP server (its
- * client roots, else its start folder) and the CLI (the folder it runs in)
- * use for an unscoped write or read.
- *
- * Each input is realpath-resolved first, so a link gets the decision of the
- * folder it points at. Each must resolve to `on` with a scope — the folder
- * map's, else a trusted `.plur.yaml`'s — and all to the SAME scope. Anything
- * else gives null, and null means no scope, with no fallback after it:
- *  - no inputs; two inputs with different scopes, or one with no scope;
- *  - an `off` or undecided (`ask`) folder;
- *  - the home folder, a folder above it or a filesystem root (each covers
- *    every folder under it);
- *  - an input that cannot be resolved, or any error.
+ * THE default scope of a workspace, shared by the MCP server and the CLI. Each
+ * input is realpath-resolved and must be `on` with a scope (map's, else a trusted
+ * `.plur.yaml`'s), all the SAME. Otherwise null — no scope, no fallback — incl. no
+ * inputs, mixed/missing scopes, `off`/`ask`, home or above or a filesystem root,
+ * or any resolution error.
  */
 export function workspaceFolderScope(inputs: string[], policyOf: (dir: string) => FolderPolicy): string | null {
   const decision = workspaceScopeDecision(inputs, policyOf)
@@ -1102,20 +1045,11 @@ function entryIsFolder(e: FolderEntry, folder: string, raw: string, target: stri
 }
 
 /**
- * True when stored entry form `form` names the folder `target` (canonical,
- * existing) and differs from it only in letter case.
- *
- * Every path component that differs is checked for IDENTITY, not existence:
- * under the target's canonical parent, the target's component and the
- * entry's own spelling of it must be the same directory entry (same device
- * and inode, by lstat). On a case-sensitive filesystem `Proj` and `pROJ` —
- * or `Ⓟ` and `ⓟ`, which are cased but not letters — can be two sibling
- * folders, and treating one's entry as the other's would move an `off` or a
- * trust grant to the wrong folder. lstat does not follow a symlink, so a
- * link at the entry's spelling has its own inode and never matches, and the
- * parent is the target's canonical one: the stored entry is never resolved
- * through a link. Device and inode are compared as bigints (a 64-bit
- * NTFS file id can exceed 2^53). Any error: false.
+ * True when stored entry form `form` names folder `target` (canonical, existing)
+ * and differs only in letter case. Each differing component must be the SAME
+ * directory entry (device + inode by lstat, as bigints) under the target's canonical
+ * parent — on case-sensitive filesystems the two spellings can be siblings, and a
+ * match would move an `off` or trust grant. lstat never follows links. Any error: false.
  */
 function sameFolderIgnoringCase(form: string, target: string): boolean {
   if (form === target || form.toLowerCase() !== target.toLowerCase()) return false
@@ -1244,20 +1178,13 @@ function setFolderEntryUnlocked(root: string, folder: string, change: FolderChan
   const consume = opts.nonce !== undefined ? verifyFolderNonce(root, opts.nonce, folder, change, opts.now, home, literal, opts.session) : null
   const key = folderEntryKey(folder, home, literal)
   const { applied, nameOnly } = findEntryIndex(map.folders, folder, home, literal)
-  // Every entry for this folder merges into ONE, which keeps exactly what is
-  // in effect now, except what this change sets:
-  //  - path, `trusted` and `scope` come ONLY from entries that applied. The
-  //    scope is the one the resolver picks among them (`mostSpecific`), so a
-  //    merge never reroutes writes; the grant is kept when any applied entry
-  //    had one, as `isTrustedInMap` does. With none, the path is the canonical
-  //    key and there is no grant or scope.
-  //  - entries matched only by name (typed spelling, symlink, letter case)
-  //    contribute their mode at most. Their grant and scope never applied,
-  //    and a merge must not bring them to life.
-  //  - the mode is the most restrictive of the applied modes and the
-  //    name-only `off`/`ask` (never a name-only `on`); a mode this change sets
-  //    wins, and `--scope` without a mode means `on` — also when it replaces a
-  //    merged `off`.
+  // Every entry for this folder merges into ONE, keeping what is in effect except
+  // what this change sets:
+  //  - path, `trusted`, `scope` come ONLY from entries that applied (scope via
+  //    `mostSpecific`, so a merge never reroutes writes); none → canonical key only.
+  //  - name-only matches (spelling, symlink, case) contribute their mode at most.
+  //  - mode = most restrictive of applied modes and name-only `off`/`ask`; a mode this
+  //    change sets wins, and `--scope` without a mode means `on`.
   const appliedEntries = applied.map(i => ({ e: map.folders[i], i }))
   const grantedPaths = [...applied, ...nameOnly].filter(i => map.folders[i].trusted === true).map(i => map.folders[i].path)
   const entry: FolderEntry = { path: appliedEntries[0]?.e.path ?? key }
@@ -1573,17 +1500,11 @@ function writeNonceFile(file: string, data: NonceFile): void {
 }
 
 /**
- * Issue a single-use nonce that lets the ask flow of `sessionId` record
- * exactly `answer` for exactly `folder`. The ask flow issues one nonce
- * per answer it offers, and prints each next to its command: a nonce issued
- * for `{ mode: 'on' }` does not authorise `--trusted`, `--off`, another scope
- * or `rm`. `plur trust` is `{ trusted: true }`, `folders set --no-trusted` is
- * `{ trusted: false }` and `plur folders rm` is `{ remove: true }`. The folder
- * is recorded as the key a write of it records (folderEntryKey: `~` expanded,
- * canonicalised, a glob as typed), which is what verifyFolderNonce compares.
- * `literal` must match the write's own `literal` option: a
- * literal write of `sub?` records the canonical folder, a glob write `sub?`
- * as typed, and the nonce is bound to the same key.
+ * Issue a single-use nonce letting `sessionId`'s ask flow record exactly `answer`
+ * for exactly `folder` (one nonce per offered answer; `{ mode: 'on' }` does not
+ * authorise `--trusted`, `--off`, another scope or `rm`). The folder is keyed as a
+ * write records it (folderEntryKey), which verifyFolderNonce compares; `literal`
+ * must match the write's own `literal` option.
  */
 export function issueFolderNonce(
   root: string, sessionId: string, folder: string, answer: FolderAnswer, now: number = Date.now(),

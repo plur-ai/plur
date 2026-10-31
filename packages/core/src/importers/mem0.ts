@@ -1,21 +1,9 @@
 /**
- * mem0 importer.
- *
- * Parses mem0's JSON export shape — the `{"results": [...]}` envelope that
- * `Memory.get_all()` returns (v1.1+, mem0 OSS `mem0/memory/main.py`) and the
- * platform export equivalents. Each memory item carries:
- *   id, memory (the text), hash, created_at, updated_at, plus promoted payload
- *   keys user_id / agent_id / run_id / actor_id / role / expiration_date, an
- *   optional metadata object, and (platform) categories.
- *
- * Mapping:
- *   memory          → statement
- *   user_id         → scope `user:<id>`   (agent_id → `agent:<id>` fallback)
- *   categories      → tags
- *   created_at      → temporal.learned_at (via ImportRecord.created_at)
- *   updated_at      → activation.last_accessed (via ImportRecord.last_accessed)
- *   expiration_date → temporal.valid_until
- *   id              → source `mem0:<id>`
+ * mem0 importer: parses the `{"results": [...]}` export envelope (`Memory.get_all()`,
+ * v1.1+, and platform equivalents).
+ * Mapping: memory → statement; user_id → scope `user:<id>` (agent_id → `agent:<id>`
+ * fallback); categories → tags; created_at → temporal.learned_at; updated_at →
+ * activation.last_accessed; expiration_date → temporal.valid_until; id → source `mem0:<id>`.
  * Graph `relations` arrays and free-form `metadata` are not imported.
  */
 import type { ImportRecord } from './types.js'

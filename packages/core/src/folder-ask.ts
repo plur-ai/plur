@@ -7,16 +7,12 @@ import { canonicalize, findProjectConfigPath } from './project-config.js'
 import { folderAnswerKey, hostFolderNonces, issueFolderNonce, safeSessionKey, type FolderAnswer, type FolderAskHost, type FolderPolicy } from './folders.js'
 
 /**
- * The one-time folder question and the session
- * settings an `on` folder gives, shared by every adapter that follows the
- * folder map: the CLI's editor hooks (Claude Code, Codex, Cursor,
- * Antigravity — through packages/cli/src/lib/folder-gate.ts) and the opencode
- * plugin, which runs in-process and cannot shell out to a hook. Kept in one
- * place so the content rules (quoted repository data, no token, per-answer
- * nonces, safe quoting) have one implementation.
- *
- * Nothing here writes the folder map; only `plur folders set` does, and only
- * with a nonce this module issued for exactly that folder and answer.
+ * The one-time folder question and an `on` folder's session settings, shared
+ * by the CLI editor hooks (via packages/cli/src/lib/folder-gate.ts) and the
+ * in-process opencode plugin, so the content rules (quoted repository data, no
+ * token, per-answer nonces, safe quoting) have one implementation.
+ * Nothing here writes the folder map; only `plur folders set` does, with a
+ * nonce issued here for exactly that folder and answer.
  */
 
 /** One answer the folder question offers: its `plur folders set` flags and the answer its nonce is issued for. */
@@ -209,17 +205,11 @@ export function clearFolderAsk(sessionId: string): void {
 
 
 /**
- * A folder path as a shell argument for the platform's shell. Bare only when
- * every character is one no shell treats specially.
- *
- * - POSIX (macOS, Linux): single quotes, with an embedded `'` written as
- *   `'\''`. Double quotes are not enough there: sh still expands `$(...)`,
- *   backticks and `$VAR` inside them, so a folder named like a command would
- *   run it when the agent pasted the "yes" line.
- * - Windows (cmd, PowerShell, and Git Bash): double quotes. A bare backslash
- *   is an escape in a POSIX shell such as Git Bash: unquoted, `C:\Users\x`
- *   reaches plur as `C:Usersx`, and the nonce, bound to the exact folder, is
- *   refused.
+ * A folder path as a shell argument; bare only when no character is special.
+ * - POSIX: single quotes (`'` as `'\''`); double quotes would still expand
+ *   `$(...)`, backticks and `$VAR`, running a malicious folder name.
+ * - Windows (cmd, PowerShell, Git Bash): double quotes, so Git Bash does not
+ *   eat backslashes and break the folder-bound nonce.
  */
 export function quoted(p: string, platform: NodeJS.Platform = process.platform): string {
   if (/^[A-Za-z0-9_./:~-]+$/.test(p)) return p
@@ -428,16 +418,10 @@ function requestedRemoteText(url: string): string {
 }
 
 /**
- * Scopes this install can write to that are worth offering: configured stores
- * that are not readonly. The suggestion is the repo's requested scope when it
- * is one of them, else the best match of the scope ranker over them. Never a
- * scope that is not configured, so a "yes" can never route memory to a store
- * the user did not set up.
- *
- * For an untrusted `.plur.yaml` (`untrusted`), nothing it asks for is used:
- * its scope is neither suggested nor listed, and its domain does not steer the
- * ranker, so "Yes, without its settings" cannot write the scope the
- * repository requested. The only way to that scope is `--trusted`.
+ * Writable configured stores worth offering, with a suggestion: the repo's
+ * requested scope if configured, else the scope ranker's best match. Never an
+ * unconfigured scope. For an `untrusted` `.plur.yaml`, its scope and domain are
+ * ignored entirely; only `--trusted` reaches the requested scope.
  */
 function suggestScopes(
   plur: FolderAskScopeRanker | null,

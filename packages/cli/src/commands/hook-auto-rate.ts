@@ -5,34 +5,14 @@ import { exitWhenStoreIdle, EXIT_LOCK_WAIT_MS } from '../lib/store-lock-exit.js'
 import { enqueueTurn, hasLeftoverBatches, spawnWorker, runWorker, agyReplySinceLastUser, type AutoRateEditor } from '../lib/auto-rate.js'
 
 /**
- * plur hook-auto-rate <editor> — end-of-turn hook that rates the engrams
- * injected this session against the assistant's reply.
- *
- * Registered as its OWN hook entry on each editor's end-of-turn event, next to
- * (never inside) the existing nudge/cleanup hooks:
- *
- *   editor   event                payload fields used
- *   claude   Stop                 session_id, last_assistant_message, stop_hook_active, cwd
- *   codex    Stop                 session_id, last_assistant_message, stop_hook_active, cwd
- *   cursor   afterAgentResponse   conversation_id, text
- *   agy      Stop                 conversationId, transcriptPath, workspacePaths
- *                                 (no reply text in the payload — read from the transcript)
- *
- * The rating itself lives in core (`rateInjectedEngrams`) and the bookkeeping
- * in lib/auto-rate.ts. This file only turns each editor's payload into
- * (session id, reply). It prints nothing on stdout on any path — for every
- * editor above, empty output is the valid "no opinion" result, and a Stop
- * hook that printed would be read as hook output. Fail-open: any error is a
- * stderr line and exit 0.
- *
- * Skip-cheap: with nothing injected this session (and auto-capture off) no
- * store is opened — see `enqueueTurn`.
- *
- * Bounded: the hook only queues the turn and starts a detached worker
- * (`hook-auto-rate --worker <editor> <session>`), then exits. The store work
- * runs in the worker, outside the editor's timeout, so a large store cannot
- * push the hook past its budget or get it killed while it holds the store
- * lock.
+ * plur hook-auto-rate <editor> — end-of-turn hook rating this session's injected
+ * engrams against the reply. Its OWN hook entry on Stop (claude, codex, agy —
+ * agy reads the reply from the transcript) or afterAgentResponse (cursor).
+ * Rating: core `rateInjectedEngrams`; bookkeeping: lib/auto-rate.ts; this file maps payloads.
+ * - Prints nothing on stdout on any path (empty is "no opinion"); fail-open.
+ * - Opens no store when nothing was injected (see `enqueueTurn`).
+ * - Only queues the turn and starts a detached worker, so store work never runs
+ *   inside the editor's timeout or gets killed holding the store lock.
  */
 
 const EDITORS: readonly AutoRateEditor[] = ['claude', 'codex', 'cursor', 'agy']

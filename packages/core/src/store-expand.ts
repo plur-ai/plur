@@ -196,30 +196,13 @@ const RESERVED_ENTRY_KEYS = new Set<string>([
 export { safeOrigin }
 
 /**
- * Collapse expanded per-scope entries back into the original server entries
- * before writing to disk.
- *
- * Typed entries are grouped by their `EXPANDED_FROM` identity and matched to
- * the raw entry with the same identity in the freshly read `rawStores`; an
- * identity with no raw match (the entry was changed or removed since load)
- * writes nothing, and neither does an identity base two server entries share
- * (on disk now, or at load). For each matched server entry the per-scope metadata
- * fields (dial, description, covers, sensitivity) from its typed entries are
- * written back; every other field (scope, scopes, pinned_scopes, discovery,
- * enterprise, url, token, token_env, readonly) is left byte-identical.
- *
- * Where a field is written: `scope_settings[scope]`, except for the compat
- * `scope`, whose field stays at the top level when that is where it already
- * is (an older client reads it there) and no `scope_settings` value overrides it.
- *
- * `sensitivity` follows the per-scope writeback rule
- * ({@link mergeSensitivityForWriteback}): unknown `forbid` categories and
- * nested keys on disk survive, unless the scope is in
- * `serverSensitivityScopes` (the server's policy was just synced).
- *
- * Returns a new rawStores array of the same length where server entry
- * positions carry the updated collapsed entry and non-server positions are
- * unchanged.
+ * Collapse expanded per-scope entries back into their server entries before
+ * writing. Entries are matched to `rawStores` by `EXPANDED_FROM` identity; an
+ * unmatched or shared identity writes nothing. Only per-scope metadata (dial,
+ * description, covers, sensitivity) is written, to `scope_settings[scope]`
+ * (the compat `scope` stays top-level where it already is); all other fields
+ * stay byte-identical. `sensitivity` follows {@link mergeSensitivityForWriteback}.
+ * Returns a same-length array; non-server positions are unchanged.
  */
 export function collapseExpandedStores(
   typed: StoreEntry[],

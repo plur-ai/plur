@@ -35,38 +35,14 @@ export interface LearnMethods {
   learn(statement: string, context?: LearnContext): Promise<Engram>
 
   /**
-   * Async learn that returns the canonical engram — server-assigned ID
-   * for remote-routed writes, locally-built engram for local writes.
-   *
-   * Use this from async callers (MCP handlers, OpenClaw plugins, etc.)
-   * when the user later needs to reference the engram by ID (forget,
-   * feedback, history). The sync `learn()` returns a local-placeholder
-   * ID for remote-routed writes — the actual server engram has a
-   * different ID, so feedback/forget against the placeholder fails.
-   *
-   * Local writes: just delegates to sync learn(). Same dedup, same
-   * history append, same return shape.
-   *
-   * Remote writes: bypasses local YAML entirely. POSTs to the remote's
-   * /api/v1/engrams, awaits the server's response, and returns an
-   * Engram with the server-assigned id. Throws on remote failure
-   * (caller knows the write didn't land — better UX than a fire-and-
-   * forget that pretends success and leaves the user with a phantom ID).
+   * Async learn returning the canonical engram: server-assigned id for remote-routed writes (the sync `learn()`
+   * returns a local placeholder id that forget/feedback cannot use). Local writes delegate to `learn()`; remote
+   * writes POST to /api/v1/engrams and throw on failure rather than return a phantom id.
    */
   /**
-   * Report the closest existing engrams to a statement — REPORTING ONLY.
-   *
-   * `plur_learn` goes through {@link learnRouted} → sync `learn()`, which has
-   * only exact content-hash dedup; `learnAsync` (and therefore the similarity
-   * pass) is reachable solely from `plur_learn_batch`.
-   *
-   * This gives that path the same observation the batch path gets, without
-   * giving either the power to suppress a write. Never throws: similarity is an
-   * optimisation, and a reporting failure must not affect a write that has
-   * already happened.
-   *
-   * @param excludeId engram to omit — pass the just-written id so it does not
-   *                  match itself at 1.0.
+   * Report the closest existing engrams to a statement — REPORTING ONLY, never suppresses a write (`plur_learn` only
+   * has exact content-hash dedup). Never throws: a reporting failure must not affect a write that already happened.
+   * @param excludeId engram to omit — pass the just-written id so it does not match itself at 1.0.
    */
   nearDuplicates(statement: string, context?: LearnContext, excludeId?: string): Promise<{ mode: 'cosine' | 'hash-only'; near_duplicates?: Array<{ id: string; score: number }> }>
 
@@ -83,25 +59,11 @@ export interface LearnMethods {
   _commitRemoteRouted(localPlaceholder: Engram, remoteDriver: RemoteStore, scope: string, now: string, allEngrams: Engram[], unpersistableHit: Engram | null, lockHeld: boolean, remoteTimeoutMs?: number, attemptedTokenFp?: string): Promise<Engram>
 
   /**
-   * Where a learn result went, and a warning when that is not where a reader
-   * would assume.
-   *
-   * A write to a shared scope (`group:`, `project:`, `org:` …) with no writable
-   * url store registered for exactly that scope falls through to the local
-   * primary store. That is deliberate — nothing is auto-routed into a shared
-   * store — but silently, a team save could sit on one machine indefinitely
-   * while the caller was told only `ADD`. This reports it.
-   *
-   * Pure: reads the returned engram and the store config, never the network,
-   * and changes nothing about where anything was written. Pass the object
-   * `learn()` / `learnRouted()` returned; a copy loses the `remote` evidence.
-   *
-   * `requestedScope`: the scope the caller asked for. When the save
-   * came back as an engram in a DIFFERENT scope — recorded as a recurrence on
-   * another team's engram, or on a `global` one — nothing was written to the
-   * requested shared scope, so the result is `local` for that scope and the
-   * warning names the requested scope, not the one it landed in. A sensitive-
-   * content demotion is excluded: it already carries its own warning.
+   * Where a learn result went, with a warning when that is not where a reader would assume: a write to a shared
+   * scope with no writable url store for exactly that scope lands in the local primary store (deliberately, but it
+   * must not be silent). Pure — no network, no writes; pass the object `learn()` / `learnRouted()` returned.
+   * `requestedScope`: if the save landed in a DIFFERENT scope (a recurrence on another engram), the result is `local`
+   * for the requested scope and the warning names it. Sensitive-content demotions carry their own warning instead.
    */
   deliveryOf(engram: Engram, requestedScope?: string, folder?: GitScopeOutcome | null): { destination: string; delivery: LearnDelivery; warning?: string; reason?: string; reason_code?: OutboxReasonCode; host?: string; }
 
@@ -119,26 +81,12 @@ export interface LearnMethods {
   }
 
   /**
-   * The id shape the READ paths hand back for an engram.
-   *
-   * A store's engrams are namespaced with `ENG-{storePrefix(scope)}-` on load,
-   * so `recall` returns `ENG-GPL-2026-08-13-025` where the write path returned
-   * the server's own `ENG-2026-08-13-025`. Core keeps returning the server id
-   * from `learnRouted` — that is the id the remote actually holds, and callers
-   * that talk to the store need it — but a surface that reports an id back to a
-   * caller alongside `recall` results should report the form `recall` uses, or
-   * a caller recording what it just wrote ends up holding a shape no read path
-   * produced.
-   *
-   * Returns the id unchanged when the scope is not backed by a REMOTE store:
-   * a locally-written engram keeps a local id, and the read paths hand that one
-   * back as it is. This mirrors `_isRemoteBackedScope`'s exact-scope rule, so
-   * the two agree on which writes leave the machine.
+   * The id shape read paths hand back: `ENG-{storePrefix(scope)}-…` for remote-backed scopes (core's `learnRouted`
+   * still returns the server's own id); unchanged for scopes not backed by a remote store.
    */
   /**
-   * Why an outbox engram was queued, from the failure recorded on it.
-   * Pure: reads `_outbox`, never the network. Uses the outbox classifier so
-   * this line, `plur outbox` and `plur doctor` agree on the cause.
+   * Why an outbox engram was queued, from the failure recorded on it. Pure; uses the outbox classifier so this,
+   * `plur outbox` and `plur doctor` agree.
    */
   /** @internal */
   _outboxReason(engram: Engram): { reason: string; reason_code: OutboxReasonCode }
@@ -146,15 +94,9 @@ export interface LearnMethods {
   readIdFor(engram: { id: string; scope: string }): string
 
   /**
-   * THE engram constructor — the one place the shape of a new engram is
-   * written down.
-   *
-   * Builds without persisting: `learn()` spreads the result and sets the id it
-   * minted; `learnRouted()` posts it to the remote, which assigns the id, and
-   * on failure mints a local id for the outbox copy. Neither acquires the
-   * lock nor touches disk here. `validity` is taken from callers that
-   * already resolved it — learn() fails fast on a malformed window before
-   * taking the lock — and derived otherwise.
+   * THE engram constructor — the one place the shape of a new engram is written down. Builds without persisting,
+   * locking or touching disk: `learn()` sets the minted id; `learnRouted()` gets it from the remote (or mints one for
+   * the outbox copy). `validity` is taken when already resolved, derived otherwise.
    */
   /** @internal */
   _buildEngramShape(statement: string, scope: string, context: LearnContext | undefined, now: string, validity?: ResolvedValidity, ancestorsOf?: (id: string) => string[], scopeSource?: ScopeSource): Engram
@@ -188,23 +130,10 @@ export const learnMethods: LearnMethods & ThisType<Plur> = {
     return await this._withStoreLock(this.paths.engrams, async () => {
       const scope = guarded.scope
       const ps = this._primaryStore
-      // Can the store answer BOTH derived facts `learn()` needs — "is this
-      // statement already here in this scope" and "what is the next id" —
-      // without the corpus, AND take every write `learn()` performs as a
-      // targeted row operation?
-      //
-      // It is a capability SET, not a pair, and every member is load-bearing.
-      // The derive seams are jointly required because each of the two facts is
-      // otherwise read off the SAME materialised corpus — delegating one still
-      // pays the full load for the other. The write seams are required because
-      // every fallback below (`_appendEngram`, `_updateEngrams`,
-      // `_writeSupersededByEdges`) takes "the corpus in hand" and, absent a
-      // row-level write, turns it into a whole-corpus `save()`. Taking the
-      // targeted READ without the targeted WRITE would hand a stand-in array
-      // of one or two rows to a FULL REPLACE, deleting the corpus — the reason
-      // `_reactivateResults` checks its pair rather than each half.
-      // remote-only: never the store's own content-hash lookup, which would
-      // answer from personal rows in the team scope.
+      // Delegate only if the store can answer BOTH derived facts (dedup in scope, next id) AND take every write
+      // `learn()` performs as a row operation. Each member is load-bearing: the fallbacks turn "the corpus in hand"
+      // into a whole-corpus `save()`, so a targeted read without targeted writes would full-replace the corpus with a
+      // one-row stand-in. Never in remote-only mode (the store's hash lookup would answer from personal rows).
       const canDelegate = this._learnCanDelegate() && !this._remoteOnly
       // The primary corpus, or an empty stand-in when nothing below will read
       // or rewrite it. Safe ONLY under `canDelegate` — see above.
@@ -239,26 +168,11 @@ export const learnMethods: LearnMethods & ThisType<Plur> = {
         return await this._recordDuplicate(hashMatch, corpusInHand, scope, context, statement)
       }
 
-      // Cross-scope recurrence — same statement, different scope.
-      // Treated as evidence of universal applicability: graduates the
-      // existing engram toward 'global' + 'locked' commitment instead of
-      // creating a new scope-bound duplicate.
-      //
-      // Under `canDelegate` this sees secondary stores and packs but NOT the
-      // primary store, and that is deliberate rather than an oversight of the
-      // seam: `findActiveByContentHash` is scope-bound by contract precisely so
-      // it cannot disclose another scope's engram, which is the same query
-      // cross-scope recurrence needs. A store that opts into the seam is one
-      // where scopes are a permission boundary, and broadening one scope's
-      // engram to `global` because another scope learned the same sentence is
-      // what such a store must not do. So the primary half is skipped, the new
-      // statement becomes its own engram, and a deployment that wants
-      // graduation declines the seam and keeps the corpus scan.
-      // See `PrimaryStore.findActiveByContentHash`.
-      //
-      // Only a hit the writer can persist graduates; one held in a
-      // pack, a readonly store or another scope's remote cache does not absorb
-      // the write — it falls through to a new row and is noted in history.
+      // Cross-scope recurrence (same statement, other scope) graduates the existing engram toward 'global' + 'locked'
+      // instead of creating a duplicate. Under `canDelegate` the primary store is deliberately skipped: its
+      // `findActiveByContentHash` is scope-bound so scopes stay a permission boundary (see
+      // `PrimaryStore.findActiveByContentHash`). Only a hit the writer can persist graduates; pack, readonly or
+      // remote-cache hits fall through to a new row, noted in history.
       const cross = await this._crossScopeMatch(statement, allEngrams, scope)
       // `engrams` is empty under delegation, so `_recordCrossScopeRecurrence`
       // takes its secondary-store branch — which is where every match it can
@@ -272,22 +186,10 @@ export const learnMethods: LearnMethods & ThisType<Plur> = {
       if (cross.hit) await this._recordCrossScopeRecurrence(cross.hit, engrams, scope, context)
       const unpersistableHit = sameScopeForeign ?? cross.foreign
 
-      // A supersede proposed by the duplicate checker never lands on a memory
-      // that is locked — checked here, under the store lock, so a lock taken
-      // after the checker read the target still wins. The caller sees the
-      // dropped target missing from `relations.supersedes` and sends the pair
-      // to review instead.
-      //
-      // When a target is locked the new memory is saved as a DRAFT in this
-      // same write, so it is never deliverable, not between this write and the
-      // caller's review step, and not after a crash at that boundary.
-      //
-      // Each target is checked in the store that holds it. A target in a
-      // writable secondary store keeps the supersede, and its reverse edge is
-      // written in that store (`_landSecondarySupersedes`, right before the new
-      // row is written). A target whose store cannot take the reverse edge
-      // (readonly store, pack, remote cache) is not superseded at all: nothing
-      // there would suppress it, so the new memory is linked to it instead.
+      // A supersede proposed by the duplicate checker never lands on a locked memory — checked here under the store
+      // lock; the new memory is then saved as a DRAFT in this same write, so it is never deliverable even after a
+      // crash. Each target is checked in its own store: a writable secondary keeps the supersede (reverse edge via
+      // `_landSecondarySupersedes`); a store that cannot take the edge (readonly, pack, remote cache) gets a link.
       let secondarySupersedes: SecondarySupersede[] = []
       if (context?.supersedes_unless_locked && context.supersedes?.length) {
         const wanted = context.supersedes
@@ -352,20 +254,9 @@ export const learnMethods: LearnMethods & ThisType<Plur> = {
       // will be committed, and inside the lock the write commits under.
       await this._assertHardTierFits(engram)
 
-      // supersedes is a graph edge, not a temporality enum — write the reverse
-      // superseded_by edge on each target found in the local primary store
-      // (best-effort; targets living in other stores are not patched). The
-      // tension scanner skips supersedes-linked pairs: an intentional update is
-      // not a contradiction. The mutated targets are collected so the
-      // incremental write path below can persist them explicitly — on a store
-      // with `append`, writing only the new engram would silently drop these
-      // back-edges.
-      //
-      // Under delegation `engrams` is empty, so the targets are fetched by id.
-      // Dropping the back-edges instead would fail quietly:
-      // `supersedes` would still be recorded on the new engram and the reverse
-      // edge would simply never appear, which reads as data corruption rather
-      // than as a disabled feature.
+      // supersedes is a graph edge: write the reverse superseded_by edge on targets in the local primary store
+      // (best-effort; the tension scanner skips supersedes-linked pairs). Mutated targets are persisted explicitly,
+      // since an `append` store would otherwise drop them. Under delegation targets are fetched by id, never skipped.
       const supersededTargets = context?.supersedes?.length
         ? this._writeSupersededByEdges(
             canDelegate ? await ps.loadByIds!(context.supersedes) : engrams,
@@ -459,23 +350,10 @@ export const learnMethods: LearnMethods & ThisType<Plur> = {
         }
         await this._syncIndex()
 
-        // Fire-and-forget: attempt immediate push, clean up on success.
-        //
-        // The push and the local bookkeeping are caught SEPARATELY: a failure
-        // while removing the local copy after the remote accepted the engram
-        // must not be recorded as a failed push, or the outbox retries it and
-        // the remote ends up with a duplicate. "The write did not land" and
-        // "the write landed but I could not tidy up" must not share a handler.
-        //
-        // The trailing `.catch()` is load-bearing: the error path below itself
-        // awaits a store write, and if THAT throws the IIFE's promise rejects
-        // with nothing attached — an unhandled rejection, which terminates the
-        // process on modern Node. A background task must not be able to take
-        // the host down.
-        // Started only once the local write has committed. A
-        // transactional primary store would otherwise hand this task the
-        // write's own connection, which is gone by the time it runs. A
-        // rolled-back write never launches it, so nothing is marked in flight.
+        // Fire-and-forget push, started only after the local write commits (a transactional store would otherwise
+        // hand over a dead connection). Push failure and local cleanup failure are caught SEPARATELY, so a cleanup
+        // error is never recorded as a failed push (that would duplicate on retry). The trailing `.catch()` is
+        // load-bearing: an unhandled rejection would terminate the host process.
         this._afterStoreCommit(() => {
           this._outboxInFlight.add(engram.id)
           void (async () => {

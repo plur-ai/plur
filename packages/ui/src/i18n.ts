@@ -1,13 +1,7 @@
 /**
- * English and Chinese strings for the viewer.
- *
- * Bilingual because the ecosystems PLUR plugs into are: roughly 40% of the
- * DeepSeek Harness plugin ecosystem ships Chinese-language content, and dsh
- * itself carries a `.zh.md` beside every doc. A memory viewer that only speaks
- * English is a viewer half those users cannot read.
- *
- * Plain functions and a frozen table rather than a framework — the package
- * stays dependency-free, and every string is visible in one file.
+ * English and Chinese strings for the viewer — much of the DeepSeek Harness ecosystem PLUR plugs into is
+ * Chinese-language. Plain functions and a frozen table keep the package dependency-free with every string in one
+ * file.
  *
  * @module
  */

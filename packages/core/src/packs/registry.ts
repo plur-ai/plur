@@ -138,16 +138,10 @@ export function saveRegistry(packsDir: string, entries: RegistryEntry[]): void {
 
 
 /**
- * Serialize a registry read-modify-write.
- *
- * Atomic saves prevent torn files but not lost updates: two processes
- * installing different packs each read the same registry, each add their own
- * entry, and each rename a COMPLETE but different snapshot. The last rename
- * wins and the other pack's integrity baseline is gone, after which a tampered
- * copy of it can no longer be detected.
- *
- * Two MCP servers, or an MCP server and a CLI, is the ordinary case, so
- * atomicity alone is not enough.
+ * Serialize a registry read-modify-write. Atomic saves prevent torn files but
+ * not lost updates: two concurrent installers (two MCP servers, or MCP + CLI)
+ * would each rename a complete snapshot, and the loser's integrity baseline
+ * would vanish, hiding later tampering.
  */
 export function withRegistryLock<T>(packsDir: string, fn: () => T): T {
   // The lock file must live next to the registry, and the directory may not
@@ -158,16 +152,10 @@ export function withRegistryLock<T>(packsDir: string, fn: () => T): T {
 
 
 /*
- * Which registry row belongs to which installed pack.
- *
- * Rows are keyed by install directory (`dir`). Keying by manifest name would
- * let two directories whose manifests share a name share ONE row: the second
- * install would overwrite the first's baseline, and uninstalling either would
- * remove the other's baseline.
- *
- * Legacy rows carry only `name`. They still resolve, by manifest name, and only
- * rows WITHOUT `dir` are matched that way: a row that names its directory never
- * answers for another one.
+ * Which registry row belongs to which installed pack: rows are keyed by install
+ * directory (`dir`), not manifest name, so same-named packs never share a
+ * baseline. Legacy rows carry only `name` and resolve by it; a row that names
+ * its directory never answers for another one.
  */
 
 /** Index of the row for the pack installed at `dir` (manifest `name`), or -1. */
@@ -181,16 +169,10 @@ export function findRegistryRowIndex(entries: RegistryEntry[], dir: string, name
 
 /**
  * Other install directories whose manifest carries `name` and that could own a
- * legacy row (no `dir`) with that name. A legacy row is claimed or removed on
- * behalf of `dir` only when this is empty.
- *
- * Two kinds of directory are NOT candidates:
- *   - one that already owns a `dir` row: its baseline is that row, so a legacy
- *     row cannot be its. Counting it would make a legacy row next to a newer
- *     same-name install "ambiguous", so the legacy pack could never be
- *     reinstalled in place, migrated, or uninstalled cleanly.
- *   - a transient staging (`*.installing-*`) or displaced (`*.replacing-*`)
- *     directory, which is not a pack at all.
+ * legacy row (no `dir`) with that name; a legacy row is claimed or removed for
+ * `dir` only when this is empty. Not candidates: a directory that already owns
+ * a `dir` row (else legacy rows next to newer installs become stuck), and
+ * transient `*.installing-*` / `*.replacing-*` directories.
  */
 export function otherDirsNamed(packsDir: string, dir: string, name: string, entries: RegistryEntry[]): string[] {
   if (!fs.existsSync(packsDir)) return []

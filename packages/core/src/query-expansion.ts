@@ -85,18 +85,9 @@ function rrfMerge(resultSets: Engram[][], k = 60): Engram[] {
 }
 
 /**
- * Expanded search: query expansion + hybrid search + RRF merge.
- *
- * Pipeline:
- * 1. LLM generates query variants (3 for normal, 5 for aggregation)
- * 2. Hybrid search (BM25+embeddings) runs on original + variants
- * 3. Results from all searches are merged via RRF
- *
- * For aggregation queries ("how many", "total"), uses a specialized prompt
- * that generates entity-focused variants to find ALL mentions across
- * conversations, not just the top few. The returned list is capped at
- * `limit` either way.
- *
+ * Expanded search: LLM query variants (3, or 5 entity-focused ones for
+ * aggregation queries like "how many"), hybrid search on the original and each
+ * variant, merged via RRF and capped at `limit`.
  * Cost: 1 LLM call (~$0.001) + N× hybrid search
  */
 export async function expandedSearch(

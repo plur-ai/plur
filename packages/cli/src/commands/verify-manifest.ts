@@ -1,24 +1,12 @@
 /**
- * `plur verify --manifest <file|reference>`.
- *
- * Exit codes, as for `plur verify`:
- *   0  every engram this store holds matches, and a downloaded manifest's
- *      content hash and notary signature check out
- *   1  at least one engram CHANGED, or the downloaded bytes or signature do not check
- *   2  cannot verify: no such file, not a manifest, the gateway could not be
- *      reached, the stored document has no notary signature or no notary
- *      address to check it against, or none of the listed engrams is in this
- *      store
- *
- * Which notary a downloaded manifest must be signed by: `--notary <address>`
- * if given; for the default gateway, the default notary; for any other
- * gateway, none — unless `--trust-gateway-notary` accepts the address that
- * gateway reports about itself. Trusting the gateway that served the document
- * to name its own signer would let a compromised gateway vouch for its own
- * forgeries.
- *
- * NOT AVAILABLE (an engram this store does not hold) is counted and shown,
- * never turned into a pass or a failure: it is an unknown.
+ * `plur verify --manifest <file|reference>`. Exit codes, as for `plur verify`:
+ *   0  every held engram matches, and a downloaded manifest's hash and notary signature check out
+ *   1  an engram CHANGED, or the downloaded bytes or signature do not check
+ *   2  cannot verify (missing/invalid file, unreachable gateway, no signature or notary
+ *      address, or none of the listed engrams held)
+ * Required notary: `--notary <address>`; else the default notary for the default
+ * gateway; else none unless `--trust-gateway-notary` (a gateway naming its own signer
+ * could vouch for its own forgeries). NOT AVAILABLE engrams are an unknown, never pass/fail.
  */
 import { readFileSync, existsSync } from 'fs'
 import { createHash } from 'crypto'

@@ -106,19 +106,11 @@ export function sortKeysDeep(value: unknown): unknown {
 }
 
 /**
- * Canonical bytes for a history event: UTF-8 JSON, keys sorted
- * lexicographically by UTF-16 code unit, no insignificant whitespace.
- *
- * The `hash` field is EXCLUDED from its own canonical representation (circular
- * by construction). The `prev` field is INCLUDED — it is a known value at hash
- * time and forms part of the chain linkage.
- *
- * Spec:
- * - UTF-8 JSON
- * - Keys sorted recursively by UTF-16 code unit (JS default sort)
- * - No insignificant whitespace (JSON.stringify with no space arg)
- * - Timestamps must be ISO-8601 strings, never floats
- * - Hashes: lowercase hex SHA-256
+ * Canonical bytes for a history event: UTF-8 JSON, keys sorted recursively by
+ * UTF-16 code unit (JS default sort), no insignificant whitespace.
+ * `hash` is excluded (it is computed from these bytes); `prev` is included as
+ * part of the chain linkage. Timestamps must be ISO-8601 strings, never floats;
+ * hashes are lowercase hex SHA-256.
  */
 export function canonicalEventBytes(event: HistoryEvent): Buffer {
   // `hash` is excluded because it is computed FROM these bytes (circular).
@@ -147,17 +139,10 @@ export function computeEventHash(event: HistoryEvent): string {
 }
 
 /**
- * Sidecar file name inside the history directory. Written after every
- * successful JSONL append; contains only the 64-char hex hash of the last
- * chained event (plus a trailing newline). Reading 65 bytes is cheaper than
- * reading TAIL_WINDOW bytes and parsing JSON, and the sidecar works across
- * process boundaries (an in-memory cache does not).
- *
- * The JSONL files remain the authoritative source of truth. The sidecar is
- * advisory: if absent, invalid, or suspect, readers fall back to tail-seeking
- * the JSONL. A stale sidecar (written but not flushed before a crash) can
- * create a chain gap on the next write — the same outcome as any other
- * predecessor-read failure, which is already handled as a documented gap.
+ * Sidecar in the history directory holding the 64-char hex hash of the last
+ * chained event: a 65-byte read that works across processes. It is advisory —
+ * the JSONL is authoritative, and an absent, invalid or suspect sidecar falls
+ * back to tail-seeking. A stale sidecar after a crash yields a documented gap.
  */
 const CHAIN_HEAD_FILE = '.chain-head'
 
@@ -165,18 +150,10 @@ const CHAIN_HEAD_FILE = '.chain-head'
 const HEX64 = /^[0-9a-f]{64}$/
 
 /**
- * In-process cache of the last written chain-head hash, keyed by historyDir.
- *
- * Three-tier lookup in findPredecessorHash:
- *   1. This map (zero disk I/O — eliminates the sidecar readFileSync on hot path)
- *   2. Sidecar file (65-byte disk read — cross-process fast path)
- *   3. JSONL tail-seek (8 KiB disk read + JSON.parse — slow fallback)
- *
- * Populated by appendHistory after every successful JSONL write. Only covers
- * writes made by THIS process; another process writing to the same store is
- * not visible here (the sidecar handles that case). Call
- * clearChainHeadMemCache(historyDir) when the store is reloaded from disk so
- * the next lookup falls through to the sidecar and picks up any external writes.
+ * In-process cache of the last chain-head hash per historyDir: tier 1 of
+ * findPredecessorHash (memory, then sidecar, then JSONL tail-seek).
+ * Covers only this process's writes; the sidecar covers other processes.
+ * Call clearChainHeadMemCache(historyDir) when the store is reloaded from disk.
  */
 interface ChainHeadRecord {
   /** Chain head hash as of the observation below. */
@@ -192,20 +169,11 @@ interface ChainHeadRecord {
 const _chainHeadMem = new Map<string, ChainHeadRecord>()
 
 /**
- * Is a recorded observation still true of the file on disk?
- *
- * The memory cache and the sidecar can only be trusted while the file they
- * describe has the same size and inode as when the observation was made:
- *
- *  - another process appending changes the size, so a cross-process writer is
- *    never served a stale predecessor;
- *  - a crash between the JSONL fsync and the sidecar write leaves the sidecar
- *    describing a shorter file, so it is rejected rather than chained from;
- *  - a store wiped and recreated at the same path gets a new inode, so a
- *    brand-new store cannot inherit a hash from the old one.
- *
- * One stat instead of an 8 KiB read plus JSON.parse, and it fails CLOSED — any
- * doubt falls through to the authoritative tail-seek.
+ * Is a recorded observation still true of the file on disk? The cache and
+ * sidecar are trusted only while the file has the same size and inode:
+ * another process's append changes the size, a crash before the sidecar write
+ * leaves it describing a shorter file, and a recreated store gets a new inode.
+ * Fails CLOSED: any doubt falls through to the authoritative tail-seek.
  */
 function observationHolds(rec: ChainHeadRecord, file: string): boolean {
   if (rec.file !== file) return false
@@ -292,25 +260,11 @@ function writeChainHead(historyDir: string, rec: ChainHeadRecord): void {
   }
 }
 
-/**
- * Tail-seek the last non-empty line of a JSONL file and extract the `hash`
- * field from the parsed JSON. Returns null if the file does not exist, cannot
- * be read, has no non-empty lines, or the last line lacks a `hash` field.
- *
- * This is the predecessor-hash read for chain linkage. It is intentionally
- * robust: an unreadable or missing predecessor results in null (a documented
- * gap), not an error. The caller (appendHistory) writes the gap marker rather
- * than failing the mutation.
- *
- * Implementation: reads the last TAIL_WINDOW bytes and scans backwards for a
- * newline, avoiding a full-file parse on the hot write path. If the window
- * lands entirely INSIDE the final line -- no newline in it -- the window is
- * doubled and the read retried, up to TAIL_MAX_WINDOW.
- *
- * Without the retry, any event longer than the window would start the buffer
- * mid-line, fail to parse, and make the NEXT event chain from nothing — a gap
- * over an intact log. Large `data` payloads (e.g. a co_injection with a big id
- * array) can exceed 8 KiB.
+// tailSeekLastHash: the predecessor-hash read for chain linkage. Reads the last
+// TAIL_WINDOW bytes and scans back for a newline; if the window lies inside the
+// final line it doubles, up to TAIL_MAX_WINDOW, so a large event never reads as
+// a gap over an intact log. Missing, unreadable or hashless input returns null
+// (a documented gap, never an error); appendHistory writes the gap marker.
 /** Initial tail read. Covers the overwhelming majority of event lines. */
 const TAIL_WINDOW = 8192
 /**
@@ -325,15 +279,9 @@ const TAIL_MAX_WINDOW = 1024 * 1024
 
 /**
  * The hash of the last CHAINED event in `text`, scanning backwards.
- *
- * Steps over events with no hash — written by an older PLUR still running
- * against the same store (e.g. an MCP server not yet restarted after an
- * upgrade) — because `verifyChain` expects the next chained event to link to
- * the last chained one, skipping those. Treating them as unreadable would turn
- * every such interleave into a declared gap plus a genesis fork. A line that
- * will not parse still stops the scan (null: a gap) — under the lock a torn
- * final line has already been dropped (dropTornTail), so what is left is
- * corruption, not a crash.
+ * Skips hashless events (from an older PLUR on the same store), matching
+ * `verifyChain`. A line that will not parse stops the scan: under the lock a
+ * torn tail is already dropped (dropTornTail), so it is corruption.
  * @returns the hash; null when a line will not parse; undefined when the text
  *          holds no chained event at all.
  */
@@ -406,20 +354,11 @@ export function tailSeekLastHash(filePath: string): string | null {
 }
 
 /**
- * Find the hash of the most recent chained event across all month files in the
- * history directory, looking at the current month file first and then scanning
- * backwards through prior months.
- *
- * Three-tier lookup (cheapest first):
- *   1. In-process memory cache (_chainHeadMem) — zero disk I/O; covers the
- *      common single-process write burst.
- *   2. Sidecar `.chain-head` file (65-byte readFileSync) — cross-process fast
- *      path; valid even when the in-memory cache is cold or has been cleared.
- *   3. JSONL tail-seek (up to 8 KiB + JSON.parse) — slow fallback for cold
- *      start or absent/corrupt sidecar.
- *
- * Returns null when no chained predecessor is found (genesis event, gap after
- * an event without a hash, or unreadable files).
+ * Hash of the most recent chained event, current month file first, then
+ * earlier months. Lookup order: in-process cache (_chainHeadMem), the
+ * `.chain-head` sidecar, then the JSONL tail-seek.
+ * Returns null when there is no chained predecessor (genesis, gap, or
+ * unreadable files).
  */
 export function findPredecessorHash(historyDir: string, currentMonthFile: string): string | null {
   // Tier 1: in-process memory, validated. The cached hash is accepted only
@@ -481,63 +420,25 @@ export function findPredecessorHash(historyDir: string, currentMonthFile: string
 }
 
 /**
- * Append a history event to the JSONL file for the current month.
- * Files are stored in {root}/history/YYYY-MM.jsonl.
- * Auto-creates the history directory and file on first write.
- *
- * Hash chain: before writing, this function:
- *   1. Tail-seeks for the predecessor's hash — current month file first, then
- *      the most recent prior month file (cross-month continuity)
- *   2. Sets event.prev = predecessor hash | null (gap when predecessor unreadable)
- *   3. Computes SHA-256 over canonical bytes (sorted keys, no whitespace) and
- *      sets event.hash
- *
- * Concurrency: this function serializes itself. The read-predecessor →
- * compute-hash → append sequence is wrapped in a short cross-process lock on
- * the history directory, so two writers cannot both read the same tail and
- * both append from it. Callers need not hold the store lock (the store mutex
- * is not re-entrant, so it could not be taken here).
- *
- * Lock ordering is one-way: a caller may hold the store lock and then take this
- * one, never the reverse (nothing here calls back into store code), so the two
- * cannot deadlock.
- *
- * If the lock cannot be acquired, the event is still written but with
- * `prev: null` — a DECLARED GAP rather than a possibly-stale predecessor.
- * A gap is visible; a fork is silent corruption. The write itself must always
- * land: history NAMES the engrams a restore cannot recover, so dropping a
- * record makes restore under-report the loss.
- *
- * Gap handling: if the predecessor cannot be read (file missing, malformed line,
- * event without hash), prev is set to null. This is a documented gap in the
- * chain — never an error, never a fabricated hash.
- *
- * Events without hash or prev fields are loaded and reported as-is, never
- * silently upgraded, never errored.
- *
- * @returns `true` when the event was written, `false` when it could not be.
- *
- * This function deliberately does NOT throw: an unwritable history directory
- * must not fail the learn/forget/feedback that called it. A caller that needs
- * to stay consistent with the log (e.g. `inject()`'s `injection_count`) must
- * check the return value, since a try/catch would never see a failure.
+ * Append a history event to {root}/history/YYYY-MM.jsonl, setting `prev` (the
+ * predecessor hash, across months) and `hash` over the canonical bytes.
+ * - Read-tail, hash and append run under a short cross-process lock on the
+ *   history dir; lock order is store lock then this one, never the reverse.
+ * - Lock failure or unreadable predecessor writes `prev: null` (a declared gap,
+ *   never a fabricated hash); the write must still land. Legacy events stay as-is.
+ * @returns `true` when written. Never throws, so callers that must stay
+ *          consistent with the log (e.g. `injection_count`) check the result.
  */
 export function appendHistory(root: string, event: HistoryEvent): boolean {
   return appendHistoryStamped(root, event)
 }
 
 /**
- * `appendHistory`, with a hook that runs INSIDE the critical section once the
- * predecessor is known and before the event is serialised.
- *
- * Used by checkpoints: a checkpoint's payload carries `chain_head`, which must
- * be the very predecessor the event chains onto. The only way to guarantee
- * that is to build the payload from the `prev` this append is about to use,
- * under the same lock.
- *
- * `onPrev` runs with the chain lock held and MAY read the store (a checkpoint
- * binds its `store_hash` to the `chain_head` it records). It should still do no
- * more than it must: every history append waits behind it.
+ * `appendHistory` with an `onPrev` hook run inside the critical section once the
+ * predecessor is known, before serialising. Checkpoints use it so `chain_head`
+ * is exactly the `prev` this append chains onto.
+ * `onPrev` holds the chain lock and may read the store; keep it minimal, since
+ * every history append waits behind it.
  */
 export function appendHistoryStamped(
   root: string,
@@ -554,19 +455,11 @@ export function appendHistoryStamped(
   // month boundary that another writer already crossed joins the newest file.
   let filePath = join(historyDir, `${date}.jsonl`)
 
-  // Hash-chain linkage under exclusion. Reading the tail and appending from it
-  // must be one atomic step, or two writers chain from the same predecessor
-  // and the log forks. `withLock` is the synchronous twin of the store's async
-  // lock (token-based release, stale detection, liveness check), which fits a
-  // synchronous `appendHistory`.
-  //
-  // The critical section is read-tail -> compute -> WRITE, all three: stamping
-  // under the lock and appending after it would still let two writers append
-  // from the same tail.
-  //
-  // An `onPrev` failure is NOT a lock failure. The catch below falls back to an
-  // unlocked append when the lock cannot be taken; this flag lets it rethrow an
-  // `onPrev` error instead of writing the event with an incomplete payload.
+  // Read-tail -> compute -> WRITE must all run under the lock (`withLock`, the
+  // synchronous twin of the store lock), or two writers chain from the same
+  // predecessor and the log forks.
+  // An `onPrev` failure is not a lock failure: it is rethrown rather than
+  // falling back to an unlocked append with an incomplete payload.
   let onPrevFailure: unknown
   let written = false
   const stampAndWrite = (): void => {
@@ -585,26 +478,15 @@ export function appendHistoryStamped(
     event.hash = computeEventHash(event) // canonical bytes exclude the hash field
     written = writeEventLine(JSON.stringify(event) + '\n', true)
   }
-  // fsync the append. O_APPEND makes the write atomic against concurrent
-  // writers but not durable, and `plur restore` reads this log to NAME the
-  // engrams a restore cannot recover, so a lost record makes it under-report.
-  //
-  // The whole append is best-effort: failing the caller's mutation because the
-  // log could not be written would trade a small durability gap for a large
-  // availability one. Failures are warned rather than swallowed, because
-  // history is load-bearing for `plur restore` and for id allocation; a store
-  // writing no history is degraded and the operator needs to know.
+  // fsync the append: `plur restore` uses this log to name unrecoverable
+  // engrams. The append is best-effort (never fail the caller's mutation), but
+  // failures are warned, not swallowed.
   /**
-   * Append one JSONL line, and record the chain head it establishes.
-   *
-   * `chained` is false on the lock-failure path. Only a writer holding the
-   * chain lock may update the caches: an unlocked writer's `statSync` can
-   * observe a size that already includes a CONCURRENT writer's append, and the
-   * resulting `{hash: mine, size: combined}` would pass size+inode validation
-   * while naming the wrong tail — a silent fork.
-   *
-   * So the unlocked path INVALIDATES instead: drop the memory entry and remove
-   * the sidecar, forcing the next lookup down to the authoritative tail-seek.
+   * Append one JSONL line and record the chain head it establishes.
+   * Only a writer holding the chain lock (`chained`) may update the caches: an
+   * unlocked writer's stat can include a concurrent append and pass validation
+   * while naming the wrong tail. The unlocked path instead drops the memory
+   * entry and removes the sidecar, forcing the next lookup to tail-seek.
    */
   function writeEventLine(line: string, chained: boolean): boolean {
   try {
@@ -873,24 +755,14 @@ export function appendHistoryBatch(root: string, events: readonly HistoryEvent[]
 const warnedHistoryPaths = new Set<string>()
 
 /**
- * Payload of a `checkpoint` history event.
- *
- * A checkpoint commits to every event that precedes it in the chain — the
- * chain linkage (prev/hash) makes the whole prior history tamper-evident
- * once this checkpoint is externally anchored.
- *
- * Fields:
- *   chain_head  — hash of the predecessor event (the last event before this
- *                 checkpoint), or null when this is the genesis checkpoint.
- *                 Redundant with the HistoryEvent.prev field, but kept in
- *                 data so the payload is self-contained without parsing chain
- *                 linkage separately.
- *   store_hash  — SHA-256 over each engram's id, status and record hash
- *                 (its content, not its usage counters; see attestStore),
- *                 hex-encoded. Never computed on append (hot path) — only
- *                 computed when a checkpoint is explicitly requested.
- *   engram_count — count of active (non-retired) engrams at checkpoint time.
- *   actor        — who/what triggered the checkpoint ('session_end' | 'cli' | string).
+ * Payload of a `checkpoint` history event. Through the prev/hash chain it
+ * commits to all prior history once externally anchored.
+ *   chain_head   — predecessor hash, or null for genesis (duplicates `prev` so
+ *                  the payload is self-contained).
+ *   store_hash   — hex SHA-256 over each engram's id, status and record hash
+ *                  (see attestStore); only computed on explicit checkpoints.
+ *   engram_count — active (non-retired) engrams at checkpoint time.
+ *   actor        — trigger ('session_end' | 'cli' | string).
  */
 export interface CheckpointData {
   /**
@@ -934,16 +806,9 @@ export function hashEngramsFile(engramsPath: string): string {
 }
 
 /**
- * Hash a store AND count it from ONE read of ONE buffer.
- *
- * The two values are emitted side by side in a checkpoint, and a count that is
- * not derived from the bytes the hash covers is not attested by it. Two
- * separate reads would leave a window for a concurrent `learn()` to land
- * between them.
- *
- * Parse errors THROW rather than degrading: a checkpoint attesting "0 engrams"
- * beside a hash of a full store is a false attestation, worse than none.
- *
+ * Hash a store AND count it from ONE read, so the count is attested by the
+ * hash and no concurrent `learn()` can land between them.
+ * Parse errors THROW: "0 engrams" beside a full-store hash is a false attestation.
  * @param engramsPath - absolute path to engrams.yaml.
  * @returns the canonical store hash and the active engram count, from one read.
  * @throws if the store cannot be read or parsed.
@@ -951,23 +816,11 @@ export function hashEngramsFile(engramsPath: string): string {
 export function attestStore(engramsPath: string): { store_hash: string; engram_count: number; store_buckets: string[] } {
   const raw = fs.readFileSync(engramsPath, 'utf8')
 
-  // Hash the CONTENT, not the bytes. Canonicalising the parsed document gives
-  // a digest that is stable across line endings, YAML emitter and platform,
-  // which is what a third party needs in order to check the claim. This
-  // attests the engrams, not the file: a comment-only or formatting-only edit
-  // does not change it.
-  //
-  // Depends on sortKeysDeep honouring toJSON: js-yaml parses ISO timestamps
-  // into Date objects, which would otherwise canonicalise to `{}`.
-  //
-  // Each memory's CONTENT is attested, not its usage: recall, injection and
-  // feedback rewrite activation, frequency and feedback counts, and hashing
-  // those would make `plur verify` report BROKEN after ordinary use. Each
-  // engram is reduced to its id, its status and the record hash a session
-  // manifest carries (`computeRecordHash`: statement, rationale, type, scope,
-  // domain, commitment, tags, provenance, attribution, claim class, polarity)
-  // — exactly what a change made behind PLUR's back would alter, and nothing a
-  // read moves.
+  // Hash parsed CONTENT, not bytes, so the digest is stable across line
+  // endings, emitter and platform. Relies on sortKeysDeep honouring toJSON
+  // (js-yaml yields Date objects). Each engram reduces to id, status and its
+  // record hash (`computeRecordHash`), never usage counters, so ordinary
+  // recall/feedback does not make `plur verify` report BROKEN.
   const parsed = yaml.load(raw)
   const engram_count = countActive(parsed, engramsPath)
   const records = storeRecords(parsed)
@@ -1103,26 +956,13 @@ export interface CheckpointSigningOptions {
 }
 
 /**
- * Emit a `checkpoint` history event for the store at `root`.
- *
- * Computes:
- *   - chain_head: the predecessor hash (last chained event in the store)
- *   - store_hash: SHA-256 over each engram's id, status and record hash (see attestStore)
- *   - engram_count: number of active engrams, from the same read as store_hash
- *
- * The checkpoint is itself a chained event — it gets its own hash and prev
- * via appendHistory, so two checkpoints across a month boundary chain correctly
- * via the existing cross-month mechanism.
- *
- * The `engram_id` field is set to '' (empty string — same convention as
- * session_scope_changed): checkpoints are store-level events, not engram-level.
- *
+ * Emit a chained `checkpoint` event (engram_id '') with chain_head, store_hash
+ * and engram_count (see attestStore).
  * @param root        — plur store root (e.g. ~/.plur)
  * @param engramsPath — absolute path to engrams.yaml
  * @param actor       — who triggered the checkpoint ('session_end' | 'cli' | custom)
  * @param timestamp   — ISO-8601 timestamp; defaults to now
- * @param signing     — optional signing options; when absent the checkpoint
- *                      is unsigned (valid L2, not L3-capable)
+ * @param signing     — optional; absent means unsigned (valid L2, not L3-capable)
  * @returns the written CheckpointData
  */
 export function emitCheckpoint(
@@ -1146,21 +986,10 @@ export function emitCheckpoint(
   // predecessor is read once, inside the same lock that appends, and the
   // payload is built from it (appendHistoryStamped's onPrev hook).
   const written = appendHistoryStamped(root, event, prev => {
-    // Attest INSIDE the chain lock, from ONE read. Two bindings depend on it:
-    //
-    //  1. store_hash to engram_count — separate reads could straddle a
-    //     concurrent write.
-    //
-    //  2. store_hash to chain_head — a third party who replays the log to
-    //     chain_head and hashes the store must get this digest, so the store
-    //     must not move between the digest and the recorded predecessor.
-    //
-    // The cost is holding the chain lock across a whole-store parse. That is
-    // acceptable: checkpoints are explicit and rare (CLI, session end), while
-    // history appends are frequent and short.
-    //
-    // A throw here aborts the checkpoint rather than writing an unattested one
-    // — see the onPrevFailure handling in appendHistoryStamped.
+    // Attest INSIDE the chain lock from ONE read, binding store_hash to both
+    // engram_count and chain_head (a replay to chain_head must reproduce this
+    // digest). Holding the lock across a store parse is fine: checkpoints are
+    // rare. A throw aborts the checkpoint (see onPrevFailure).
     const { store_hash, engram_count, store_buckets } = attestStore(engramsPath)
     const data: CheckpointData = { chain_head: prev, store_hash, store_buckets, engram_count, actor, ...(sessionId ? { session_id: sessionId } : {}) }
     event.data = data as unknown as Record<string, unknown>
@@ -1230,22 +1059,11 @@ export function readHistory(root: string, yearMonth: string): HistoryEvent[] {
 }
 
 /**
- * Ids this store has ever MINTED whose prefix matches one of `prefixes`.
- *
- * `generateEngramId` allocates by scanning the corpus for the highest same-day
- * suffix, and `compact()` removes rows, which would free their ids for reuse.
- * Two engrams sharing an id would merge in everything keyed by id that
- * outlives the corpus entry (history, backups and restore diffs, `supersedes`
- * edges, outbox rows, remote store rows). This log is append-only and written
- * on every create, so it is a record of allocation that survives removal.
- *
- * History writes are best-effort, so this can UNDER-report. That is safe: a
- * missed record leaves allocation where corpus-only scanning puts it, while
- * every record found can only push the next suffix higher.
- *
- * Reads a single month (allocation is per-day, so only the current month can
- * hold same-day ids) and never throws: an unreadable log degrades to
- * corpus-only allocation rather than blocking a write.
+ * Ids this store has ever MINTED with one of `prefixes`, from the append-only
+ * log, so `generateEngramId` never reuses an id freed by `compact()` (shared
+ * ids would merge history, backups, edges and remote rows).
+ * Under-reporting is safe (it only lowers the floor). Reads only the current
+ * month and never throws; an unreadable log degrades to corpus-only allocation.
  */
 export function mintedIdsWithPrefix(root: string, yearMonth: string, prefixes: string[]): string[] {
   try {
@@ -1340,22 +1158,12 @@ export function generateEventId(): string {
 }
 
 // --- Injection provenance ---
-//
-// Two event types feed the co-fire edge pipeline and temporal-replay
-// self-labeling:
-//
-//   co_injection      — one per inject/session-start with >=1 injected engram.
-//                       engram_id carries the injection ID (INJ-...) so the
-//                       event is addressable; data = { ids, query_hash, ... }.
-//                       Kept compact: engram IDs only, never statements
-//                       (~325 B at 5 ids, ~625 B at 20 ids).
-//   injection_outcome — one per positive/negative plur_feedback verdict on an
-//                       engram that was previously injected; data links back
-//                       via { injection_id, signal }. ~170 B. "Ignored" is the
-//                       ABSENCE of an outcome for an injected engram — no
-//                       synthetic ignore events are ever written.
-//
-// Growth at ~50 sessions/day: under ~1 MiB/month of JSONL.
+// Feeds the co-fire edge pipeline and temporal-replay self-labeling:
+//   co_injection      — one per inject/session-start with >=1 engram; engram_id
+//                       is the INJ-... id; data holds ids only, never statements.
+//   injection_outcome — one per positive/negative feedback on an injected
+//                       engram, linked by { injection_id, signal }. "Ignored"
+//                       is the absence of an outcome; none is ever synthesised.
 
 /**
  * Generate a globally-unique injection ID for co_injection events.
@@ -1376,20 +1184,10 @@ export function computeQueryHash(task: string): string {
 }
 
 /**
- * Cross-process dedup for co_injection events.
- *
- * Duplicate injections come from separate hook processes spawning within
- * milliseconds, so in-memory maps cannot see each other. This checks the
- * HISTORY FILE (durable, shared across processes) for a recent co_injection
- * with the same key.
- *
- * Keyed on query_hash + sorted engram IDs + source + session (not hash alone):
- * the same query text can legitimately select different engrams after a
- * write, and two different sessions selecting the same engrams are two real
- * injections rather than one duplicated.
- *
- * Window: 5 seconds. Reads only the tail of the current (and, across a month
- * boundary, previous) month's file — bounded I/O.
+ * Cross-process dedup for co_injection events, checked against the shared
+ * history file (hook processes cannot see each other's memory).
+ * Key: query_hash + sorted engram ids + source + session. Window: 5 seconds,
+ * reading only the tail of the current (and previous) month file.
  */
 export function isRecentDuplicateInjection(
   root: string,

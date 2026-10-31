@@ -48,23 +48,9 @@ export class AsyncMutex {
 }
 
 /**
- * A pool of {@link AsyncMutex}, one per key.
- *
- * A file lock alone does NOT serialize callers inside one
- * process well. `O_EXCL` makes the second caller fail with `EEXIST`, and the
- * only recovery is retry-with-backoff — which under real in-process contention
- * means every writer but one sleeps through an exponential backoff and, past
- * `maxRetries`, throws `Failed to acquire lock`. That is fine as a
- * *cross-process* guard (contention is rare, processes are independent) and
- * wrong as an *in-process* one, where contention is the normal case for a
- * deployment that serves several sessions from one instance.
- *
- * So: queue in-process on a mutex first (FIFO, no polling, no spurious
- * failure), and only then contend for the file lock — by which point this
- * process has exactly one candidate in flight per key.
- *
- * Entries are evicted once idle so the map tracks *live* contention rather
- * than every key ever locked.
+ * A pool of {@link AsyncMutex}, one per key. In-process callers queue here (FIFO, no polling)
+ * before contending for the file lock, whose `O_EXCL` retry-with-backoff is fine across
+ * processes but fails under normal in-process contention. Idle entries are evicted.
  */
 export class KeyedAsyncMutex {
   private mutexes = new Map<string, AsyncMutex>()

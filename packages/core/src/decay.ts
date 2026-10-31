@@ -48,22 +48,10 @@ export function daysSince(lastAccessed: string, now?: Date): number {
 export const LEGACY_REACTIVATION_STRENGTH_DELTA = 0.1
 
 /**
- * Reactivation on access.
- *
- * Returns the strength UNCHANGED. `retrieval_strength` means "how
- * well-regarded is this": it is what `min_strength` filters on, what
- * `scoreEngram` multiplies into injection ranking, and what admin surfaces
- * present. If retrieval raised it, incidental fetches would outvote deliberate
- * feedback and the value would saturate.
- *
- * Traffic is tracked separately in `activation.frequency`, which counts
- * retrieval events. `retrieval_strength` moves ONLY on deliberate feedback, so
- * the two signals do not compete for one field and a ranker can weigh them
- * explicitly.
- *
- * Recency is unaffected: `_reactivateResults` still refreshes `last_accessed`
- * on every recall, and decay is driven by that — so a frequently-recalled
- * engram still resists decay without its strength being inflated.
+ * Reactivation on access: returns the strength UNCHANGED. `retrieval_strength` moves only
+ * on deliberate feedback, so incidental fetches cannot outvote it or saturate it; traffic
+ * is counted in `activation.frequency`. Recall still refreshes `last_accessed`, which
+ * drives decay.
  */
 export function reactivate(currentStrength: number): number {
   return currentStrength

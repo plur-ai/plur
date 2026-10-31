@@ -14,36 +14,14 @@ import {
 import { cursorReminderRulePath } from '../mcp-config.js'
 
 /**
- * plur hook-cursor-post-tool — Cursor `postToolUse` hook.
- *
- * Two jobs, both keyed off the same event because postToolUse is the only
- * Cursor hook that fires reliably after any tool call — including in cloud/
- * background agents, where sessionStart never fires:
- *
- *   1. If the call was plur_session_start, mark the sentinel — this is what
- *      covers the cloud/background-agent path (hook-cursor-session-start
- *      never ran there, so nothing else marks it).
- *   2. Otherwise, on a 10-minute cadence, remind the agent to call plur_learn
- *      — the closest available substitute for Claude Code's per-turn
- *      UserPromptSubmit reminder, since Cursor's beforeSubmitPrompt output is
- *      documented as not respected for context injection.
- *
- * Delivery: Cursor drops `additional_context` for `postToolUse` (the same
- * race as `sessionStart`), so the reminder is written to its own dynamic
- * rules file via `writeContextRule()` as the PRIMARY channel, with
- * `additional_context` kept as a harmless secondary output. It must not share
- * the file hook-cursor-session-start.ts uses for recalled engrams, or the
- * first reminder would erase that session's injected memory — see
- * `cursorReminderRulePath()`.
- *
- * Tool-name matching uses the shared isPlurSessionStartTool(), so the
- * prefixed (mcp__plur__plur_session_start) and bare (plur_session_start)
- * forms are handled in one place for every Cursor hook.
- *
+ * plur hook-cursor-post-tool — Cursor `postToolUse` hook (fires reliably, even
+ * in background agents). On plur_session_start (via isPlurSessionStartTool())
+ * it marks the sentinel; otherwise it reminds about plur_learn every 10 minutes.
+ * Cursor drops `additional_context`, so the PRIMARY channel is
+ * `.cursor/rules/plur-reminder.mdc` via `writeContextRule()` — never the
+ * session-context file (see `cursorReminderRulePath()`).
  * Input: JSON on stdin — { tool_name, tool_input, tool_output, conversation_id | session_id }
  * Output: JSON on stdout — { additional_context } or nothing (secondary channel)
- * Side effect: overwrites `.cursor/rules/plur-reminder.mdc` when reminding (primary channel) —
- * NOT the session-context file hook-cursor-session-start.ts writes.
  */
 
 const REMINDER_INTERVAL_MS = 10 * 60 * 1000

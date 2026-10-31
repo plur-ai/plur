@@ -250,20 +250,12 @@ function runtimeRegistrationStep(openclawHome?: string): { step: SetupStep; stat
 }
 
 // Detects plugins.entries[<id>] whose extensions/<id> directory is absent —
-// orphaned entries that may still hold credentials. Deleting them automatically
-// is unsafe: extensions/<id> is transiently absent during any install/upgrade,
-// and the third-party config may embed API keys. So this check is:
-//   1. NON-DESTRUCTIVE: it only warns. It never deletes or mutates config.
-//   2. USER-INVOKED, NOT AUTOMATIC: it runs only inside runDoctor (the `doctor`
-//      command a user runs deliberately), never from the postinstall setup path
-//      that fires mid-install.
-//   3. CONSERVATIVE: if the extensions/ dir itself is absent we cannot
-//      distinguish "no plugins installed" from "tree not yet populated
-//      mid-install", so we stay silent. When we do warn, the message says it is
-//      advisory, may be a false positive during an in-progress upgrade, and that
-//      the user — not claw — must remove anything.
-// It includes plur-claw's OWN entry: a lingering plur-claw entry with no
-// extension is equally orphaned.
+// orphaned entries that may still hold credentials (plur-claw's own included).
+//   1. NON-DESTRUCTIVE: it only warns; never deletes or mutates config
+//      (extensions/<id> is transiently absent during installs).
+//   2. USER-INVOKED: only from runDoctor, never the postinstall setup path.
+//   3. CONSERVATIVE: silent when extensions/ itself is absent; the warning says
+//      it is advisory and that the user, not claw, must remove anything.
 function orphanedEntriesStep(
   cfg: OpenclawConfig,
   configPath: string,

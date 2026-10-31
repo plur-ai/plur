@@ -11,27 +11,12 @@ import {
 
 /**
  * `plur remote`: the one way to connect a folder to a team store.
- *
  *   plur remote --url <u> --token <t> [--scope <s> | --scopes <a,b,...>]
- *   plur remote                 # show this folder's connection and check it
- *
- * With flags it checks the token against the server's /me for every scope
- * first (Plur.verifyRemoteStore) and writes nothing if any is refused; then it
- * registers each scope as a url store in the user's config.yaml
- * (Plur.addRemoteStore, idempotent) and maps the current folder in
- * folders.yaml with the scope (`--scope`, or the first of `--scopes`), under
- * the folder-map lock. Nothing is written to the repo's `.plur.yaml`, so the
- * token never lands in a repo folder, and no trust grant is needed: the URL
- * and token are the user's own, in the user's own config.
- *
- * Without flags it prints the resolved folder policy and checks the stores
- * serving this folder: exit 0 when all are reachable, 2 when one is not, 1
- * when none serves it.
- *
- * `plur init-remote` is a hidden alias (same flags; `--verify` is bare
- * `plur remote`).
- *
- * The token is never printed: not in text, not in --json, not in an error.
+ *   plur remote                 # show this folder's connection and check it (exit 0 ok, 2 unreachable, 1 none)
+ * With flags it verifies the token for every scope first and writes nothing if any is refused; then registers url
+ * stores in the user's config.yaml and maps the folder in folders.yaml under the folder-map lock. Nothing goes into
+ * `.plur.yaml`, so the token never lands in a repo and no trust grant is needed.
+ * `plur init-remote` is a hidden alias. The token is never printed — not in text, --json or errors.
  */
 
 const HELP = `plur remote — connect this folder to a team store

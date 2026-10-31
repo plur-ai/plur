@@ -5,33 +5,14 @@ import { tmpdir } from 'os'
 import { join, sep } from 'path'
 
 /**
- * Owner-only protection for files (and folders) that hold a secret. One rule
- * for every caller — core's
- * config.yaml writes, atomicWrite's temporary files, the enterprise
- * installer's backups and key file:
- *
- * - Unix: `chmod 0600` (a folder `0700`), then read the mode back.
- * - Windows: `icacls <path> /inheritance:r /grant:r *<SID>:F` (a folder
- *   `(OI)(CI)F`, so what is created inside it is owner-only too), then the
- *   access list is read back; explicit entries for other principals that
- *   survive the inheritance removal are removed (`/remove *<SID>`) and the list
- *   is read again. Accepted only when every access entry is the current
- *   account's.
- *
- * Windows works on security identifiers (SIDs), never on account names:
- * icacls prints names and paths in the OEM code page (e.g. `ü` comes out as
- * byte 0x81, `Č` as `C`), so a name or path that is
- * not ASCII cannot be matched in its text output — every write for such a
- * user would be refused. The current account's SID comes from
- * `whoami /user /fo csv /nh` (the SID column is ASCII); the access list is
- * read with `icacls <path> /save <file>`, which writes it as SDDL in UTF-16
- * (SIDs, or SDDL abbreviations such as `SY`, `BA`), whatever the system
- * language.
- *
- * Commands run through execFile with an argument array, never a shell, so a
- * path with spaces or shell characters is one argument; on Windows they run
- * from `%SystemRoot%\System32` by full path, so a planted `icacls.exe` or
- * `whoami.exe` in the working folder is never run.
+ * Owner-only protection for secret-holding files and folders, one rule for all callers.
+ * - Unix: `chmod 0600` (folder `0700`), then read the mode back.
+ * - Windows: `icacls <path> /inheritance:r /grant:r *<SID>:F` (folder
+ *   `(OI)(CI)F`), `/remove *<SID>` for other principals, accept only if every
+ *   entry is the current account's. SIDs, never names (OEM code page output):
+ *   `whoami /user /fo csv /nh`, ACL read via `icacls <path> /save` (UTF-16 SDDL).
+ * - execFile with an argument array, never a shell; on Windows by full path
+ *   from `%SystemRoot%\System32`, so planted executables never run.
  */
 
 export type OwnerOnlyExec = (cmd: string, args: string[]) => { status: number | null; stdout: string }

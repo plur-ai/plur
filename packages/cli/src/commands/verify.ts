@@ -1,26 +1,12 @@
 /**
- * `plur verify` — verify the history chain and optionally checkpoint
- * signatures.
- *
- * Exit codes are the contract, and all three are distinct:
- *
- *   0  verified        the chain holds over everything it covers
- *   1  broken          at least one break or fork, each one named
- *   2  cannot verify   the log could not be read — NOT the same as clean
- *
- * The third code is the point. A verifier that answered 0 when it could not
- * read the log would report "healthy" for a chain nobody checked, which is the
- * failure this whole surface exists to refuse.
- *
+ * `plur verify` — verify the history chain and optionally checkpoint signatures.
+ * Exit codes: 0 verified; 1 broken (each break named); 2 cannot verify (NOT clean).
  * Usage:
  *   plur verify                Human-readable report
  *   plur verify --signatures   Also verify Ed25519 signatures on checkpoints
  *   plur verify --json         Full structured result
  *   plur verify --manifest <file|swarm reference> [--notary <0x address>] [--gateway <url>] [--trust-gateway-notary]
- *                              Re-hash every engram a session manifest lists:
- *                              MATCH / CHANGED / NOT AVAILABLE per engram. A Swarm
- *                              reference is downloaded through the provenance gateway;
- *                              its content hash and notary signature are checked locally.
+ *                              Re-hash each listed engram: MATCH / CHANGED / NOT AVAILABLE.
  */
 import { join } from 'path'
 import { createPlur, type GlobalFlags } from '../plur.js'

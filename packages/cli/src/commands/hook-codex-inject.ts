@@ -6,23 +6,12 @@ import { resolveProjectRemote, projectRemoteRefusalNotice } from '../lib/project
 import { recordInjected } from '../lib/auto-rate.js'
 
 /**
- * plur hook-codex-inject — Codex `UserPromptSubmit` hook.
- *
- * The load-bearing hook: recalls engrams relevant to THIS prompt and returns
- * them as `additionalContext`, which Codex appends to the turn.
- *
- * Synchronous, hybrid-first with a BM25 fallback on a soft deadline — see
- * `injectWithFallback`. Async is the wrong trade here even though Codex
- * supports it: its context lands on the NEXT turn, not this one.
- *
- * Also marks the session sentinel. In `codex exec` (a one-shot, no TUI)
- * SessionStart and UserPromptSubmit both fire, but a resumed or forked
- * session may deliver only one of them; whichever arrives first should stop
- * the guard from nagging.
- *
- * Input:  JSON on stdin — { session_id, turn_id, cwd, hook_event_name, prompt, ... }
- * Output: JSON on stdout — { hookSpecificOutput: { hookEventName, additionalContext } }
- *         or nothing at all when there is nothing worth saying.
+ * plur hook-codex-inject — Codex `UserPromptSubmit` hook: recalls engrams for THIS prompt
+ * and returns them as `additionalContext`. Synchronous (async context would land on the
+ * next turn), hybrid-first with a BM25 fallback — see `injectWithFallback`.
+ * Also marks the session sentinel, since resumed/forked sessions may skip SessionStart.
+ * Input: JSON on stdin { session_id, turn_id, cwd, hook_event_name, prompt, ... }.
+ * Output: { hookSpecificOutput: { hookEventName, additionalContext } } or nothing.
  */
 export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   await runCodexHook('codex inject', async () => {

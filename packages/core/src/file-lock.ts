@@ -17,24 +17,11 @@ export interface LockOptions {
 
 
 /**
- * File-based exclusive lock using O_EXCL. Retries with exponential backoff.
- *
- * ## Why this one keeps a short retry budget
- *
- * The async lock raises BOTH its stale threshold and its acquire deadline, so a
- * waiter never abandons a holder the protocol still considers alive. Only half
- * of that is safe to copy here.
- *
- * The stale threshold is raised, for the same reason: stealing a lock from a
- * process that is still writing corrupts the store, and 10 s is too close to a
- * legitimate hold.
- *
- * The retry budget is deliberately NOT raised, because this implementation
- * busy-waits on `Date.now()` — it blocks the event loop for the whole delay.
- * Waiting longer here would make a long-lived MCP server less responsive,
- * not more correct. Callers that need to wait out a slow holder belong on
- * `withAsyncLock`; this variant exists for the remaining synchronous callers
- * (tensions, config, episode capture), whose holds are short.
+ * File-based exclusive lock using O_EXCL, retrying with exponential backoff.
+ * The stale threshold is raised like the async lock's (stealing from a live
+ * writer corrupts the store), but the retry budget deliberately is NOT: this
+ * busy-waits and blocks the event loop. Callers that must wait out a slow holder
+ * belong on `withAsyncLock`; this serves short synchronous holds (tensions, config, episodes).
  */
 export function withLock<T>(
   filePath: string,

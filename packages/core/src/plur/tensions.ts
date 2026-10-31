@@ -88,28 +88,13 @@ export interface TensionsMethods {
   getTensionsConfig(): { temporal_domains: string[]; snapshot_pairs: 'skip' | 'floor'; measured_under_pairs: 'skip' | 'floor'; temporal_discount: boolean }
 
   /**
-   * Write the reverse `relations.superseded_by` edge on each supersede
-   * target present in the (already-loaded, lock-held) local engram list
-   * Unknown targets are skipped silently — the forward edge on the new
-   * engram still records the intent. Mutates in place and RETURNS the
-   * targets it actually changed: on the incremental write path the
-   * new engram is appended on its own, so the caller must persist these
-   * mutated rows explicitly via `_updateEngrams` — a whole-corpus fallback
-   * save carries them implicitly, a targeted `append` does not.
+   * Write the reverse `relations.superseded_by` edge on each supersede target in the
+   * (lock-held) local list; returns changed targets for the caller to persist.
    */
   /**
-   * Write the reverse `superseded_by` edge on supersede targets that live in
-   * a writable SECONDARY store, in that store, under its own lock (the
-   * primary-only `_writeSupersededByEdges` does not reach them). Without it
-   * the old memory keeps being injected beside its replacement.
-   *
-   * Called right before the new row is written, with the new row in hand and
-   * not yet persisted, so anything decided here lands in the same write:
-   *  - target locked meanwhile: the forward edge is dropped and the new
-   *    row becomes a draft;
-   *  - target gone or retired meanwhile: the forward edge becomes a link.
-   * Returns an undo that removes the edges it wrote, for when the new row then
-   * fails to write (a dangling edge would down-rank the target).
+   * The same edge on targets in a writable SECONDARY store, under its lock, before the
+   * new row is written: a target locked meanwhile makes the new row a draft; one gone
+   * or retired turns the forward edge into a link. Returns an undo for a failed write.
    */
   /** @internal */
   _landSecondarySupersedes(engram: Engram, targets: SecondarySupersede[]): Promise<() => Promise<void>>
@@ -536,20 +521,10 @@ export const tensionsMethods: TensionsMethods & ThisType<Plur> = {
     let storesCleaned = 0
     for (const storePath of storePaths) {
       try {
-        // Check WITHOUT the lock, then do the work under it.
-        //
-        // The write rewrites the entire store, so it must use the authoritative
-        // `load()` under the lock, never a cached snapshot: this is started
-        // un-awaited from the constructor and can overlap the caller's first
-        // learn, which a stale read-modify-write would overwrite.
-        //
-        // The unlocked pre-check matters: this runs on EVERY `Plur`
-        // construction and almost always finds nothing to purge. Taking the
-        // store's exclusive lock to discover that would serialize every startup
-        // behind it — and on a YAML store it would create a lock file in the
-        // storage directory as a side effect of doing nothing. The lock is only
-        // taken when there is a write to make, and the state is re-read
-        // authoritatively inside it, so the pre-check being stale is harmless.
+        // Check WITHOUT the lock, then do the work under it: this runs on every
+        // construction and almost always finds nothing, so locking would serialize
+        // startup and create a lock file for nothing. The write uses the
+        // authoritative `load()` under the lock (it can overlap the first learn).
         const probe = await this._loadCached(storePath)
         if (!probe.some(e => (e.relations?.conflicts?.length ?? 0) > 0)) continue
 

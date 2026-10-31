@@ -270,24 +270,10 @@ export function domainSegmentsOverlap(a?: string, b?: string): boolean {
 }
 
 /**
- * Subject-predicate pre-filter: skip pairs whose subject noun phrases don't
- * overlap.
- *
- * Extracts "subject tokens" from each statement — longer content words
- * (>3 chars) from the first clause (up to the first verb-like boundary or
- * 10 tokens). Two statements pass the filter when they share at least one
- * raw subject token, indicating they are making assertions about the same
- * entity.
- *
- * Subject tokens are compared as raw lowercased, tokenized, stopword-filtered
- * words — no suffix-stemming. Stemming adds no recall on the labeled suite
- * and over-stems unrelated words onto shared 4-char stems ('states'/'station'/
- * 'stats' all → 'stat'), producing false-positive candidate pairs.
- *
- * This is a heuristic, not a true NLP parse. It captures the most common
- * pattern: "The plur CLI uses X" vs "The plur CLI uses Y" share "plur"
- * and "cli". Unrelated facts like "Protocol fee is 1%" vs "MemPalace
- * is a competitor" share no subject tokens and are skipped.
+ * Subject pre-filter: two statements pass when they share at least one subject token — a lowercased,
+ * stopword-filtered content word (>3 chars) from the first clause (up to a verb-like boundary or 10 tokens).
+ * Deliberately no stemming: it added no recall and over-stems unrelated words ('states'/'station' → 'stat').
+ * A heuristic, not an NLP parse.
  */
 export function subjectsOverlap(a: string, b: string): boolean {
   return setsIntersect(extractSubjectTokens(a), extractSubjectTokens(b))
@@ -388,19 +374,10 @@ export function measuredUnderDiffers(a: Engram, b: Engram): boolean {
 }
 
 /**
- * Where a loaded engram came from, as the LOADER marked it: packs carry
- * `_pack` (set by `_loadSecondaryAndPacks` from the manifest), `stores:` and
- * remote rows carry `_storeScope` (set from the config entry), primary-store
- * rows carry neither. A foreign row cannot forge a primary origin because the
- * loader always stamps foreign rows.
- *
- * Nor can it borrow ANOTHER foreign origin:
- * remote rows lose every `_`-prefixed key at the trust boundary
- * (`salvageRemoteRow`) before the loader stamps `_storeScope`. A row carrying
- * BOTH markers was stamped by one loader and forged the other — no loader
- * stamps both — so which loader it came from is unknown. It gets an
- * `ambiguous:` origin, which {@link measuredUnderGateApplies} never gates:
- * such a pair always reaches the judge.
+ * Where a loaded engram came from, as the LOADER marked it: packs carry `_pack`, `stores:`/remote rows carry
+ * `_storeScope`, primary rows carry neither. Foreign rows cannot forge a primary origin (the loader always stamps
+ * them) nor borrow another (remote rows lose `_` keys in `salvageRemoteRow`). A row with BOTH markers gets an
+ * `ambiguous:` origin, which {@link measuredUnderGateApplies} never gates.
  */
 export function engramOrigin(e: Engram): string {
   const r = e as unknown as Record<string, unknown>
@@ -416,19 +393,10 @@ export function engramOrigin(e: Engram): string {
 const MEASUREMENT_TOKEN = /(?<![A-Za-z])\d+(?:[.,:]\d+)*\s*%?(?![A-Za-z])/
 
 /**
- * Whether the measured-under gate may remove this pair from the judge.
- *
- * Three conditions, all required, because the gate is fail-open with respect
- * to the scanner's purpose (a skipped pair is a contradiction nobody sees):
- *
- *   1. Same origin. `measured_under` is free-form and any writer can set it.
- *      If the two sides came from different stores (or a pack vs the primary
- *      store), the writer of one side could hide a contradiction with the
- *      other by setting four garbage dimensions. A pair that crosses a trust
- *      boundary always reaches the judge.
- *   2. Both statements carry a measured value. The rule is about measurements
- *      (max_tokens 16384 vs 65536, 87% vs 43%); prose claims with a
- *      `measured_under` block are not what the refinement rule describes.
+ * Whether the measured-under gate may remove this pair from the judge. All required, because a skipped pair is a
+ * contradiction nobody sees:
+ *   1. Same origin — `measured_under` is free-form, so a pair crossing a trust boundary always reaches the judge.
+ *   2. Both statements carry a measured value (the rule is about measurements, not prose).
  *   3. The configurations differ (measuredUnderDiffers).
  */
 export function measuredUnderGateApplies(a: Engram, b: Engram): boolean {
@@ -454,39 +422,12 @@ function isSnapshotPair(a: Engram, b: Engram, temporalDomains: readonly string[]
 }
 
 /**
- * Build candidate pairs for the LLM contradiction scan.
- *
- * Three-stage pipeline (cheapest first):
- *   1. Scope partition  — skip pairs with no scope overlap
- *   2. Domain filter    — skip pairs whose domain hierarchies don't touch
- *   3. Subject overlap  — skip pairs whose subject noun phrases don't overlap
- *
- * Pairs already adjudicated in the tension store are skipped via
- * options.exclude_pairs. relations.conflicts does NOT exempt a pair:
- * importer-written conflict edges are heuristic suspects awaiting an LLM
- * verdict.
- *
- * Temporal gates:
- *   - Supersedes-linked pairs are skipped in both directions — an
- *     intentional update is not a tension.
- *   - Pairs where either side's validity window has closed
- *     (`temporal.valid_until` in the past) are skipped — an expired engram
- *     is no longer a peer claim about CURRENT truth, so lining it up
- *     against a newer claim manufactures a false tension.
- *   - Snapshot-vs-snapshot pairs (both domains in `temporal_domains`)
- *     recorded on different days are skipped by default — they are an
- *     event log, not a contradiction. `snapshot_pairs: 'floor'` keeps them
- *     for the judge (scanForTensions caps their confidence instead).
- *   - Pairs where both engrams have `measured_under` AND differ on at least
- *     one configuration dimension (source_type, model, hardware, dataset)
- *     are skipped — they are context-scoped refinements, not
- *     contradictions. `date` is excluded from the dimension check: a
- *     regression on the same config on different dates IS a real tension.
- *
- * Surviving pairs are ranked by descending shared-token overlap so
- * that the pairs most likely to be genuine contradictions are judged first
- * when the caller applies a max_pairs cap. Ties keep insertion order
- * (stable sort).
+ * Build candidate pairs for the LLM contradiction scan: scope partition, then domain filter, then subject overlap.
+ * - Pairs already adjudicated are skipped via `exclude_pairs`; `relations.conflicts` does NOT exempt a pair.
+ * - Skipped: supersedes-linked pairs; pairs with a closed validity window; snapshot-vs-snapshot pairs from different
+ *   days (unless `snapshot_pairs: 'floor'`); pairs whose `measured_under` differ on a config dimension (`date` is
+ *   excluded — a same-config regression is a real tension).
+ * Survivors are ranked by descending shared-token overlap (stable), so a `max_pairs` cap keeps the likeliest.
  */
 export interface CandidatePairOptions {
   /**
@@ -604,23 +545,11 @@ export interface TensionScanOptions extends TemporalGateOptions, CandidatePairOp
 }
 
 /**
- * Scan engrams for contradictions with an LLM judge.
- *
- * Candidates come pre-ranked by overlap score from getCandidatePairs, so the
- * max_pairs cap keeps the most likely contradictions.
- *
- * Pairs are judged in batches of `batch_size` (default 5) — one LLM call per
- * batch instead of one per pair. Any pair whose batch verdict is
- * missing or unparseable falls back to an individual single-pair call;
- * a pair is never counted as a contradiction without an explicit verdict.
- * Set batch_size to 1 for sequential single-pair judging.
- *
- * Temporal behavior: each judged statement carries its recorded date
- * (engramDate) so the judge can tell evolution from contradiction. With
- * `temporal_discount: true`, verdict confidence is additionally multiplied
- * by temporalDiscountFactor(days_apart). Snapshot-vs-snapshot pairs are
- * skipped by getCandidatePairs (default) or confidence-capped at
- * SNAPSHOT_CONFIDENCE_CAP in `snapshot_pairs: 'floor'` mode.
+ * Scan engrams for contradictions with an LLM judge, over pre-ranked candidates from getCandidatePairs.
+ * Pairs are judged in batches of `batch_size` (default 5; 1 = one per call); a missing or unparseable batch verdict
+ * falls back to a single-pair call — never a contradiction without an explicit verdict. Each statement carries its
+ * date; `temporal_discount: true` multiplies confidence by temporalDiscountFactor(days_apart); 'floor' snapshot pairs
+ * are capped at SNAPSHOT_CONFIDENCE_CAP.
  */
 export async function scanForTensions(
   engrams: Engram[],

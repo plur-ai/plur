@@ -32,16 +32,11 @@ export interface AtomicWriteOptions {
    */
   durable?: boolean
   /**
-   * The content may carry a credential (config.yaml, an editor config holding
-   * another server's token). On Windows the temp file is made owner-only — and
-   * verified — before the first byte, whether the destination is new, already
-   * owner-only, or readable by other accounts; the write is refused (nothing
-   * written, the destination untouched) when that cannot be done, or when an
-   * existing destination's access list cannot be inspected at all (icacls
-   * failed, account unknown). An owner-only
-   * `mode` alone gets the protection only over a provably owner-only
-   * destination, and no refusal. No effect elsewhere: on POSIX the
-   * destination's mode already governs the temp file from creation.
+   * The content may carry a credential. On Windows the temp file is made owner-only and
+   * verified before the first byte; the write is refused (destination untouched) when that
+   * fails or an existing destination's access list cannot be inspected. A plain owner-only
+   * `mode` gets this only over a provably owner-only destination, without refusal.
+   * No effect on POSIX, where the destination mode already governs the temp file.
    */
   secret?: boolean
   /**
@@ -63,16 +58,9 @@ export type AclExec = OwnerOnlyExec
 
 
 /**
- * Platform, environment and command runner for atomicWrite's Windows
- * owner-only path. Internal — not exported from the package; tests swap the
- * fields to drive the Windows branch on any OS.
- *
- * It is the SAME object as the shared owner-only helper's host
- * (`owner-only.ts`), so a simulated host drives both the temp-file
- * protection here and the re-check `writeConfigFile` (config-file.ts) runs
- * after the rename. One rule, one implementation: remove inherited access, grant only
- * the current account, read the list back, accept only entries naming that
- * account.
+ * Platform, environment and command runner for atomicWrite's Windows owner-only path.
+ * Internal; tests swap fields to drive the Windows branch. The SAME object as the
+ * `owner-only.ts` host, so one simulated host drives this and `writeConfigFile`'s re-check.
  */
 export const _atomicWriteAcl = _ownerOnlyHost
 
@@ -143,68 +131,22 @@ export function protectWindowsOwnerOnly(path: string, account: string | null): s
 
 
 /**
- * Atomic write: write to a temp file, flush it, then rename over the target.
- *
- * ## Why the fsync
- *
- * write + rename alone is atomic with respect to a dying *process* — the page
- * cache outlives it, so a reader either sees the old file or the new one. It is
- * NOT atomic with respect to a dying *kernel*. On power loss the rename can
- * reach disk before the data does, and the canonical artifact is a zero-length
- * or truncated file.
- *
- * That artifact is precisely the input a corrupt-read wipe would act on: a
- * zero-length engrams.yaml read as an empty corpus and persisted by the next
- * write would mean total corpus loss, which is why this is fsync-by-default
- * rather than fsync-on-request.
- *
- * The parent directory is flushed too, because the rename itself is directory
- * metadata — without that flush the durable file can still be reachable only
- * under its temp name after a crash.
- *
- * ## Why the tmp name is unique
- *
- * A fixed `<path>.tmp` would let two concurrent writers clobber each other's
- * partial file and rename it into place, or crash with `ENOENT` on rename when
- * the other writer's rename already moved it away. Unique names make
- * concurrent writers independent; the last rename wins cleanly instead of
- * publishing a half-written blend.
- *
- * ## Why the tmp is protected before the first byte
- *
- * A tmp opened at the default mode (0644 under umask 022) and chmodded only
- * after being filled would leave a credential in a world-readable file for
- * that window, and a descriptor another account opened in it would stay
- * readable afterwards. So the tmp is created exclusively (`wx`: never through
- * a link or file planted at its name) at 0600 whenever a mode is known, and
- * given its exact final mode just before the rename. On Windows, a `secret`
- * write gets a verified owner-only list on the EMPTY tmp — new destination,
- * owner-only destination or shared destination alike — and an owner-only
- * `mode` write gets it over a destination whose list names only the current
- * account; when that cannot be established, nothing is written and the
- * destination is left as it was. A `secret` write over an existing
- * destination whose access list cannot be inspected (icacls failed, output
- * names no account, account unknown) is refused the same way — "could not
- * inspect" is never treated as "not protected". A write that only passes an
- * owner-only
- * `mode` is not refused on that result.
+ * Atomic write: write to a unique temp file, fsync, then rename over the target.
+ * - fsync by default (and the parent directory too): after power loss a rename can land
+ *   before the data, and a zero-length engrams.yaml read as empty would lose the corpus.
+ * - Unique tmp names keep concurrent writers independent; the last rename wins cleanly.
+ * - The tmp is protected before the first byte: created `wx` at 0600 when a mode is known,
+ *   given its final mode just before rename. On Windows a `secret` write gets a verified
+ *   owner-only list on the EMPTY tmp, else nothing is written ("could not inspect" is never
+ *   "not protected"); an owner-only `mode` write is protected only over an owner-only destination.
  */
 export function atomicWrite(filePath: string, content: string | Buffer, opts: AtomicWriteOptions = {}): void {
   const durable = opts.durable !== false
   const dir = dirname(filePath)
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
-  // Preserve the destination's permissions.
-  //
-  // A replace-by-rename creates a NEW inode, so the result carries the tmp
-  // file's mode — `0666 & ~umask`, i.e. 0644 under the common umask 022 — not
-  // the mode the file had. `config.yaml` holds remote bearer tokens and
-  // Postgres DSNs and is expected to be 0600, and every config writer routes
-  // through here.
-  //
-  // Read the mode BEFORE writing, and apply it to the tmp file BEFORE the
-  // rename, so the file is never briefly visible at the wrong mode at its final
-  // path. A missing destination means there is nothing to preserve — a first
-  // write keeps the platform default.
+  // Preserve the destination's permissions: rename creates a new inode with the tmp's mode
+  // (0644 under umask 022), but config.yaml holds tokens and must stay 0600. Read the mode
+  // BEFORE writing and apply it to the tmp BEFORE the rename. No destination: platform default.
   let destMode: number | undefined = opts.mode
   const destExists = existsSync(filePath)
   try {
@@ -213,20 +155,12 @@ export function atomicWrite(filePath: string, content: string | Buffer, opts: At
     if (destExists) destMode = statSync(filePath).mode & 0o7777
   } catch { /* unreadable stat — fall through and keep opts.mode/default */ }
 
-  // Windows keeps access in an ACL, not the mode bits, and a tmp file inherits
-  // the folder's list — so the rename would publish the content in a file the
-  // folder's other accounts can read. Ordinary writes never run icacls.
-  //
-  // - A `secret` write (config.yaml through writeConfigFile, the enterprise
-  //   cleanup's editor configs) ALWAYS gets an owner-only, verified list on
-  //   the EMPTY tmp — for a new file and over a destination other accounts
-  //   can read too — and is refused, with nothing written, when that cannot
-  //   be established. "Could not inspect" an existing destination is never
-  //   read as "not protected" either: it is refused before any temp file
-  //   exists.
-  // - A write that only asks for an owner-only `mode` (the folder map, engram
-  //   files): the tmp is protected when the existing destination is provably
-  //   owner-only, and an unknown result is not refused.
+  // Windows keeps access in an inherited ACL, so the rename would publish a file other
+  // accounts can read. Ordinary writes never run icacls.
+  // - `secret` writes ALWAYS get a verified owner-only list on the EMPTY tmp, or are refused
+  //   with nothing written; an uninspectable existing destination is refused too.
+  // - Owner-only `mode` writes: protected when the destination is provably owner-only;
+  //   an unknown result is not refused.
   let winAccount: string | null = null
   let winProtect = false
   if (_atomicWriteAcl.platform === 'win32') {

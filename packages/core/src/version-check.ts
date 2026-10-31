@@ -1,24 +1,11 @@
 /**
- * Non-blocking version check against the npm registry. Never throws or
- * blocks startup.
- *
- * With no internet at all PLUR tries the network at most once, with this
- * check, and when that cannot connect it assumes it is offline. The first attempt that fails to connect (a
- * network error or a timeout) marks the process offline, and from then on the
- * update checker makes no request of any kind: not on the periodic re-check,
- * not on a refresh-on-read, not on an explicit check. Those answer from the
- * cache (or with nothing). A registry that answers with an error is reachable,
- * so that is not offline. The offline switches (offline.ts) stop even the
- * first attempt.
- *
- * Results are cached in memory with a TTL: a successful registry answer is
- * reused for VERSION_CHECK_SUCCESS_TTL_MS, a non-OK answer only for
- * VERSION_CHECK_FAILURE_TTL_MS, so a long-lived MCP server process still
- * learns about releases published after it started.
- *
- * Reads stay synchronous and zero-cost: an expired entry is returned as-is
- * while a background refresh is kicked off (unless offline), so no caller
- * ever waits on the network.
+ * Non-blocking npm-registry version check; never throws or blocks.
+ * - The first attempt that cannot connect marks the process offline; then no
+ *   request is made at all (an error response counts as reachable). offline.ts
+ *   switches stop even the first attempt.
+ * - TTL cache: VERSION_CHECK_SUCCESS_TTL_MS for OK answers,
+ *   VERSION_CHECK_FAILURE_TTL_MS otherwise. Reads are synchronous: an expired
+ *   entry is returned while a background refresh runs (unless offline).
  */
 
 import { updateCheckDisabledByEnv, markOffline, offlineInferred, _resetInferredOffline } from './offline.js'

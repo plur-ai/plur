@@ -13,20 +13,11 @@ function generateEpisodeId(): string {
 }
 
 /**
- * Append one episode to the episode log.
- *
- * The load-push-write runs under a lock: this is reachable from every MCP
- * server the user has open at once, and since the write replaces the whole
- * array, an unlocked concurrent capture would overwrite other captures.
- *
- * The lock is keyed on the episodes path, which nothing else locks, so it
- * cannot contend with (or deadlock against) the engram store lock. The load
- * MUST stay inside it — locking only the write leaves the same race, just
- * narrower.
- *
- * `withLock` is the synchronous variant because this function is synchronous
- * and has synchronous callers. That is safe here only because no async holder
- * ever takes this path's lock, so the busy-wait cannot starve one out.
+ * Append one episode to the episode log. The load-push-write runs under a lock
+ * keyed on the episodes path (several MCP servers may capture at once, and the
+ * write replaces the whole array); the load MUST stay inside it. Nothing else
+ * takes this lock, so it cannot deadlock with the store lock, and the
+ * synchronous `withLock` is safe because no async holder ever takes it.
  */
 export function captureEpisode(path: string, summary: string, context?: CaptureContext): Episode {
   const episode: Episode = {

@@ -1,37 +1,12 @@
 /**
- * Gentleman-Programming/engram importer.
- *
- * gp-engram is a Go + SQLite(FTS5) memory tool for AI coding agents. Its
- * source of truth is the `observations` table (internal/store/store.go):
- *
- *   observations(id, sync_id, session_id, type, title, content, tool_name,
- *                project, scope['project'|'personal'|'global'], topic_key,
- *                normalized_hash, revision_count, duplicate_count,
- *                last_seen_at, review_after, pinned, created_at, updated_at,
- *                deleted_at)
- *
- * Mapping:
- *   title + content → statement ("title: content")
- *   type            → PLUR type via normalizeImportType (decision→architectural,
- *                     config/setup/ci→procedural, pattern/learning→behavioral, ...)
- *                     with the original type preserved as a tag
- *   topic_key       → domain (slashes → dots, e.g. decision/storage → decision.storage)
- *   scope+project   → 'global' → global; 'project' → project:<name>;
- *                     'personal' (or projectless) → unset, so core routing applies
- *   pinned          → pinned
- *   created_at      → temporal.learned_at (SQLite datetimes are UTC → normalized to ISO Z)
- *   last_seen_at    → activation.last_accessed (updated_at fallback)
- *   expires_at      → temporal.valid_until (a real expiry, when the column
- *                     exists and is set)
- *   row id          → source `gp-engram:<file>#<id>`
- *
- * Deliberately NOT mapped: `review_after` (gp-engram's decay "review by" date —
- * mapping it to valid_until would make PLUR hard-skip the engram after that
- * date, which is stronger than the source semantics), soft-deleted rows
- * (deleted_at IS NOT NULL), sessions/user_prompts/memory_relations tables.
- *
- * Loads better-sqlite3 (an optional dependency of @plur-ai/core) via the same
- * createRequire pattern as store/sqlite-store.ts.
+ * Gentleman-Programming/engram importer: reads its `observations` table (SQLite).
+ * Mapping: title + content → statement; type → normalizeImportType (original kept as
+ * a tag); topic_key → domain (slashes → dots); scope 'global' → global, 'project' →
+ * project:<name>, 'personal'/projectless → unset (core routing); pinned → pinned;
+ * created_at → temporal.learned_at (UTC → ISO Z); last_seen_at (else updated_at) →
+ * activation.last_accessed; expires_at → temporal.valid_until; source `gp-engram:<file>#<id>`.
+ * NOT mapped: `review_after` (valid_until would hard-skip, stronger than the source),
+ * soft-deleted rows, other tables. Loads better-sqlite3 as store/sqlite-store.ts does.
  */
 import { existsSync } from 'fs'
 import { basename } from 'path'

@@ -135,21 +135,11 @@ export class IndexedStorage {
       params.push(filter.status)
     }
     if (filter.scopes !== undefined) {
-      // Permitted-scope allow-list pushdown — the SQLite twin of
-      // storage-pglite's `scope = ANY($n::text[])`. EXACT membership: no
-      // hierarchy expansion and no `personal = 1` pass-through, because the
-      // caller has already resolved identity to a complete permitted set and
-      // widening it here would hand back engrams authorization never granted.
-      //
-      // An EMPTY list must match NOTHING, so it compiles to a literal false
-      // rather than being dropped — `scope IN ()` is not even valid SQLite,
-      // and silently dropping the clause would show a principal with zero
-      // permitted scopes the entire corpus.
-      //
-      // One placeholder per scope. A permitted-scope list is an authorization
-      // decision (tens of entries at most), so SQLite's variable ceiling
-      // (SQLITE_MAX_VARIABLE_NUMBER, 32766 in better-sqlite3) is not in reach;
-      // if it ever were, switch to `IN (SELECT value FROM json_each(?))`.
+      // Permitted-scope allow-list (SQLite twin of pglite's `scope = ANY(...)`):
+      // EXACT membership, no hierarchy and no `personal = 1` pass-through.
+      // An EMPTY list must match NOTHING, so it compiles to `1 = 0`, never a
+      // dropped clause. One placeholder per scope is fine for tens of scopes;
+      // near SQLITE_MAX_VARIABLE_NUMBER switch to `json_each(?)`.
       if (filter.scopes.length === 0) {
         conditions.push('1 = 0')
       } else {
@@ -158,29 +148,13 @@ export class IndexedStorage {
       }
     }
     if (filter.scope) {
-      // Read-side scope filter. `personal = 1` passes ALL personal-family
-      // scopes (local, global, user:*, agent:*) — set at index time from
-      // isPersonalScope — not just global, so a project-scope recall sees personal
-      // engrams. Segment-aware membership: a descendant matches only on a
-      // real delimiter (`:`/`/`), so a sibling string-prefix (project:application
-      // under a project:app query) does NOT leak. Mirrors isScopeWithin.
-      //
-      // Mounted-scope visibility grants: each grant contributes the same
-      // segment-aware containment triple as `filter.scope`, so an engram in a
-      // granted scope (or a true descendant of one) passes the visibility
-      // filter like the personal family. The precomputed `personal` column is
-      // untouched — grants vary per query (they come from config.stores), so
-      // they must be OR-clauses, not an indexed flag. VISIBILITY ONLY: the
-      // `scopes` allow-list above is authorization and never widened by grants.
-      // SQL twin of makeVisibilityPredicate (scope-util.ts) — keep all four
-      // arms (in-memory / sqlite / pglite / postgres) in lockstep.
-      //
-      // The two LIKE arms of each triple are escaped (escapeLikePattern +
-      // ESCAPE '\'), same as the pglite/postgres copies: a `%`/`_` in a
-      // caller-supplied scope or grant must match literally, not widen the
-      // containment into unrelated namespaces. The equality arm keeps the
-      // raw value. SQLite has NO default LIKE escape character, so the
-      // explicit ESCAPE clause is load-bearing, not style.
+      // Read-side scope filter: `personal = 1` (all personal-family scopes, set
+      // at index time) OR the scope / a descendant on a real `:`/`/` delimiter,
+      // never a sibling prefix (mirrors isScopeWithin). Mounted-scope grants add
+      // the same triple per grant as OR-clauses; VISIBILITY ONLY, never widening
+      // the `scopes` allow-list. Keep in lockstep with makeVisibilityPredicate
+      // and the pglite/postgres arms. LIKE arms are escaped and the explicit
+      // ESCAPE is required (SQLite has no default LIKE escape).
       const clauses = ['personal = 1', "scope = ?", "scope LIKE ? || ':%' ESCAPE '\\'", "scope LIKE ? || '/%' ESCAPE '\\'"]
       params.push(filter.scope, escapeLikePattern(filter.scope), escapeLikePattern(filter.scope))
       for (const g of filter.visibilityGrants ?? []) {

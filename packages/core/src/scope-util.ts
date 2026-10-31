@@ -1,14 +1,8 @@
 /**
- * Scope-family predicates, kept in a dependency-free leaf module to avoid a module cycle.
- *
- * `inject.ts` needs `isPersonalScope` for its read-side scope filter, but
- * `index.ts` imports from `inject.ts`. If these predicates lived in `index.ts`,
- * `inject.ts` importing them would create an `index.ts → inject.ts → index.ts`
- * cycle. Keeping them here (a dependency-free leaf) lets `inject.ts`, `index.ts`,
- * `storage-indexed.ts`, and `mcp/tools.ts` all import them without any cycle.
- *
- * `index.ts` re-exports `isSharedScope`/`isPersonalScope` as public
- * `@plur-ai/core` API.
+ * Scope-family predicates, in a dependency-free leaf module so `inject.ts`,
+ * `index.ts`, `storage-indexed.ts` and `mcp/tools.ts` can import them without
+ * an `index.ts → inject.ts → index.ts` cycle. `index.ts` re-exports
+ * `isSharedScope`/`isPersonalScope` as public `@plur-ai/core` API.
  */
 
 /**
@@ -73,34 +67,13 @@ export function isScopeWithin(scope: string, queryScope: string): boolean {
 }
 
 /**
- * Read-side VISIBILITY predicate under a scope filter — the ONE
- * in-memory implementation every visibility call site uses (inject scoring,
- * the YAML arm of `_filterEngrams`, `_engramsOutsidePrimaryStore`). The SQL
- * arms (storage-indexed / storage-pglite / storage-postgres) inline the
- * equivalent clause and must stay in lockstep with this.
- *
- * An engram passes a `scopeFilter` (e.g. `project:plur/plur-ai/enterprise`
- * from .plur.yaml) when ANY of:
- *   1. it falls within the filter itself (segment-aware);
- *   2. it is personal-family (`local`, `global`, `user:*`, `agent:*`, …);
- *   3. it falls within a GRANTED scope — a scope explicitly mounted in
- *      `~/.plur/config.yaml` `stores:` (path AND url entries alike). Mounting
- *      a store with your own token is the consent act, so its scope passes a
- *      project-scope visibility filter exactly like the personal family.
- *      Without this, a project scope filter would hide every `group:*` engram
- *      from mounted team stores.
- *
- * Grant matching is segment-aware via `isScopeWithin`: a grant for
- * `group:acme/eng` admits `group:acme/eng` and true descendants
- * (`group:acme/eng/x`, `group:acme/eng:x`) but NEVER the sibling
- * string-prefix `group:acme/eng-private`.
- *
- * STRICTLY visibility-only. This predicate must NEVER be consulted by (or
- * folded into) the `scopeAllowFilter` authorization allow-list below —
- * grants widen what a scope filter shows, never what a principal is
- * permitted to see. The `INJECT_GLOBAL_IS_TARGETED` branch in inject.ts is
- * likewise untouched: an explicit `scope: 'global'` inject stays targeted to
- * `global` only, grants or no grants.
+ * Read-side VISIBILITY predicate: the one in-memory implementation (SQL arms in
+ * storage-indexed / -pglite / -postgres must stay in lockstep). Passes when the
+ * engram is within the filter, personal-family, or within a GRANTED scope
+ * mounted in config.yaml `stores:` (mounting with your own token is consent),
+ * all segment-aware via `isScopeWithin`.
+ * STRICTLY visibility-only: never fold into `scopeAllowFilter` authorization,
+ * and an explicit `scope: 'global'` inject stays targeted to `global`.
  */
 export function makeVisibilityPredicate(
   scopeFilter: string,
@@ -113,23 +86,13 @@ export function makeVisibilityPredicate(
 }
 
 /**
- * Permitted-scope allow-list predicate — the in-memory twin of the SQL
- * `scope = ANY($n)` pushdown (see `StorageFilter.scopes` in
- * storage-adapter.ts).
- *
- * Returns a predicate so every read path — SQL-backed adapters and the
- * in-memory YAML path alike — agrees on the same three cases:
- *   - `undefined` → unrestricted (predicate always true)
- *   - `[]`        → matches NOTHING (predicate always false). Security-
- *                   relevant: a principal with no permitted scopes must see
- *                   nothing. NEVER treat an empty list as "no filter".
- *   - non-empty   → EXACT membership. No hierarchy expansion, no personal-
- *                   family pass-through: the list is the fully-resolved
- *                   authorization decision, so `['project:a']` does NOT admit
- *                   `project:a:sub`, `global`, or `local`.
- *
- * The Set is built once so the per-engram check is O(1) — the caller may be
- * filtering a whole corpus against a list of tens of scopes.
+ * Permitted-scope allow-list predicate: the in-memory twin of SQL
+ * `scope = ANY($n)` (see `StorageFilter.scopes`).
+ *   - `undefined` → unrestricted.
+ *   - `[]`        → matches NOTHING. NEVER treat an empty list as "no filter".
+ *   - non-empty   → EXACT membership: no hierarchy expansion, no personal
+ *                   pass-through (`['project:a']` does not admit `global`).
+ * Builds the Set once so per-engram checks are O(1).
  */
 export function scopeAllowFilter(scopes: readonly string[] | undefined): (scope: string) => boolean {
   if (scopes === undefined) return () => true

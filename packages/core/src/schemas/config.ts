@@ -22,16 +22,10 @@ function partialKeepAbsent<S extends z.ZodRawShape>(schema: z.ZodObject<S>) {
 }
 
 /**
- * A store can be either:
- *   - filesystem (path) — YAML or SQLite
- *   - remote (url + token) — speaks to a PLUR Enterprise server over HTTP
- * Exactly one of path/url must be present.
- *
- * A store entry may also carry self-describing scope metadata —
- * `description`, `covers`, `sensitivity` — so a registered scope declares
- * locally what it is for and its sensitivity policy. All metadata fields are
- * optional and non-breaking; absent metadata falls back to the default
- * shared-scope leak-guard behavior.
+ * A store is filesystem (`path` — YAML or SQLite) or remote (`url` + token, a PLUR
+ * Enterprise server over HTTP); exactly one of path/url must be present.
+ * Optional scope metadata (`description`, `covers`, `sensitivity`) describes the
+ * scope locally; absent metadata falls back to the default shared-scope leak guard.
  */
 export const StoreEntrySchema = z.object({
   path: z.string().optional(),
@@ -131,23 +125,13 @@ export const EnterpriseBlockSchema = z.object({
 export type EnterpriseBlock = z.infer<typeof EnterpriseBlockSchema>
 
 /**
- * A multi-scope server store entry.
- *
- * One on-disk entry represents a company PLUR server and all the scopes it
- * grants. At load it is expanded into one in-memory `StoreEntry` per scope so
- * code that works per scope entry needs no server-entry awareness.
- *
- * Detection: an entry is a server entry when it has both `url` and an own
- * `scopes` key (the `enterprise` block is NOT required).
- *
- * Shape-tolerant: a non-array `scopes` becomes `[]`; non-string
- * elements are dropped; a malformed `pinned_scopes`, `enterprise`,
- * `discovery` or per-scope `scope_settings` value drops that value, never the
- * entry. A scope string that fails the safe grammar (`/^[\w:./-]+$/`) is
- * dropped with a warning at expansion time.
- *
- * `scope` (singular) is a compatibility field — older clients require it and
- * would otherwise drop the entry on writeback.
+ * A multi-scope server store entry: one company PLUR server and all the scopes it
+ * grants, expanded at load into one in-memory `StoreEntry` per scope.
+ * - Detected by `url` plus an own `scopes` key (`enterprise` is not required).
+ * - Shape-tolerant: malformed `scopes`/`pinned_scopes`/`enterprise`/`discovery`/
+ *   `scope_settings` values are dropped, never the entry; scopes failing
+ *   `/^[\w:./-]+$/` are dropped with a warning at expansion.
+ * - `scope` (singular) is kept for older clients, which drop the entry without it.
  */
 export const ServerStoreEntrySchema = z.object({
   url: z.string().url(),
@@ -215,26 +199,12 @@ export const EmbeddingsConfigSchema = partialKeepAbsent(z.object({
 
 /**
  * Vector-column configuration for the PGLite/pgvector index.
- *
- * `precision` selects the pgvector storage type for the embedding column:
- *   - `float32` — pgvector `vector(N)`, 4 bytes/dim
- *   - `halfvec` — pgvector `halfvec(N)`, 2 bytes/dim (~50% smaller,
- *     -0.2 to -0.5pp recall). Requires pgvector >= 0.7; PGLite 0.4.x bundles
- *     0.8.1, verified working in the WASM build. Note: in PGLite (WASM, no
- *     F16C) halfvec exact scans cost ~3-10x more CPU than float32 — pick it
- *     for storage-constrained stores, not for speed.
- *
- * When UNSET, the adapter keeps whatever the existing store already uses
- * (float32 for new stores) — omitting the knob never migrates a store.
- * Setting it migrates lazily on next init via an atomic in-place
- * `ALTER TABLE ... USING embedding::<type>(N)` cast (no re-embed needed);
- * `plur sync --full` drops and rebuilds the derived index from YAML at the
- * configured precision per ADR-0001's rebuildability invariant.
- *
- * int8 scalar and binary quantization are not offered: pgvector has no int8
- * vector column type (its types are vector/halfvec/sparsevec/bit), and
- * binary-quantized retrieval only makes sense paired with a cross-encoder
- * rerank pass.
+ * `precision`: `float32` (`vector(N)`, 4 B/dim) or `halfvec` (`halfvec(N)`, 2 B/dim,
+ * slightly lower recall, pgvector >= 0.7; in PGLite exact scans cost ~3-10x more CPU —
+ * choose it for storage, not speed).
+ * UNSET keeps whatever the store already uses, so omitting it never migrates. Setting it
+ * migrates lazily on next init via an in-place `ALTER TABLE ... USING` cast;
+ * `plur sync --full` rebuilds from YAML (ADR-0001). int8/binary are not offered.
  */
 export const VectorConfigSchema = partialKeepAbsent(z.object({
   precision: z.enum(['float32', 'halfvec']),
@@ -242,20 +212,11 @@ export const VectorConfigSchema = partialKeepAbsent(z.object({
 
 
 /**
- * Server-Postgres backend configuration (ADR-0005).
- *
- * Presence of `url` is what makes the `postgres` tier reachable at all: the
- * size-based selector may decide a corpus wants a server, but without somewhere
- * to connect it caps at PGLite and says so. `PLUR_POSTGRES_URL` overrides `url`.
- *
- * `vector_index` picks the recall/latency trade-off explicitly:
- *   - `auto` (default) — exact below the row threshold, HNSW above it
- *   - `exact`          — never approximate; 100% recall, linear scan
- *   - `hnsw`           — always approximate
- *
- * `ef_search` is a FLOOR, not a fixed value: every query raises it to at least
- * the requested limit, because pgvector's default (40) sits below most useful
- * limits and silently truncates the result set.
+ * Server-Postgres backend configuration (ADR-0005). Without `url` the `postgres`
+ * tier is unreachable and selection caps at PGLite. `PLUR_POSTGRES_URL` overrides `url`.
+ * `vector_index`: `auto` (default; exact below the row threshold, HNSW above), `exact`, `hnsw`.
+ * `ef_search` is a FLOOR: each query raises it to at least the limit, since
+ * pgvector's default (40) silently truncates results.
  */
 export const PostgresConfigSchema = partialKeepAbsent(z.object({
   url: z.string().optional()
@@ -270,23 +231,14 @@ export const PostgresConfigSchema = partialKeepAbsent(z.object({
 
 
 /**
- * Scope-routing tuning — optional overrides for the deterministic ranker that
- * auto-routes unscoped writes to a `covers`-matching scope.
- * Defaults match the module-level constants in scope-routing.ts.
- *
- * Enterprise installs with many narrow, covers-rich scopes may need to raise
- * `match_threshold` to cut false-positive routing. Raising `weight_tag` boosts
- * tag-only signals relative to keyword evidence. WEIGHT_DOMAIN (1.5) is NOT
- * configurable: the lone-domain-clears-threshold invariant is load-bearing.
+ * Scope-routing tuning — optional overrides for the ranker that auto-routes
+ * unscoped writes; defaults match the constants in scope-routing.ts.
+ * WEIGHT_DOMAIN (1.5) is NOT configurable: a lone domain match clearing the threshold
+ * is load-bearing.
  */
-// Field-level tolerance: these fields sit inside the top-level
-// PlurConfigSchema.parse(), where a single out-of-range value (e.g.
-// `min_confidence: 1.5`, or `15` from a percent misread) would otherwise fail
-// the WHOLE config parse — loadConfig's catch falls back to full defaults,
-// silently dropping every configured store AND reverting match_threshold to
-// 0.5 for the process (so unscoped writes start auto-routing at the default
-// gate). `.catch(undefined)` drops only the bad field instead, mirroring the
-// per-entry tolerance philosophy the stores array already follows.
+// Each field uses `.catch(undefined)` so one out-of-range value drops only that
+// field instead of failing the whole config parse (which would drop every store
+// and reset routing to defaults).
 export const ScopeRoutingConfigSchema = partialKeepAbsent(z.object({
   /** Minimum confidence to auto-route an unscoped write. Default: 0.5. */
   match_threshold: z.number().min(0).max(1).optional().catch(undefined),
@@ -302,18 +254,10 @@ export const ScopeRoutingConfigSchema = partialKeepAbsent(z.object({
    */
   min_confidence: z.number().min(0).max(1).optional().catch(undefined),
   /**
-   * Opt in to auto-routing a genuinely-unscoped write into a SHARED scope
-   * (`group:`/`project:`/`space:`/`team:`/`org:`/`public`). Default FALSE.
-   *
-   * With it on, a personal engram whose domain matches a shared scope's
-   * `covers` can land in a team store and be pushed to its remote, which local
-   * cleanup cannot undo. Routing among PERSONAL scopes is unaffected: a wrong
-   * guess there costs nothing a `plur_rescope` cannot fix.
-   *
-   * Set true only if covers-driven team routing is something this install
-   * actually wants. Even then, prefer raising `match_threshold` alongside it:
-   * a lone forward domain-prefix match bypasses the threshold entirely, so the
-   * gate does not protect that path.
+   * Opt in to auto-routing a genuinely-unscoped write into a SHARED scope. Default
+   * FALSE: such a write can be pushed to a team remote, which local cleanup cannot
+   * undo. Routing among personal scopes is unaffected. If enabled, also raise
+   * `match_threshold` — a lone forward domain-prefix match bypasses the threshold.
    */
   allow_shared_auto_route: z.boolean().optional().catch(undefined),
 }))
@@ -322,18 +266,11 @@ export type ScopeRoutingConfig = z.infer<typeof ScopeRoutingConfigSchema>
 
 /**
  * Tension-scan configuration — temporal-aware contradiction detection.
- *
- * `temporal_domains` (Layer 2) declares domains whose engrams are
- * point-in-time snapshots by default (e.g. war-analysis, markets). A
- * snapshot-vs-snapshot pair recorded on different days is an event log, not
- * a contradiction — the scanner skips it (`snapshot_pairs: 'skip'`, default)
- * or judges it with confidence capped at 0.1 (`'floor'`). Retroactive: no
- * engram re-tagging needed.
- *
- * `temporal_discount` (Layer 3 multiplier) additionally multiplies judge
- * confidence by a days-apart ladder (same day ×1.0 … 15+ days ×0.3).
- * OFF by default: the dated judge prompt is the default mechanism, and a
- * blanket multiplier can bury genuine corrections made weeks apart.
+ * - `temporal_domains`: domains whose engrams are point-in-time snapshots; a
+ *   snapshot pair from different days is skipped (`snapshot_pairs: 'skip'`) or
+ *   capped at confidence 0.1 (`'floor'`). Retroactive, no re-tagging.
+ * - `temporal_discount`: multiplies judge confidence by a days-apart ladder.
+ *   OFF by default — it can bury genuine corrections made weeks apart.
  */
 export const TensionsConfigSchema = partialKeepAbsent(z.object({
   temporal_domains: z.array(z.string()).default([]),
@@ -377,16 +314,9 @@ export const PlurConfigSchema = partialKeepAbsent(z.object({
   }).prefault({}),
   dedup: DedupConfigSchema.prefault({}),
   /**
-   * When to write a provenance record.
-   *
-   * `never` is the default, for two reasons. A record per engram duplicates the
-   * history log, which already holds the same events. And the trust boundary is
-   * the moment an engram LEAVES: inside one person's store, a provenance record
-   * defends against almost nobody.
-   *
-   * `on_export` is the recommended setting for anyone sharing engrams.
-   *
-   * Turning this on changes nothing except that records start appearing.
+   * When to write a provenance record. Default `never`: records duplicate the
+   * history log, and the trust boundary is when an engram leaves the store.
+   * `on_export` is recommended for anyone sharing engrams.
    */
   provenance: z.object({
     generate: z.enum(['never', 'on_export', 'always']).default('never'),
@@ -395,38 +325,16 @@ export const PlurConfigSchema = partialKeepAbsent(z.object({
     /** Include the engram's own text in a shared record. Off by default. */
     include_statement: z.boolean().default(false),
     /**
-     * The licence this user wants offered first, and used when they do not pick.
-     *
-     * The distinction that makes this worth a config field: a licence set HERE
-     * was chosen. Somebody sat down once and decided. The schema's
-     * `cc-by-sa-4.0` was chosen by nobody, and a record has to be able to tell
-     * those apart — which is why `engram:licenseSource` has four values and not
-     * a boolean.
-     *
-     * Unset by default, deliberately. Shipping a default here would recreate
-     * the problem it exists to solve.
+     * Licence offered first and used when the user does not pick. A licence set here
+     * was chosen, unlike the schema default, which `engram:licenseSource` records.
+     * Unset by default on purpose.
      */
     default_license: z.string().optional(),
     /**
-     * Who this machine's memories are attributed to.
-     *
-     * Any address is acceptable and the form is deliberately not fixed: a local
-     * name (`local:maintainer`), a Decentralized Identifier
-     * (`did:web:example.org:alice`), an email, or an identifier for a running
-     * process. A future "identities" feature can add structure without changing
-     * what is stored here, because a single address is the common denominator
-     * of all of them.
-     *
-     * Unset means every write records the `unidentified` marker — which says
-     * "we looked and nobody was configured", a different and more useful fact
-     * than the field simply being absent.
-     *
-     * NEVER defaulted from the operating system account. That would put a real
-     * person's name into shared records because they installed some software,
-     * not because they chose to be named.
-     *
-     * Self-asserted. Nothing verifies it, packs are not signed, and no surface
-     * may present it as though something did.
+     * Who this machine's memories are attributed to; any address form (local name,
+     * DID, email, process id). Unset records the `unidentified` marker.
+     * NEVER default it from the OS account (that names people without consent).
+     * Self-asserted: nothing verifies it, and no surface may present it as verified.
      */
     identity: z.string().optional(),
   }).prefault({}),
@@ -462,20 +370,12 @@ export const PlurConfigSchema = partialKeepAbsent(z.object({
   allow_secrets: z.boolean().default(false),
   index: z.boolean().default(true),
   /**
-   * Storage tier selector — an OVERRIDE, not a default.
-   *
-   * Leave it unset and the tier is chosen from the size of the store (ADR-0005,
-   * `backend-selection.ts`): `yaml` for a personal corpus, `pglite` past ~5k
-   * engrams, `postgres` past ~50k when `postgres.url` is configured. Set it and
-   * that choice is yours — the automatic path exists to make the default sane,
-   * not to overrule a decision someone made on purpose.
-   *
-   *   - `yaml`     — no index; in-memory BM25 + exact cosine (with `index: true`,
-   *                  the legacy better-sqlite3 metadata index)
+   * Storage tier OVERRIDE. Unset, the tier is chosen by store size (ADR-0005,
+   * `backend-selection.ts`); set, it is respected.
+   *   - `yaml`     — no index; in-memory BM25 + exact cosine (`index: true` adds sqlite)
    *   - `sqlite`   — legacy better-sqlite3 index (requires `index: true`)
-   *   - `pglite`   — ADR-0001 substrate: PGLite WASM + pgvector + Apache AGE
-   *   - `postgres` — ADR-0005: server Postgres as store AND index
-   *
+   *   - `pglite`   — PGLite WASM + pgvector + Apache AGE (ADR-0001)
+   *   - `postgres` — server Postgres as store AND index (ADR-0005)
    * Env override: PLUR_BACKEND=yaml|sqlite|pglite|postgres.
    */
   backend: z.enum(['yaml', 'sqlite', 'pglite', 'postgres']).optional(),
@@ -495,17 +395,10 @@ export const PlurConfigSchema = partialKeepAbsent(z.object({
   profile: ProfileConfigSchema.prefault({}),
   registry_url: z.string().url().optional(),
   /**
-   * Where a genuinely-unscoped write lands when nothing else decides its scope.
-   * Both `local` and `global` are PERSONAL, non-shared scopes (the
-   * organization-wide scope is `org`), so this is an organizational default,
-   * NOT a leak-safety control (the sensitivity guard runs after this and still
-   * demotes an auto-routed SHARED scope carrying sensitive content).
-   *
-   * Defaults to `global`: the cross-project personal namespace, read-visible
-   * under any scoped recall/inject. Personal-family scopes — `local`,
-   * `global`, `user:*`, `agent:*` — are ALL visible under a project-scope
-   * recall/inject, so setting this to `local` keeps unscoped writes
-   * machine-local WITHOUT making them invisible to scoped sessions.
+   * Where a genuinely-unscoped write lands. `local` and `global` are both personal,
+   * so this is an organizational default, NOT a leak-safety control (the sensitivity
+   * guard still runs after it). Personal-family scopes are visible under scoped
+   * recall/inject, so `local` keeps writes machine-local without hiding them.
    */
   unscoped_default: z.enum(['local', 'global']).default('global'),
   /**

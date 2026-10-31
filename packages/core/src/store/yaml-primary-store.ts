@@ -1,14 +1,7 @@
 /**
- * YamlPrimaryStore: the default `PrimaryStore` (ADR-0001: YAML as truth).
- *
- * Provides `loadEngrams()` for authoritative reads, an mtime-keyed snapshot
- * cache for hot reads, `saveEngrams()` (atomic write) for persistence, and
- * explicit cache invalidation on every write.
- *
- * The invalidate-on-write rule is required for correctness: on filesystems with
- * coarse mtime resolution (e.g. tmpfs), a stat() before and after a write can
- * return the same value, so a purely mtime-driven cache would serve a pre-write
- * snapshot and `getById` would miss an engram `learn()` just created.
+ * YamlPrimaryStore: the default `PrimaryStore` (ADR-0001: YAML as truth) — authoritative `loadEngrams()`, an
+ * mtime-keyed snapshot cache, atomic `saveEngrams()`. The cache MUST be invalidated on every write: coarse mtime
+ * (e.g. tmpfs) can be unchanged across a write, and `getById` would miss a just-learned engram.
  */
 import * as fs from 'fs'
 import { loadEngrams, saveEngrams } from '../engrams.js'

@@ -1,22 +1,10 @@
-// Daily flush + POST /v1/heartbeat.
-//
-// Imports the gate (`isTelemetryEnabled`) and the counter snapshot
-// (`getCounters` / `resetCounters`) from sibling modules. Owns the network.
-//
-// Privacy invariants (each pinned by a test):
-//   1. Default-off install makes zero network calls.
-//   2. Telemetry-on but no counter file → zero network calls.
-//
-// Trigger semantics: flush drains the pending-flush directory written by
-// `recordEvent` on day-rollover. Two call sites:
-//   - rollover: `recordEvent` returns `true` from its rollover branch; callers
-//     fire `flushIfNeeded` async
-//   - exit: `registerFlushOnExit` registered from cli startup (best-effort)
-// No setInterval, no background polling.
-//
-// Failure semantics: `sendHeartbeat` never throws. On any failure (network,
-// timeout, non-2xx) it returns false; pending files stay on disk for the next
-// rollover or process restart to retry.
+// Daily flush + POST /v1/heartbeat; owns the network (gate and counters come from
+// sibling modules).
+// Privacy invariants (each pinned by a test): default-off install makes zero network
+// calls; telemetry-on with no counter file makes zero network calls.
+// Flush drains the pending-flush directory on day rollover (`recordEvent` returns true)
+// or at exit (`registerFlushOnExit`); no background polling.
+// `sendHeartbeat` never throws: on failure it returns false and pending files stay for retry.
 
 import { dirname, join } from 'node:path'
 import { existsSync, readFileSync } from 'node:fs'

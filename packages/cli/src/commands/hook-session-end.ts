@@ -12,32 +12,12 @@ import { hookSessionKey, legacyHookSessionKeys } from '../lib/session-key.js'
 import { removeSessionTask } from '../lib/session-task.js'
 
 /**
- * plur hook-session-end — Claude Code SessionEnd hook.
- *
- * Auto-closes the PLUR memory lifecycle when a session ends, instead of
- * relying on the agent remembering to call plur_session_end.
- *
- * How it relates to the rest of the lifecycle:
- * - hook-learn-check writes periodic session checkpoints.
- * - plur_session_end (agent-called) is the primary close: it creates engrams
- *   from LLM-reviewed suggestions, captures an episode, AND unlinks the
- *   checkpoint.
- * - If the agent never calls plur_session_end, the checkpoint is left behind.
- *   hook-inject's deferred wrap-up on the NEXT session_start emits a
- *   transient notice for it but captures no durable episode.
- *
- * This hook is fired by Claude Code at the moment the session ends: it captures a durable closing episode from the checkpoint metadata and
- * cleans up the checkpoint — at the right time, with the right cwd. It cannot
- * produce LLM-quality engram suggestions (no model runs in a shell hook), so it
- * is a conservative safety net, not a replacement for plur_session_end.
- *
- * If the checkpoint is absent, plur_session_end already ran (clean close) or
- * the session was too short to checkpoint — either way there is nothing to do.
- *
- * It also retries queued team writes (the outbox), within a bounded
- * budget, on every exit path — including the clean-close one, where there is
- * no checkpoint to act on.
- *
+ * plur hook-session-end — Claude Code SessionEnd hook: a conservative safety net
+ * for when the agent never calls plur_session_end (the primary close, which also
+ * unlinks the checkpoint). With a checkpoint left by hook-learn-check, it captures a
+ * durable closing episode from its metadata and removes it; no checkpoint means a
+ * clean close or a short session. It cannot make LLM-quality suggestions. On every
+ * exit path it also retries queued team writes (outbox) within a bounded budget.
  * Input: JSON on stdin (Claude Code SessionEnd hook format: session_id, cwd,
  *        reason). Never blocks; SessionEnd output is advisory.
  */

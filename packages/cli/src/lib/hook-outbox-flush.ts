@@ -1,35 +1,12 @@
 /**
- * Bounded outbox flush for editor hooks.
- *
- * Team-scoped writes that could not reach their store queue locally (the
- * outbox). Besides MCP `plur_session_start` / `plur_sync` / `plur_outbox` and
- * `plur outbox --flush`, session-end and stop hooks retry them, so a user who
- * ends sessions without any of those does not leave engrams on the laptop
- * indefinitely.
- *
- * A hook runs under a harness timeout (docs/runbooks/hook-timeouts.md): the
- * Claude Code SessionEnd hook is installed with 5s, Codex clamps SessionEnd to
- * 3s, Cursor's stop hook has 3s. So this is written to never fail or slow the
- * hook:
- *
- * - **Skipped with no store load** when the store file has no queued write.
- *   Cursor's stop hook fires on every turn; the common case costs one file
- *   read and a substring search.
- * - **Bounded**: `flushOutbox({ timeoutMs })` cuts the in-flight push and
- *   starts nothing further when the budget runs out. A second, outer timer
- *   stops waiting even if the local part (load, merge-back under the store
- *   lock) is what is slow — the hook stops waiting, and the merge-back is left
- *   to finish or be killed by the harness. Nothing local is lost either way
- *   (the store write is atomic); the cost of a kill there is that an entry the
- *   remote already accepted is pushed again next time — the same exposure a
- *   request timeout already carries, and the reason the budget is not applied
- *   to the merge-back itself (it sits behind the store-lock wait).
- * - **Never throws**: every error is logged to stderr (hook output channels
- *   are advisory) and the entries stay queued.
- *
- * Knobs: `PLUR_HOOK_OUTBOX_FLUSH=0` turns it off; `PLUR_HOOK_OUTBOX_FLUSH_MS`
- * overrides the per-hook budget. Keep an override below the harness budget
- * minus process start, or the harness kills the hook before it reports.
+ * Bounded outbox flush for session-end/stop hooks, under tight harness timeouts
+ * (docs/runbooks/hook-timeouts.md). It:
+ * - is skipped with no store load when the store file has no queued write;
+ * - is bounded (`flushOutbox({ timeoutMs })` plus an outer timer; an interrupted
+ *   merge-back loses nothing locally, at worst a re-push next time);
+ * - never throws: errors go to stderr and entries stay queued.
+ * `PLUR_HOOK_OUTBOX_FLUSH=0` disables it; `PLUR_HOOK_OUTBOX_FLUSH_MS` sets the budget
+ * (keep it below the harness budget minus process start).
  */
 import { existsSync, readFileSync, statSync, mkdirSync, writeFileSync } from 'fs'
 import { join } from 'path'

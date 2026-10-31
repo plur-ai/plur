@@ -42,18 +42,10 @@ export interface PreviewResult {
 }
 
 /**
- * What a pack claims about the origin of its contents, read BEFORE installing.
- *
- * Modelled on the way media provenance is shown to a reader: an indicator that
- * something is there, then a readable summary, then the full document for
- * anyone who wants it. Each level is optional and each is a step deeper.
- *
- * One rule governs the whole thing. **These are claims, not proof.** Nothing in
- * a pack is signed (signing is reserved in the standard), so anybody can write
- * anything here. A reader is shown what the pack asserts and is told, in those
- * words, that nobody has checked it. A reassuring tick on an unverified record
- * is worse than showing nothing at all, because it converts a claim into a
- * belief without anybody deciding to.
+ * What a pack claims about the origin of its contents, read BEFORE installing:
+ * an indicator, then a summary, then the full document, each optional.
+ * **These are claims, not proof.** Nothing in a pack is signed, so the reader is told
+ * nobody has checked it — never show a reassuring tick on an unverified record.
  */
 export interface PackProvenanceView {
   /** Does the pack carry provenance at all? */
@@ -82,17 +74,10 @@ export interface PackProvenanceView {
   /** Why `verified` is false, in words a reader can act on. */
   verification_note: string
   /**
-   * Distinct licences the pack's engrams carry, most common first.
-   *
-   * `chosen` answers the coarse question: did anybody decide this. `sources`
-   * carries the four-state `engram:licenseSource` values seen for this licence,
-   * so a reader can tell a licence picked for the engram from one inherited
-   * from the pack or taken from a configured default. Empty for records that
-   * lack that field.
-   *
-   * The set is closed (profile §8.4): a value outside `LICENSE_SOURCES` never
-   * reaches this array. A record is a file a stranger wrote, and the surface a
-   * recipient reads must not carry that stranger's free text as a typed fact.
+   * Distinct licences the pack's engrams carry, most common first. `chosen`: did anybody
+   * decide this. `sources`: the four-state `engram:licenseSource` values seen (empty when
+   * absent). Closed set (profile §8.4): values outside `LICENSE_SOURCES` never appear here,
+   * so a stranger's free text is never surfaced as a typed fact.
    */
   licences: Array<{ name: string; count: number; chosen: boolean; sources: LicenseSource[] }>
   /** Engrams naming somebody answerable, out of those with a record. */
@@ -106,19 +91,10 @@ export interface PackProvenanceView {
 }
 
 /**
- * Every entry under a pack directory, without following anything.
- *
- * `lstat` semantics throughout (`Dirent.isSymbolicLink()` rather than
- * `isFile()`), because a symbolic link answers `isFile() === false`; skipping
- * it would let `installPack` copy THROUGH it, so a link to a file holding a
- * credential, or an absolute link to an arbitrary host file, would pass the
- * scan and land in the store. `tar -xzf` preserves symlinks, so a URL pack can
- * carry them too.
- *
- * Iterative, so a deeply nested archive cannot exhaust the stack; bounded by
- * an entry count rather than a depth, so a file at depth six is scanned like
- * one at depth one, and a pack past the bound is reported rather than
- * partially scanned in silence.
+ * Every entry under a pack directory, without following anything. Uses `lstat` semantics
+ * (`isSymbolicLink()`): skipping a link as "not a file" would let `installPack` copy
+ * THROUGH it (tar preserves symlinks). Iterative and bounded by entry count, not depth;
+ * a pack past the bound is reported, never partially scanned in silence.
  */
 function walkPack(packDir: string): {
   files: string[]
@@ -155,16 +131,9 @@ function walkPack(packDir: string): {
 }
 
 /**
- * Refuse a pack that contains a symbolic link, before anything reads it.
- *
- * A link is not content: it is an instruction to read some OTHER file, and
- * every reader of a pack (`loadPack`, the integrity hash, the file scan,
- * `installPack`'s copy) would follow it. There is no legitimate reason for a
- * pack to ship one, and no safe way to preview a pack whose manifest may be a
- * link to a file outside it: the preview would report the target's contents
- * as the pack's manifest. So the check runs first, and a link anywhere is a
- * refusal naming the link, not a scan finding beside a manifest read through
- * it.
+ * Refuse a pack that contains a symbolic link, before anything reads it. Every pack
+ * reader would follow a link (a manifest could point outside the pack), and no pack
+ * legitimately ships one — so this runs first and refuses naming the link.
  */
 function refuseSymlinks(packDir: string, op: string): void {
   const { symlinks } = walkPack(packDir)
@@ -396,20 +365,10 @@ export function readPackProvenance(
 
       const licence = subject['engram:license']
       if (typeof licence === 'string') {
-        // Read the four-state field, not the boolean beside it.
-        //
-        // `engram:licenseSource` says WHICH of four ways a licence was arrived
-        // at: chosen on the engram, inherited from the pack, the author's
-        // configured default, or the schema default nobody ever looked at. The
-        // last two are different facts: one is a decision made once in
-        // advance, the other is nobody's decision at all. Reading only
-        // `engram:licenseIsDefault` would collapse them at the one surface a
-        // recipient sees.
-        //
-        // Falls back to the boolean for records without the four-state field.
-        //
-        // Guarded: a record is a file a stranger wrote, and an unguarded read
-        // would put whatever the file contained into `sources: string[]`.
+        // Read the four-state `engram:licenseSource` (chosen, pack-inherited, configured
+        // default, schema default), not the boolean: the last two are different facts that
+        // `engram:licenseIsDefault` collapses. Falls back to the boolean when absent.
+        // Guarded: the record is a stranger's file, so unknown values are not passed through.
         const rawSource = subject['engram:licenseSource']
         // Closed set, not merely a string (profile §8.4). A string outside the
         // four values is a stranger's free text; it is counted, reported, and
@@ -682,16 +641,10 @@ export interface InstallResult {
    */
   neutralized: NeutralizedCounts
   /**
-   * What the pack's provenance records turned out to be (ENGRAM-STANDARD-v1
-   * §5.6.5, provenance profile §5.4.2).
-   *
-   * §5.6.5 puts the obligation on the *consumer*, and an install is the moment
-   * a recipient is looking, so the counts are reported here and not only by
-   * `previewPack`. An orphan record is the signature of a pack assembled from a
-   * larger set than the one being handed over.
-   *
-   * Absent when the pack carries no `provenance/` directory at all: "there was
-   * nothing to report" and "everything was zero" are different facts.
+   * Provenance-record counts for the pack (ENGRAM-STANDARD-v1 §5.6.5, profile §5.4.2),
+   * reported at install because the obligation is on the consumer. Orphan records signal
+   * a pack cut from a larger set. Absent when there is no `provenance/` directory —
+   * "nothing to report" differs from "all zero".
    */
   provenance?: InstallProvenanceCounts
 }
@@ -851,24 +804,11 @@ function _installPackDir(
       + 'A private engram must not be in a pack (ENGRAM-STANDARD-v1 §5.4). Ask whoever built it to export again without them.',
     )
   }
-  // A file the scan could not read is a file that cannot be installed: nothing
-  // may land in the store that was not checked. No override for this one:
-  // the remedy is to fix the pack, not to look away.
-  //
-  // With one carve-out, required by the provenance profile §5.4.2: a record in
-  // `provenance/` that is merely too large or that the filesystem would not
-  // hand over is an UNREADABLE RECORD, and the profile says a record a consumer
-  // cannot read MUST NOT abort the preview or the install of the pack it
-  // arrived in: one crafted file counts as one unreadable record and nothing
-  // more.
-  //
-  // The carve-out is narrow on purpose. It covers only `oversize` and
-  // `read_error`, and only for a file under `provenance/` whose name has the
-  // §5.3.1 record shape. A symlink, a special file or a truncated walk still
-  // blocks wherever it is: those say the pack is shaped to hide something,
-  // which is a different finding from a file that would not fit in the scanner.
-  // The exempted file is reported here and skipped by the copy below, so
-  // nothing unchecked reaches the installed pack.
+  // A file the scan could not read cannot be installed — no override; fix the pack.
+  // Narrow carve-out (provenance profile §5.4.2): an `oversize` / `read_error` file under
+  // `provenance/` with the §5.3.1 record name counts as one unreadable record and must not
+  // abort install. Symlinks, special files and truncated walks still block everywhere.
+  // The exempted file is reported and skipped by the copy, so nothing unchecked lands.
   const isUnreadableProvenanceRecord = (i: PrivacyIssue): boolean =>
     (i.unscannable_reason === 'oversize' || i.unscannable_reason === 'read_error')
     && /^provenance\/[A-Za-z0-9._-]+\.jsonld$/.test(i.engram_id.split(path.sep).join('/'))
@@ -969,18 +909,10 @@ function _installPackDir(
     }
   }
 
-  // Auto-upgrade a deprecated manifest.yaml pack to SKILL.md in the installed
-  // copy. manifest.yaml still LOADS (loadPack reads it with a deprecation
-  // warning), but the managed copy is normalized to the canonical SKILL.md so
-  // the integrity value below covers the SKILL.md that is actually installed.
-  // Done before computePackIntegrity so the recorded integrity reflects the upgrade.
-  //
-  // Load engrams, then clamp host-overriding fields (pinned / locked commitment)
-  // before they can reach injection. Re-save the sanitized copy so the on-disk
-  // pack AND the integrity hash reflect the clamped content.
-  //
-  // Both steps live in `normalizeStagedPack` so that `migratePackIntegrity`
-  // can reproduce the installed form of a source exactly (§5.5 re-baselining).
+  // `normalizeStagedPack` upgrades a deprecated manifest.yaml to SKILL.md and clamps
+  // host-overriding fields (pinned / locked commitment), re-saving the copy — before
+  // computePackIntegrity, so the integrity covers what is actually installed.
+  // Shared with `migratePackIntegrity` so it reproduces the installed form (§5.5).
   const { upgradedManifest, engrams: newEngrams, sanitized } = normalizeStagedPack(staging, preview.manifest)
   if (upgradedManifest) {
     logger.warning(
@@ -1173,25 +1105,11 @@ function pickInstallDirName(
 }
 
 /**
- * Other installed copies of the pack being installed into `target` that a
- * collision left behind, which this install supersedes.
- *
- * Such a copy arises when a pack displaced by a collision (its source folder
- * `pack` was taken by another pack, so it went to `beta` or `pack-2`) is later
- * installed into `pack` once that comes free. Its fingerprint is in the
- * registry: a row whose directory is not the one its own source asked for,
- * while that asked-for directory holds the same pack. So a directory with the
- * same manifest name is obsolete when either
- *   - its row says it was displaced from `target` (it wanted `target`), or
- *   - the target's row says the target was displaced from it.
- *
- * Kept, always: a pack with a different manifest name; a copy with no `dir`
- * row (nothing records where it came from); a copy installed from a URL (no
- * asked-for directory is recorded); and a copy that sits in the directory its
- * own source asked for, which is how two installations made on purpose from
- * differently named sources look. The installer never creates the
- * displaced-plus-original pair itself (it upgrades an existing copy in place),
- * so the pair only comes from older installs or from copying by hand.
+ * Other installed copies of the pack, left behind by a collision, that this install into
+ * `target` supersedes. A same-name directory is obsolete when its registry row says it was
+ * displaced from `target`, or the target's row says the target was displaced from it.
+ * Always kept: a different manifest name, a copy with no `dir` row, a URL install, and a
+ * copy in the directory its own source asked for (deliberate parallel installs).
  */
 function staleCollisionCopies(packsDir: string, target: string, manifestName: string | undefined): string[] {
   if (!manifestName) return []
@@ -1224,20 +1142,9 @@ function installedDirsNamed(packsDir: string, manifestName: string | undefined):
 }
 
 /**
- * Resolve `name` as a direct child of `packsDir`, or throw.
- *
- * A pack name is a caller-supplied string that reaches here from `plur packs
- * uninstall <name>` and from the `plur_packs_uninstall` MCP tool. Joined
- * straight onto `packsDir`, `..` would resolve to the PLUR ROOT, and
- * `uninstallPack` ends in `fs.rmSync(packDir, { recursive: true })`. On the
- * install path, a source ending in `/..` has basename `..`, which would copy
- * pack files over a live engrams.yaml.
- *
- * Containment is checked on the RESOLVED path rather than by pattern-matching
- * the name: `a/../..`, an absolute path, and a name with embedded separators
- * all normalise away, and a denylist of shapes would have to enumerate them.
- * Resolution answers the only question that matters: does this end up inside
- * the packs directory.
+ * Resolve `name` as a direct child of `packsDir`, or throw. The name is caller-supplied
+ * (CLI and MCP uninstall); `..` would reach the PLUR root, which uninstall then `rmSync`s.
+ * Containment is checked on the RESOLVED path, not by pattern-matching the name.
  */
 function resolveInside(packsDir: string, name: string, op: string): string {
   const base = path.resolve(packsDir)
@@ -1324,17 +1231,12 @@ export interface PackInfo {
   source?: string
   integrity_ok?: boolean
   /**
-   * Explicit integrity verdict: the reason `integrity_ok` alone is not enough
-   * to act on.
-   *
+   * Explicit integrity verdict:
    *   'ok'          the pack hashes to what the registry recorded at install
-   *   'modified'    it does not: the contents changed after install
+   *   'modified'    the contents changed after install
    *   'unverified'  there is NO registry entry, so the question cannot be answered
-   *
-   * `integrity_ok === undefined` carries the third case, which consumers easily
-   * read as "nothing to report". A verdict that cannot be reached must be as
-   * visible as a verdict that failed, because the two have the same cause more
-   * often than not: something tampered with the pack directory.
+   * Exists because `integrity_ok === undefined` reads as "nothing to report", while an
+   * unreachable verdict often has the same cause as a failed one: tampering.
    */
   integrity_status?: 'ok' | 'modified' | 'unverified'
   /**

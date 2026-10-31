@@ -38,19 +38,12 @@ import { commandSpawn } from '../lib/command-spawn.js'
 
 /**
  * plur doctor — diagnose a Claude Code / Claude Desktop / Cursor installation.
- *
  * Checks:
- *   1. Hooks installed in any settings.json (UserPromptSubmit etc.) or, for
- *      Cursor, its separate flat-shaped `.cursor/hooks.json`.
- *   2. `plur` MCP server registered in any of the known config files
- *   3. Whether `datacore` MCP server is also present (collision warning)
- *   4. Live MCP handshake — spawns the configured server command and
- *      sends an `initialize` JSON-RPC request to verify it actually starts,
- *      then a `tools/list` request to report the live tool count. Probed
- *      twice — once with the default env, once forcing
- *      `PLUR_TOOL_PROFILE=cursor` — so a Cursor user can see whether their
- *      setup is actually using the reduced tool profile.
- *
+ *   1. Hooks in any settings.json, or Cursor's flat `.cursor/hooks.json`.
+ *   2. `plur` MCP server registered in a known config file.
+ *   3. A `datacore` MCP server alongside it (collision warning).
+ *   4. Live MCP handshake (`initialize`, then `tools/list` for the tool count),
+ *      run with the default env and with `PLUR_TOOL_PROFILE=cursor`.
  * Exits 0 if everything is healthy, 1 if any check fails.
  */
 
@@ -135,21 +128,11 @@ interface DoctorReport {
   cursorProjectDetected: boolean
   cursorWired: boolean
   /**
-   * Whether Codex is installed on this machine (`~/.codex/` exists, honouring
-   * `CODEX_HOME`) and, if so, whether Codex's OWN two config files have PLUR
-   * wired in — `hooks.json` carrying our hooks, `config.toml` carrying the
-   * `[mcp_servers.plur]` table. Same rationale as `cursorWired`: a healthy
-   * Claude Code setup elsewhere says nothing about this harness.
-   *
-   * Reported as its own line and deliberately NOT folded into `overall` —
-   * see the comment at the `overall` computation for why a machine-level
-   * detection must not fail a project-level health check.
-   *
-   * NOTE: `codexWired: true` does NOT mean the hooks will actually run. Codex
-   * fingerprints every non-managed hook and skips it until reviewed via
-   * `/hooks`, with no warning and exit 0 when it doesn't — a state nothing on
-   * disk distinguishes from a trusted one. `printText` says so explicitly
-   * rather than letting a green tick imply more than it knows.
+   * Whether Codex is installed (`~/.codex/`, honouring `CODEX_HOME`) and whether
+   * its own `hooks.json` and `config.toml` (`[mcp_servers.plur]`) wire PLUR in.
+   * Not folded into `overall` (machine-level detection; see `overall`).
+   * `codexWired: true` does NOT mean the hooks run: Codex silently skips
+   * unreviewed hooks until trusted via `/hooks`, so `printText` says so.
    */
   codexDetected: boolean
   codexWired: boolean
@@ -184,17 +167,10 @@ interface DoctorReport {
    */
   pgliteGemmaReembedNeeded: boolean
   /**
-   * Number of engrams whose `content_hash` does not match
-   * `computeContentHash(statement)`. These act as dedup attractors — a
-   * re-learn of an unrelated statement that happens to hash to the same old
-   * value is absorbed into the wrong engram.
-   *
-   * Typically non-zero when statements containing non-ASCII letters were
-   * hashed by an ASCII-only (`\w`) normalizer. Pure-ASCII stores are
-   * unaffected.
-   *
-   * Advisory only: does not fail the overall check. Fix: run
-   * `plur reindex-hashes --apply`.
+   * Engrams whose `content_hash` does not match `computeContentHash(statement)`;
+   * they attract dedup of unrelated re-learns. Usually from non-ASCII text hashed
+   * by an ASCII-only normalizer. Advisory only (does not fail the overall
+   * check); fix with `plur reindex-hashes --apply`.
    */
   staleContentHashes: number
   /**
@@ -239,18 +215,10 @@ interface DoctorReport {
    */
   tokenEnvFound: Array<{ scope: string; url: string; variable: string; inShell: boolean; sources: string[] }>
   /**
-   * opencode leg. opencode's `plugin: ["@plur-ai/opencode"]` resolves a bare
-   * name from the npm registry at startup and fails with NO error anywhere on
-   * a miss — the config looks correct, opencode starts normally, and the
-   * plugin simply never loads. This is the compensating control: the only
-   * channel that can tell a user their memory silently isn't working.
-   *
-   * `null` when opencode isn't in use on this machine at all — mirrors
-   * `codexDetected`/`agyDetected`'s "not applicable" treatment (a global,
-   * machine-level config directory absent entirely is not a failure to warn
-   * about). Like Codex/Antigravity, and unlike Cursor, this is deliberately
-   * NOT folded into `overall`: `~/.config/opencode` existing says the user
-   * has opencode installed somewhere, not that this project depends on it.
+   * opencode leg: a bare `plugin` name that fails to resolve at startup fails
+   * with no error anywhere, so this is the only place a user can learn their
+   * memory silently isn't loading. `null` when opencode isn't used on this
+   * machine. Not folded into `overall`: like Codex, it is machine-level.
    */
   opencode: OpencodeReport | null
   /**
@@ -327,21 +295,13 @@ interface OpencodeReport {
    */
   mcpPlurMissingPaths: string[]
   /**
-   * Whether the declared plugin will actually resolve when opencode starts.
-   * This is the load-bearing check — a `pluginDeclared: true` entry that
-   * cannot resolve is worthless and, worse, invisible to the user.
-   *
+   * Whether the declared plugin will resolve when opencode starts (the
+   * load-bearing check):
    *  - 'not-declared': `pluginDeclared` is false — nothing to check.
-   *  - 'yes': confirmed resolvable, either via a local install
-   *    (`resolvedVia: 'local install'`) or because the npm registry
-   *    currently serves the package (`resolvedVia: 'npm registry'`).
-   *  - 'no': confirmed NOT resolvable — no local install found, and the npm
-   *    registry has no such package (a definitive 404). opencode's bare-name
-   *    resolution has nothing to fetch; the plugin will not load.
-   *  - 'unknown': could not be determined either way (offline, DNS failure,
-   *    timeout, or a registry response that is neither a clean hit nor a
-   *    clean miss) — deliberately never coerced to 'yes' or 'no'. Also the
-   *    result when the network check is skipped (`--no-handshake`).
+   *  - 'yes': local install or the npm registry serves it (see `resolvedVia`).
+   *  - 'no': no local install and a definitive registry 404; it will not load.
+   *  - 'unknown': undetermined (offline, timeout, ambiguous response, or
+   *    `--no-handshake`); never coerced to 'yes' or 'no'.
    */
   pluginResolvable: 'not-declared' | 'yes' | 'no' | 'unknown'
   /** Where a 'yes' verdict came from. `null` for every other `pluginResolvable` value. */
@@ -709,18 +669,11 @@ function inspectConfigs(): ConfigFileReport[] {
 }
 
 /**
- * The MCP entry doctor should actually launch.
- *
- * Prefers whatever a config file declares, in `knownConfigFiles()` order, so
- * the probe exercises the server the user runs. Falls back to the synthesised
- * recommendation only when nothing declares one — an install that has not been
- * wired yet, where "would the recommended entry work" is the useful question.
- *
- * Probing the synthesised entry on a configured install would fail BOTH ways:
- * a working local build could time out because the cold `npx` fallback is
- * slow, and — worse — a configured server that crashes on startup would
- * report healthy, because npx fetched a good copy of a package the user is
- * not running.
+ * The MCP entry doctor should launch: the first one declared in
+ * `knownConfigFiles()` order, so the probe exercises the server the user runs.
+ * Falls back to the synthesised recommendation only when nothing is declared;
+ * probing it on a configured install could hide a crashing server behind a
+ * good npx copy, or time out a working local build.
  */
 function resolveProbeTarget(): { entry: McpServerEntry; source: string } {
   // Probe what Claude Code launches first: ~/.claude.json (user, then
@@ -742,19 +695,11 @@ function resolveProbeTarget(): { entry: McpServerEntry; source: string } {
 }
 
 /**
- * Spawn the configured plur MCP server, send an `initialize` JSON-RPC
- * request, then — once that succeeds — a `tools/list` request to count the
- * live tool surface. Resolves with the server's name, version, and tool
- * count on success, or an error on timeout / crash / invalid response.
- *
- * `envOverride` lets the caller force env vars (e.g. `PLUR_TOOL_PROFILE:
- * 'cursor'`) onto the spawned process without touching `process.env` itself —
- * used to probe the cursor tool profile alongside the default one, since
- * parsing each config file's configured env to guess which profile is
- * "active" would be fragile (a hand-edited config could have anything).
- *
- * Times out after 20 seconds — first-run npx fetches the @plur-ai/mcp package
- * (and its native deps), which can take 10-15s. Subsequent runs respond in ~1s.
+ * Spawn the configured plur MCP server, send `initialize` then `tools/list`;
+ * resolves with name, version and tool count, or an error on timeout, crash
+ * or invalid response. `envOverride` forces env vars (e.g. `PLUR_TOOL_PROFILE:
+ * 'cursor'`) on the child without touching `process.env`.
+ * 20-second timeout: a first-run npx fetch can take 10-15s.
  */
 async function mcpHandshake(
   timeoutMs = 20000,
@@ -916,18 +861,11 @@ export function resolveProbeTimeoutMs(envValue = process.env.PLUR_DOCTOR_TIMEOUT
 }
 
 /**
- * Probe the embedder in an isolated subprocess.
- *
- * Why subprocess: onnxruntime-node has a known SIGABRT crash on macOS during
- * thread pool cleanup on process exit. Running the probe in-process makes
- * `plur doctor` itself exit with code 134 even when everything is healthy.
- * Subprocess isolation contains the crash — if the probe dies, parent reports
- * embedder as degraded and continues with the rest of the doctor checks.
- *
- * Timeout: DEFAULT_PROBE_TIMEOUT_MS. Cold model downloads (130MB for
- * bge-small, 325MB for embedding-gemma) need 60-300s on slow connections.
- * Override via PLUR_DOCTOR_TIMEOUT env var (in seconds) if 300s is still too
- * short.
+ * Probe the embedder in a subprocess: onnxruntime-node can SIGABRT on macOS
+ * at exit, which in-process would make doctor exit 134; a dead probe is
+ * reported as degraded instead.
+ * Timeout: DEFAULT_PROBE_TIMEOUT_MS (cold model downloads can take minutes);
+ * override with PLUR_DOCTOR_TIMEOUT (seconds).
  */
 async function checkEmbedder(_flags: GlobalFlags, timeoutMs = resolveProbeTimeoutMs()): Promise<{ available: boolean; loaded: boolean; lastError: string | null; modelLoaded: boolean; disabled: boolean; disabledReason: string | null }> {
   return new Promise((resolve) => {
@@ -1013,26 +951,12 @@ async function checkEmbedder(_flags: GlobalFlags, timeoutMs = resolveProbeTimeou
 }
 
 /**
- * Best-effort check for whether `pkg` is resolvable via Node's own module
- * resolution, without spawning opencode or Bun. Tries a handful of plausible
- * install roots — opencode's own config directory and the user's home
- * directory — the way a `require()` from either of those locations would
- * resolve it.
- *
- * `process.cwd()` is deliberately NOT one of these roots: `plur doctor`
- * inherits whatever directory the OPERATOR happens to be running it from,
- * which has no relationship to where the user's actual `opencode` process
- * resolves its plugins from. Including it would give a false "resolves (local
- * install)" inside any repo that carries `node_modules/@plur-ai/opencode` — a
- * confident answer about a directory opencode itself never looks in.
- *
- * Deliberately narrow otherwise: it does NOT see a Bun-only global install
- * (`bun add -g`) or Bun's own internal package cache — that layout is
- * opaque, undocumented, and version-dependent, and hard-coding it risks
- * reporting confidently wrong answers as Bun's internals shift. A `false`
- * here is not proof the plugin can't resolve; it just means this particular
- * check didn't find it, and the registry check below carries the actual
- * verdict. A `true` here IS confident — Node found a real, loadable package.
+ * Best-effort check that Node module resolution finds `pkg` from opencode's
+ * config directory or the home directory.
+ * - Not `process.cwd()`: the operator's directory is unrelated to where
+ *   opencode resolves plugins and would give false "local install" answers.
+ * - Does not see Bun-only global installs or Bun's cache (undocumented layout).
+ * `true` is confident; `false` is not proof — the registry check decides.
  */
 function opencodePluginLocallyResolvable(pkg: string): boolean {
   const req = createRequire(import.meta.url)
@@ -1049,28 +973,11 @@ function opencodePluginLocallyResolvable(pkg: string): boolean {
 }
 
 /**
- * Bounded npm-registry lookup for whether `pkg` is published at all. This is
- * the load-bearing question for the opencode leg: opencode resolves a bare
- * `plugin` name by having Bun fetch it from the npm registry at startup,
- * with zero error output on a miss (see `OpencodeReport.pluginResolvable`'s
- * doc comment). A 200 here does not *guarantee* the runtime fetch succeeds
- * (this machine could be offline, or behind a different registry) — but a
- * 404 DOES guarantee it fails: the registry has never heard of the package,
- * so there is nothing for Bun to fetch. Every other outcome (timeout, DNS
- * failure, 5xx, abort) is folded into 'unknown' rather than asserted either
- * way — see the file's "report the uncertainty" requirement.
- *
- * Same technique (fetch + AbortController timeout against
- * `registry.npmjs.org/<pkg>/latest`) as `@plur-ai/core`'s
- * `checkForUpdate` — not reused directly because that function's return
- * shape collapses "confirmed absent" (404) and "couldn't tell" (network
- * error) into the same `latest: null`, which is exactly the distinction this
- * check exists to preserve.
- *
- * 3s timeout: long enough for a live network, short enough that `plur
- * doctor` never visibly hangs on a dead connection (doctor is a diagnostic —
- * see the file's "keep it fast and side-effect free" requirement). Exported
- * for tests.
+ * Bounded npm-registry lookup (`registry.npmjs.org/<pkg>/latest`) for whether
+ * `pkg` is published. A 404 guarantees opencode's bare-name fetch fails; a 200
+ * does not guarantee success. Timeouts, DNS, 5xx and aborts map to 'unknown'.
+ * Not reusing core's `checkForUpdate`: it conflates 404 with network errors.
+ * 3s timeout so doctor never visibly hangs. Exported for tests.
  */
 export async function checkOpencodePluginPublished(
   pkg: string = PLUR_OPENCODE_PLUGIN,
@@ -1350,20 +1257,12 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
   const cursorHooksConfigReport = configs.find((c) => c.label === 'Cursor (.cursor/hooks.json)')
   const cursorProjectDetected = existsSync(join(process.cwd(), '.cursor'))
 
-  // Two further checks beyond bare "entry exists":
-  //   1. The entry's env actually carries PLUR_TOOL_PROFILE=cursor — an
-  //      entry that exists but is missing/wrong here silently gets the full
-  //      39-tool surface, not the ~11-tool one, which is exactly what this
-  //      wiring exists to prevent.
-  //   2. If the command is an absolute path (the local shim `plur init`
-  //      installs — see mcp-config.ts's buildMcpServerEntry), it must
-  //      actually exist ON THIS MACHINE. `.cursor/mcp.json` is meant to be
-  //      committed so teammates/background agents inherit it, but the shim
-  //      path it bakes in is machine-local — a config that's healthy on the
-  //      machine that ran `plur init --cursor` can point at a path that was
-  //      never installed on another machine or a fresh cloud-agent VM. This
-  //      is a cheap existsSync check, not a second live handshake spawn —
-  //      doctor already spawns the server twice (see cursorHandshake below).
+  // Beyond "entry exists":
+  //   1. Its env must set PLUR_TOOL_PROFILE=cursor, or Cursor silently gets the
+  //      full tool surface instead of the reduced one.
+  //   2. An absolute command (the local shim, see buildMcpServerEntry) must
+  //      exist on THIS machine: `.cursor/mcp.json` is committed but the shim
+  //      path is machine-local. A cheap existsSync, not another handshake.
   let cursorEntryEnvCorrect = false
   let cursorEntryCommandExists = true
   if (cursorMcpConfig?.exists) {
@@ -1492,22 +1391,12 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
       tokenEnvUnset.length === 0
     const overall: DoctorReport['overall'] =
       !staticChecksPass ? 'fail' : skipHandshake ? 'unverified' : handshake.ok ? 'ok' : 'fail'
-    // NOTE: codexWired is deliberately NOT in `overall`, unlike cursorWired.
-    // The two detections are not the same kind of signal. A `.cursor/`
-    // directory sits IN THIS PROJECT and says "the user works on this
-    // project in Cursor", so an unwired Cursor there is a genuine failure.
-    // `~/.codex/` is machine-level: it says the user has Codex installed
-    // somewhere, not that they use it here. Folding it into `overall` would
-    // turn doctor red for every Claude-Code-only user who once tried Codex —
-    // a false alarm on a check whose whole value is that a red result means
-    // something. It is reported as its own line instead.
-    // PGLite + embedding-gemma: the PGLite vector cache is keyed on dimension
-    // only, so embedding-gemma's role-prefix change is not picked up
-    // automatically — flag a one-time re-embed.
-    // Backend half through the real resolver: `backend: pglite` in
-    // config.yaml and case/whitespace variants of PLUR_BACKEND all select the
-    // tier. The embedder half stays env-only — resolveEmbedderName has no
-    // config route.
+    // codexWired is NOT in `overall`, unlike cursorWired: `.cursor/` is in this
+    // project, while `~/.codex/` is machine-level and would turn doctor red for
+    // users who merely installed Codex once. It gets its own line.
+    // PGLite + embedding-gemma: the vector cache is keyed on dimension only, so
+    // the role-prefix change needs a one-time re-embed. The backend half uses
+    // the real resolver (config or PLUR_BACKEND); the embedder half is env-only.
     const gemmaRoot = process.env.PLUR_PATH || join(homedir(), '.plur')
     const pgliteGemmaReembedNeeded =
       resolveBackendTier({

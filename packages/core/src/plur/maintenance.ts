@@ -63,26 +63,12 @@ export interface MaintenanceMethods {
   _kickPrimaryAutoEmbed(adapter: StorageAdapter): void
 
   /**
-   * Embed active engrams missing a row in the primary store's embedding table
-   * — the Postgres-primary counterpart of `_autoEmbedNewEngrams`.
-   *
-   * Deliberately NOT that method: `_autoEmbedNewEngrams` loads the whole
-   * corpus and probes `hasEmbedding` per id, which is fine for a local PGLite
-   * index and too costly per write at the corpus size that selects
-   * a server tier. This pass asks the store the set-based question instead —
-   * `listEngramsMissingEmbeddings` is one anti-join per batch — so its cost
-   * scales with the GAP, not with the corpus.
-   *
-   * Failure posture, in order:
-   *   - embeddings disabled (PLUR_DISABLE_EMBEDDINGS / config): skip before
-   *     touching the database, with a once-per-instance notice — the table
-   *     staying empty is then a configuration choice, not a silent gap.
-   *   - embedder dim ≠ the store's embedding column: skip (debug log), same
-   *     as the PGLite pass — writing wrong-dim vectors is worse than none.
-   *   - embedder unavailable mid-pass: stop quietly; the next write or
-   *     semantic recall retries.
-   *   - anything else: recorded via `lastIndexError()` and logged. Never
-   *     thrown — a background embed must not be able to fail a write.
+   * Embed active engrams missing an embedding row in the primary store, using
+   * the set-based `listEngramsMissingEmbeddings` so cost scales with the gap, not
+   * the corpus (unlike `_autoEmbedNewEngrams`). Failure posture: embeddings
+   * disabled → skip with a once-per-instance notice; dimension mismatch → skip;
+   * embedder unavailable → stop quietly; anything else → `lastIndexError()`.
+   * Never throws — a background embed must not fail a write.
    */
   /** @internal */
   _autoEmbedPrimaryStore(adapter: StorageAdapter): Promise<void>

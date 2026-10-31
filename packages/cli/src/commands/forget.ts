@@ -73,18 +73,11 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     }
 
     // Not in the local corpus, or an explicit scope was given — let
-    // plur.forget() resolve. getById reads the primary store, the local
-    // secondary stores and the REMOTE CACHE, and that cache is a synchronous
-    // peek nothing warms in a one-shot CLI process, so remote engrams miss
-    // there. forget() routes a namespaced id to the store its prefix declares,
-    // walks the remotes for a bare id, refuses an ambiguous id and an
-    // unreachable declared store, and throws "Engram not found" when the id is
-    // nowhere. Nothing is caught here: each of those reaches the entry point's
-    // error handler as what it is, so a retire that DID happen is never
-    // reported as a failure, and a failure is never dressed up as a retire.
-    //
-    // No statement to echo on this path — the local corpus did not have one —
-    // so the report names what was asked for and, when given, where.
+    // plur.forget() resolve (the remote cache is cold in a one-shot CLI). It
+    // routes by id prefix, walks remotes, and throws on ambiguous, unreachable
+    // or missing ids. Nothing is caught here, so a retire that happened is never
+    // reported as a failure, nor a failure as a retire. No statement to echo on
+    // this path, so the report names the target and, if given, the scope.
     const { warnings } = await plur.forget(target, reason, { force: true, ...(scope ? { scope } : {}) })
     if (shouldOutputJson(flags)) {
       outputJson({ success: true, retired: { id: target, ...(scope ? { scope } : {}) }, ...withWarnings(warnings) })

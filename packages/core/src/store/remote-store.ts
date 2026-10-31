@@ -12,16 +12,11 @@ export interface WriteCheckResult { scope: string; writable: boolean; review_hel
 const SCOPE_SOURCES: ReadonlySet<string> = new Set<ScopeSource>(['explicit', 'session', 'default', 'routed'])
 
 /**
- * Lenient validation for semi-trusted remote rows. The server may legitimately omit optional engram fields, so we
- * don't demand the full Engram shape — but we DO type-check the security-relevant
- * fields and reject structurally-broken rows. Without this, a compromised or
- * malicious remote could spread arbitrary / type-confused data (and instruction-
- * carrying `statement`s) into the local injection pool via `as unknown as Engram`.
- * `.passthrough()` keeps unmodeled fields; the point is to gate the meaningful ones.
- *
- * Exported: the server-authoritative recall leg (remote-recall.ts)
- * validates /api/v1/recall rows through the SAME schema — one trust boundary,
- * not two that can drift.
+ * Lenient validation for semi-trusted remote rows: optional fields may be omitted,
+ * but security-relevant fields are type-checked and broken rows rejected, so a
+ * malicious remote cannot inject type-confused data into the injection pool.
+ * `.passthrough()` keeps unmodeled fields. Exported so remote-recall.ts validates
+ * /api/v1/recall rows through the SAME schema — one trust boundary.
  */
 export const RemoteRowSchema = z.object({
   id: z.string().regex(/^(ENG|ABS|META)-[A-Za-z0-9-]+$/),
@@ -42,18 +37,10 @@ export const RemoteRowSchema = z.object({
   domain: z.string().nullish(),
 }).passthrough()
 
-// Truncate and strip control chars from server error bodies before
-// persisting them (append → _outbox.last_error) or surfacing in thrown errors.
-// Mirrors the treatment applied to server-assigned ids in append().
-//
-// CONTROL CHARACTERS ONLY (\x00-\x1F, \x7F): that neutralises escape
-// injection, while non-ASCII text in a localised error stays readable in
-// `plur outbox`.
-//
-// Truncation is by CODE POINT, not UTF-16 unit. `String.prototype.slice` cuts
-// mid-surrogate, and a lone surrogate in this value is persisted to YAML —
-// so the bound has to respect character boundaries, and it has to run AFTER
-// the substitution so the replacement characters are counted too.
+// Truncate and strip control chars from server error bodies before persisting
+// (_outbox.last_error) or throwing them. Only \x00-\x1F and \x7F are replaced, so
+// localised text stays readable. Truncation is by CODE POINT (no lone surrogates in
+// YAML) and runs AFTER substitution.
 function sanitiseResponseBody(raw: string): string {
   const cleaned = raw.replace(/[\x00-\x1F\x7F]/g, '?')
   return Array.from(cleaned).slice(0, 200).join('')
@@ -75,22 +62,12 @@ export function safeOrigin(url: string): string {
 }
 
 /**
- * Canonical endpoint identity for a configured remote URL. Users configure the SSE URL (mcp.json shape), so
- * `https://x.com`, `https://x.com/`, and `https://x.com/sse` all name the SAME
- * server — RemoteStore.apiBase folds them at HTTP time. Every
- * IDENTITY comparison (endpoint dedup, addStore same-URL dedup, /me metadata ↔
- * store-entry matching, registered-vs-offerable splits) must apply the same
- * fold, or the three spellings count as three distinct endpoints and a scope
- * registered under one spelling is re-offered under another.
- *
- * The form is URL-parsed: `https://X.com:443/sse` is `https://x.com` too.
- * Scheme and host are case-folded and the scheme's default port is dropped;
- * userinfo and fragment are never part of the identity; a base path is kept
- * as written (its case matters), less a trailing `/sse` and slash. A url that
- * does not parse as http(s) only gets the trailing fold.
- *
- * Comparison-time only: callers must NEVER rewrite a stored config value with
- * the normalized form — the user's spelling is preserved on disk.
+ * Canonical endpoint identity for a configured remote URL: `https://x.com`,
+ * `https://x.com/` and `https://x.com/sse` (and `:443`) name the same server.
+ * Every identity comparison (endpoint dedup, addStore, /me metadata matching) must
+ * use this fold. Scheme/host are lowercased, default port, userinfo and fragment
+ * dropped; a base path keeps its case, less a trailing `/sse` and slash.
+ * Comparison-time only: NEVER rewrite a stored config value with the normalized form.
  */
 export function normalizeEndpointUrl(url: string): string {
   const foldPath = (p: string): string => p.replace(/\/sse\/?$/, '').replace(/\/$/, '')
@@ -104,21 +81,10 @@ export function normalizeEndpointUrl(url: string): string {
 }
 
 // ── Host-level failure breaker ──────────────────────────────────────────────
-//
-// Process-wide memory of hosts that failed at the NETWORK level (connect
-// refused, blackholed route, fetch timeout). Several store entries can point
-// at one unreachable host; without this, every entry pays the full connect
-// timeout on every load, in every fresh process. One network
-// failure marks the ORIGIN down for a cooldown, and the PASSIVE read path
-// (load() paging) fast-fails to its prior cache while it lasts.
-//
-// Deliberately asymmetric: fetchBounded (writes, /me, explicit retries) marks
-// on failure and clears on success but NEVER fast-fails — an outbox flush the
-// user just invoked against a recovered host must probe, not be told "still
-// down" for the rest of the cooldown. Those probes are also the breaker's
-// recovery signal. HTTP responses never trip it — a 401/500 is a live host
-// talking. Per-process, not persisted: a fresh process re-probes once, which
-// is exactly the recovery behaviour a temporarily-down host wants.
+// Process-wide memory of origins that failed at the NETWORK level; for a cooldown
+// the PASSIVE read path (load() paging) fast-fails to its cache. fetchBounded
+// (writes, /me, retries) marks and clears but NEVER fast-fails — its probes are the
+// recovery signal. HTTP responses never trip it. Per-process, not persisted.
 const HOST_DOWN_COOLDOWN_MS = 60_000
 const downHosts = new Map<string, number>()
 
@@ -159,18 +125,11 @@ export function _resetRemoteHostBreaker(): void {
 }
 
 /**
- * Fields whose ABSENCE is more permissive than any present value — stripping
- * them converts a fail-closed check somewhere else into fail-open:
- *
- *   - `visibility`: `=== 'private'` is the pack-export privacy gate. A row
- *     whose visibility this client cannot validate must DROP, not export.
- *   - `pinned`: a drifted truthy pin stripped away silently un-pins a team
- *     engram; injection's pinned bypass would stop honoring it.
- *
- * Everything else (commitment, plus the cosmetic and
- * rendered fields) only ever REMOVES content or privilege when absent, so it
- * stays strippable. Required fields need no listing: stripping one just
- * fails the re-parse.
+ * Fields whose ABSENCE is more permissive than any present value, so salvage must
+ * never strip them (that would turn a fail-closed check into fail-open):
+ *   - `visibility`: the pack-export privacy gate; an unvalidated row must DROP.
+ *   - `pinned`: stripping silently un-pins a team engram.
+ * Other optional fields only remove content or privilege when absent.
  */
 const NEVER_STRIP = new Set(['visibility', 'pinned'])
 
@@ -294,17 +253,11 @@ function withoutLoaderMarkers(candidate: Record<string, unknown>): Record<string
 }
 
 /**
- * Validate a remote row against RemoteRowSchema, salvaging schema drift.
- *
- * An enterprise server on an older (or newer) release can serve field VALUES
- * this client's stricter schema rejects (e.g. an unknown `commitment` enum
- * value), which would otherwise make whole engrams silently invisible to
- * recall. A whole engram is worth
- * more than one drifted optional field, so on failure this strips exactly the
- * top-level fields the issues name and re-parses ONCE. A required field named
- * in the issues is still missing on the re-parse, so a genuinely malformed
- * row cannot be resurrected. Returns null when the row is unusable even after
- * stripping. Shared by RemoteStore.reshape and remote-recall's processHostRows.
+ * Validate a remote row against RemoteRowSchema, salvaging schema drift: on failure
+ * strip exactly the top-level fields the issues name and re-parse ONCE, so an older
+ * or newer server's drifted value does not hide the whole engram. A missing required
+ * field still fails. Returns null if unusable. Shared by RemoteStore.reshape and
+ * remote-recall's processHostRows.
  */
 export function salvageRemoteRow(
   rawCandidate: Record<string, unknown>,
@@ -413,19 +366,10 @@ export function _resetRemoteCapabilityCache(): void {
 }
 
 /**
- * Remote engram store — speaks to a PLUR Enterprise server over its
- * public REST API (/api/v1).
- *
- * Exposes the same load/append/getById/remove shape as the file-backed
- * stores so the multi-store recall path doesn't need to know the difference.
- *
- * Caching: load() is called by `Plur._loadCached()` on every recall,
- * so we hold a per-instance TTL cache (default 60s) over the result.
- * That keeps recall fast in tight loops without going stale for long.
- *
- * Failure mode: any network error returns an empty array from load()
- * — the upstream merge sees "no engrams from this store right now"
- * rather than blowing up. Callers learn about the problem via logs.
+ * Remote engram store — speaks to a PLUR Enterprise server over its REST API
+ * (/api/v1), with the same load/append/getById/remove shape as file-backed stores.
+ * load() holds a per-instance TTL cache (default 60s), since recall calls it every
+ * time. Any network error makes load() return an empty array (logged), not throw.
  */
 export class RemoteStore {
   private cache: { ts: number; engrams: Engram[] } | null = null
@@ -475,18 +419,10 @@ export class RemoteStore {
   }
 
   /**
-   * Run a request AND read its body under ONE deadline. Every request this
-   * class makes goes through here.
-   *
-   * Unbounded, a request inherits undici's 300s `headersTimeout`, and
-   * `forget()`/`feedback()` call `getById` on every store while holding the
-   * primary store lock (180s acquire budget), so one stalled host would make
-   * other writers fail to acquire the lock and lose their writes.
-   *
-   * `fetch()` resolves when response HEADERS arrive, so a timer cleared on
-   * return would not guard the body, and a peer that sends headers and stalls
-   * the body would hang the caller. Owning the read makes the bound
-   * structural — so this takes a reader instead of returning a `Response`.
+   * Run a request AND read its body under ONE deadline; every request in this class
+   * goes through here. Unbounded requests inherit undici's 300s timeout while some
+   * callers hold the primary store lock (180s budget), and `fetch()` resolves on
+   * headers, so the body read must be inside the bound too.
    *
    * @param consume - reads the body. Runs INSIDE the deadline, and the abort
    *   signal is wired to the response stream, so a stalled read rejects.
@@ -651,19 +587,12 @@ export class RemoteStore {
   }
 
   /**
-   * Resolve the identity behind this token — `GET /api/v1/me`. Returns the
-   * full authorized scope set the server resolved from group memberships, so
-   * the client can discover scopes a token can access without registering them
-   * out-of-band. Scope-independent: `/me` is keyed on the token alone,
-   * so the driver's `scope` is irrelevant here.
-   *
-   * Also reads `scopes_status`, `scope_metadata_status`, `gitlab_host`,
-   * `project_paths` and `key_expires_at`. Server-supplied strings are
-   * validated at this trust boundary.
-   *
-   * Throws {@link RemoteHttpError} on a non-2xx response (caller decides whether
-   * to swallow per URL). The message keeps the `Remote /me failed: <status>`
-   * pattern so the `/\b40[13]\b/` auth-expired checks in callers still match.
+   * Resolve the identity behind this token — `GET /api/v1/me`: the full authorized
+   * scope set plus `scopes_status`, `scope_metadata_status`, `gitlab_host`,
+   * `project_paths` and `key_expires_at`, validated at this trust boundary.
+   * Scope-independent (keyed on the token alone).
+   * Throws {@link RemoteHttpError} on non-2xx; keeps the `Remote /me failed: <status>`
+   * message so callers' `/\b40[13]\b/` auth-expired checks still match.
    */
   async me(signal?: AbortSignal): Promise<MeResponse> {
     const r = await this.fetchBounded(`${this.apiBase}/me`, { headers: this.headers() }, RemoteStore.readBounded, signal)
@@ -1082,25 +1011,11 @@ export class RemoteStore {
   }
 
   /**
-   * Existence probe that distinguishes "definitely absent" from "cannot tell".
-   *
-   * `getById` collapses both onto `null` — a 404 and a dead network return the
-   * same value — which is safe for the read paths that only want the engram,
-   * and unsafe for anything deciding whether it is free to act. `forget()`
-   * needs the distinction: treating an unreachable store as "not there" is how
-   * an id collision goes unnoticed and the wrong engram gets retired.
-   *
-   * Returns false ONLY on an authoritative 404. Anything else — transport
-   * failure, 5xx, auth rejection — throws, so the caller must decide what an
-   * unknown means rather than inheriting a silent "no".
-   *
-   * BOUNDED, and that is not a nicety. Both callers — `forget()` and `feedback()` — run this INSIDE the primary store
-   * lock, one probe per configured remote. An unbounded `fetch` inherits
-   * undici's 300s `headersTimeout`, so a host that completes its handshake and
-   * then stalls holds the lock every other write path needs for five minutes,
-   * past the 180s `DEFAULT_ACQUIRE_TIMEOUT` — waiting `plur_learn` calls throw
-   * "Failed to acquire lock" and the engram is silently never stored. The
-   * budget is the same one `load()` uses, for the same reason.
+   * Existence probe that distinguishes "definitely absent" from "cannot tell"
+   * (`getById` returns `null` for both). Returns false ONLY on an authoritative 404;
+   * transport failure, 5xx or auth rejection throw, so `forget()` never mistakes an
+   * unreachable store for absence. BOUNDED: `forget()`/`feedback()` call it inside the
+   * primary store lock, and a stalled host must not outlast the lock acquire timeout.
    */
   async existsById(id: string, opts?: { signal?: AbortSignal }): Promise<boolean> {
     // Uses the shared helper so the body read is bounded too (see the method
@@ -1138,18 +1053,9 @@ export class RemoteStore {
   }
 
   /**
-   * Ownership probe with a THIRD state: `unknown`.
-   *
-   * `getById` collapses "not here" and "could not look" onto `null`, so a walk
-   * using it cannot tell a store that answered 404 from one that never
-   * answered. `existsById` separates them but answers a STRICTER question —
-   * it refuses to treat a bare 200 as proof, because proxies answer 200 with
-   * envelope payloads on unrecognised routes, which is too strict for an
-   * ownership test.
-   *
-   * So ownership here is decided by `reshape`, exactly as `getById` decides
-   * it — same acceptance for reachable stores — and only the failure modes
-   * are split out.
+   * Ownership probe with a THIRD state, `unknown`. Ownership is decided by `reshape`
+   * exactly as in `getById`; only "absent" (404) and "could not look" are split.
+   * Not `existsById`, which rejects a bare 200 (proxy envelopes) — too strict here.
    */
   async probeById(id: string, opts?: { signal?: AbortSignal }): Promise<'owned' | 'absent' | 'unknown'> {
     let r: BoundedResponse

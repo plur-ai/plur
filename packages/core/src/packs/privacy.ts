@@ -16,16 +16,11 @@ export interface PrivacyIssue {
     | 'unscannable'
   detail: string
   /**
-   * Why an `unscannable` file could not be scanned. Present only on that type.
-   *
-   * The install gate reads this rather than parsing `detail`, because the two
-   * halves are not the same kind of finding. A link, a special file or a
-   * truncated walk means the pack is shaped to hide something and install must
-   * refuse. A plain file that is merely too large, or that the filesystem would
-   * not hand over, is just a file the consumer could not check, and for a
-   * `provenance/` record the provenance profile §5.4.2 requires that this
-   * cannot abort the install of the pack it arrived in. It is reported, and the
-   * file is not copied, so nothing unchecked lands.
+   * Why an `unscannable` file could not be scanned (only on that type); the
+   * install gate reads this, not `detail`. Links, special files or a truncated
+   * walk mean the pack hides something: install refuses. Oversize or unreadable
+   * plain files are reported and not copied; for `provenance/` records they must
+   * not abort the install (provenance profile §5.4.2).
    */
   unscannable_reason?: 'symlink' | 'special' | 'entry_limit' | 'oversize' | 'read_error'
   /**

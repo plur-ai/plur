@@ -1,20 +1,11 @@
 /**
  * One evaluator for engram validity windows, shared by retrieval and injection.
- *
- * Timestamps are compared as instants, never as strings: lexically
- * `'2026-09-07T01:00:00Z' > '2026-09-07'` is true at every hour of that day,
- * which would hide content that is already valid and keep content that has
- * already expired. `spec/ENGRAM-STANDARD-v1.md` and `TemporalSchema` accept both
- * date-only and RFC 3339 values, so both must be handled.
- *
- * ## The rule
- *
- * A bare `YYYY-MM-DD` denotes a whole DAY. An RFC 3339 value denotes an INSTANT
- * and is compared as one, offset included. So `valid_from` opens at the start of
- * its day (or at its instant), and `valid_until` closes at the END of its day
- * (or at its instant), which is why a date-only expiry of `2026-09-06` is still
- * valid all through the 6th and expired on the 7th.
- *
+ * Timestamps are compared as instants, never as strings (lexical comparison of
+ * date-only vs RFC 3339 values is wrong all day long); both forms are accepted
+ * (`spec/ENGRAM-STANDARD-v1.md`, `TemporalSchema`).
+ * The rule: a bare `YYYY-MM-DD` is a whole DAY, an RFC 3339 value an INSTANT
+ * (offset included). `valid_from` opens at the start of its day; `valid_until`
+ * closes at the END of its day, so an expiry of the 6th is valid through the 6th.
  * @module
  */
 import type { Engram } from './schemas/engram.js'
@@ -31,21 +22,11 @@ const DAY_MS = 86_400_000
 const HAS_ZONE = /(?:Z|[+-]\d{2}:?\d{2})$/i
 
 /**
-/**
- * Pin a timestamp to UTC when it names no zone.
- *
- * `Date.parse('2026-09-07T01:00:00')` (no `Z`, no offset) resolves in the
- * HOST's local time, so the same stored engram would expire at different
- * moments on different machines. `TemporalSchema` accepts any string, and
- * `salvageRemoteRow` copies server values verbatim, so naive timestamps can
- * reach this function.
- *
- * UTC is the right default: every timestamp this codebase mints is
- * `toISOString()`, so a naive value is foreign or hand-edited, and reading it
- * as UTC agrees with the rest of the store.
- *
- * Exported for tests: the behavioural difference is only visible in a non-UTC
- * timezone, so the mechanism is asserted directly.
+ * Pin a timestamp to UTC when it names no zone. A naive value would otherwise
+ * parse in the host's local time and expire at different moments per machine;
+ * such values only arrive hand-edited or from remote rows, and UTC matches
+ * every `toISOString()` value the store mints.
+ * Exported for tests (the difference only shows in a non-UTC timezone).
  */
 export function pinToUtc(value: string): string {
   return HAS_ZONE.test(value) ? value : `${value}Z`
@@ -135,19 +116,10 @@ export function isCurrentlyValid(temporal: Temporal, nowMs: number): boolean {
 }
 
 /**
- * Interpret an "evaluate as of" parameter as an instant.
- *
- * Callers that expose a `now` option take a `YYYY-MM-DD` string or an RFC 3339
- * instant. A whole day is resolved to its END, so a date-only `valid_until`
- * equal to `now` is NOT expired. Resolving to midnight instead would expire
- * everything a day early.
- *
- * The sibling functions treat an unparseable bound as ABSENT, because stored
- * engrams have their fields validated by `TemporalSchema` and hiding content
- * over a data error is the worse outcome. A caller-supplied evaluation instant
- * is an explicit argument, so an unparseable value throws a `RangeError`
- * rather than silently answering as of the present moment.
- *
+ * Interpret an "evaluate as of" parameter as an instant. A whole day resolves
+ * to its END, so a date-only `valid_until` equal to `now` is NOT expired.
+ * Unlike stored bounds (unparseable → absent), an explicit unparseable `now`
+ * throws rather than silently answering as of the present.
  * @param now - `YYYY-MM-DD`, or an RFC 3339 instant, or nothing for the
  *   current moment.
  * @throws {RangeError} When `now` is provided but cannot be parsed as a date or instant.

@@ -21,48 +21,23 @@ import { AddRemoteStoreError, isFromServerEntry, serverEntryIdOf, serverEntrySco
 
 export interface ConfigStoresMethods {
   /**
-   * Register an additional engram store.
-   *
-   * Two shapes — exactly one of `pathOrUrl` semantics applies:
-   *   - filesystem (default): pass a path. `options.url` undefined.
-   *   - remote (PLUR Enterprise / any compatible REST API):
-   *     pass any string for the first arg (it goes into a slot we
-   *     never read), set `options.url` + `options.token`.
-   *
-   * Dedup semantics:
-   *   - REMOTE stores dedup by **url + scope**: a single enterprise URL
-   *     legitimately hosts many scopes — the server filters reads per entry
-   *     (`?scope=`), so multi-team users need one entry per authorized scope.
-   *   - LOCAL stores dedup by **path only**: one engrams.yaml is one store.
-   *     The loader clones global-scoped engrams into each entry's scope, so
-   *     two entries on the same file would load those engrams twice.
-   *
-   * Returns the outcome so callers can report honestly: `added` (new entry
-   * persisted), `already_registered` (idempotent no-op — `scope` is the
-   * EXISTING entry's scope, which for local stores may differ from the
-   * requested one), or `overwritten` (same scope reassigned to this endpoint
-   * via overwriteScope).
+   * Register an additional engram store (addStore): a filesystem path, or a
+   * remote store via `options.url` + `options.token` (first arg unused).
+   * Dedup: REMOTE by url + scope; LOCAL by path only (two entries on one file
+   * would double-load global engrams). Returns `added`, `already_registered`
+   * (`scope` is the EXISTING entry's) or `overwritten` (via overwriteScope).
    */
   /** mtime (ms) of config.yaml, or 0 if it cannot be stat'd. */
   /** @internal */
   statConfigMtime(): number
 
   /**
-   * Load config.yaml for in-memory use, dropping a LOCAL store entry only when
-   * it would load engrams that are already loaded, compared by canonical path:
-   *
-   *  - its file is the primary store: every primary engram would load a
-   *    second time under namespaced ids and be injected twice; or
-   *  - its file AND scope repeat an earlier entry: the same engrams again.
-   *
-   * One file registered under two DIFFERENT scopes keeps loading under both:
-   * each scope admits different engrams, so dropping one would make that
-   * scope's engrams vanish from recall. It gets an informational warning
-   * instead.
-   *
-   * A dropped entry is only ignored here: config.yaml is not rewritten, and
-   * writebacks start from the raw file (addStore / persistScopeMetadata), so
-   * nothing is deleted from disk. `ignoredDuplicateStores()` reports it.
+   * Load config.yaml for in-memory use, dropping a LOCAL store entry (by
+   * canonical path) only when its file is the primary store, or its file AND
+   * scope repeat an earlier entry — either would load engrams twice.
+   * One file under two different scopes keeps both (each admits different
+   * engrams) with an informational warning. Drops are in memory only; config.yaml
+   * is never rewritten here. `ignoredDuplicateStores()` reports them.
    */
   /** @internal */
   _loadConfig(): PlurConfig
@@ -81,30 +56,20 @@ export interface ConfigStoresMethods {
   removeDuplicatePrimaryStores(): StoreEntry[]
 
   /**
-   * Reload this.config from disk if config.yaml changed since the last load.
-   *
-   * The MCP server holds ONE long-lived Plur instance, so a store added by
-   * editing ~/.plur/config.yaml directly (or by another process) stays invisible
-   * until the server restarts — and nothing hints why. The stores operations call
-   * this first so a changed file is picked up on the next call instead of needing
-   * a restart. Cheap: one statSync, reload only on an actual mtime change.
-   *
+   * Reload this.config if config.yaml's mtime changed since the last load, so
+   * the long-lived MCP instance sees stores added by hand or by another process
+   * without a restart. Store operations call this first; costs one statSync.
    * @returns true if the config was reloaded.
    */
   /** @internal */
   reloadConfigIfChanged(): boolean
 
   /** Persist a new stores list to config.yaml, preserving other keys, then
-   *  refresh the in-memory config + mtime. Shared by addStore's append and
-   *  token-rotation paths, and by persistScopeMetadata (which passes
-   *  `serverSensitivityScopes` — see {@link mergeStoresForWriteback}).
-   *
-   *  The read-modify-write runs under {@link withLock} on config.yaml: two
-   *  concurrent persist paths (e.g. an MCP session_start metadata sync racing
-   *  a CLI `plur stores add`) could otherwise each re-read the file and
-   *  last-writer-wins away the other's change. Same lock discipline as
-   *  engrams.yaml. Lock scope is kept tight — read + merge + write only; the
-   *  in-memory refresh happens after release. */
+   *  refresh the in-memory config + mtime. `serverSensitivityScopes` is passed
+   *  by persistScopeMetadata (see {@link mergeStoresForWriteback}).
+   *  The read-merge-write runs under {@link withLock} on config.yaml so
+   *  concurrent writers cannot lose each other's change; the in-memory refresh
+   *  happens after release. */
   /** @internal */
   persistStores(stores: StoreEntry[], opts?: {
     serverSensitivityScopes?: Set<string>
@@ -117,22 +82,13 @@ export interface ConfigStoresMethods {
   }): void
 
   /**
-   * MERGE the typed `stores` array onto the RAW (freshly-read YAML) entries so a
-   * writeback never strips fields the typed schema doesn't know about.
-   * `stores` is `StoreEntry[]` — the typed parse output —
-   * which (without this) would clobber `configData.stores` and lose:
-   *   - unknown/future TOP-LEVEL keys (recovered here; also kept by
-   *     StoreEntrySchema.passthrough so the typed value already carries them)
-   *   - unknown NESTED keys inside `sensitivity` (recovered by the explicit
-   *     one-level deep-merge below; a shallow spread would replace `sensitivity`
-   *     wholesale and lose them even with ScopeSensitivitySchema.passthrough)
-   * Parsed deltas (e.g. a corrected `forbid`) land ON TOP of the raw values.
-   *
-   * `serverSensitivityScopes`: the scopes whose typed `sensitivity.forbid` is
-   * SERVER-AUTHORITATIVE for this writeback — i.e. persistScopeMetadata just
-   * synced them from `/me` — so the raw-forbid restore below must NOT undo the
-   * update for those entries. Every other caller omits it and keeps the
-   * restore-raw behavior.
+   * MERGE typed `stores` onto the RAW YAML entries so a writeback never strips
+   * unknown fields: unknown top-level keys, and unknown keys nested in
+   * `sensitivity` (one-level deep merge; a shallow spread would lose them).
+   * Parsed deltas land on top of raw values.
+   * `serverSensitivityScopes`: scopes whose typed `sensitivity.forbid` was just
+   * synced from `/me` and must win over the raw-forbid restore; other callers
+   * omit it.
    */
   /** @internal */
   mergeStoresForWriteback(rawStores: unknown, stores: StoreEntry[], serverSensitivityScopes?: Set<string>): StoreEntry[]
@@ -150,31 +106,14 @@ export interface ConfigStoresMethods {
   }
 
   /**
-   * Register a company server as one store entry and fold the per-scope
-   * entries that hold the same key into it.
-   *
-   * Creates or updates the one server entry for the url's canonical endpoint
-   * identity ({@link normalizeEndpointUrl}). A new entry gets its compat
-   * `scope` here, from `personalScope` — the `user:<org>:<username>` scope of
-   * the /me answer the caller already holds — so an entry
-   * is never without one. A new key for the same server replaces the key in
-   * that same entry (`updated`) and keeps its `scope`, `scopes`,
-   * `pinned_scopes`, `scope_settings`, `discovery` and `enterprise`; no other
-   * entry's key changes. `opts.enterprise` is merged into the `enterprise`
-   * block. Per-scope entries on the same server whose `token`, `token_env` and
-   * `readonly` equal the server entry's are folded into it
-   * ({@link foldStoresIntoServerEntry}); the others are listed in
-   * `kept_separate`. Two server entries for the url are refused. Taking over
-   * the personal scope's writes from another entry is refused with a
-   * {@link PersonalScopeTakenError} that names those entries; with
-   * `removeStale` they are removed in the same write and listed in `removed`
-   * (`plur login --remove-stale`).
-   *
-   * No network call: the caller runs `refreshServerScopes({ url })` next. The
-   * read-modify-write runs under the config lock on the file as it is then and
-   * is written atomically, only when something changed (`unchanged` leaves the
-   * file byte-identical). With `tokenEnv` the file holds the variable's name,
-   * never the key. No key reaches the result, an error or the log.
+   * Register a company server as ONE store entry (keyed by
+   * {@link normalizeEndpointUrl}); a new entry takes `personalScope` as its
+   * compat `scope`, a new key updates the entry in place keeping its scope settings.
+   * - Same-key per-scope entries fold in ({@link foldStoresIntoServerEntry});
+   *   others go to `kept_separate`. Two server entries for the url are refused;
+   *   taking the personal scope throws {@link PersonalScopeTakenError} unless `removeStale`.
+   * - No network call; atomic write under the config lock, only on change.
+   * - No key reaches the result, an error or the log (`tokenEnv` stores only the name).
    */
   registerEnterpriseServer(url: string, opts: {
     token?: string; tokenEnv?: string; personalScope: string; enterprise?: Record<string, string>; removeStale?: boolean
@@ -192,25 +131,14 @@ export interface ConfigStoresMethods {
   }): Promise<{ status: 'added' | 'updated' | 'unchanged'; fold: FoldReport; removed: ScopeHolder[]; migratedLegacy?: boolean }>
 
   /**
-   * Register a remote (url) store only after the server has vouched for it.
-   * {@link addStore} is synchronous and never checks the token, so an
-   * installer script using it could write a dead token, or a scope the token
-   * cannot reach, and learn so only at the first failed recall.
-   *
-   * Order: validate the URL, ask `GET /api/v1/me` with the offered token (raced
-   * against `timeoutMs`), require `scope` to be among the scopes `/me`
-   * authorises, THEN delegate to `addStore`. Any refusal throws an
-   * {@link AddRemoteStoreError} and config.yaml is not touched.
-   *
-   * Idempotency and rotation come from `addStore`'s url+scope identity: an
-   * identical re-run returns `already_registered` and writes nothing; the same
-   * url+scope with a different token that `/me` accepts returns
-   * `token_rotated` (the old token is replaced in place). A different token
-   * that `/me` rejects never reaches `addStore`, so the old entry survives.
-   *
-   * The token never appears in the thrown message: the `/me` error text
-   * includes the server's response body, which is not ours to trust, so every
-   * occurrence of the token is scrubbed before it is rethrown.
+   * Register a remote store only after the server vouches for it: validate the
+   * URL, call `GET /api/v1/me` with the token (raced against `timeoutMs`),
+   * require `scope` among the authorised scopes, THEN delegate to `addStore`.
+   * Any refusal throws {@link AddRemoteStoreError} without touching config.yaml.
+   * Re-runs return `already_registered`; a new accepted token returns
+   * `token_rotated`; a rejected token leaves the old entry intact.
+   * The token is scrubbed from every thrown message (the /me error carries an
+   * untrusted response body).
    */
   addRemoteStore(opts: {
     url: string; token: string; scope: string
@@ -454,30 +382,14 @@ export const configStoresMethods: ConfigStoresMethods & ThisType<Plur> = {
         if (!k) logger.warning(`[plur:persistStores] store entry for scope "${typed.scope}" has neither url nor path — writing typed entry as-is`)
         return typed
       }
-      // The raw config is un-validated, un-salvaged on-disk YAML (persistStores
-      // reads it via yaml.load, NOT loadConfig), so `sensitivity` can be ANYTHING
-      // a hand-edit put there — including a truthy primitive (`sensitivity: 'oops'`,
-      // `5`, `true`). loadConfig dedups nothing over `stores`, so a duplicate entry
-      // on the same url+scope key can leave a primitive in rawMap (last-wins) while
-      // the typed entry carries a proper object. mergeSensitivityForWriteback only
-      // treats raw sensitivity as mergeable when it actually IS a plain object.
-      //
-      // `forbid` is a KNOWN field whose value is NORMALIZED at read time
-      // (loadConfig's preprocess rewrites a forward-compat `forbid:['pii']`
-      // to the safe default). A shallow `...typed.sensitivity` would then write
-      // the normalized value over the raw one, ERASING the forward-compat
-      // declaration on the first writeback. So when raw carried a `forbid` we
-      // restore it verbatim — mirroring the nested-unknown preservation below.
-      //
-      // ONE deliberate exception: persistScopeMetadata DOES intentionally
-      // mutate `forbid` — it syncs the server-authoritative policy from `/me`
-      // — and names the affected scopes in `serverSensitivityScopes`. For
-      // those entries the typed (sanitized) `forbid` must win, or the server's
-      // policy change is silently discarded on every writeback and the
-      // metadata change-detector can never converge (config.yaml rewritten on
-      // every session_start).
-      // The same rule applies inside a server entry's scope_settings:
-      // collapseExpandedStores calls the same function.
+      // Raw config is unvalidated YAML, so `sensitivity` may be any value; it is
+      // merged only when it is a plain object.
+      // `forbid` is normalized at read time, so when raw carried one it is
+      // restored verbatim, or the first writeback would erase a forward-compat
+      // declaration. Exception: scopes in `serverSensitivityScopes` (synced from
+      // `/me` by persistScopeMetadata) take the typed `forbid`, or the server
+      // policy is discarded and config.yaml is rewritten on every session_start.
+      // collapseExpandedStores applies the same rule to scope_settings.
       const mergedSensitivity = mergeSensitivityForWriteback(
         (raw as { sensitivity?: unknown }).sensitivity,
         typed.sensitivity,
@@ -536,23 +448,12 @@ export const configStoresMethods: ConfigStoresMethods & ThisType<Plur> = {
     this.reloadConfigIfChanged()
     const config = loadConfig(this.paths.config)
 
-    // Dedup: for REMOTE stores the URL alone is NOT the identity — a single
-    // enterprise URL hosts many scopes (server filters reads per entry via
-    // ?scope=), so only an exact url+scope match is "already registered".
-    //
-    // LOCAL stores keep path-only identity: one engrams.yaml is one store.
-    // The loader clones global-scoped engrams into each entry's scope, so a
-    // second scope on the same file would double-load those engrams.
-    //
-    // URL identity is NORMALIZED: `https://x.com`, `https://x.com/` and
-    // `https://x.com/sse` all name the same server (RemoteStore.apiBase folds
-    // them at HTTP time), so an exact-string compare here would register the
-    // same url+scope twice under two spellings. Comparison-time only — the
-    // stored spelling is never rewritten.
-    // Local identity is the CANONICAL path: the same file spelled two ways (a
-    // symlinked home, /var vs /private/var) is one store, and the primary
-    // engrams.yaml is never a secondary store under any spelling — registering
-    // it loads every primary engram twice.
+    // Dedup identity:
+    // - REMOTE: normalized url + scope (`https://x.com`, `.../` and `.../sse` are
+    //   one server; the stored spelling is never rewritten).
+    // - LOCAL: canonical path only (symlinks, /var vs /private/var); a second
+    //   scope on one file would double-load global engrams.
+    // - The primary engrams.yaml is never a secondary store under any spelling.
     const canonicalStorePath = isRemote ? '' : canonicalize(storePath)
     if (!isRemote && canonicalStorePath === canonicalize(this.paths.engrams)) {
       const ignoredHere = this._ignoredDuplicates

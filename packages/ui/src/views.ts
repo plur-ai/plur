@@ -1,16 +1,8 @@
 /**
- * The memory viewer, rendered as self-contained HTML.
- *
- * Pure functions returning strings — the same idiom as the PLUR Enterprise
- * admin, and for the same reason: no framework, no bundler, and no browser
- * needed to test it. Assert on the markup.
- *
- * Deliberately script-free. Expanding a record uses native `<details>`, so the
- * page works identically served from a bare HTTP server and embedded in a
- * host's web shell, with keyboard operation for free and no CSP exemption.
- *
- * Every value that reaches the page is escaped. Engram statements are user
- * data, and people store code in their memory.
+ * The memory viewer, rendered as self-contained HTML by pure string functions
+ * (no framework or browser needed to test; assert on the markup).
+ * Script-free: expansion uses native `<details>`, so it works served or embedded
+ * with no CSP exemption. Every value is escaped — statements are user data.
  *
  * @module
  */
@@ -254,20 +246,10 @@ function footer(links: BrowseLinks, t: ReturnType<typeof strings>): string {
 }
 
 /**
- * The PLUR mark: four nodes wired P→L→U→R across a 3×3 grid.
- *
- * The "home" frame of the animated mark on plur.ai, at the same geometry
- * (200 viewBox, grid at 40/100/160, nodes r=21 at indices 0/4/5/8, dim dots
- * r=7 at the rest, bars stroke 11 round-capped at 0.72). Rendered without the
- * P/L/U/R letters: at header size each node is about six pixels across and the
- * letters would be mud. The wordmark beside it carries the name.
- *
- * Transparent — no tile. The four node colours are the brand's own and carry
- * the mark on either ground; the five dim grid dots use `currentColor` so they
- * follow the page instead of assuming one.
- *
- * Inline rather than an asset, because the viewer ships as one self-contained
- * string with no files to serve and no external request to make.
+ * The PLUR mark: four nodes wired P→L→U→R across a 3×3 grid — the "home" frame
+ * of the plur.ai animated mark at the same geometry, without letters (illegible
+ * at header size). Transparent; brand node colours, grid dots in `currentColor`.
+ * Inline so the viewer stays one self-contained string.
  */
 const MARK = `<svg class="mark" viewBox="0 0 200 200" width="32" height="32" aria-hidden="true" focusable="false">
   <g stroke-width="11" stroke-linecap="round" opacity="0.72" fill="none">

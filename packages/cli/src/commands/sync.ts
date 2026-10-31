@@ -3,20 +3,12 @@ import { createPlur, type GlobalFlags } from '../plur.js'
 import { shouldOutputJson, outputJson, outputText, outputInfo } from '../output.js'
 
 /**
- * `plur sync [remote] [--full]`
- *
- * Default: git pull/push + incremental syncFromYaml on the active index.
- * --full: git pull/push + drop-and-rebuild the derived index from YAML.
- *
- * YAML is the source of truth. `--full` is the recovery path: it deletes
- * every row in the index (SQLite or PGLite) and replays the YAML file. Use
- * after upgrading the embedder, after a schema migration, or whenever the
- * index looks out of sync with what `list()` and `recall()` report.
- *
- * Then retries queued team writes (the outbox), as MCP `plur_sync` does.
- * A failed flush does not fail the sync — the repository and index work
- * already happened — but it is reported, never swallowed: entries stay
- * queued.
+ * `plur sync [remote] [--full]` — git pull/push, then an incremental
+ * syncFromYaml (default) or, with --full, a drop-and-rebuild of the derived
+ * index from YAML (the source of truth; use after embedder upgrades, schema
+ * migrations, or a suspect index).
+ * Then retries queued team writes (the outbox), like MCP `plur_sync`; a failed
+ * flush is reported, never swallowed, and does not fail the sync.
  */
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const plur = createPlur(flags)

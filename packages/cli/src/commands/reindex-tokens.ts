@@ -1,19 +1,9 @@
 /**
  * `plur reindex-tokens` — re-derive BM25 tokens on a Postgres-backed store
- * after a tokenizer change.
- *
- * The adapter kicks this in the background the first time it notices stale
- * rows, so most deployments never need to run it. It exists for the cases
- * where "eventually, in the background" is not good enough:
- *
- *   - an operator upgrading deliberately, who wants the pushdown back before
- *     the first user query rather than after it,
- *   - a store that is read rarely, where "on the next recall" could be days,
- *   - anyone who wants a count rather than a log line.
- *
- * Only Postgres persists tokens. Every other tier re-derives them per query,
- * so there is nothing to reindex and this reports that rather than pretending
- * to work.
+ * after a tokenizer change. The adapter already does this in the background on
+ * first noticing stale rows; this is for operators who want it done now (before
+ * the first query, on a rarely-read store) or want a count. Only Postgres
+ * persists tokens; other tiers report there is nothing to reindex.
  */
 import type { GlobalFlags } from '../plur.js'
 import { PostgresAdapter, detectPlurStorage, loadConfig } from '@plur-ai/core'

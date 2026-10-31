@@ -39,41 +39,21 @@ export interface ProvenanceIdentityMethods {
   writeProvenance(engramId: string, options?: ProvenanceOptions & { store?: ProvenanceStore }): Promise<string | undefined>
 
   /**
-   * Append a history event, stamped with who caused it.
-   *
-   * Every event site goes through here rather than calling `appendHistory`
-   * directly, so a new event type gets an actor without its author having to
-   * know that it should.
-   *
-   * A caller that knows better — a dedup pass acting on behalf of somebody
-   * else, say — passes its own `actor` and this leaves it alone.
-   *
-   * The actor answers a DIFFERENT question from the engram's `attribution`.
-   * Attribution says who asserted the statement; this says who caused this
-   * event. An engram asserted by one person and retired by another has two
-   * answers, and collapsing them loses both — which is precisely what a reader
-   * auditing a correction needs to know.
-   */
-  /**
-   * @returns whether the event was written — propagated from `appendHistory`,
-   *   which reports rather than throws. `inject()` gates `injection_count` on
-   *   this, so swallowing it here would put the counter out of step with the log.
+   * Append a history event, stamped with who caused it. Every event site goes
+   * through here so new event types get an actor; a caller acting for someone else
+   * passes its own `actor`. The actor (who caused this event) is distinct from the
+   * engram's `attribution` (who asserted it); never collapse them.
+   * @returns whether the event was written (from `appendHistory`); `inject()` gates
+   *   `injection_count` on it, so never swallow it.
    */
   /** @internal */
   _appendHistory(event: HistoryEventType): boolean
 
   /**
-   * The recorded ancestors of one engram, for extending a derivation chain.
-   *
-   * Reads the chain the ancestor already carries rather than walking the graph
-   * again — each engram's chain was resolved when it was written, so this is
-   * one lookup deep instead of a traversal per write.
-   *
-   * Takes the already-loaded engram list rather than reading the store: both
-   * call sites have it in hand, and a store read inside the write path would
-   * add latency to every learn for a field that is a convenience. An ancestor
-   * that is not in the list contributes nothing, which shortens the chain and
-   * never fails the write.
+   * The recorded ancestors of one engram, for extending a derivation chain: one
+   * lookup of the chain the ancestor carries, from the already-loaded list (no
+   * store read in the write path). A missing ancestor shortens the chain, never
+   * fails the write.
    */
   /** @internal */
   _ancestorsOf(loaded: Engram[], id: string): string[]
@@ -110,20 +90,13 @@ export interface ProvenanceIdentityMethods {
   _provenanceStore(): ProvenanceStore
 
   /**
-   * Write a record at creation time, when the setting asks for it.
-   *
-   * Default is `never`: a record per engram duplicates the history log, and the
-   * trust boundary is the moment an engram leaves, not the moment it is written.
-   * Never throws — provenance is a description, and failing to write one must
-   * not fail the learn that prompted it.
+   * Write a record at creation time, when the setting asks for it (default `never`).
+   * Never throws: failing to write provenance must not fail the learn.
    */
   /**
-   * Run fire-and-forget work only once the store has committed.
-   *
-   * A transactional store runs a protected write inside one connection and one
-   * ownership context. Background work started inside that context would
-   * inherit it, then fail once the transaction ends, or run against state that
-   * a later rollback discards. Stores without transactions run it immediately.
+   * Run fire-and-forget work only once the store has committed: inside a
+   * transaction it would inherit the connection context and fail, or act on state a
+   * rollback discards. Stores without transactions run it immediately.
    */
   /** @internal */
   _afterStoreCommit(callback: () => void): void

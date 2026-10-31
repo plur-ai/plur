@@ -1,27 +1,12 @@
 /**
- * The provenance gateway's HTTP API — PLUR's only network client for
- * provenance. The gateway stores on Swarm and signs with its notary;
- * PLUR carries no Swarm or Bee client. The gateway address is a user setting
- * (`receipts.gateway_url`); `DEFAULT_GATEWAY_URL` is the default we ship.
- *
- * Calls (the same ones the @datafund/swarm-provenance SDK makes):
- *
+ * The provenance gateway's HTTP API — PLUR's only network client for provenance (the
+ * gateway stores on Swarm and notarises; PLUR has no Swarm/Bee client). Address:
+ * `receipts.gateway_url`, default `DEFAULT_GATEWAY_URL`. Calls (as the SDK makes them):
  *   POST /api/v1/pool/acquire                    {"size":"small"} -> {batch_id}
  *   POST /api/v1/data/?stamp_id=..&sign=notary   multipart file "provenance.json"
  *   GET  /api/v1/data/<reference>                -> {data, content_hash, signatures[]}
  *   GET  /api/v1/notary/info                     -> {enabled, available, address}
- *
- * Every request uses the free tier (`X-Payment-Mode: free`): about three
- * requests a minute, and an upload costs two. Free pool stamps last about a
- * day; `receipts.stamp_id` names a stamp bought through the gateway instead.
- *
- * The uploaded document is the SDK's metadata shape:
- *   {"data": base64(bytes), "content_hash": sha256(bytes), "stamp_id": ...}
- *
- * Network: only when the user turned uploads on (`receipts.store: swarm`) or
- * asked to verify a reference. Lives outside @plur-ai/core, which makes no
- * provenance network calls. Checking the notary's signature (secp256k1,
- * keccak) stays in the CLI (`plur verify --manifest`).
+ * Free tier (`X-Payment-Mode: free`); network only when `receipts.store: swarm` or verifying.
  */
 import { createHash, randomUUID } from 'crypto'
 import type { WormStore, WormPutResult } from '@plur-ai/core'

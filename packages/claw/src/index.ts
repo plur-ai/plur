@@ -31,18 +31,11 @@ function getEngine(path: string): PlurContextEngine {
 }
 
 /**
- * PLUR OpenClaw Plugin — default export.
- *
- * When installed via `openclaw plugins install @plur-ai/claw`, OpenClaw
- * loads this as the plugin entry point. Registers:
- * - ContextEngine (memory injection, episode capture, learning extraction)
- * - Event hooks (before_prompt_build for recall, agent_end for capture)
- * - SYSTEM.md auto-setup with memory instructions
- * - Service lifecycle
- *
- * Tools and slash commands are registered separately via the .mjs plugin
- * wrapper (which imports TypeBox from OpenClaw's runtime). This default
- * export provides the core memory functionality that works without TypeBox.
+ * PLUR OpenClaw Plugin — default export, the entry point loaded after
+ * `openclaw plugins install @plur-ai/claw`. Registers the ContextEngine, event
+ * hooks (before_prompt_build recall, agent_end capture), SYSTEM.md setup and
+ * the service lifecycle. Tools and slash commands come from the .mjs wrapper
+ * (it needs OpenClaw's TypeBox); this export works without TypeBox.
  */
 const plugin = {
   id: 'plur-claw',

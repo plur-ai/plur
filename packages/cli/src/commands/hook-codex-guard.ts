@@ -12,24 +12,11 @@ import {
 } from '../lib/codex-hook-io.js'
 
 /**
- * plur hook-codex-guard — Codex `PreToolUse` hook.
- *
- * Codex accepts `permissionDecision: "deny"` with a
- * `permissionDecisionReason` and surfaces that reason to the model (checked
- * on codex-cli 0.149.1). It REJECTS `"allow"` and `"ask"`
- * from a hook ("PreToolUse hook returned unsupported permissionDecision"),
- * so this hook only ever denies or stays silent; it can never wave a tool
- * through that Codex's own approval policy would have stopped.
- *
- * In practice this rarely fires: SessionStart writes the sentinel before the
- * first tool call. It exists for the paths where SessionStart does not run.
- *
- * Deadlock prevention, same rule as Claude Code's hook-session-guard and
- * the Cursor guard: nudge once, then give up and mark the session
- * started anyway. A wedged or missing MCP server must not be able to lock
- * the agent into a state where the only permitted tool is one it cannot
- * reach.
- *
+ * plur hook-codex-guard — Codex `PreToolUse` hook. Codex accepts only
+ * `permissionDecision: "deny"` (with a reason) and rejects "allow"/"ask", so this
+ * hook denies or stays silent; it can never wave a tool through. It rarely fires
+ * (SessionStart writes the sentinel first). Deadlock prevention: nudge once,
+ * then mark the session started, so a missing MCP server cannot lock the agent.
  * Input:  JSON on stdin — { session_id, tool_name, tool_input, ... }
  * Output: JSON on stdout — a deny decision, or nothing.
  */

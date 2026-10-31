@@ -1,29 +1,12 @@
 /**
- * Import engine — routes normalized ImportRecords through
- * `plur.learn()` so every existing write gate applies (secret detection, the
- * sensitive-scope guard, routing).
- *
- * Re-running an import changes nothing. A record
- * that learn() would resolve to an existing engram — same-scope content-hash
- * dedup or cross-scope recurrence, asked with `plur.wouldDeduplicate` (learn()'s
- * own dedup code) BEFORE learn() is called — is reported as skipped and the
- * existing engram is left completely untouched: no write_count bump, no sources
- * append, no recurrence, no graduation. A re-import is a retry, not new evidence.
- *
- * Imports NEVER raw-append to the store.
- *
- * Conflicts are detected with the same non-LLM heuristic pre-filter the
- * tension scan uses (scope partition → domain overlap → subject overlap,
- * tensions.ts). Conflicted records are still imported — dropping data on a
- * heuristic would be worse — but they are counted in the report, and the new
- * engram's relations.conflicts links the suspects so `plur tensions --scan`
- * can confirm with an LLM later. Conflicts are evaluated against the engrams
- * that existed before the run, not between records of the same import.
- *
- * Temporal metadata is preserved where the source has it: created_at becomes
- * temporal.learned_at (with ingested_at stamped to import time), last_accessed
- * becomes activation.last_accessed. Dedup-skipped records never overwrite the
- * existing engram's temporal data.
+ * Import engine — routes normalized ImportRecords through `plur.learn()` so every write gate applies (secrets,
+ * sensitive-scope guard, routing). Imports NEVER raw-append to the store.
+ * - Idempotent: a record learn() would dedup (asked via `plur.wouldDeduplicate` BEFORE learning) is reported as
+ *   skipped and the existing engram is left untouched — a re-import is a retry, not new evidence.
+ * - Conflicts use the tension scan's heuristic pre-filter against engrams that existed before the run; conflicted
+ *   records are still imported, counted, and linked via relations.conflicts for `plur tensions --scan`.
+ * - created_at → temporal.learned_at (ingested_at = now), last_accessed → activation.last_accessed; skipped
+ *   records never overwrite existing temporal data.
  */
 import type { Plur } from '../index.js'
 import type { Engram } from '../schemas/engram.js'

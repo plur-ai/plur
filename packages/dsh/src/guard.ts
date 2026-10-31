@@ -20,13 +20,9 @@ export interface GuardOptions {
 }
 
 /**
- * Run one PLUR call so it can never fail the host's turn.
- *
- * Resolves `undefined` on ANY failure — a synchronous throw raised before the
- * promise exists, a rejection, or the timeout elapsing. Never rejects. The timer
- * is always cleared, so a fast success leaves nothing pending (an uncleared
- * 5-second timer per turn would keep the event loop alive and delay host exit).
- *
+ * Run one PLUR call so it can never fail the host's turn: resolves `undefined`
+ * on any sync throw, rejection or timeout; never rejects. The timer is always
+ * cleared so it cannot keep the event loop alive.
  * @param fn - the call to contain; may throw synchronously or reject.
  * @param opts - timeout bound and optional failure observer.
  * @returns the value, or `undefined` if anything at all went wrong.
@@ -86,22 +82,12 @@ export function contain<T>(fn: () => Promise<T> | T, onError?: (error: unknown) 
 export type WriteQueue = <T>(fn: () => Promise<T>) => Promise<T | undefined>
 
 /**
- * How long one write may hold the write-queue slot: 60 s.
- *
- * The soft bound (`timeoutMs`, default 5 s) is how long a CALLER waits — a tool
- * answers UNAVAILABLE then. It is not how long the write runs: the write keeps
- * going, and releasing the slot at the soft bound would let the next write
- * overlap it. Holding the slot until settlement instead would let one hung
- * write wedge every later write forever. The hard cap is the bound between the
- * two. 60 s matches core's store-lock stale threshold
- * (`DEFAULT_STALE_THRESHOLD`): a write still running past it has lost the
- * lock's guarantee anyway, so waiting longer protects nothing. The plugin uses
- * `max(WRITE_HARD_CAP_MS, timeoutMs)`, so the hard cap is never below the soft.
- *
- * A CONSTANT on purpose, not a config key: it is tied to core's lock
- * threshold, not to the host's patience, and a smaller value would allow
- * overlapping writes. The only way to raise it is a larger `timeoutMs`; there
- * is no way to lower it.
+ * How long one write may hold the write-queue slot: 60 s. The soft bound
+ * (`timeoutMs`) is how long a caller waits; the write keeps running, so
+ * releasing then would overlap writes, while holding until settlement lets a
+ * hung write wedge the queue. 60 s matches core's `DEFAULT_STALE_THRESHOLD`.
+ * A constant on purpose: a smaller value would allow overlapping writes; the
+ * plugin uses `max(WRITE_HARD_CAP_MS, timeoutMs)`, so it can only be raised.
  */
 export const WRITE_HARD_CAP_MS = 60_000
 
@@ -114,17 +100,11 @@ export interface WriteQueueOptions {
 }
 
 /**
- * Serialize writes against the one on-disk PLUR store.
- *
- * Running PLUR in-process means several live dsh sessions share this module, so
- * two auto-learn paths can otherwise read-modify-write the same YAML
- * concurrently — a hazard the subprocess-per-call competitor does not have and
- * that our in-process choice introduces. Each queued call holds the slot until
- * it settles or `hardCapMs` elapses, whichever comes first; at the hard cap the
- * slot is released, `onRelease` is told (the write may still be running), and
- * the call resolves `undefined`. A rejection is contained so it cannot poison
- * the chain or leave an unhandled rejection behind.
- *
+ * Serialize writes against the one on-disk PLUR store: in-process, several dsh
+ * sessions could otherwise read-modify-write the same YAML concurrently. Each
+ * call holds the slot until it settles or `hardCapMs` elapses; at the cap the
+ * slot is released, `onRelease` is told, and the call resolves `undefined`.
+ * Rejections are contained so they cannot poison the chain.
  * @returns an enqueue function that resolves `undefined` on failure or release.
  */
 export function createWriteQueue(opts: WriteQueueOptions = {}): WriteQueue {

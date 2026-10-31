@@ -7,23 +7,13 @@ import { exitWhenStoreIdle, EXIT_LOCK_WAIT_MS } from './store-lock-exit.js'
 import { withDeadline, DEADLINE_MISSED } from '@plur-ai/core'
 
 /**
- * Shared stdin-reading and sentinel helpers for the four hook-codex-*
- * commands.
- *
- * Codex's hook contract is close to a straight port of Claude Code's — same
- * nested `{ matcher, hooks: [...] }` config shape, same snake_case stdin
- * payload, same `hookSpecificOutput.additionalContext` on stdout — so this
- * file is deliberately much thinner than its Cursor counterpart. Cursor
- * needed a whole `.mdc`-rewrite channel because `additional_context` from
- * `sessionStart` is dropped by a race in Cursor's composer; Codex delivers
- * context from both SessionStart and UserPromptSubmit to the model in the
- * same turn, so the standard channel is the only channel here.
- *
- * Sentinels live under a Codex-specific directory rather than sharing
- * Claude Code's `~/.plur/sessions/` or the Cursor hooks' tmpdir namespace:
- * a project can legitimately be open in more than one harness at once, and
- * two guards disagreeing about whether a session has started is worse than
- * two guards each nudging once.
+ * Shared stdin-reading and sentinel helpers for the four hook-codex-* commands.
+ * Codex's hook contract mirrors Claude Code's (nested `{ matcher, hooks }`
+ * config, snake_case stdin, `hookSpecificOutput.additionalContext`), and Codex
+ * delivers that context reliably, so no Cursor-style `.mdc` side channel is needed.
+ * Sentinels live in a Codex-specific directory: a project can be open in several
+ * harnesses at once, and guards disagreeing about session start is worse than
+ * each nudging once.
  */
 
 export function readStdinJson(): Record<string, unknown> {
@@ -83,25 +73,13 @@ const SESSION_DIR = join(tmpdir(), 'plur-codex-sessions')
 const STALE_SESSION_FILE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000 // 7 days
 
 /**
- * Create — and vet — a hook-family session directory under os.tmpdir().
- * Returns false when the directory cannot be trusted; every writer treats
- * that as "no persistence" (fail open: hooks keep working, they just
- * re-derive instead of caching).
- *
- * The vetting exists because on Linux os.tmpdir() is the world-writable
- * /tmp. Two attacks the checks close, for every hook family:
- *
- *   - A pre-planted symlink at plur-*-sessions/ pointing somewhere the
- *     attacker can read or wants us to scribble on — or wants our stale-file
- *     sweep to DELETE from. mkdirSync({recursive}) happily accepts an
- *     existing symlink-to-dir, so lstat and refuse.
- *   - A directory pre-created by another user (0777 or simply theirs), which
- *     lets them read cached session state, pre-plant sentinels that bypass
- *     the session guard, and pre-write counters that fail it open.
- *
- * The dir is created 0700 and files 0600 for the same reason. macOS tmpdirs
- * are already per-user, so the checks only ever bite on shared-/tmp systems —
- * which is exactly where they must.
+ * Create and vet a hook-family session directory under os.tmpdir(). Returns
+ * false when it cannot be trusted; writers then skip persistence (fail open).
+ * On Linux /tmp is world-writable, so refuse:
+ * - a pre-planted symlink (mkdirSync accepts symlink-to-dir; lstat and refuse);
+ * - a directory owned by another user or world-writable (planted sentinels,
+ *   readable session state).
+ * The dir is created 0700 and files 0600.
  */
 export function ensureSessionDir(dir: string): boolean {
   try {
@@ -144,16 +122,11 @@ export function sessionDirSafeToSweep(dir: string): boolean {
 }
 
 /**
- * May the CONTENTS of this directory be believed? The read-side half of the
- * vetting: ensureSessionDir guards writers only. Without it a planted
- * sentinel would switch the session guard off, and a planted Antigravity
- * turn cache would be emitted to the model as recalled memory.
- *
- * Never creates and never chmods: it is a verdict, not a repair. Trusted
- * means: a real directory (not a symlink), owned by this user, and not
- * writable by group or others — so nobody but this user can have put a file
- * in it. A 0755 dir passes (nobody else could write it);
- * a 0777 or 0775 one does not until a writer's ensureSessionDir tightens it.
+ * May the CONTENTS of this directory be believed? The read-side check
+ * (ensureSessionDir guards writers only); without it a planted sentinel could
+ * switch the session guard off or a planted cache be emitted as memory.
+ * Never creates or chmods. Trusted = a real directory (not a symlink), owned by
+ * this user, not group- or other-writable.
  */
 export function sessionDirTrusted(dir: string): boolean {
   try {
@@ -207,17 +180,11 @@ export function ownFileExists(path: string): boolean {
 }
 
 /**
- * A counter that hands every caller a DISTINCT value.
- *
- * Append-then-stat is not atomic as a whole: `A-append, B-append, A-stat,
- * B-stat` gives both callers 2 — one Nth-stop nudge fires twice and the next
- * multiple is skipped. Here each caller appends a line carrying a unique token (one O_APPEND write, atomic
- * for a line this short) and its value is the position of ITS OWN line in
- * the file. The file is a total order of appends, so positions are distinct
- * and, after n appends, exactly 1..n. See PlurSpec/R2CLI.lean §4
- * (`ticket_distinct`, `tickets_are_prefix`).
- *
- * Throws on I/O failure — callers keep their existing fail-open handling.
+ * A counter that hands every caller a DISTINCT value: each caller appends one
+ * line with a unique token (atomic O_APPEND) and its value is the position of
+ * ITS OWN line, so values after n appends are exactly 1..n. Append-then-stat
+ * would hand two racers the same value. See PlurSpec/R2CLI.lean §4.
+ * Throws on I/O failure — callers keep their fail-open handling.
  */
 export function ticketCounter(path: string): number {
   const token = `${process.pid}-${randomBytes(6).toString('hex')}`
@@ -334,19 +301,10 @@ export function emitContext(hookEventName: string, additionalContext: string): v
 
 /**
  * Run a Codex hook body and guarantee the process ends with exit code 0.
- *
- * Codex reads the exit code as the hook's verdict, and a non-zero one is not
- * a warning — it DISCARDS the hook's output entirely (`hook: X Failed`), and
- * on PreToolUse an exit code of 2 means BLOCK THE TOOL, with stderr as the
- * blocking reason. So a crash in an unrelated part of the engine does not
- * degrade to "no memory this turn"; it degrades to "every tool call is
- * blocked by a hook that has nothing to say". A native layer can also abort
- * during teardown (e.g. PGLite's WASM on a corrupt index), long after the hook
- * has written perfectly good JSON to stdout.
- *
- * So: catch everything, report to stderr (never stdout — Codex parses that as
- * the result), flush, and exit 0 explicitly rather than letting a background
- * handle decide the exit code.
+ * Codex discards output on a non-zero exit, and on PreToolUse exit 2 BLOCKS THE
+ * TOOL, so any crash (even a native abort during teardown) must not leak into
+ * the exit code. Catch everything, report to stderr (never stdout — Codex parses
+ * it), flush, and exit 0 explicitly.
  */
 export async function runCodexHook(
   name: string,
@@ -415,22 +373,10 @@ export interface Injectable<O, R> {
 
 /**
  * Inject with hybrid search, falling back to BM25 if hybrid misses a soft deadline.
- *
- * Why hybrid at all, when the Cursor and Claude Code event hooks are
- * BM25-only: on a store of several thousand engrams in a cold process, the
- * whole hybrid inject costs a few seconds more than BM25. On keyword-ish
- * prompts hybrid and BM25 agree on ~90% of the injected set, but on vague,
- * low-keyword prompts ("this keeps breaking in the same way", "what did we
- * agree on") agreement drops to ~78% — exactly the prompts where a user is
- * relying on memory rather than supplying the keywords.
- *
- * Why a deadline rather than just calling injectHybrid: a slower machine, a larger corpus, or a cold model download
- * turns that into a hook Codex kills at its timeout — and a killed hook
- * injects NOTHING, which is strictly worse than BM25 results. The race bounds
- * the worst case at deadline + BM25 while keeping the typical case at hybrid
- * speed. The abandoned hybrid promise is harmless: `runCodexHook` force-exits
- * the process afterwards — once any store write it is inside has finished
- * (bounded).
+ * Hybrid matters most on vague, low-keyword prompts, where it diverges from
+ * BM25 most. The deadline exists because Codex kills a hook at its timeout, and
+ * a killed hook injects NOTHING; the race bounds the worst case at deadline + BM25.
+ * The abandoned hybrid promise is harmless: `runCodexHook` force-exits afterwards.
  */
 export async function injectWithFallback<O, R>(
   plur: Injectable<O, R>,

@@ -1,28 +1,10 @@
 /**
- * Embedder factory.
- *
- * One uniform interface (`EmbedderAdapter`) across the candidate models:
- *
- *   - minilm            sentence-transformers/all-MiniLM-L6-v2     (384d, 22M)
- *   - bge-small         BAAI/bge-small-en-v1.5                     (384d, 33M)  — DEFAULT
- *   - bge-base          BAAI/bge-base-en-v1.5                      (768d, 110M)
- *   - embedding-gemma   google/EmbeddingGemma-300M (ONNX community) (768d, 300M) — opt-in
- *   - openai-3-large    OpenAI text-embedding-3-large              (3072d, API)  — opt-in
- *
- * Pick one via PLUR_EMBEDDER env var or programmatically via `getEmbedder()`.
- *
- *   PLUR_EMBEDDER=bge-base node -e "..."   # 768d, pgvector column resized
- *   PLUR_EMBEDDER=openai-3-large           # API tier (requires OPENAI_API_KEY)
- *   getEmbedder('embedding-gemma').embed(text)
- *
- * Wiring:
- *   - benchmark/run.ts uses this to map --embedder flag to a real adapter
- *   - storage-pglite.ts reads adapter.dim to size its vector(N) column
- *   - embeddings.ts routes through the active adapter
- *
- * Default embedder: bge-small; embedding-gemma is opt-in. See DEFAULT_EMBEDDER
- * below — that constant is authoritative; do not infer the default from this
- * header.
+ * Embedder factory — one `EmbedderAdapter` interface across models:
+ *   minilm (384d), bge-small (384d), bge-base (768d), embedding-gemma (768d, opt-in), openai-3-large (3072d, API,
+ *   opt-in, needs OPENAI_API_KEY).
+ * Pick via the PLUR_EMBEDDER env var or `getEmbedder()`. storage-pglite.ts sizes its vector(N) column from
+ * adapter.dim; embeddings.ts routes through the active adapter. DEFAULT_EMBEDDER below is authoritative for the
+ * default — do not infer it from this header.
  */
 import { logger } from '../logger.js'
 import { makeMiniLMAdapter } from './minilm.js'

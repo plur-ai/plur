@@ -1,14 +1,10 @@
 /**
- * `remote-only` folders: what a Plur instance
- * bound to such a folder refuses, and how it says so.
- *
- * The folder's memory lives only on the team server, in one scope. A write
- * with no scope goes there (that scope is the folder's "global"); a write to
- * another shared scope served by a url store the user can write still works;
- * everything that would stay on this machine — a personal scope (`user:`,
- * `agent:`, `global`, `local`), a local-only scope (`project:` and other
- * scopes no url store serves), a private write, or content the sensitivity
- * guard would demote to local — is refused, with nothing written or sent.
+ * `remote-only` folders: what a Plur instance bound to one refuses, and how it
+ * says so. Memory lives only on the team server in one scope: an unscoped write
+ * goes there; a write to another shared scope a writable url store serves works.
+ * Anything that would stay on this machine (personal or local-only scope,
+ * private write, content the sensitivity guard would demote) is refused, with
+ * nothing written or sent.
  */
 import { escapedPath, quoted, folderCommandOfferable } from './folder-ask.js'
 

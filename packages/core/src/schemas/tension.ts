@@ -1,16 +1,11 @@
 import { z } from 'zod'
 
 /**
- * Tension record: the persisted output of a contradiction scan, so scans do
- * not re-pay LLM calls, false positives stay suppressed, and resolution has a
- * representation. One record per engram pair, carried through the lifecycle
- *
+ * Tension record: the persisted output of a contradiction scan (one per engram
+ * pair), so scans do not re-pay LLM calls and false positives stay suppressed.
  *   detected → confirmed → resolved   (real conflict, winner picked)
  *   detected → dismissed              (false positive, pair suppressed)
- *
- * Records live in `tensions.yaml` next to `engrams.yaml`. Any recorded
- * pair — whatever its status — is excluded from future scans, so
- * dismissals act as a suppress-list and detections are never re-judged.
+ * Stored in `tensions.yaml`; any recorded pair, whatever its status, is excluded from future scans.
  */
 export const TensionStatusSchema = z.enum(['detected', 'confirmed', 'dismissed', 'resolved'])
 export type TensionStatus = z.infer<typeof TensionStatusSchema>

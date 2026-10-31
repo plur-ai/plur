@@ -14,28 +14,11 @@ import {
 
 /**
  * plur hook-codex-post-tool — Codex `PostToolUse` hook.
- *
- * Two jobs:
- *
- * 1. SENTINEL. When the agent calls `plur_session_start` itself, mark the
- *    session started so `hook-codex-guard` stops denying. This is the path
- *    that matters when SessionStart never ran.
- *
- * 2. LEARN NUDGE. Codex has a `Stop` event, and Claude Code puts the nudge
- *    there — but `Stop` output is `{decision, reason}` only: no
- *    `additionalContext` (Codex explicitly warns "ignoring
- *    additionalContextLimit … this event cannot emit additionalContext"),
- *    and `decision: "block"` means "keep going", which would turn a gentle
- *    reminder into a forced extra turn. PostToolUse ACCEPTS
- *    additionalContext, so the nudge rides here on an every-Nth-tool
- *    cadence instead — the same fatigue-avoidance shape as
- *    `hook-learn-check`.
- *
- *    Codex parses this output without complaint, but whether PostToolUse
- *    additionalContext actually reaches the model is not verified. If
- *    Codex drops it, the nudge is a silent no-op (the sentinel job above is
- *    unaffected — it writes a file, needing no output channel).
- *
+ * 1. SENTINEL: when the agent calls `plur_session_start`, mark the session started so
+ *    `hook-codex-guard` stops denying (matters when SessionStart never ran).
+ * 2. LEARN NUDGE every Nth tool: Codex `Stop` cannot emit additionalContext and its
+ *    `block` forces an extra turn, so the nudge rides here. Whether Codex delivers
+ *    PostToolUse additionalContext to the model is not verified.
  * Input:  JSON on stdin — { session_id, tool_name, tool_input, tool_response, ... }
  * Output: JSON on stdout — an additionalContext nudge, or nothing.
  */

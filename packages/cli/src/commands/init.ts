@@ -85,47 +85,14 @@ import {
 } from '../opencode-config.js'
 
 /**
- * plur init — install Claude Code hooks AND register the plur MCP server.
+ * plur init — install Claude Code hooks AND register the plur MCP server. PLUR is global: one server, one store
+ * (~/.plur/); per-project scoping uses engram domain/scope. The MCP server goes to ~/.claude.json (Claude Code never
+ * reads MCP servers from ~/.claude/settings.json); hooks call a local shim ~/.plur/bin/plur-hook.
  *
- * Architecture: PLUR is a GLOBAL tool. One MCP server, one engram store
- * (~/.plur/), available in every project. Per-project scoping is handled
- * via domain/scope fields on engrams, not separate installations.
- *
- * Two things must be in place for plur to work in Claude Code:
- *
- *   1. The `plur` MCP server must be registered, so the `plur_*` tools exist.
- *      Claude Code reads user-scoped MCP servers from ~/.claude.json only
- *      (what `claude mcp add --scope user` writes), never from
- *      ~/.claude/settings.json.
- *   2. The lifecycle hooks must call the plur CLI to inject relevant engrams
- *      into the conversation. A local shim at ~/.plur/bin/plur-hook is
- *      created to avoid npx overhead and race conditions.
- *
- * Usage:
- *   plur init                 # default: hooks in user settings ~/.claude/settings.json, from any folder;
- *                             #   MCP server in ~/.claude.json at user scope
- *   plur init --global        # same as the default
- *   plur init --project       # prompt hooks in ./.claude/settings.json, plus the project marker
- *                             #   entry there; the MCP server still goes to ~/.claude.json
- *   plur init --desktop / --no-desktop        # force / skip Claude Desktop registration
- *   plur init --cursor / --no-cursor          # force / skip Cursor (auto: .cursor/ exists)
- *   plur init --codex / --no-codex            # force / skip Codex (auto: ~/.codex exists)
- *   plur init --antigravity | --agy / --no-antigravity
- *                             # force / skip Antigravity (auto: ~/.gemini/antigravity-cli exists)
- *   plur init --opencode / --no-opencode      # force / skip opencode (auto: ~/.config/opencode exists)
- *   plur init --no-prompt     # never ask interactive questions (telemetry opt-in)
- *   plur init --domain X      # set default domain for this project (.plur.yaml)
- *   plur init --scope Y       # set default scope for this project (.plur.yaml)
- *
- * For multi-project setups:
- *   cd ~/projects/my-app
- *   plur init --domain myapp.core --scope project:my-app
- *
- * This writes the hooks to user settings, the MCP server to ~/.claude.json and
- * .plur.yaml (scoping) in the folder. Run inside a repo whose
- * .claude/settings.json carries PLUR's hooks (the `--project` placement), it
- * moves them out to user settings and records the repo as `on` in the folder
- * map.
+ * Flags: --global (default: hooks in ~/.claude/settings.json) | --project (hooks in ./.claude/settings.json);
+ * --desktop, --cursor, --codex, --antigravity|--agy, --opencode (each with --no-…; auto-detected otherwise);
+ * --no-prompt; --domain X / --scope Y (write .plur.yaml). Run in a repo whose .claude/settings.json carries PLUR's
+ * hooks, it moves them to user settings and records the repo as `on` in the folder map.
  */
 
 interface Settings {
@@ -193,31 +160,13 @@ function installHookBinary(): { shimPath: string; status: string } {
 }
 
 // ─── MCP shim ───────────────────────────────────────────────────────────────
-//
-// The MCP server would otherwise be launched by Claude Code via
-// `npx -y @plur-ai/mcp@latest` on every session start. When a new MCP version
-// publishes, the npx cache update races with concurrent MCP launches →
-// ENOTEMPTY → the session can't reach PLUR memory until the cache is manually
-// wiped.
-//
-// So: write a local shim at ~/.plur/bin/plur-mcp that calls
-// `node <resolved-mcp-entry>` directly. Same path resolution strategy as
-// the hook shim — walks node_modules looking for @plur-ai/mcp/dist/index.js
-// since the MCP package is a sibling of the CLI in global node_modules.
+// A local shim ~/.plur/bin/plur-mcp runs `node <resolved-mcp-entry>` directly, because `npx -y @plur-ai/mcp@latest`
+// on every session races the npx cache update on publish (ENOTEMPTY) and loses PLUR until the cache is wiped.
 
 /**
- * Find @plur-ai/mcp's CLI entrypoint by walking up from the CLI's own
- * location and looking for it in nearby node_modules. Returns null if
- * the MCP package isn't installed alongside the CLI.
- *
- * The typical layout (npm install -g @plur-ai/mcp) is:
- *   <prefix>/lib/node_modules/@plur-ai/mcp/dist/index.js     ← target
- *   <prefix>/lib/node_modules/@plur-ai/cli/dist/index.js     ← we're here
- *
- * Walks up from CLI's dist looking for a node_modules dir that contains
- * @plur-ai/mcp. Returns null if not found (caller falls back to npx).
+ * Find @plur-ai/mcp's dist/index.js by walking up from the CLI's location through nearby node_modules (it is a
+ * sibling of @plur-ai/cli in a global install). Returns null if absent; the caller falls back to npx.
  */
-/** A directory named `mcp` only counts as the workspace sibling if it really IS @plur-ai/mcp. */
 function isPlurMcpPackage(dir: string): boolean {
   try {
     const pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')) as { name?: string }
@@ -365,16 +314,9 @@ ${PLUR_INSTRUCTIONS_MARKER}
 `
 
 /**
- * The instruction block written to AGENTS.md for Codex and Antigravity.
- *
- * A separate constant, not CLAUDE_MD_SECTION, because two of that block's
- * claims are Claude-Code-only and false in these harnesses: the "SessionEnd
- * hook auto-closes the lifecycle if you forget" promise (Codex's SessionEnd
- * hook only removes sentinels — the 3s clamp forbids an episode capture — and
- * agy has no session-end hook at all), and the ToolSearch bootstrap flow,
- * which is a Claude Code mechanism neither harness has. Telling the model a
- * safety net exists precisely where it does not undoes the nudges that
- * compensate.
+ * The AGENTS.md instruction block for Codex and Antigravity. Separate from CLAUDE_MD_SECTION because the
+ * "SessionEnd hook auto-closes" promise and the ToolSearch bootstrap are Claude-Code-only; claiming a safety net
+ * these harnesses lack would undo the nudges that compensate.
  */
 const AGENTS_MD_SECTION = `## PLUR Memory
 
@@ -515,23 +457,12 @@ function installClaudeMd(): string {
 }
 
 /**
- * Ship the bundled skills to the harness that reads them.
- *
- * `skills/` lives at the REPO root, and `files[]` in package.json is
- * package-relative, so no manifest entry can reach it — the build copies the
- * tree into `dist/skills/`, which `files: ["dist"]` already covers, and this
- * leg installs it. (The `Skill` PreToolUse matcher elsewhere fires WHEN a
- * skill runs — a different thing.)
- *
- * Target is `<dir of settings.json>/skills/`, so this follows init's existing
- * scope decision: --global lands in ~/.claude/skills, project mode in
- * ./.claude/skills. No new flag, and one place decides scope.
+ * Ship the bundled skills (copied by the build into `dist/skills/`) to `<dir of settings.json>/skills/`, so it
+ * follows init's scope decision: ~/.claude/skills or ./.claude/skills.
  */
 /**
- * Copy a folder tree file by file, following links (what the bundled skills
- * need). Not fs.cpSync: on Windows its native implementation aborts the whole
- * process (0xC0000409, no output) when a path holds a non-English letter, as in
- * a home folder named after the user.
+ * Copy a folder tree file by file, following links. Not fs.cpSync: on Windows it aborts the process (0xC0000409)
+ * when a path holds a non-English letter.
  */
 function copyTree(from: string, to: string): void {
   mkdirSync(to, { recursive: true })
@@ -615,27 +546,13 @@ function findSettingsPath(_flags: GlobalFlags, args: string[]): string {
 }
 
 /**
- * Re-running `plur init` in a repo whose `<cwd>/.claude/settings.json` carries
- * PLUR's hooks: move them out (user settings carry them) so no hook runs
- * twice, and record the repo as `on` in folders.yaml through the folder-map
- * writer, so the repo keeps working without being asked. Returns a status
- * line, or null when there is nothing to migrate.
- *
- * - Only PLUR's hooks are removed from the repo file, hook by hook; its MCP
- *   entry, the user's own hooks and every other setting stay as they are.
- * - The map entry is `on` with no scope, so a `.plur.yaml` there stays the
- *   scope hint (applied when trusted, as for any folder).
- * - A folder whose .plur.yaml requests a scope, domain or remote and is not
- *   trusted gets no entry: `on` would count as a decision, skip the question
- *   that offers to trust it, and drop its scope.
- * - A folder the map already has, and one the map turns `off`, keep their
- *   entry unchanged. If the map cannot be written, the repo file is left
- *   alone too, so the repo keeps its memory either way.
- * - The policy is read after this run's `.plur.yaml` is written (run() calls
- *   installProjectConfig first), so `plur init --scope X` in such a repo is
- *   decided on the `.plur.yaml` it will have, as in a fresh repo.
- * - A failure is reported as `FAILED (…)`, and says whether the folder map
- *   was already written when the repo file could not be.
+ * Re-running init in a repo whose `.claude/settings.json` carries PLUR's hooks: remove them (user settings carry
+ * them) and record the repo `on` in folders.yaml. Returns a status line, or null when nothing to migrate.
+ * - Only PLUR's hooks are removed; MCP entry, user hooks and other settings stay. The `on` entry has no scope.
+ * - A folder whose untrusted .plur.yaml requests scope/domain/remote gets no entry, so the trust question still asks.
+ * - Existing or `off` map entries are kept; if the map cannot be written, the repo file is left alone too.
+ * - Policy is read after this run's `.plur.yaml` is written. Failures report `FAILED (…)`, saying whether the map
+ *   was already written.
  */
 function migrateRepoHooks(flags: GlobalFlags, userPath: string): string | null {
   const folder = process.cwd()
@@ -773,20 +690,10 @@ function mergeHooks(settings: Settings, hooksMap: Record<string, HookEntry[]>): 
 }
 
 /**
- * Register the plur MCP server for Claude Code at user scope, in
- * `~/.claude.json` — the file `claude mcp add --scope user` writes and the only
- * user-level place Claude Code reads MCP servers. Written directly, so it
- * works without the `claude` CLI; every other key in that file (Claude Code's
- * own state, other servers, per-folder settings) is kept.
- *
- * Claude Code never reads MCP servers from `~/.claude/settings.json`, so an
- * entry found there is moved here — env and extra keys kept, healed like any
- * other — unless `~/.claude.json` already has one, which wins; then the old
- * entry is removed from settings.json, leaving its other servers and keys.
- * Every change to an existing file is preceded by a timestamped backup beside
- * it, and a file edited while PLUR was working is left alone
- * (writeWithBackup). An unparseable `~/.claude.json` is refused and neither
- * file is touched. A run with nothing to change writes nothing.
+ * Register the plur MCP server at user scope in `~/.claude.json` (what `claude mcp add --scope user` writes),
+ * directly and keeping every other key. An entry in `~/.claude/settings.json` (never read) is moved here unless one
+ * exists already, then removed. Changes are backed up first; a file edited concurrently is left alone
+ * (writeWithBackup); an unparseable `~/.claude.json` is refused. Nothing to change writes nothing.
  */
 function installClaudeCodeMcp(settingsPath: string): { ok: boolean; status: string } {
   const settingsRaw = existsSync(settingsPath) ? readFileSync(settingsPath, 'utf8') : null
@@ -1093,17 +1000,9 @@ function installCodex(cmd: string, root: string, keepLaunch: boolean, env: NodeJ
 }
 
 /**
- * Codex fingerprints every non-managed hook and refuses to run it until it
- * has been reviewed — and in `codex exec` there is no review UI, so an
- * untrusted hook produces no output, no warning and exit 0. That is
- * indistinguishable from a config Codex never read (the same hooks work under
- * `--dangerously-bypass-hook-trust` and are silently inert without it).
- * Project `trust_level = "trusted"` does not cover hooks, and a hand-written
- * `trusted_hash` that doesn't match is also skipped silently with no hint of
- * the expected value — so there is nothing `plur init` can write to pre-trust
- * these. The user has to do it once.
- *
- * This is why the Codex install report does not end on "restart Codex".
+ * Codex refuses to run a non-managed hook until it is reviewed, and in `codex exec` an untrusted hook is skipped
+ * silently (no output, exit 0). Neither project trust_level nor a hand-written trusted_hash pre-trusts it, so the
+ * user must do it once — which is why the Codex install report does not end on "restart Codex".
  */
 const CODEX_TRUST_NOTICE =
   '  ⚠ ONE MANUAL STEP: Codex will not run these hooks until you trust them.\n' +
@@ -1221,18 +1120,9 @@ function shouldSetupOpencode(args: string[]): boolean {
 }
 
 /**
- * Wire PLUR into opencode by writing BOTH layers into its config file
- * (`writeOpencodeConfig` — see packages/cli/src/opencode-config.ts):
- *
- *   - `plugin: ["@plur-ai/opencode"]` — the automatic layer (recall injected
- *     each turn, learning harvested after it), which needs no tool calls.
- *   - `mcp.plur` — the explicit `plur_*` tool surface from `@plur-ai/mcp`,
- *     for when the user wants to query or teach memory directly.
- *
- * Same three-layer strategy PLUR already commits to everywhere else
- * (context files + hooks/plugins + MCP tools), pinned to CLI_VERSION for the
- * same reason every other npx-fallback MCP entry is pinned: an unpinned spec
- * re-resolves on every publish and races the npx cache rewrite.
+ * Wire PLUR into opencode by writing both layers into its config (`writeOpencodeConfig`, opencode-config.ts):
+ * `plugin: ["@plur-ai/opencode"]` (automatic recall/learning) and `mcp.plur` (explicit tools), the latter pinned to
+ * CLI_VERSION because an unpinned npx spec races the cache rewrite on every publish.
  */
 function installOpencode(cliVersion: string, autoDetected: boolean, upgradePlugin = true): string {
   const configPath = opencodeConfigPath()
@@ -1349,17 +1239,9 @@ export async function promptTelemetryOptIn(opts: {
 }
 
 // ── Identity prompt ─────────────────────────────────────────────────────────
-// Asks once during `plur init` who memories should be attributed to.
-//
-// Same resolution rules as the telemetry prompt above, and for the same reason:
-// ask an interactive user once, never nag a returning one, and never block a
-// script. The difference is what happens when nobody answers — telemetry
-// defaults to off, and this defaults to the `unidentified` marker, which is a
-// recorded fact rather than a silence.
-//
-// It must never fall back to the operating system account. That is the obvious
-// value and the wrong one: it would put a real name into shared records because
-// somebody installed software, not because they chose to be named.
+// Asks once who memories are attributed to, with the telemetry prompt's rules (ask once, never nag, never block a
+// script). Unanswered defaults to the `unidentified` marker. Never fall back to the OS account name: that would put
+// a real name into shared records without a choice.
 
 /**
  * Prompt for an identity during `plur init`.

@@ -12,41 +12,13 @@ import {
 } from '../lib/agy-hook-io.js'
 
 /**
- * plur hook-agy-guard — Antigravity `PreToolUse` hook.
- *
- * Session guard: deny tool calls until `plur_session_start` has run, with
- * the same one-nudge-then-give-up deadlock protection as the Claude Code,
- * Cursor and Codex guards. A `{"decision":"deny","reason":...}` output blocks
- * the tool and the reason reaches the model ("tool call denied by pre-tool
- * hook: ...").
- *
- * Differences from the Codex guard worth knowing:
- *
- * - The verdict is FLAT `{decision, reason}` — no hookSpecificOutput
- *   envelope — and agy accepts `allow`/`ask`/`force_ask` too. We still only
- *   ever deny or stay silent: emitting `allow` would bypass agy's own
- *   permission prompting for tools PLUR has no opinion about.
- * - The sentinel is marked HERE when `plur_session_start` itself passes
- *   through, because agy's PostToolUse payload carries no tool name
- *   (stepIdx + error only) — there is no after-the-fact detection point.
- *   Marking on the way in is slightly optimistic (the user could still
- *   refuse the permission prompt), which costs at most one un-nudged
- *   session — the same trade every guard in this codebase already makes.
- * - In practice this guard rarely fires a deny at all: PreInvocation runs
- *   before any tool call and already marks the session. Its job is the path
- *   where PreInvocation somehow didn't run (hook disabled mid-session,
- *   config raced) — belt, not braces.
- * - Tool names are lowercased step types (`run_command`, `view_file`). How
- *   MCP tools are named in `toolCall.name` is NOT yet verified against a
- *   live MCP call; `isPlurSessionStartTool` matches on the
- *   `plur_session_start` suffix, which survives any prefixing scheme.
- *
- * GATING: same install-is-the-opt-in rule as hook-agy-pre-invocation, and
- * for the same reason — agy runs hooks with cwd = the hooks.json directory,
- * where a project-config walk can never succeed. When the payload names a
- * workspace, a project-level opt-out is honoured.
- *
- * Input:  camelCase JSON — { conversationId, toolCall: { name, args }, stepIdx, ... }
+ * plur hook-agy-guard — Antigravity `PreToolUse` session guard: deny tool calls until
+ * `plur_session_start` has run (one nudge, then give up, to avoid deadlock).
+ * - Verdict is FLAT `{decision, reason}`; only deny or silence — `allow` would bypass agy's prompts.
+ * - The sentinel is marked HERE when `plur_session_start` passes (PostToolUse has no tool
+ *   name); matched on the name suffix. Mostly a backstop: PreInvocation marks it first.
+ * - Install is the opt-in (cwd is the hooks.json dir); a workspace opt-out is honoured.
+ * Input: camelCase JSON { conversationId, toolCall: { name, args }, stepIdx, ... }.
  * Output: {"decision":"deny","reason":"..."} or nothing.
  */
 

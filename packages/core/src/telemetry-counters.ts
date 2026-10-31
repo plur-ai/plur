@@ -1,36 +1,13 @@
-// Per-event counters for telemetry.
-//
-// Pure file-local plumbing: increment hooks at plur_learn / plur_recall_hybrid
-// success persist to ~/.plur/telemetry-counters.json. NO network code lives here;
-// transport (telemetry-flush) imports getCounters/resetCounters from this module.
-//
-// Privacy invariant: every public function MUST short-circuit on
-// !isTelemetryEnabled() BEFORE any filesystem call. A default-off install must
-// produce zero filesystem writes under ~/.plur/ for telemetry. The
-// "default-off install touches zero files" test is the load-bearing guard.
-//
-// Session semantics: 'session' fires on the first 'learn' or 'recall' recorded
-// within a UTC day. No standalone session call site.
-//
-// Day-rollover safety: on rollover, yesterday's snapshot is moved to a
-// pending-flush directory (~/.plur/telemetry-pending/<date>.json) BEFORE
-// counters.json is rewritten for today. flushIfNeeded drains that directory.
-// Without this, a long-lived process emitting an event after midnight would
-// silently overwrite yesterday's data on disk.
-//
-// Cross-process safety: every read-modify-write of counters.json and pending/
-// runs under ONE lock file (`<countersPath>.lock`, the `withLock` from
-// sync.ts), so two processes cannot merge the same snapshot twice or lose
-// same-day increments. A flush CLAIMS a pending file by renaming it (under the
-// same lock) before the POST, so a second flusher cannot send it again and a
-// later merge for that date lands in a fresh pending file instead of being
-// deleted with the sent one.
-// Invariant, per date: shipped + on disk (counters, pending, claims) = recorded.
-// If the lock cannot be taken the event is not written unlocked and not
-// dropped: it is written to its own spill file (`<countersPath>.spill.<uuid>`,
-// temp name then rename, no lock) and the next writer holding the lock, or the
-// flush, folds the spill files in. Telemetry never blocks or fails the tool
-// call, and events are conserved. Spill files count as "on disk" above.
+// Per-event counters for telemetry, persisted to ~/.plur/telemetry-counters.json. NO network code here; transport
+// (telemetry-flush) imports getCounters/resetCounters.
+// - Privacy: every public function short-circuits on !isTelemetryEnabled() BEFORE any filesystem call (guarded by
+//   the "default-off install touches zero files" test).
+// - 'session' fires on the first 'learn' or 'recall' of a UTC day.
+// - Rollover moves yesterday's snapshot to ~/.plur/telemetry-pending/<date>.json BEFORE rewriting counters.
+// - Every read-modify-write runs under one lock (`<countersPath>.lock`); a flush claims a pending file by rename.
+//   Invariant per date: shipped + on disk (counters, pending, claims, spills) = recorded.
+// - Lock unavailable: the event goes to its own spill file (`<countersPath>.spill.<uuid>`), folded in later.
+//   Telemetry never blocks or fails the tool call.
 
 import {
   existsSync,

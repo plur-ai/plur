@@ -1,42 +1,17 @@
 /**
- * Per-session default write scope.
- *
- * A single instance-wide session scope is only safe with one session per
- * `Plur` instance and no interleaving. `learnRouted()` awaits a network
- * round-trip between reading the session scope and persisting the engram, so
- * with several concurrent sessions on one instance, session B could change the
- * scope while A is mid-write and A's engram would land in B's scope. This
- * registry keeps a `Map<sessionKey, scope>` so each session's scope is isolated.
- *
- * ### Resolution order
- *
- * A session that has registered a scope gets its own, regardless of what any
- * other session does. A session that has NOT registered one inherits the
- * process-default slot, which is what single-session CLI and MCP deployments
- * use and what `setSessionScope(scope)` without a key sets. Isolation is
- * opt-in per session by registering.
- *
- * Registering `null` for a session is meaningful and distinct from not
- * registering: it pins that session to "no session scope", so unscoped writes
- * auto-route instead of inheriting the process default.
+ * Per-session default write scope: a `Map<sessionKey, scope>`, because `learnRouted()` awaits the network between
+ * reading the scope and persisting, so one instance-wide scope would let concurrent sessions write into each
+ * other's scope.
+ * A session with a registered scope gets its own; an unregistered one inherits the process-default slot (what
+ * `setSessionScope(scope)` without a key sets). Registering `null` pins "no session scope", so unscoped writes
+ * auto-route instead of inheriting the default.
  */
 
 /**
- * The "no session" sentinel.
- *
- * Pass it as `LearnContext.session` (learn / learnRouted), `RecallOptions.session`
- * or `InjectOptions.session_id` when the caller KNOWS it has no session, e.g. an
- * MCP call without a `session_id` while several sessions are open, where
- * falling back to the process-default slot would hand this write whichever
- * session scope was set last (possibly a team scope). With `NO_SESSION` the
- * registry answers `null`: neither a keyed registration nor the process-default
- * slot applies, so an unscoped write takes the genuinely-unscoped path
- * (auto-route / `unscoped_default`, `scope_source` 'routed' | 'default'). An
- * explicit `scope` still wins.
- *
- * It is a string (the `session` fields are strings) that no real session id
- * can collide with. It is never registered (`set` refuses it), never recorded
- * as a session id in provenance, and never persisted on an engram.
+ * The "no session" sentinel, for `LearnContext.session`, `RecallOptions.session` or `InjectOptions.session_id` when
+ * the caller KNOWS it has no session: the registry answers `null`, so an unscoped write takes the unscoped path
+ * (auto-route / `unscoped_default`) instead of the last-set process default. An explicit `scope` still wins.
+ * No real session id can collide with it; it is never registered, recorded in provenance or persisted.
  */
 export const NO_SESSION = '\u0000plur:no-session'
 

@@ -1,21 +1,10 @@
 /**
- * Reranker factory for the cross-encoder reranker stage.
- *
- * One uniform interface (`RerankerAdapter`) across reranker models, so
- * API-backed rerankers can drop in without changing call sites.
- *
+ * Reranker factory: one `RerankerAdapter` interface across models.
  *   PLUR_RERANKER=bge-reranker-v2-m3   # opt in to the local cross-encoder
  *   PLUR_RERANKER=off                  # explicit skip (default)
- *
- * The reranker is OFF by default. PLUR's "no API key, no surprise latency"
- * posture extends to the model load cost: the BGE reranker adds ~50-500ms
- * per query (depending on K) and ~300 MB of resident weights once loaded.
- * Callers that want it set PLUR_RERANKER explicitly or pass
- * `rerank: true` to recallHybrid / injectHybrid.
- *
- * The "off" sentinel is a real adapter object whose scoreBatch is a no-op
- * — `isRerankerOff()` lets the recall path skip the rerank stage entirely
- * without an extra `if (!reranker)` branch in the hot path.
+ * OFF by default: the BGE reranker adds latency per query and ~300 MB of
+ * weights. Opt in via PLUR_RERANKER or `rerank: true` on recallHybrid/injectHybrid.
+ * "off" is a real no-op adapter; `isRerankerOff()` lets recall skip the stage.
  */
 import { logger } from '../logger.js'
 import { makeBgeRerankerV2M3Adapter, makeMsMarcoMiniLmL6Adapter } from './transformers-cross-encoder.js'

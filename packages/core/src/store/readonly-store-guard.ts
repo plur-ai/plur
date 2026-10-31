@@ -1,46 +1,12 @@
 /**
- * ReadonlyStoreGuard — wraps a `PrimaryStore` and blocks every write.
- *
- * Used when `Plur` is opened for a read-only command (`plur list`, `plur
- * status`, `plur tensions` list mode, `new Plur({ readonly: true })`) so that
- * lazy engine writes — index sync side-effects, cache refresh, migration
- * fix-ups — are caught rather than silently mutating the store.
- *
- * Design rules, each load-bearing:
- *
- * - **Reads delegate unchanged** (`load`, `loadCached`, `invalidate`, and
- *   `loadByIds` when the inner store has it).
- * - **Optional capabilities mirror the inner store.** `estimateCount` and
- *   `loadByIds` are only present when the inner store implements them — a
- *   guard must not invent an estimate of 0 for a store that declined to give
- *   one (backend selection has its own "treat as small" fallback and must see
- *   the absence, not a fabricated number). Likewise the write capabilities
- *   `append`/`updateMany`/`nextEngramId` are only declared when the inner store
- *   declares them, so capability probes (`store.updateMany && store.loadByIds`)
- *   see the same shape as the unwrapped store.
- * - **`withExclusiveAccess` runs the callback WITHOUT acquiring anything.**
- *   Exclusive access exists to serialize read-modify-write cycles; on a store
- *   that cannot be written there is no write to serialize, and acquiring the
- *   fallback file lock would create `.lock` files on a pure read path — a
- *   disk write from a read-only engine. Any write attempted inside the
- *   callback still rejects at the store method itself.
- * - **All writes reject with the same typed error**, so callers can
- *   distinguish "this instance is read-only" from a real store failure.
- * - **The query-adapter surface delegates unchanged** (`role`, `searchBM25`,
- *   `searchVector`, `vectorIndex`, ...). These are reads, like `loadByIds`.
- *   `_primaryQueryAdapter()` keys on `role === 'primary' && typeof searchBM25
- *   === 'function'`; without them `recall()` falls back to `_filterEngrams()`,
- *   which for a store that answers queries itself has no index to read and
- *   throws.
- *
- * This is a WHITELIST, so a new read member of the query-adapter surface is
- * silently dropped until it is added here, and the loss may be only a silent
- * cost regression. A Proxy with a write deny-list would avoid that, but the
- * failure modes are not symmetric: a missed whitelist entry loses
- * functionality, a missed deny-list entry PERMITS A WRITE on a path whose
- * purpose is that it cannot write. On a safety guard, fail closed. The
- * structural test in `readonly-query-adapter.test.ts` enumerates the surface so
- * a new member that is not forwarded fails there.
+ * ReadonlyStoreGuard — blocks every write to a `PrimaryStore` for read-only commands.
+ * - Reads and the query-adapter surface (`role`, `searchBM25`, ...) delegate unchanged;
+ *   without them `recall()` falls back to `_filterEngrams()` and throws on a primary adapter.
+ * - Optional capabilities mirror the inner store (never invent an `estimateCount` of 0).
+ * - `withExclusiveAccess` runs the callback WITHOUT locking (no `.lock` file on a read path).
+ * - All writes reject with one typed error, distinct from real store failures.
+ * - A WHITELIST on purpose (fail closed): a missed deny-list entry would permit a write.
+ *   `readonly-query-adapter.test.ts` enumerates the surface so new members fail there.
  */
 import type { Engram } from '../schemas/engram.js'
 import type { PrimaryStore, PrimaryStoreKind } from './primary-store.js'

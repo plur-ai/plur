@@ -1,21 +1,10 @@
 /**
  * `plur keys` — manage per-actor Ed25519 signing keys.
- *
- * Subcommands:
- *   plur keys init                   Generate a key pair for the configured identity
- *   plur keys init --identity <name> Override the identity for key generation
- *   plur keys list                   List registered public keys for this store
- *
- * Key storage:
- *   Private key: <keys-dir>/<identity>.key  (mode 0600, never in a store or repo)
- *   Public key:  <store-root>/keys.yaml     (tracked, per-store registry)
- *
- * The keys directory is `PLUR_KEYS_DIR` if set, else `<store-root>/keys` —
- * the same folder `plur checkpoint` and the MCP session end sign from
- * (`keysDirFor`). There is no `--keys-dir` flag: keys written anywhere else
- * would never be found by signing.
- *
- * Exit codes: 0 ok, 1 error.
+ *   plur keys init [--identity <name>]   Generate a key pair (for the configured identity, or <name>)
+ *   plur keys list                       List registered public keys for this store
+ * Private key: <keys-dir>/<identity>.key (0600, never in a store or repo); public key: <store-root>/keys.yaml.
+ * The keys dir is `PLUR_KEYS_DIR`, else `<store-root>/keys` — the folder signing reads (`keysDirFor`); there is
+ * deliberately no `--keys-dir` flag. Exit codes: 0 ok, 1 error.
  */
 import { join } from 'path'
 import { homedir } from 'os'

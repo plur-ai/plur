@@ -107,16 +107,10 @@ export interface LearnAsyncDeps {
 
 /**
  * The duplicate checker said UPDATE onto a locked memory. The locked memory is
- * left exactly as it is, the new statement is saved as its own memory, and a
- * tension record linking the two (status `detected`) puts the pair in the
- * user's review queue.
- *
- * While the review waits only the locked memory is given to the agent. The
- * new statement is saved as a draft (stored and searchable, never injected).
- * Resolving the review in its favour makes it a normal memory
- * (Plur.resolveTension); resolving it for the locked memory retires it;
- * dismissing the review leaves it a draft. There is no setting to skip the
- * review.
+ * left untouched; the new statement is saved as a draft (searchable, never
+ * injected) with a `detected` tension linking the two for user review.
+ * Resolving for the new one makes it normal (Plur.resolveTension), resolving
+ * for the locked one retires it, dismissing leaves a draft. No setting skips review.
  */
 async function saveBesideLocked(
   deps: LearnAsyncDeps,
@@ -371,25 +365,10 @@ export async function learnAsync(
   }
 
   // Step 2: Check dedup config
-  //
-  // `threshold` is a REPORTING floor, not a write gate. Cosine similarity never
-  // suppresses a write — see the reporting block in step 4 for why the gate was
-  // removed rather than tuned.
-  //
-  // Measured with the shipped BGE-small embedder, comparing ENRICHED text on
-  // both sides:
-  //
-  //   0.8512  DISTINCT   staging port 8080 vs 8081
-  //   0.8826  DISTINCT   "Always rebase before pushing" vs "Never ..."
-  //   0.9878  DUPLICATE  a duplicate pair, contexted on BOTH sides
-  //   0.8339  DUPLICATE  the SAME pair as actually written (twin had no
-  //                      domain, no rationale) — below every candidate bar
-  //
-  // That last row is the one that matters: the real duplicates are the
-  // under-contexted ones, and they score below the distinct pairs. There is no
-  // value of `threshold` that separates them, which is why this reports rather
-  // than decides. 0.85 is a deliberately low floor chosen to capture the
-  // distribution around the interesting band, not to assert a duplicate.
+  // `threshold` is a REPORTING floor, not a write gate: cosine similarity never
+  // suppresses a write (see step 4). Measured with the shipped embedder, real
+  // under-contexted duplicates score below distinct pairs, so no threshold
+  // separates them. 0.85 is a deliberately low floor to capture the band.
   const { enabled = true, threshold = 0.85, mode = 'llm' } = deps.dedupConfig
   if (!enabled || mode === 'off') {
     return { engram: await deps.learn(statement, context), decision: 'ADD' }
@@ -481,19 +460,12 @@ export async function learnAsync(
             ...(st ? { statement: st.length > 240 ? `${st.slice(0, 240)}…` : st } : {}),
           }
         })
-        // REPORTING ONLY — cosine never gates a write.
-        //
-        // No bar works at any value: production enriches only the incoming
-        // side from the write's own context, so an under-contexted write (the
-        // kind that produces duplicates) is compared against a fully-contexted
-        // stored engram, and real duplicates can score below distinct pairs.
-        // A guessed bar would risk a false NOOP — a memory silently not stored,
-        // the worst outcome for this product. So the observation is recorded
-        // to build a distribution from real writes; `threshold` is only the
-        // REPORTING floor below.
-        //
-        // Because nothing NOOPs here, an unscoped write that auto-routes to a
-        // team scope cannot be absorbed by a `global` near-duplicate either.
+        // REPORTING ONLY — cosine never gates a write. Only the incoming side is
+        // enriched, so real duplicates can score below distinct pairs, and a
+        // guessed bar risks a false NOOP (a memory silently not stored — the
+        // worst outcome). Observations are recorded to build a distribution.
+        // Because nothing NOOPs here, a team-routed write cannot be absorbed by
+        // a `global` near-duplicate either.
         const top = scores[0]
         if (top.score >= NEAR_DUPLICATE_OBSERVATION_FLOOR) {
           // History is what makes the distribution measurable after the fact.
@@ -548,16 +520,11 @@ export interface LearnBatchOptions {
 }
 
 /**
- * Minimal record of an engram written earlier in the same learnBatch call.
- * Only the fields that learnAsync's dedup step reads are captured:
- *   - buildDedupPrompt reads  {id, statement, type, domain}
- *   - scope filtering reads   {scope, status}
- *   - similarityScores reads  the Engram object (passed as candidate)
- *
- * The cast to Engram in the recall wrappers below is therefore safe as long
- * as no other consumer of `candidates` is introduced without updating this
- * interface. The alternative — storing full Engram objects — would require
- * re-loading the just-written engram and adds a store round-trip per ADD.
+ * Minimal record of an engram written earlier in the same learnBatch call,
+ * holding only what learnAsync's dedup step reads (buildDedupPrompt: id,
+ * statement, type, domain; scope filtering: scope, status; similarityScores:
+ * the object as candidate). The cast to Engram below is safe only while no
+ * other consumer of `candidates` is added without updating this interface.
  */
 interface BatchAccumulatorEntry {
   id: string
@@ -578,21 +545,12 @@ interface BatchAccumulatorEntry {
 
 /**
  * Batch learn: process multiple statements sequentially with LLM dedup.
- *
- * Never overwrites: a MERGE answer is saved as a new memory linked to the one
- * the checker named, an UPDATE answer as a new memory that supersedes it (a
- * locked one goes to review); NOOP writes nothing.
- *
- * LLM dedup calls are bounded by opts.maxLlmCalls (default 50). The cap only
- * bites on large batches of novel-but-similar statements — exact-hash NOOPs
- * and zero-candidate ADDs short-circuit before the LLM and don't consume budget.
- *
- * In-batch near-duplicate detection: _syncIndex() is fire-and-forget,
- * so the BM25/embedding index does not contain statement i when statement i+N
- * is being processed. To catch new-vs-new near-duplicates, learnBatch maintains
- * a `batchAccumulator` of engrams written so far and splices them into the
- * recall results that learnAsync sees, before the dedup step runs. This keeps
- * _syncIndex fire-and-forget (no blocking flush required).
+ * - Never overwrites: MERGE saves a new linked memory, UPDATE a new memory that
+ *   supersedes (locked: goes to review), NOOP writes nothing.
+ * - LLM calls are capped by opts.maxLlmCalls (default 50); exact-hash NOOPs and
+ *   zero-candidate ADDs do not consume budget.
+ * - _syncIndex() is fire-and-forget, so a `batchAccumulator` of engrams written
+ *   so far is spliced into recall results to catch new-vs-new near-duplicates.
  */
 export async function learnBatch(
   deps: LearnAsyncDeps,
@@ -633,19 +591,11 @@ export async function learnBatch(
       }
     }
 
-    // Per-statement deps that splice in-batch accumulator entries into the
-    // recall results so learnAsync's dedup step sees earlier batch writes even
-    // before _syncIndex() has flushed. The accumulator entries are appended
-    // AFTER the index results so index-resident engrams rank first; dedup
-    // trims to its `limit` anyway so duplicates across both lists are
-    // harmless. The caller's scope filter still runs inside learnAsync — the
-    // accumulator entries carry `scope` and `status` for it.
-    //
-    // learnRouted (if available) is the ADD-path learn function: it awaits
-    // the server push and returns the server-assigned id, so every result in
-    // the batch gets a distinct, correct id (see LearnAsyncDeps.learnRouted).
-    // Its own hash-dedup and cross-scope recurrence checks are redundant
-    // (learnAsync already ran them) but cheap.
+    // Per-statement deps that splice accumulator entries into recall results
+    // (after index results, so index-resident engrams rank first); the caller's
+    // scope filter still runs inside learnAsync on their `scope`/`status`.
+    // learnRouted (if available) awaits the server push and returns the
+    // server-assigned id, so every batch result gets a distinct, correct id.
     const effectiveLearn = deps.learnRouted ?? deps.learn
     const batchDeps: LearnAsyncDeps = {
       ...deps,

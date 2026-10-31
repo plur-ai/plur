@@ -31,45 +31,14 @@ export interface ForgetRescopeMethods {
   uploadLocal(ids: string[], opts?: { dryRun?: boolean }): Promise<{ results: UploadLocalResult[] }>
 
   /**
-   * Move existing engram(s) to `targetScope`. Fills the gap between `learn()`
-   * (whose content-hash dedup silently no-ops a re-emit under a new scope) and
-   * candidate promotion (`plur_promote` ACTIVATES a candidate; it never changes
-   * scope).
-   *
-   * Routing by target:
-   *  - REMOTE-backed scope (a writable `stores:` url entry): push a copy via
-   *    the routed write path (`appendAndGetServerId`: the server assigns the
-   *    id; its own content-hash dedup is relied on, not fought), with
-   *    provenance stamped in the copy's `source` field ("rescoped from <id>")
-   *    and `structured_data._rescoped_from`. Then, unless `keep_local`,
-   *    soft-retire the local source with a `superseded_by` link so it stops
-   *    injecting; retired rows are invisible to `_hashDedup`, so the source's
-   *    hash cannot resurrect it. Deliberately NO outbox fallback: an explicit
-   *    move either lands or fails loud: on push failure the source stays
-   *    untouched (atomic semantics).
-   *  - LOCAL-family target (`local`, `global`, `project:*`, or the scope of a
-   *    configured path store): rewrite `scope` in place under the store lock,
-   *    via the same incremental update path as `updateEngram`'s local branch, so
-   *    id, activation, feedback and history stay attached to the same row.
-   *
-   * Guards:
-   *  - Target validation: a scope that is neither local-family nor backed by a
-   *    configured store fails EARLY with a structured error, never a silent
-   *    success that strands the engram un-synced (e.g. a typo in a group scope).
-   *  - Authorization: the same client-side rule as the learnRouted write path:
-   *    a readonly store entry is refused.
-   *  - Sensitivity (mirrors `_guardExplicitUpdate`'s remote arm): a rescope to
-   *    a shared/remote scope re-scans the FULL content (statement + context
-   *    fields via `_engramContextFields`). An offending hit BLOCKS that id:
-   *    an explicit move must fail loud, never silently demote.
-   *  - Dedup on target: an identical ACTIVE engram already at the target
-   *    (content-hash AND scope match) is idempotent success:
-   *    nothing pushed, and the source is still retired per `keep_local`, so
-   *    re-running a partially-failed batch converges.
-   *
-   * Batch-first: `idOrIds` accepts one id or an array;
-   * outcomes are per-id and one failure never blocks the rest. `dry_run`
-   * reports every decision without mutating anything, local or remote.
+   * Move existing engram(s) to `targetScope` (`learn()` dedup no-ops a re-emit,
+   * `plur_promote` never changes scope). Batch-first: per-id outcomes; `dry_run` mutates nothing.
+   * - REMOTE target: push a copy (provenance in `source`, `_rescoped_from`), then unless
+   *   `keep_local` retire the source (`superseded_by`). NO outbox: a failed push leaves it untouched.
+   * - LOCAL-family target: rewrite `scope` in place under the store lock, keeping id and history.
+   * Guards: unknown target scopes fail early; readonly stores are refused; a
+   * shared/remote target re-scans full content and BLOCKS on a hit (never demotes);
+   * an identical active engram at the target is idempotent success.
    */
   rescope(idOrIds: string | string[], targetScope: string, options?: RescopeOptions): Promise<{ results: RescopeResult[]; success: boolean }>
 
@@ -209,20 +178,12 @@ export const forgetRescopeMethods: ForgetRescopeMethods & ThisType<Plur> = {
       const engram = engrams.find(e => e.id === id)
       if (!engram) return false
 
-      // Ambiguity guard. Sits HERE, past the not-found return, so the local hit
-      // is established by control flow: "ambiguous" means it resolves in more
-      // than one place, and a remote-only id (including a namespaced one) is
-      // not ambiguous and must keep routing straight through.
-      //
-      // A COLD cache must not silently downgrade to first-match-wins:
-      // `_loadRemoteCached` is a synchronous peek with no fetch, so the probe
-      // falls back to a bounded live lookup (one getById per configured remote
-      // store) when that store's cache is cold. If the lookup cannot complete,
-      // refuse rather than guess; the caller can pass scope: "primary", which
-      // skips this block entirely and needs no network.
-      // The probe normally runs BEFORE this lock (see `probedOutsideLock`).
-      // Only a row that appeared between that unlocked check and this lock is
-      // probed here, bounded the same way.
+      // Ambiguity guard, past the not-found return: only an id that resolves in
+      // more than one place is ambiguous; remote-only ids route straight through.
+      // A cold cache must not downgrade to first-match-wins: fall back to a
+      // bounded live lookup, and refuse if it cannot complete (scope: "primary"
+      // skips this). Normally probed before the lock (`probedOutsideLock`); here
+      // only for a row that appeared in between.
       if (!targetScope && !probedOutsideLock && engram.status !== 'retired') {
         this._decideForgetProbes(id, await this._probeIdCollisions(id), warnings)
       }
@@ -390,23 +351,12 @@ export const forgetRescopeMethods: ForgetRescopeMethods & ThisType<Plur> = {
       // The team store's host may also hold personal rows under the same token:
       // act on a bare id only when its row there is in a team scope.
       if (this._remoteOnly && !(await this._remoteRowOwnedByTeam(driver, this._stripRemotePrefix(id, entry.scope)))) continue
-      // Tri-state ownership. `getById` alone cannot distinguish "this store does
-      // not have it" from "this store did not answer", and treating an
-      // unreachable remote as "not found" would claim absence the walk never
-      // verified.
-      //
-      // For bare IDs the walk CONTINUES on `unknown`: a degraded fleet must not
-      // stop a retire. The store is recorded so the terminal message does not
-      // claim knowledge it does not have. Same resolution `feedback` uses.
-      //
-      // For namespaced IDs (ENG-GPL-...) the prefix was stripped above, so this
-      // store likely is the intended target, but storePrefix() is lossy, so
-      // two scopes can share a prefix. Defer instead of throwing: record the
-      // error and continue; fire it only once the walk completes without a
-      // retirement.
-      // Optional capability: a driver without `probeById` (an injected stub, a
-      // third-party implementation) keeps two-state behaviour rather than
-      // crashing. Absence of the capability is not a reason to fail a retire.
+      // Tri-state ownership: `getById` cannot tell "absent" from "did not
+      // answer", and an unreachable remote must not be claimed absent.
+      // Bare IDs: the walk CONTINUES on `unknown` (a degraded fleet must not stop
+      // a retire); the store is recorded for the final message. Namespaced IDs:
+      // prefixes are lossy, so record the error and fire it only if the walk
+      // ends without a retirement. A driver without `probeById` stays two-state.
       const ownership: 'owned' | 'absent' | 'unknown' = driver.probeById
         // Bounded like the collision probe.
         ? await driver.probeById(serverId, { signal: AbortSignal.timeout(REMOTE_PROBE_TIMEOUT_MS) })
@@ -803,19 +753,11 @@ export const forgetRescopeMethods: ForgetRescopeMethods & ThisType<Plur> = {
         ...(tsd && typeof tsd === 'object' && !Array.isArray(tsd) ? tsd : {}),
         _rescoped: { from_scope: from, at: now },
       }
-      // CANCEL any pending delivery to the store we are moving away from.
-      //
-      // A failed remote write leaves `_outbox` naming the original url + scope.
-      // Leaving that entry queued would deliver the engram to the old store
-      // whenever it came back, silently reverting the rescope at an unbounded
-      // later time.
-      //
-      // Dropping is correct on THIS branch specifically: `route === 'local'`
-      // means the target matched no URL-backed store, so the user has said the
-      // engram does not belong in a shared store at all. (A target that maps to
-      // a different remote takes the `remote` branch, which builds a fresh copy
-      // with the bookkeeping keys stripped and retires the source, and
-      // flushOutbox already skips retired rows.)
+      // CANCEL any pending delivery to the store we are moving away from: a
+      // queued `_outbox` entry would later deliver to the old store and silently
+      // revert the rescope. Dropping is right on this branch only — `route ===
+      // 'local'` means the target is not URL-backed; the `remote` branch builds
+      // a fresh copy and retires the source, which flushOutbox skips.
       const ob = nextSd._outbox as { target_url?: string; target_scope?: string } | undefined
       if (ob?.target_url) {
         cancelledOutbox = { target_url: ob.target_url, target_scope: ob.target_scope ?? from }

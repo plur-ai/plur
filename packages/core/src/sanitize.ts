@@ -1,44 +1,17 @@
 /**
  * Statement sanitisation shared by every write path.
- *
- * ## The attack
- *
- * `dsh`'s `flatten()` renders engrams into one block and splits entries on a
- * line terminator followed by an opening bracket. A statement that contains
- * that sequence therefore mints a SECOND entry when rendered — and the renderer
- * emits that block at system-prompt authority, so the forged entry is read as
- * an instruction rather than as data.
- *
- * ## Why this lives in core, in its own module
- *
- * Not every write path goes through `Plur.learn()`. `learnRouted()` calls
- * `learn()` only on its local route: when a remote store resolves for the
- * scope, it posts the engram without entering `learn()`, and the outbox
- * fallback writes the same raw shape locally. The CLI and the Python SDK both
- * go through `learnRouted`. A forged entry on a shared store reaches other
- * people's system prompts, so a helper called by every route is the only way
- * to guarantee no write path bypasses the sanitisation.
- *
- * ## The character class
- *
- * Deliberately matches the renderer's own class byte for byte rather than
- * narrowing to the one character that provably forges a boundary today. A
- * sanitiser that is exactly as strict as the renderer it defends stays correct
- * when either side is edited; one that is narrower is correct only until
- * someone widens the splitter, and nothing would fail loudly when they did.
+ * - Attack: `dsh`'s `flatten()` splits entries on a line terminator followed by `[`,
+ *   so such a statement forges a second entry at system-prompt authority.
+ * - Lives in core because not every route enters `Plur.learn()` (`learnRouted`'s remote
+ *   post and outbox fallback do not); every route must call it.
+ * - The character class matches the renderer's byte for byte, never narrower, so it
+ *   stays correct when either side changes.
  */
 
 /**
- * A line-terminator run, plus any spaces or tabs hugging it on either side.
- *
- * The class is CR, LF, LINE SEPARATOR, PARAGRAPH SEPARATOR, NEXT LINE, vertical
- * tab, form feed and the four information separators — the same set the
- * MCP-side sanitiser uses, so the two cannot drift into disagreeing about what
- * a line break is.
- *
- * Absorbing the adjacent spaces here, rather than collapsing every multi-space
- * run afterwards, keeps the rewrite confined to the neighbourhood of the thing
- * being defused.
+ * A line-terminator run plus hugging spaces/tabs. The class (CR, LF, LS, PS, NEL, VT,
+ * FF, the four information separators) is the same set the MCP-side sanitiser uses,
+ * so they cannot drift. Absorbing adjacent spaces confines the rewrite locally.
  */
 const SPACES_AROUND_TERMINATORS =
   /[ \t]*[\r\n\u2028\u2029\u0085\u000b\u000c\u001c-\u001f]+[ \t]*/g

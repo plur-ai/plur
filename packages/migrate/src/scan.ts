@@ -1,38 +1,20 @@
 /**
  * Find PLUR calls that stopped being synchronous in 0.16 and were never awaited.
- *
- * ## Why this reports rather than rewrites, by default
- *
- * A naive codemod gets several classes of site wrong while still producing
- * valid code. Each is guarded for here, because a tool that silently corrupts
- * a user's source is worse than no tool:
- *
- *   - **String literals.** Rewriting text inside quotes turns help output
- *     into `hook-await inject` and a message into "Add a remote with await
- *     plur.sync(...)". Valid TypeScript, green tests.
- *   - **`Promise.race` / `Promise.all` arrays.** Inserting `await` into an
- *     element resolves that call BEFORE the array is constructed, which
- *     silently disables a timeout guard — the racing promise is already
- *     settled. Still valid, still green.
- *   - **ASI hazards.** A line beginning `(await ...)` after a line with no
- *     semicolon parses as a call on the previous expression.
- *
- * The compiler catches an un-awaited promise in TypeScript. It cannot catch any
- * of the above, and neither can a test suite. So: report everything, and only
- * rewrite the sites where the transformation is unambiguous.
+ * Reports by default and rewrites only unambiguous sites, because a naive
+ * codemod produces valid code that is silently wrong in three ways (neither the
+ * compiler nor tests catch them):
+ *   - **String literals:** rewriting text inside quotes.
+ *   - **`Promise.race` / `Promise.all` arrays:** an inserted `await` settles the
+ *     element first, e.g. disabling a timeout guard.
+ *   - **ASI hazards:** a line starting `(await ...)` splices onto a previous line with no semicolon.
  */
 
 /**
- * Methods on `Plur` that return a promise as of 0.16 and did not before.
- *
- * Deliberately NOT a list of "every async method" — `recallHybrid`,
- * `injectHybrid` and friends were always async, so a call to them without
- * `await` was already a bug and is not this migration's business.
- *
- * `capture` and `timeline` are absent because they are still synchronous: they
- * are backed by `episodes.yaml`, not the engram store. `suggestScope`,
- * `dismissScope`, `reofferScopes` and `listImportSources` are absent because
- * they were briefly async before release and were reverted.
+ * Methods on `Plur` that return a promise as of 0.16 and did not before — NOT
+ * every async method (`recallHybrid` etc. were always async). `capture` and
+ * `timeline` are absent because they are still synchronous (`episodes.yaml`);
+ * `suggestScope`, `dismissScope`, `reofferScopes` and `listImportSources` were
+ * briefly async before release and were reverted.
  */
 export const NEWLY_ASYNC = [
   // Derived from git, not from memory: these are the methods whose signature
@@ -173,31 +155,13 @@ function inSpans(spans: Array<[number, number]>, idx: number): boolean {
 
 /**
  * Characters after which a line-starting `(` cannot splice onto the previous
- * statement: statement terminators (`;`), openers (`{ ( [`), separators
- * (`, :`), and binary/prefix operator tails (`= > & | + - * % < ~ ^ ?`
- * — `>` also covers `=>`). Everything else — `)`, `]`, `}`, quotes,
- * identifier characters — can legally absorb a following `(` as a call or
- * index, which is the ASI splice. See the guard in `scanSource`.
- *
- * Two characters that LOOK like dangling operators are deliberately absent,
- * because both far more often END a complete expression (refusing them
- * would splice at runtime for each):
- *
- *   - `/` — the tail of a regex literal. `literalSpans` does not lex regexes,
- *     so `const re = /foo/` reaches this check as a bare `/`, and a regex
- *     followed by `(` is a CallExpression — no ASI. A genuine dangling
- *     division at end of line effectively does not occur.
- *   - `!` — TypeScript's non-null assertion (`map.get(k)!`), a standard
- *     end-of-line idiom in exactly the no-semicolon TS codebases this tool
- *     targets; `expr!(args)` is a call. A dangling prefix-`!` at end of line
- *     effectively does not occur.
- *
- * Known caveat, documented rather than removed: `>` stays because dangling
- * comparisons (`count >` at end of line) are real and the wrap there is both
- * safe and wanted — but a TS 4.7+ instantiation expression tail
- * (`const g = f<string>` at end of line) also ends in `>` and DOES splice,
- * silently. That shape is rare enough that refusing every dangling comparison
- * to block it would cost more than it saves.
+ * statement: `;`, openers `{ ( [`, separators `, :`, and operator tails
+ * `= > & | + - * % < ~ ^ ?` (`>` covers `=>`). Anything else (`)`, `]`, `}`,
+ * quotes, identifier characters) can absorb a `(` — the ASI splice; see `scanSource`.
+ * - `/` and `!` are deliberately absent: they almost always END an expression
+ *   (regex literal, non-null assertion), and `literalSpans` does not lex regexes.
+ * - Known caveat: a TS instantiation expression tail (`f<string>` at end of
+ *   line) ends in `>` and does splice; rare enough to accept.
  */
 const ASI_SAFE_BEFORE_PAREN = new Set([
   ';', '{', ',', '(', '[', ':', '=', '>', '&', '|', '+', '-', '*', '%', '<', '~', '^', '?',
@@ -277,17 +241,10 @@ const CONTROL_KEYWORDS = new Set(['if', 'for', 'while', 'switch', 'catch', 'with
 
 /**
  * Is `idx` directly inside a `Promise.all/race/allSettled/any([...])` array?
- *
- * Awaiting an element there resolves that call BEFORE the array is even
- * constructed, so the combinator receives an already-settled promise. For
- * `race` that silently disables a timeout; for `all` it serialises what the
- * caller wrote to run concurrently. Both still parse and still pass tests —
- * this is the bug the tool exists to prevent, so emitting it is the one
- * unacceptable outcome.
- *
- * Detected by scanning outwards for an unmatched `[` rather than by looking
- * back a fixed number of characters: a fixed window misses any combinator
- * whose preceding elements are long enough to push it out of range.
+ * Awaiting an element there settles it before the array exists (disabling a
+ * `race` timeout, serialising an `all`), so emitting it is unacceptable.
+ * Scans outward for an unmatched `[`; a fixed look-back window would miss
+ * combinators with long preceding elements.
  */
 function insideCombinatorArray(src: string, idx: number, spans: Array<[number, number]>): boolean {
   let square = 0, round = 0, curly = 0
@@ -329,18 +286,10 @@ function insideCombinatorArray(src: string, idx: number, spans: Array<[number, n
 
 /**
  * Whether the function enclosing `idx` is `async` — or `'top-level'` when the
- * call is not inside a function at all.
- *
- * `await` is a syntax error outside an async function, so inserting one without
- * checking produces source that does not parse. The tool did exactly that:
- * given `function saveIt(plur) { plur.learn('x') }` it emitted
- * `await plur.learn('x')` inside a non-async function, and `node --check`
- * rejected the file. A migration tool that breaks the build is worse than one
- * that reports and leaves the edit to a human.
- *
- * Walks backwards tracking brace depth to find the nearest enclosing `{` that
- * belongs to a function header, then inspects that header. String and comment
- * spans are skipped by the caller's span list.
+ * call is not inside a function. `await` outside an async function does not
+ * parse, so a rewrite there would break the build. Walks backwards by brace
+ * depth to the nearest enclosing function header; string and comment spans are
+ * skipped by the caller's span list.
  */
 function enclosingFunctionKind(src: string, idx: number, spans: Array<[number, number]>): 'async' | 'sync' | 'top-level' {
   let depth = 0
@@ -431,29 +380,11 @@ function matchBackwardBracket(src: string, close: number, spans: Array<[number, 
 
 /**
  * Resolve the start of the receiver chain whose method dot sits at `dot`, or
- * null when what precedes the dot is not a receiver this tool understands.
- *
- * Walks BACKWARD from the dot through the chain — identifier segments, `?.`
- * links, bracket indexes (nested ones too — the walk matches brackets with
- * spans skipped, so `m[a[0]]` and `m["a]b"]` both resolve), call arguments, and
- * parenthesised heads — skipping whitespace and comments between tokens.
- *
- * Why a walk and not a receiver-anchored regex:
- *
- *   - A regex cannot span a newline, so `plur\n  .recall(q)` — an ordinary
- *     fluent chain — would scan CLEAN, and a clean exit is read as "this file
- *     is done".
- *   - A regex re-anchors MID-chain: `getStore().plur.recall(q)` would match
- *     with receiver `plur`, and --write would emit
- *     `getStore().await plur.recall(q)`, which does not parse. The walk
- *     starts the finding at the true head of the chain, so the insertion
- *     point is always a position `await` may legally occupy — and an
- *     `await`/`return`/`void` already in front of the CHAIN is seen.
- *
- * The walk stops (returns null) at anything it cannot classify — a string or
- * template receiver, a control-structure header, an unmatched bracket. A miss
- * is reported by nothing and costs a finding; a mis-anchored rewrite corrupts
- * user source, which is the one unacceptable outcome.
+ * null when the receiver is not one this tool understands. Walks BACKWARD
+ * through identifiers, `?.`, bracket indexes, call arguments and parenthesised
+ * heads, skipping whitespace and comments. A regex would miss multi-line chains
+ * and re-anchor mid-chain (`getStore().await plur.recall(q)`). Anything
+ * unclassifiable returns null: a missed finding beats a mis-anchored rewrite.
  */
 function receiverStart(src: string, dot: number, spans: Array<[number, number]>): number | null {
   let i = dot - 1
@@ -534,17 +465,11 @@ function receiverStart(src: string, dot: number, spans: Array<[number, number]>)
 }
 
 /**
- * Scan one file's source for un-awaited calls to newly-async methods.
- *
- * Anchored on the METHOD, not the receiver: the receiver is resolved by
- * `receiverStart` walking backward from the method's dot, so a chain split
- * across lines (`plur\n  .recall(q)`), a comment inside the chain, or a call
- * in the chain all resolve to the same head as their single-line forms.
- *
- * This cannot know that the receiver is a `Plur`, so it reports `db.list()`
- * too. That is the correct trade for a text tool: a false positive costs a
- * glance, a false negative ships a silent bug. The report says which receiver
- * it saw so the reader can dismiss it instantly.
+ * Scan one file's source for un-awaited calls to newly-async methods. Anchored
+ * on the METHOD; the receiver is resolved by `receiverStart`, so multi-line
+ * chains resolve like single-line ones. It cannot know the receiver is a
+ * `Plur`, so it also reports e.g. `db.list()`: a false positive costs a glance,
+ * a false negative ships a bug. The report names the receiver it saw.
  */
 export function scanSource(file: string, src: string, methods: readonly string[] = NEWLY_ASYNC): Finding[] {
   const spans = literalSpans(src)
@@ -640,30 +565,14 @@ export function scanSource(file: string, src: string, methods: readonly string[]
       else { fixable = false; reason = 'result is consumed by a multi-line expression — needs `(await ...)` by hand' }
     }
 
-    // ASI hazard — the third failure class in the header comment. A `wrapTo`
-    // rewrite starts the line with `(`. If
-    // the PREVIOUS statement never terminated, that `(` splices both lines
-    // into one expression:
-    //
+    // ASI hazard (the third class in the header). A `wrapTo` rewrite starts the
+    // line with `(`; if the previous statement never terminated, that splices:
     //     const x = someFunc()          const x = someFunc()
     //     plur.list().length      ->    (await plur.list()).length
-    //
-    // parses as `someFunc()(await plur.list()).length` — the previous line's
-    // result is CALLED, at runtime, with the awaited value as its argument.
-    // Only the paren-wrap form is exposed: a plain inserted `await` cannot
-    // continue the previous expression (`f() await` is invalid, so ASI still
-    // splits the lines exactly as it did before the rewrite).
-    //
-    // Applies only when the call starts its line; mid-line insertions sit
-    // inside an expression whose parsing is already fixed. The previous
-    // significant character decides: an operator, opener, `;`, `,` or `:`
-    // means the `(` either starts a fresh statement or continues an
-    // expression that was ALREADY continuing — while `)`, `]`, `}`, a quote,
-    // or an identifier tail can all legally absorb a following `(` as a call.
-    // `}` is refused even though it is usually a block end, because it is
-    // also how a function EXPRESSION ends, and `let f = function () {}`
-    // followed by `(await ...)` is the splice again. Refusal costs a glance;
-    // the splice costs a runtime failure in rewritten user source.
+    // calls `someFunc()` with the awaited value. Only paren-wraps at line start
+    // are exposed. Refuse unless the previous significant character is in
+    // ASI_SAFE_BEFORE_PAREN; `}` is refused too, since a function expression
+    // ends with it.
     if (fixable && wrapTo !== undefined) {
       const lineStart = idx - (pos.column - 1)
       if (/^\s*$/.test(src.slice(lineStart, idx))) {
@@ -722,14 +631,9 @@ function matchParen(s: string, open: number, spans: Array<[number, number]>, bas
 /**
  * Add `await` at the fixable sites. Returns the new source, the count applied,
  * and the fixable sites it could NOT apply (for the caller to report).
- *
- * Applied right-to-left so a site's START is never moved by an earlier edit.
- * Its END can be: when one fixable call sits inside another's argument list on
- * the same line (`plur.list(plur.getById(id)).length`), the inner `await ` is
- * inserted first, inside the outer wrap's span, and an unadjusted `wrapTo`
- * would close the outer `(await …)` six characters early, corrupting the
- * line. So every position is mapped through
- * the insertions already made on that line (original offset → current offset).
+ * Applied right-to-left so a site's START never moves; its END can (a fixable
+ * call nested in another's arguments on the same line), so every position is
+ * mapped through the insertions already made on that line.
  */
 export function applyFixes(src: string, findings: Finding[]): { src: string; applied: number; skipped: Finding[] } {
   const lines = src.split('\n')

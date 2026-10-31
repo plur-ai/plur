@@ -1,44 +1,22 @@
 /**
  * Heuristic, READ-ONLY detector for engrams whose statement may have lost its
- * negation during extraction (`CORRECTION_PATTERNS` / `PREFERENCE_PATTERNS` in
- * `learner.ts`). Such an engram is a confident standing instruction meaning
- * the OPPOSITE of what was said ("never commit the API key" stored as "commit
- * the API key"). Stores synced from other machines can carry them too.
- * Neither `plur tensions` (contradictions between TWO engrams) nor the
- * secret/sensitivity scanners look for this shape.
- *
- * This module only REPORTS suspects. It never rewrites an engram: a truncated
- * fragment cannot be reliably reconstructed (which word was dropped? was there
- * ever a negation?), and guessing wrong would corrupt the memory a second
- * time. A human reviews each suspect: fix it by hand, retire it, or confirm a
- * false positive (clean statements can end in a preposition or start with a
- * bare verb).
- *
- * HEURISTIC, NOT PROOF. Every check matches the SURVIVING text, so it both
- * misses real inversions ("use pnpm, not npm" truncated to "use pnpm" reads
- * as complete) and flags statements written in an unusual shape. The CLI's
- * `plur audit --source engrams` help text repeats this caveat for users.
+ * negation during extraction (`learner.ts` patterns), turning "never commit the
+ * API key" into "commit the API key". Neither `plur tensions` nor the secret
+ * scanners look for this shape.
+ * Only REPORTS suspects; never rewrites (a fragment cannot be reliably
+ * reconstructed). A human reviews each one. HEURISTIC, NOT PROOF: it both misses
+ * inversions and flags unusual phrasing; `plur audit --source engrams` says so.
  */
 
 export interface InversionSuspect {
   id: string
   statement: string
   /**
-   * Which recognizable shape(s) this statement matches. A statement can
-   * match both — that is a STRONGER signal, not a double-count of the same
-   * one.
-   *
-   * - `truncated-tail`: the statement ends on a word that cannot end a
-   *   complete standing instruction (a copula, modal, preposition,
-   *   conjunction, article, or a dangling "not") — the shape
-   *   `/(.+?),?\s+not\s+(.+)/i` leaves when only the text before "not" is
-   *   captured.
-   * - `bare-imperative`: the statement opens with a common action verb and
-   *   no leading subject, hedge, or polarity word (no "never", "don't",
-   *   "you should", …) — consistent with a pattern such as
-   *   `(?:always|never)\s+(.+)` capturing only the tail and dropping the
-   *   directive word, or with the SURVIVING half of an "X, not Y" contrast
-   *   whose second half was dropped ("use pnpm" from "use pnpm, not npm").
+   * Which shape(s) the statement matches; both is a stronger signal.
+   * - `truncated-tail`: ends on a word that cannot end an instruction (copula,
+   *   modal, preposition, article, dangling "not") — what `, not` capture leaves.
+   * - `bare-imperative`: opens with an action verb and no subject or polarity
+   *   word — a dropped "never"/"always", or the surviving half of "X, not Y".
    */
   shapes: Array<'truncated-tail' | 'bare-imperative'>
   reason: string

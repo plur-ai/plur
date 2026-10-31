@@ -4,30 +4,14 @@ import { atomicWrite, ALLOW_UNPROTECTED_ENV, CONFIG_FILE_MODE, _atomicWriteAcl }
 import { checkOwnerOnly, protectOwnerOnly, type OwnerOnlyResult } from './owner-only.js'
 
 /**
- * The one way core writes `config.yaml`. The file holds the device key and
- * remote bearer tokens, so it stays owner-only after EVERY write:
- *
- * 1. Unix: an existing file is tightened to 0600 first, so the new content is
- *    never published at a wider mode (atomicWrite keeps the destination's own
- *    mode).
- * 2. `atomicWrite(…, { mode: 0600, secret: true })` — on Windows the temp file
- *    is owner-only before its first byte, and the write is refused (throws,
- *    nothing written) when that cannot be established.
- * 3. {@link protectOwnerOnly} re-applies and verifies the protection on the
- *    file now in place (on Windows a clean {@link checkOwnerOnly} reading of
- *    the renamed file is enough — it carries the temp file's verified list).
- *    A failure here is not swallowed: one stderr line, and the result is
- *    returned. The write itself stands — losing the key would
- *    be worse — and `plur doctor` re-checks it.
- *
- * `content` may be bytes, so a backup's exact bytes can be restored through
- * this same protected write.
- *
- * A static test keeps every config writer on this path
- * (test/config-owner-only.test.ts). It lives apart from sync.ts so that it
- * calls `atomicWrite` through the module's export — the seam tests use to
- * simulate a crash mid-write — and apart from owner-only.ts so no import
- * cycle forms.
+ * The one way core writes `config.yaml` (device key, tokens); owner-only after EVERY write:
+ * 1. Unix: an existing file is tightened to 0600 first (atomicWrite keeps its mode).
+ * 2. `atomicWrite(…, { mode: 0600, secret: true })` — on Windows refuses (throws)
+ *    unless the temp file is owner-only before its first byte.
+ * 3. {@link protectOwnerOnly} re-applies and verifies; a failure logs one stderr line
+ *    and is returned, the write stands, and `plur doctor` re-checks.
+ * `content` may be bytes (backup restores). test/config-owner-only.test.ts keeps every
+ * config writer here; kept apart from sync.ts (crash-test seam) and owner-only.ts (cycles).
  */
 export function writeConfigFile(path: string, content: string | Buffer): OwnerOnlyResult {
   if (_atomicWriteAcl.platform !== 'win32' && existsSync(path)) {

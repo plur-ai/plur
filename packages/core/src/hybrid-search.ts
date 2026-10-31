@@ -90,19 +90,10 @@ function rrfMerge(resultSets: Engram[][], k = 60): Array<{ engram: Engram; score
 }
 
 /**
- * Fuse the keyword and meaning legs of hybrid search.
- *
- * Reciprocal Rank Fusion, with each keyword hit's contribution scaled by its
- * query coverage (the IDF-weighted share of the query's words it contains,
- * see `ftsScoreDetail`). Plain RRF counts the first keyword hit exactly as
- * much as the first meaning hit whatever it matched, so a memory that shares
- * one incidental word with a reworded question ties with the memory that
- * answers it, and a handful of such hits push the answer out of the top five.
- * Scaled, a hit that matches the whole query counts in full and one that
- * matches a quarter of it counts a quarter.
- *
- * With only one leg there is nothing to arbitrate: the keyword order is
- * returned as BM25 ranked it.
+ * Fuse the keyword and meaning legs: Reciprocal Rank Fusion with each keyword hit scaled
+ * by its query coverage (IDF-weighted share of query words, `ftsScoreDetail`), so a hit
+ * sharing one incidental word does not tie with the answer. With one leg, the keyword
+ * order is returned as BM25 ranked it.
  */
 function fuseLegs(keyword: ScoredKeywordHit[], meaning: Engram[], k = 60): Array<{ engram: Engram; score: number }> {
   if (meaning.length === 0) return rrfMerge([keyword.map(h => h.engram)], k)
@@ -153,16 +144,9 @@ function isAggregationQuery(query: string): boolean {
 }
 
 /**
- * Hybrid search: BM25 + embedding search merged via RRF.
- *
- * Runs both search methods in parallel, then fuses results.
- * No LLM calls — fully local, ~500ms with cached embeddings.
- *
- * Automatically detects aggregation queries ("how many", "total", etc.)
- * and switches to exhaustive mode — widens the internal candidate pool
- * (limit floored at 50 for the BM25/embedding legs and the rerank stage)
- * so relevant mentions are less likely to be crowded out of the ranking.
- * The returned list is always capped at `limit`.
+ * Hybrid search: BM25 + embedding search run in parallel and merged via RRF. Fully local.
+ * Aggregation queries ("how many", "total", …) switch to exhaustive mode: the internal
+ * candidate pool is floored at 50 for both legs and rerank. Output is capped at `limit`.
  */
 export async function hybridSearch(
   engrams: Engram[],

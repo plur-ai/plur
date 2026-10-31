@@ -6,16 +6,10 @@ const n = (x: number) => x.toLocaleString('en-US')
 const pct = (x: number) => `${Math.round(x * 100)}%`
 
 /**
- * Human-readable memory receipt.
- *
- * Every line is a counted fact. No monetary or token-savings figure is shown:
- * for subscription users marginal token cost is zero, and the value of an
- * avoided rediscovery is not measurable from this data.
- *
- * Leads with DELIVERY — how many times a memory you taught PLUR was put in
- * front of the model — because that scales with real usage. Activation rate is
- * kept as a labelled store-health signal, not a success score, because it is
- * roughly injection_budget ÷ store_size and falls as you teach more.
+ * Human-readable memory receipt; every line is a counted fact, with no monetary or
+ * token-savings figure (not measurable here). Leads with DELIVERY (times a taught
+ * memory reached the model). Activation rate is a store-health signal, not a success
+ * score: it is roughly injection_budget ÷ store_size.
  */
 export function renderReceipt(r: Receipt): string {
   const L: string[] = []

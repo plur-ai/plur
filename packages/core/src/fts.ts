@@ -22,41 +22,20 @@ export const MIN_TOKEN_LENGTH = 2
 
 /**
  * Version of `ftsTokenize`'s output contract. Bump on ANY change that can alter
- * the token list produced for the same input.
- *
- * Exists because a store may derive tokens at WRITE time and compare them
- * against freshly-tokenized query terms at READ time — `PostgresAdapter` does
- * exactly that, and it is what lets the BM25 pushdown claim exactness: `df`
- * counted in SQL over stored tokens, `tf` counted in JS over live text,
- * guaranteed to agree because one tokenizer produced both.
- *
- * The guarantee holds only while the tokenizer that wrote the rows and the one
- * asking the question are the same tokenizer. When they are not, nothing
- * throws: rows tokenized under an older contract may simply never match a
- * query, which is indistinguishable from the engram not existing. Stores that
- * persist tokens compare this version and reindex when it changes.
+ * the token list for the same input.
+ * Stores that tokenize at write time (e.g. `PostgresAdapter`'s exact BM25
+ * pushdown) rely on one tokenizer producing both stored and query tokens; a
+ * mismatch fails silently (rows never match), so such stores reindex when
+ * this changes.
  */
 export const TOKENIZER_VERSION = 4
 
 /** Tokenize text into searchable terms */
 /**
- * Scripts written without spaces between words.
- *
- * These are indexed as character BIGRAMS rather than words, because there is
- * no whitespace to split on and a per-language segmenter is a dependency this
- * package will not take.
- *
- * `Script_Extensions`, NOT `Script`. A character's `Script` is its single
- * primary script; its `Script_Extensions` is every script that USES it.
- * U+30FC ー, the prolonged sound mark in essentially every Japanese loanword,
- * has `Script=Common`, so under `Script` it would terminate the run:
- *
- *     ftsTokenize('コンピューター')  →  ["ーター","コン","ンピ","ピュ"]
- *
- * …which indexes fragments split at the wrong place, so a query for ベース would
- * not match a document containing it. `Script_Extensions=Katakana` includes
- * U+30FC, and the same rule covers the Han iteration mark 々, the
- * Japanese/Korean iteration and repetition marks, and Thai's THANTHAKHAT.
+ * Scripts written without spaces between words, indexed as character BIGRAMS
+ * (no per-language segmenter dependency).
+ * Uses `Script_Extensions`, NOT `Script`: marks like U+30FC ー (Script=Common),
+ * 々 and Thai's THANTHAKHAT would otherwise split runs in the wrong place.
  */
 const SPACELESS_RUN = /[\p{Script_Extensions=Han}\p{Script_Extensions=Hiragana}\p{Script_Extensions=Katakana}\p{Script_Extensions=Thai}\p{Script_Extensions=Khmer}\p{Script_Extensions=Lao}\p{Script_Extensions=Myanmar}]{2,}/gu
 
@@ -66,17 +45,9 @@ const SPACELESS_RUN = /[\p{Script_Extensions=Han}\p{Script_Extensions=Hiragana}\
  * syllable blocks.
  */
 /**
- * Longest space-less run that gets fully bigram-indexed.
- *
- * 512 characters is far above any real statement in a space-less script — a
- * Japanese or Chinese engram statement runs to tens of characters, not
- * hundreds — and far below the scale at which a single pasted document starts
- * to dominate a shared GIN index. Chosen to be a no-op for every engram the
- * store is meant to hold, and a bound for the ones it is not.
- *
- * Changing this alters the token list for long runs, so it is covered by
- * {@link TOKENIZER_VERSION}: bump the version and reindex, or stored tokens
- * and query tokens stop agreeing.
+ * Longest space-less run that gets fully bigram-indexed: far above any real
+ * statement, far below what lets one pasted document dominate a shared GIN
+ * index. Changing it alters tokens, so bump {@link TOKENIZER_VERSION} and reindex.
  */
 export const MAX_SPACELESS_RUN_CHARS = 512
 
@@ -217,26 +188,13 @@ export function engramSearchText(engram: Engram): string {
 }
 
 /**
- * Hash of the exact text an engram's embedding was computed from.
- *
- * Stored beside the vector so a store can answer "is this vector still the
- * right one for this engram?". Without it a dedup UPDATE/MERGE could rewrite a
- * statement and semantic recall would go on ranking it by the old text.
- *
- * Hashes the RAW `engramSearchText` — the string actually passed to `embed()` —
- * NOT its tokenization. The tokenized form is lossy in exactly the direction
- * that matters: `ftsTokenize` drops stop words and short tokens, so
- * "use X" -> "do not use X" would hash identically while the embedded text,
- * and therefore the correct vector, changed completely.
- *
- * md5, not the sha256 used by the file-backed cache in `embeddings.ts`. Not a
- * security boundary — a change detector. The two hashes never meet.
- *
- * The WRITER hashes the text it actually embedded, rather than the store
- * re-deriving it at write time. An engram updated between the backfill's batch
- * read and its upsert would otherwise get a hash of the NEW text attached to a
- * vector of the OLD text — permanently stale while claiming to be current.
- * Hashing what we embedded makes that case self-healing.
+ * Hash of the exact text an engram's embedding was computed from, stored beside
+ * the vector so a rewritten statement is not ranked by its old vector.
+ * - Hashes the RAW `engramSearchText` passed to `embed()`, not its lossy
+ *   tokenization (which drops stop words: "use X" vs "do not use X").
+ * - md5: a change detector, not a security boundary.
+ * - The WRITER hashes what it embedded, so a concurrent update self-heals
+ *   instead of pairing a new-text hash with an old-text vector.
  */
 export function embeddingContentHash(engram: Engram): string {
   return hashEmbeddedText(engramSearchText(engram))
@@ -248,19 +206,10 @@ export function hashEmbeddedText(text: string): string {
 }
 
 /**
- * Corpus-wide statistics for IDF, supplied by a store that can compute them
- * without materialising the corpus.
- *
- * `computeIdf`'s default behaviour derives `N` and `df` from the engrams it is
- * handed. That is correct only when it is handed the WHOLE corpus. When
- * narrowing is pushed into the store it is not: given 200 candidates out of 50,000
- * engrams, deriving `N = 200` scores a term that is rare corpus-wide but common
- * among the candidates as if it were common — the exact inversion IDF exists to
- * prevent.
- *
- * The failure is silent. Every score is a plausible number, every test that
- * checks "the right rows came back" still passes, and the only symptom is
- * quietly worse ranking. So a store that narrows MUST also supply these.
+ * Corpus-wide IDF statistics, supplied by a store that can compute them without
+ * materialising the corpus. `computeIdf` otherwise derives `N` and `df` from the
+ * engrams it is handed, which is wrong for a narrowed candidate set and fails
+ * silently (only ranking degrades). A store that narrows MUST supply these.
  */
 export interface CorpusStats {
   /** Total number of documents in the corpus — not in the candidate set. */
@@ -288,15 +237,10 @@ export interface CorpusStats {
 
 /**
  * True when a document term matches a query term under BM25's matching rule.
- *
- * Single definition so `ftsScore`, `computeIdf`, and any store implementing
- * {@link CorpusStats} cannot drift apart. They must agree exactly: `df` counted
- * under one rule and `tf` counted under another produces scores that are not
- * BM25 at all, with no error to signal it.
- *
- * Forward (`t.includes(qt)`) finds `transferWithAuthorization` from `auth`.
- * Reverse is bounded to a prefix so `deploy` still matches `deploying` while
- * `yin` does not match it.
+ * The single definition shared by `ftsScore`, `computeIdf` and
+ * {@link CorpusStats} stores: `df` and `tf` counted under different rules is
+ * not BM25, silently. Forward is substring (`auth` → `transferWithAuthorization`);
+ * reverse is prefix-only (`deploy` matches `deploying`, `yin` does not).
  */
 export function termMatches(t: string, qt: string): boolean {
   return t.includes(qt) || qt.startsWith(t)
@@ -344,23 +288,12 @@ export function computeIdf(
 }
 
 /**
- * Extend store-supplied corpus statistics with documents that live OUTSIDE
- * that store, so a union of primary + outsider engrams is scored against the
- * union's true statistics instead of the primary corpus's.
- *
- * Scoring outsiders (secondary-store and pack engrams) with primary-only stats
- * leaves any query term that is ABSENT from the primary corpus at `df = 0`, so
- * `computeIdf` prices it as maximally rare — `log(N/1)`, decoupled from the
- * term's real prevalence among the outsiders — and weak outsider rows outrank
- * strong primary matches. Team-specific jargon (common in a team store, absent
- * from a personal one) hits this on the normal multi-store path.
- *
- * The outsiders are already fully materialised in memory by the time the
- * union is ranked (that is how they got into the candidate list), so exact
- * union figures cost one tokenisation pass — there is nothing to approximate.
- * `df` counts under {@link termMatches}, the same rule `computeIdf`'s local
- * path applies; see the CorpusStats.df doc for why drifting from that rule is
- * worse than supplying no stats at all.
+ * Extend store-supplied corpus statistics with outsider documents (secondary
+ * stores, packs), so the union is scored against its true statistics.
+ * With primary-only stats, a term absent from the primary corpus gets `df = 0`
+ * and maximal IDF, letting weak outsider rows outrank strong primary matches.
+ * Outsiders are already in memory, so figures are exact. `df` counts under
+ * {@link termMatches}, the same rule `computeIdf` uses (see CorpusStats.df).
  */
 export function extendCorpusStats(
   stats: CorpusStats,

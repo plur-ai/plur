@@ -1,30 +1,12 @@
-// Failed-recall miss-signal.
-//
-// When a hybrid recall returns zero engrams OR a top RRF score below a
-// configurable relevance floor, that is a *demand signal*: the user asked
-// memory something it could not answer. Aggregated across installs, those
-// misses show what knowledge is missing. This module only EMITS the anonymized
-// miss; clustering happens downstream.
-//
+// Failed-recall miss-signal: a hybrid recall with zero results or a top RRF score
+// below the floor is a demand signal. This module only EMITS the anonymized
+// miss (fire-and-forget POST); clustering happens downstream.
 // Privacy invariants (shared with telemetry-counters / telemetry-flush):
-//   1. Opt-in, default-off. Every public function short-circuits on
-//      !isTelemetryEnabled() BEFORE any network call. A default-off install
-//      makes zero network calls and writes zero files for miss-signals.
-//   2. Content-free AND identifier-free. The raw query NEVER leaves the process;
-//      only a SHA-256 fingerprint of the normalized query is sent.
-//      The scope is reduced to its KIND only ('project:acme-secret' becomes
-//      'project'), so a private project/client name is never transmitted. The
-//      domain is reduced to its first dotted segment ('trading.client-foo'
-//      becomes 'trading', the topic). A reason code and UTC date complete the
-//      payload. No query text, no engram text, no result bodies, no scope
-//      paths, no identity beyond the opaque install id.
-//   3. Never throws. On any failure (network, timeout, non-2xx) emit() resolves
-//      to false; the caller's recall path is never disturbed.
-//
-// Transport mirrors telemetry-flush's heartbeat: a single small JSON POST to a
-// documented endpoint, AbortController timeout, errors swallowed. Unlike the
-// daily counter heartbeat, a miss is emitted at the moment it happens (fire-
-// and-forget) because the signal is the event, not a daily aggregate.
+//   1. Opt-in, default-off: every public function checks isTelemetryEnabled()
+//      BEFORE any network call or file write.
+//   2. Content- and identifier-free: only a SHA-256 of the normalized query, the
+//      scope KIND, the domain's first segment, a reason code and UTC date.
+//   3. Never throws: emit() resolves false on any failure.
 
 import { createHash } from 'node:crypto'
 import { homedir } from 'node:os'
@@ -94,22 +76,11 @@ export function scopeType(scope: string | undefined | null): string | null {
 const DEFAULT_ENDPOINT = 'https://plur.ai/v1/miss-signal'
 const DEFAULT_TIMEOUT_MS = 5000
 
-// Below this top RRF score we treat a non-empty result set as a miss: the
-// engrams that came back are too weakly related to the query to be a real hit.
-// Tunable via PLUR_MISS_SCORE_THRESHOLD. RRF scores are small: rank r in one
-// result list scores 1/(k + r + 1), k = 60, and a document's score is the sum
-// over the lists (BM25, embeddings) that returned it.
-//
-// The default 0.025 lies strictly between 1/61 ≈ 0.0164 and 2/61 ≈ 0.0328:
-//   - a top hit only ONE retrieval leg found scores at most 1/61 → `low_score`
-//     (a lone lexical or lone semantic match is a weak answer);
-//   - a top hit BOTH legs ranked first scores 2/61 → a hit;
-//   - a top hit both legs found counts as a hit while its rank in the second
-//     leg is ≤ 55 (1/61 + 1/116 ≥ 0.025 > 1/61 + 1/117).
-// 0.025 sits near the midpoint (3/122 ≈ 0.0246) so neither boundary is within
-// float noise of it. Any value below 1/61 would make `low_score` unreachable.
-// In BM25-only mode (embeddings off) there is one leg, so an opted-in install
-// reports every non-empty recall's weak top hit as `low_score`.
+// Below this top RRF score a non-empty result is a miss (PLUR_MISS_SCORE_THRESHOLD
+// overrides). RRF rank r scores 1/(61 + r) per leg, summed over BM25 and
+// embeddings. 0.025 sits between 1/61 and 2/61: a top hit found by only one
+// leg is `low_score`; one found by both is a hit. Any value below 1/61 would
+// make `low_score` unreachable. In BM25-only mode every weak top hit is `low_score`.
 export const DEFAULT_MISS_SCORE_THRESHOLD = 0.025
 
 function resolveThreshold(env: NodeJS.ProcessEnv): number {

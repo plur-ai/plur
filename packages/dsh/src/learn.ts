@@ -14,20 +14,10 @@ import type { Counters } from './counters.js'
 import { contain, writable, type WriteQueue } from './guard.js'
 
 /**
- * High-precision correction and rule patterns.
- *
- * Precision matters more than recall here, because these fire unattended and
- * what they write is permanent. Ordinary sentences such as these must not
- * match:
- *
- *   "I never got the confirmation email from them."
- *   "Actually I think we already shipped that last week."
- *   "It always takes forever to build on this machine."
- *   "Hmm, actually never mind, ignore that."
- *
- * So `always`/`never` must open a sentence or follow `we`/`you` — the shapes a
- * rule actually takes — and bare `actually`, mostly a discourse marker, is not
- * a trigger. `correction` is, because nobody says it by accident.
+ * High-precision correction and rule patterns: they fire unattended and write
+ * permanently, so precision beats recall. `always`/`never` must open a sentence or
+ * follow `we`/`you`; bare `actually` (a discourse marker) is not a trigger;
+ * `correction` is. Must not match e.g. "I never got the confirmation email from them."
  */
 const PATTERNS: readonly RegExp[] = [
   /\bno,?\s+(?:use|do|it'?s|that'?s|the)\b/i,

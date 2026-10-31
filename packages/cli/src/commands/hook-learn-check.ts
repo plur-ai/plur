@@ -10,46 +10,14 @@ import { hookSessionDir } from '../lib/session-task.js'
 import { claimNudge, hasLearnSignal, lastUserMessage, learnFallbackInterval } from '../lib/learn-signal.js'
 
 /**
- * plur hook-learn-check — Stop hook that prompts learning reflection
- * AND writes periodic session checkpoints for crash recovery.
- *
- * Runs at the end of every response:
- * - Nudges when the user's last message (read from the payload's
- *   `transcript_path`) carries a correction / preference / decision signal
- *   (lib/learn-signal.ts), and otherwise only on every
- *   PLUR_LEARN_FALLBACK_INTERVAL-th Stop (default 10; 0 = off) — at most
- *   once per user message either way, and never after the agent already
- *   called plur_learn in that reply. Frequent unconditional nudges mostly
- *   end in a bare "ok". A missing or unreadable transcript leaves only the
- *   fallback.
- * - Every 10th Stop: writes a session checkpoint to ~/.plur/sessions/
- *
- * Checkpoints enable deferred wrap-up: if a session exits without calling
- * plur_session_end, the next session_start detects the orphaned checkpoint
- * and processes observations retroactively.
- *
- * The counter persists via a temp file keyed to the payload `session_id`.
- * Claude Code does not export CLAUDE_SESSION_ID to hooks, and each Stop runs
- * in a fresh shell, so a ppid key would give every Stop its own counter and
- * the nudge would never fire.
- *
- * Directories: the counter lives in the hook state dir (`hookSessionDir()`),
- * and the checkpoint in `<PLUR root>/sessions`. Each is written only if its
- * directory passes the ownership check. When no trusted directory exists, the
- * hook persists nothing and prints nothing.
- *
- * Delivery: a Stop hook's TOP-LEVEL `additionalContext` is ignored — recorded
- * as plain hook stdout, never shown to the model. Only
- * `{hookSpecificOutput: {hookEventName: "Stop", additionalContext}}` reaches
- * the model, and it does so by forcing ONE continuation turn. That turn ends
- * in another Stop carrying `stop_hook_active: true`; nudging there would loop,
- * so this hook stays silent on it.
- *
- * Input: JSON on stdin (Claude Code Stop hook format)
- * Output: the hookSpecificOutput nudge on a signal or a fallback Stop,
- *         otherwise nothing. The input payload is never echoed back: a Stop
- *         hook's stdout is parsed as hook OUTPUT, so an echo would at best be
- *         ignored and at worst misread.
+ * plur hook-learn-check — Stop hook: learning nudges and periodic crash-recovery checkpoints.
+ * - Nudges when the last user message (from `transcript_path`) signals a correction /
+ *   preference / decision, else every PLUR_LEARN_FALLBACK_INTERVAL-th Stop (default 10;
+ *   0 = off); at most once per message, never after plur_learn was called in that reply.
+ * - Every 10th Stop writes a checkpoint to `<PLUR root>/sessions` for deferred wrap-up.
+ * Counter keyed to the payload `session_id`; writes only to directories passing the ownership check.
+ * Only `hookSpecificOutput` reaches the model (forcing one turn), so it stays silent when
+ * `stop_hook_active` to avoid a loop. Never echoes input: Stop stdout is parsed as hook output.
  */
 
 const CHECKPOINT_INTERVAL = parseInt(process.env.PLUR_CHECKPOINT_INTERVAL || '10', 10)
@@ -244,18 +212,10 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
     try { writeCheckpoint(key, count, cwd, flags) } catch { /* never block on checkpoint failure */ }
   }
 
-  // Signal nudge: the user's last typed message reads as a correction,
-  // preference or decision, and has not been nudged for yet. lastUserMessage
-  // never throws; an unclaimable marker is "no nudge".
-  // No nudge at all when the agent already called plur_learn in that reply:
-  // the memory was saved, a forced turn would only repeat it.
-  //
-  // The fallback (every PLUR_LEARN_FALLBACK_INTERVAL-th Stop) gives a session
-  // with no explicit signal an occasional check. Both paths claim the same
-  // per-message marker, so one user message gets at most one nudge: a
-  // background task ending the turn again at the fallback count does not
-  // nudge a second time for a message already nudged. Without a readable
-  // transcript there is no message, and only the count decides.
+  // Signal nudge for an un-nudged correction/preference/decision message; none when the
+  // agent already called plur_learn in that reply. The fallback (every Nth Stop) claims the
+  // same per-message marker, so one message gets at most one nudge. No readable transcript:
+  // only the count decides.
   let prompt: string | null = null
   const msg = lastUserMessage(data.transcript_path)
   if (msg?.learned) return

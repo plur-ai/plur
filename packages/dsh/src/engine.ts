@@ -29,11 +29,8 @@ export interface Engine extends PlurClient {
 }
 
 /**
- * Load `@plur-ai/core` and construct the engine.
- *
- * Deliberately not eager: core pulls in a WASM store, and a machine where that
- * fails to initialise must degrade to "no memory" rather than take down the
- * host agent at plugin-load time.
+ * Load `@plur-ai/core` and construct the engine, lazily: if core's WASM store
+ * fails to initialise, degrade to "no memory" instead of crashing the host.
  *
  * @param config - supplies the optional store path.
  * @param importCore - overridable for tests.
@@ -59,12 +56,9 @@ async function loadEngine(
 }
 
 /**
- * Build the engine facade.
- *
- * Returns synchronously so Cordis's synchronous `apply` can wire it, while the
- * real engine loads on first call. Every method mirrors {@link PlurClient} and
- * resolves to `undefined` when the engine is unavailable — the same shape the
- * call sites already handle with `?.`.
+ * Build the engine facade synchronously (for Cordis's synchronous `apply`);
+ * the real engine loads on first call. Methods mirror {@link PlurClient} and
+ * resolve to `undefined` when the engine is unavailable.
  *
  * @param config - plugin configuration.
  * @param importCore - overridable module loader, for tests.

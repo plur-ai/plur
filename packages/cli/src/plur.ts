@@ -10,15 +10,9 @@ export interface GlobalFlags extends OutputOptions {
 
 /** Parse global flags from argv, return remaining positional args + flags. */
 /**
- * Split `--flag=value` into `--flag` and `value`.
- *
- * Every command parses flags as `--name` followed by a separate value, so an
- * unsplit `--name=value` would match nothing and be silently dropped. Splitting
- * here covers every command at once, rather than each of the parsers.
- *
- * Only the first `=` splits, so a value may contain one. Only tokens that look
- * like a long flag are touched, so a positional argument containing `=` and the
- * `--` separator both pass through untouched.
+ * Split `--flag=value` into `--flag` and `value` for every command at once
+ * (parsers expect a separate value and would silently drop it). Only the first
+ * `=` splits; positional arguments and the `--` separator pass through.
  */
 export function expandEqualsFlags(argv: string[]): string[] {
   const out: string[] = []
@@ -116,15 +110,10 @@ export function getLastPlurInstance(): Plur | null {
 
 /**
  * Create Plur instance from flags.
- *
- * `readonly: true` opens a write-guarded engine: reads work, every
- * mutation throws `ReadonlyStoreError`, and recall skips its activation
- * refresh. Read-only commands (`list`, `status`, `tensions` list mode) pass it
- * so lazy engine side-effects cannot mutate the store from a pure query.
- *
- * `autoDiscover: false` skips the constructor's walk for a `<cwd>/.plur`
- * store, which otherwise registers that store in config.yaml. The folder
- * question passes it: asking about a folder must change nothing.
+ * `readonly: true`: reads work, mutations throw `ReadonlyStoreError`, recall
+ * skips activation refresh; pure queries pass it so they cannot mutate the store.
+ * `autoDiscover: false` skips registering a `<cwd>/.plur` store in config.yaml;
+ * the folder question passes it so asking changes nothing.
  */
 export function createPlur(flags: GlobalFlags, options?: { readonly?: boolean; autoDiscover?: boolean }): Plur {
   const path = flags.path || process.env.PLUR_PATH || undefined

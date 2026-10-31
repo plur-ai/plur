@@ -2,20 +2,13 @@ import { createPlur, type GlobalFlags } from '../plur.js'
 import { shouldOutputJson, outputJson, outputText, outputInfo, exit } from '../output.js'
 
 /**
- * `plur scopes` — the user-facing surface for authorized-but-unregistered
- * shared scopes. The session-start "N scopes available" hint is agent-facing
- * only; this command is where a human actually decides per scope:
- *
- *   plur scopes                 list authorized-but-unregistered shared scopes
+ * `plur scopes` — where a human decides on authorized-but-unregistered shared scopes:
+ *   plur scopes                 list them
  *   plur scopes register <s>    register one scope
- *   plur scopes dismiss  <s>    remember "don't offer this one" (persisted)
- *   plur scopes --reoffer       clear all dismissals — offer them again
- *
- * Dismissed scopes are excluded from the list (and the session-start hint) until
- * `--reoffer`. Personal-family scopes are never offered (see registerScope).
- *
- * Exit code: a refused `register` exits 1 in text and JSON mode alike; the JSON
- * body (`success: false`, `error`) is still written to stdout.
+ *   plur scopes dismiss  <s>    stop offering it (persisted; also hides it from the session-start hint)
+ *   plur scopes --reoffer       clear all dismissals
+ * Personal-family scopes are never offered. A refused `register` exits 1 in text and JSON mode; JSON still goes
+ * to stdout.
  */
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const plur = createPlur(flags)
