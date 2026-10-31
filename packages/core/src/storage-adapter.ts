@@ -378,8 +378,6 @@ export interface StorageAdapter {
    *   stop-word filtered, so the store must not re-tokenize.
    */
   corpusStats?(queryTokens: string[], opts?: ScopeRestriction): Promise<CorpusStats | undefined>
-  /** Corpus-wide BM25 statistics; see the declaration above. */
-  corpusStats?(queryTokens: string[], opts?: ScopeRestriction): Promise<CorpusStats | undefined>
   /**
    * Vector similarity search (cosine).
    *
