@@ -8,6 +8,8 @@ import {
   folderAskOnce,
   sessionSettings,
   skippedStoreNotice,
+  withDeadline,
+  DEADLINE_MISSED,
   type FolderPolicy,
   type ProjectRemote,
 } from '@plur-ai/core'
@@ -33,12 +35,6 @@ const log = (msg: string) => { if (process.env.PLUR_DEBUG) console.error(`[plur:
 const warn = (msg: string) => { console.error(`[plur:opencode] warning: ${msg}`) }
 
 
-function withTimeout<T>(p: Promise<T>, ms: number): Promise<T | typeof TIMED_OUT> {
-  let timer: ReturnType<typeof setTimeout> | undefined
-  const t = new Promise<typeof TIMED_OUT>(resolve => { timer = setTimeout(() => resolve(TIMED_OUT), ms) })
-  return Promise.race([p, t]).finally(() => { if (timer) clearTimeout(timer) })
-}
-const TIMED_OUT = Symbol('timed-out')
 
 /** Turns after the question that still carry its commands (re-audit R4 of #1517). */
 const REMINDER_TURNS = 1
@@ -287,11 +283,11 @@ export const PlurPlugin: Plugin = async (ctx) => {
             ...(remote?.remoteProject ? { remote_project: remote.remoteProject } : {}),
           })
           pending.catch(() => {}) // a late rejection after the timeout must not go unhandled
-          const injection = await withTimeout(pending, INJECT_TIMEOUT_MS)
+          const injection = await withDeadline(pending, INJECT_TIMEOUT_MS)
           // A store in this folder that was found but not added (#1589): one
           // line, once per session and folder, like the CLI prompt hooks.
           const hint = skippedStoreNotice(plur, input.sessionID, folderDir)
-          if (injection === TIMED_OUT) {
+          if (injection === DEADLINE_MISSED) {
             // No memory this turn rather than the previous turn's block, which
             // answered a different query.
             if (hint) blocks.set(input.sessionID, hint)

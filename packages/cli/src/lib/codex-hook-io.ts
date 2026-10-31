@@ -4,6 +4,7 @@ import { join } from 'path'
 import { tmpdir } from 'os'
 import { safeSessionKey } from './session-key.js'
 import { exitWhenStoreIdle, EXIT_LOCK_WAIT_MS } from './store-lock-exit.js'
+import { withDeadline, DEADLINE_MISSED } from '@plur-ai/core'
 
 /**
  * Shared stdin-reading and sentinel helpers for the four hook-codex-*
@@ -397,7 +398,6 @@ export async function runCodexHook(
   await exitWhenStoreIdle(EXIT_LOCK_WAIT_MS, noExit ? () => { process.exitCode = 0 } : () => process.exit(0))
 }
 
-const DEADLINE_MISSED = Symbol('plur.hybrid.deadline')
 
 /**
  * Is hybrid injection allowed? Default YES since #1040 was fixed.
@@ -481,21 +481,8 @@ export async function injectWithFallback<O, R>(
 ): Promise<InjectOutcome<R>> {
   if (!hybridEnabled()) return { result: await plur.inject(task, opts), mode: 'bm25' }
 
-  let timer: NodeJS.Timeout | undefined
   try {
-    const deadline = new Promise<typeof DEADLINE_MISSED>((resolve) => {
-      // Deliberately NOT unref()'d (adversarial audit F1). If injectHybrid
-      // ever leaves the event loop with no other referenced handle, an
-      // unref'd timer cannot fire, the race never settles, and Node exits 13
-      // ("unsettled top-level await") BEFORE runCodexHook reaches its
-      // process.exit(0) — reintroducing exactly the discarded-output failure
-      // that wrapper exists to prevent. A referenced timer cannot linger
-      // either: every caller force-exits right after this returns.
-      timer = setTimeout(() => resolve(DEADLINE_MISSED), deadlineMs)
-    })
-    // A sentinel, not null: R is unconstrained, so a legitimate hybrid result
-    // could itself be falsy and would otherwise read as a deadline miss.
-    const raced = await Promise.race([plur.injectHybrid(task, opts), deadline])
+    const raced = await withDeadline(plur.injectHybrid(task, opts), deadlineMs)
     if (raced !== DEADLINE_MISSED) return { result: raced, mode: 'hybrid' }
     process.stderr.write(
       `[plur] hybrid injection exceeded ${deadlineMs}ms — falling back to BM25 for this turn. ` +
@@ -508,8 +495,6 @@ export async function injectWithFallback<O, R>(
     process.stderr.write(
       `[plur] hybrid injection failed (${(err as Error)?.message ?? 'unknown'}) — using BM25.\n`,
     )
-  } finally {
-    if (timer) clearTimeout(timer)
   }
   return { result: await plur.inject(task, opts), mode: 'bm25' }
 }
