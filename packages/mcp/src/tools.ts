@@ -7,34 +7,11 @@ import type { LlmFunction, MetaField, TensionStatus, RerankerEvalResult, History
 import { RemoteOnlyWriteError, remoteOnlySessionLine, remoteOnlyUnservedNotice } from '@plur-ai/core'
 import { enterpriseRecoveryHint } from '@plur-ai/core'
 import { emitCheckpoint, signWithActorKey, keysDirFor } from '@plur-ai/core'
-import { anchorManifest, notaryClaim, EXPERIMENTAL_NOTE } from '@plur-ai/gateway'
+import { anchorManifest, notaryClaim, EXPERIMENTAL_NOTE, makeHttpLlm, llmFromEnv } from '@plur-ai/gateway'
 import { recordTelemetry } from './telemetry.js'
 import { VERSION } from './version.js'
 import { startBackgroundDiscovery, discoverySummary, discoveryWarnings, serverEndpointKeys, isDiscoveryEnabled } from './background-discovery.js'
 import { z } from 'zod'
-
-/** Create an OpenAI-compatible LLM function from a base URL + API key */
-function makeHttpLlm(baseUrl: string, apiKey: string, model: string = 'gpt-4o-mini'): LlmFunction {
-  return async (prompt: string): Promise<string> => {
-    const response = await fetch(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model,
-        messages: [{ role: 'user', content: prompt }],
-        temperature: 0.1,
-      }),
-    })
-    if (!response.ok) {
-      throw new Error(`LLM API error: ${response.status} ${response.statusText}`)
-    }
-    const data = await response.json() as any
-    return data.choices?.[0]?.message?.content ?? ''
-  }
-}
 
 export interface ToolAnnotations {
   title?: string
@@ -624,14 +601,6 @@ const PLUR_GUIDE = `## PLUR Quick Start
   it is the authoring contract, not a style preference.
 - **plur_recall** — search engrams by topic (default: hybrid BM25 + embeddings; use mode:"keyword" for BM25-only)
 - **plur_forget** — retire an outdated engram`
-
-function getLlmFunction(): LlmFunction | undefined {
-  const openaiKey = process.env.OPENAI_API_KEY
-  const openrouterKey = process.env.OPENROUTER_API_KEY
-  if (openrouterKey) return makeHttpLlm('https://openrouter.ai/api/v1', openrouterKey, 'openai/gpt-4o-mini')
-  if (openaiKey) return makeHttpLlm('https://api.openai.com/v1', openaiKey, 'gpt-4o-mini')
-  return undefined
-}
 
 /**
  * Strip XML parameter-envelope artifacts from a statement string.
@@ -1694,7 +1663,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
         let session: string
         try { session = await _writeSession(args, plur) }
         catch (err) { if (err instanceof RootsDisagreeError) return err.refusal; throw err }
-        const llm = getLlmFunction()
+        const llm = llmFromEnv()
         // LLM-facing context. Fields not in inputSchema (knowledge_anchors,
         // dual_coding, abstract, derived_from, memory_class,
         // session_episode_id) stay in the engram spec and remain settable via
@@ -2064,7 +2033,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
         required: ['engrams'],
       },
       handler: async (args, plur) => {
-        const llm = getLlmFunction()
+        const llm = llmFromEnv()
         const raw = Array.isArray(args.engrams) ? (args.engrams as Array<Record<string, any>>) : []
         if (raw.length === 0) {
           return { ids: [], results: [], stats: { added: 0, updated: 0, merged: 0, noops: 0, failed: 0 }, failures: [], warning: 'No engrams provided — pass a non-empty `engrams` array.' }
@@ -5122,7 +5091,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
           refuseModelInRemoteOnly(plur, 'plur_tensions scan')
           const llm = args.llm_base_url && args.llm_api_key
             ? makeHttpLlm(args.llm_base_url as string, args.llm_api_key as string, args.llm_model as string | undefined)
-            : getLlmFunction()
+            : llmFromEnv()
 
           if (!llm) {
             return {

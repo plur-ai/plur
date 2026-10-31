@@ -2,37 +2,7 @@ import { createPlur, type GlobalFlags } from '../plur.js'
 import { remoteOnlyCommandRefusal } from '../lib/folder-gate.js'
 import { shouldOutputJson, outputJson, outputText, outputInfo, exit } from '../output.js'
 import type { LlmFunction } from '@plur-ai/core'
-
-/** Create an OpenAI-compatible LLM function from base URL + key + model. */
-function makeHttpLlm(baseUrl: string, apiKey: string, model = 'gpt-4o-mini'): LlmFunction {
-  return async (prompt: string): Promise<string> => {
-    const response = await fetch(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model,
-        messages: [{ role: 'user', content: prompt }],
-        temperature: 0.1,
-      }),
-    })
-    if (!response.ok) {
-      throw new Error(`LLM API error: ${response.status} ${response.statusText}`)
-    }
-    const data = (await response.json()) as any
-    return data.choices?.[0]?.message?.content ?? ''
-  }
-}
-
-function getLlmFunction(): LlmFunction | undefined {
-  const openrouterKey = process.env.OPENROUTER_API_KEY
-  const openaiKey = process.env.OPENAI_API_KEY
-  if (openrouterKey) return makeHttpLlm('https://openrouter.ai/api/v1', openrouterKey, 'openai/gpt-4o-mini')
-  if (openaiKey) return makeHttpLlm('https://api.openai.com/v1', openaiKey, 'gpt-4o-mini')
-  return undefined
-}
+import { makeHttpLlm, llmFromEnv } from '@plur-ai/gateway'
 
 /**
  * plur tensions — scan for contradictions, manage the tension lifecycle (#181).
@@ -146,7 +116,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     const llm: LlmFunction | undefined =
       llmBaseUrl
         ? makeHttpLlm(llmBaseUrl, llmApiKey ?? '', llmModel)
-        : getLlmFunction()
+        : llmFromEnv()
 
     if (!llm) {
       exit(

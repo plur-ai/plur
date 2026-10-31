@@ -10,3 +10,4 @@ export {
   RECORDED_ENTRIES_MAX,
   nextRecordedEntries,
 } from './hook-command.js'
+export { makeHttpLlm, llmFromEnv } from './llm.js'
