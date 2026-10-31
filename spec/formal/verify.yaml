@@ -68,6 +68,7 @@ models:
       - packages/mcp/src/folder-gate.ts
       - packages/mcp/src/server.ts
       - packages/mcp/src/tools.ts
+      - packages/gateway/src/llm.ts
   - model: PlurSpec/ServerDiagnostics.lean
     covers:
       - packages/core/src/index.ts
@@ -96,6 +97,9 @@ models:
       - packages/cli/src/commands/init.ts
       - packages/cli/src/lib/hook-runs.ts
       - packages/mcp/src/tools.ts
+      - packages/gateway/src/claude-hooks.ts
+      - packages/gateway/src/hook-command.ts
+      - packages/gateway/src/llm.ts
   - model: PlurSpec/WritePath.lean
     covers:
       - packages/core/src/session-scopes.ts
@@ -204,6 +208,9 @@ models:
       - packages/dsh/src/tools.ts
       - packages/dsh/src/learn.ts
       - packages/hermes/plur_hermes/bridge.py
+      - packages/gateway/src/llm.ts
+      - packages/gateway/src/claude-hooks.ts
+      - packages/gateway/src/hook-command.ts
   - model: PlurSpec/R2CoreA.lean
     covers:
       - packages/core/src/index.ts
@@ -265,6 +272,7 @@ models:
       - packages/cli/src/commands/hook-session-guard.ts
       - packages/cli/src/commands/hook-agy-pre-invocation.ts
       - packages/cli/src/commands/doctor.ts
+      - packages/core/src/deadline.ts
   - model: PlurSpec/R2Integrations.lean
     covers:
       - packages/mcp/src/tools.ts
@@ -275,6 +283,8 @@ models:
       - packages/opencode/src/index.ts
       - packages/opencode/src/turn.ts
       - packages/ui/src/server.ts
+      - packages/gateway/src/llm.ts
+      - packages/core/src/deadline.ts
   - model: PlurSpec/PacksV2.lean
     covers:
       - packages/core/src/packs.ts
@@ -371,7 +381,6 @@ models:
       - packages/cli/src/enterprise/legacy-login.ts
       - packages/cli/src/enterprise/device-name.ts
       - packages/cli/src/enterprise/sign-in-shared.ts
-
   - model: PlurSpec/SaveDestination.lean
     covers:
       - packages/cli/src/lib/hook-runs.ts
@@ -405,6 +414,7 @@ models:
       - packages/core/src/plur/types.ts
       - packages/cli/src/commands/learn.ts
       - packages/mcp/src/tools.ts
+      - packages/gateway/src/llm.ts
   - model: PlurSpec/Provenance.lean
     covers:
       - packages/core/src/history.ts
@@ -438,3 +448,4 @@ models:
       - packages/core/src/file-lock.ts
       - packages/core/src/atomic-write.ts
       - packages/gateway/src/client.ts
+      - packages/gateway/src/llm.ts
