@@ -1,0 +1,123 @@
+/**
+ * Remote-only store guard and queue hold: the rules that had no test.
+ * Model: spec/formal/PlurSpec/BackendScopes.lean (part B).
+ */
+import { describe, it, expect } from 'vitest'
+import { QueueHoldStore, RemoteOnlyStoreGuard } from '../src/store/remote-only-store-guard.js'
+import type { Engram } from '../src/schemas/engram.js'
+
+const FOLDER = '/work/client'
+const TEAM = 'group:acme/eng'
+
+function row(id: string, extra: Partial<Engram> = {}): Engram {
+  return {
+    id, statement: `s ${id}`, type: 'behavioral', scope: 'global', status: 'active', tags: [],
+    activation: { retrieval_strength: 1, storage_strength: 1, frequency: 0, last_accessed: '2026-10-01' },
+    feedback_signals: { positive: 0, negative: 0, neutral: 0 },
+    ...extra,
+  } as Engram
+}
+
+function queued(id: string): Engram {
+  return row(id, {
+    scope: TEAM,
+    structured_data: { _outbox: { remote_only: true, remote_only_folder: FOLDER, target_scope: TEAM } },
+  } as Partial<Engram>)
+}
+
+/** An in-memory primary store with every optional member, plus query-adapter extras. */
+function memStore(initial: Engram[]) {
+  let rows = initial.map(e => structuredClone(e))
+  return {
+    kind: 'yaml', location: null,
+    role: 'primary',
+    get rows() { return rows },
+    load: async () => rows.map(e => structuredClone(e)),
+    loadCached: async () => rows.map(e => structuredClone(e)),
+    invalidate: () => {},
+    save: async (es: Engram[]) => { rows = es.map(e => structuredClone(e)) },
+    append: async (e: Engram) => { rows.push(structuredClone(e)) },
+    updateMany: async (es: Engram[]) => {
+      for (const e of es) rows = rows.map(r => r.id === e.id ? structuredClone(e) : r)
+    },
+    loadByIds: async (ids: string[]) => rows.filter(r => ids.includes(r.id)).map(e => structuredClone(e)),
+    searchBM25: async () => ['bm25'],
+    corpusStats: async () => ({ n: rows.length }),
+    someLaterCapability() { return this },
+  }
+}
+
+describe('QueueHoldStore', () => {
+  it('the remembered hold state does not share objects with a returned row', async () => {
+    const inner = memStore([queued('Q1')])
+    const hold = new QueueHoldStore(inner as any, s => s === TEAM)
+    const [r] = await hold.load()
+    // A caller edits the row it read in place, then writes it back.
+    r.scope = 'global'
+    ;(r.structured_data as any)._outbox.remote_only = false
+    delete (r.structured_data as any)._outbox.remote_only_folder
+    await expect(hold.save([r])).rejects.toThrow(/queue/i)
+    expect(inner.rows[0].scope).toBe(TEAM)
+  })
+
+  it('a row read without the queue marker cannot gain a malformed one', async () => {
+    const inner = memStore([row('P1')])
+    const hold = new QueueHoldStore(inner as any, s => s === TEAM)
+    const [r] = await hold.load()
+    const marked = { ...r, structured_data: { _outbox: { remote_only: true, remote_only_folder: FOLDER, target_scope: TEAM } } } as Engram
+    // scope 'global' differs from target_scope: not a well-formed queued save.
+    await expect(hold.updateMany!([marked])).rejects.toThrow(/well-formed/)
+    await expect(hold.save([marked])).rejects.toThrow(/well-formed/)
+    expect(inner.rows[0].structured_data).toBeUndefined()
+    // Through the hold check, a well-formed marker is accepted.
+    await hold.updateMany!([{ ...marked, scope: TEAM }])
+    expect(inner.rows[0].scope).toBe(TEAM)
+  })
+
+  it('forwards every non-write member of the inner store, bound to it, and wraps the three writes', async () => {
+    const inner = memStore([row('P1')])
+    const hold = new QueueHoldStore(inner as any, () => true) as any
+    expect(hold.role).toBe('primary')
+    expect(await hold.searchBM25()).toEqual(['bm25'])
+    expect(await hold.corpusStats()).toEqual({ n: 1 })
+    expect(hold.someLaterCapability()).toBe(inner)
+    expect(hold.invalidate).toBeTypeOf('function')
+    for (const w of ['save', 'append', 'updateMany']) {
+      expect(hold[w]).toBeTypeOf('function')
+      expect(hold[w]).not.toBe((inner as any)[w])
+    }
+    expect(hold.loadByIds).not.toBe(inner.loadByIds)
+    expect((await hold.loadByIds(['P1'])).map((e: Engram) => e.id)).toEqual(['P1'])
+  })
+})
+
+describe('RemoteOnlyStoreGuard', () => {
+  it('allIds lists every id, hidden rows included, and nothing else', async () => {
+    const inner = memStore([row('P1', { statement: 'PERSONAL SECRET' }), queued('Q1')])
+    const guard = new RemoteOnlyStoreGuard(inner as any, { folder: FOLDER, scope: TEAM }, true, s => s === TEAM)
+    const ids = await guard.allIds()
+    expect(ids).toEqual(['P1', 'Q1'])
+    expect(ids.every(i => typeof i === 'string')).toBe(true)
+    expect(JSON.stringify(ids)).not.toContain('SECRET')
+    expect((await guard.load()).map(e => e.id)).toEqual(['Q1'])
+  })
+
+  it('a whole-corpus save keeps every hidden row in place and refuses to touch one', async () => {
+    const inner = memStore([row('P1'), queued('Q1'), row('P2')])
+    const guard = new RemoteOnlyStoreGuard(inner as any, { folder: FOLDER, scope: TEAM }, true, s => s === TEAM)
+    await guard.save([queued('Q2')])
+    expect(inner.rows.map(e => e.id)).toEqual(['P1', 'P2', 'Q2'])
+    await expect(guard.save([row('P1', { statement: 'overwritten' })])).rejects.toThrow()
+    await expect(guard.updateMany!([row('P2', { statement: 'overwritten' })])).rejects.toThrow()
+    await expect(guard.append!(row('P3'))).rejects.toThrow()
+    expect(inner.rows.map(e => e.statement)).toEqual(['s P1', 's P2', 's Q2'])
+  })
+
+  it('a blocked binding refuses even a well-formed queued save', async () => {
+    const inner = memStore([])
+    const guard = new RemoteOnlyStoreGuard(inner as any, { folder: FOLDER, scope: TEAM, blocked: 'unreadable' }, true, () => true)
+    await expect(guard.append!(queued('Q1'))).rejects.toThrow()
+    await expect(guard.save([queued('Q1')])).rejects.toThrow()
+    expect(inner.rows).toEqual([])
+  })
+})

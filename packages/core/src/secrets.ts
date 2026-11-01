@@ -540,11 +540,8 @@ export function detectSensitive(text: string): SecretMatch[] {
   // materializing a Buffer for the common (small) case.
   const totalBytes = Buffer.byteLength(text, 'utf8')
   const truncated = totalBytes > MAX_SCAN_BYTES
-  if (truncated) {
-    // Replace-mode decode (default) — a multi-byte char split at the boundary
-    // becomes U+FFFD; no exception, no silent corruption, always valid UTF-8.
-    text = Buffer.from(text, 'utf8').subarray(0, MAX_SCAN_BYTES).toString('utf8')
-  }
+  // The cut never throws and always yields valid text (see truncateToScanLimit).
+  if (truncated) text = truncateToScanLimit(text)
   const matches = detectSecrets(text)
   // Same two views as detectSecrets, for the same reason: an invisible
   // character inside a host name or an address must not hide it.

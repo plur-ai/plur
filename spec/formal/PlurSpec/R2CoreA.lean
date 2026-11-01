@@ -136,9 +136,6 @@ theorem public_never_withheld (shared : String → Bool) (rb : Bool) (scope : Op
     withheld shared rb scope .pub = false := by
   unfold withheld; cases leaves shared rb scope <;> rfl
 
-theorem private_always_withheld (shared : String → Bool) (rb : Bool) (scope : Option String) :
-    withheld shared rb scope .priv = true := rfl
-
 /-- The E6 change: a personal-family scope no remote store backs is withheld
 unless explicitly public (global, user:*, agent:*, local alike). -/
 theorem onmachine_nonpublic_withheld (shared : String → Bool) (s : String) (v : Vis)
@@ -210,9 +207,6 @@ def mayLeaveOld (isLocal : String → Bool) : Option Subject → Bool
 
 theorem summary_no_subject_closed (shared : String → Bool) : mayLeave shared none = false := rfl
 
-/-- The summary never says "may leave" where the record said withheld. -/
-theorem summary_agrees_with_record (shared : String → Bool) (rb : Bool) (sc : Option String) (v : Vis) :
-    mayLeave shared (some ⟨some (!withheld shared rb sc v), sc, v⟩) = !withheld shared rb sc v := rfl
 
 /-- An older record with no share answer: the summary is at least as strict as
 a record built with any backing. -/
@@ -227,6 +221,36 @@ theorem summary_fallback_sound (shared : String → Bool) (rb : Bool) (sc : Opti
     · simp_all
 
 theorem old_summary_no_subject_open (isLocal : String → Bool) : mayLeaveOld isLocal none = true := rfl
+
+/-- The subject a provenance record carries: no engram node (`present` false),
+or a node with the scope and visibility, whose share answer was written by
+`provenanceFor` with this install's backing `rb` (`answered`), or is missing
+(an older record). -/
+def recordSubject (present answered : Bool) (shared : String → Bool) (rb : Bool)
+    (sc : Option String) (v : Vis) : Option Subject :=
+  if present then some ⟨if answered then some (!withheld shared rb sc v) else none, sc, v⟩ else none
+
+/-- The summary never says "may leave" where the record would withhold, on every
+branch: no node, the record's own answer, or the fallback for an older record. -/
+theorem summary_agrees_with_record (shared : String → Bool) (rb : Bool) (sc : Option String) (v : Vis)
+    (present answered : Bool)
+    (h : mayLeave shared (recordSubject present answered shared rb sc v) = true) :
+    present = true ∧ withheld shared rb sc v = false := by
+  cases present
+  · simp [recordSubject, mayLeave] at h
+  · refine ⟨rfl, ?_⟩
+    cases answered
+    · exact summary_fallback_sound shared rb sc v (by simpa [recordSubject] using h)
+    · simpa [recordSubject, mayLeave] using h
+
+/-- A private memory is withheld wherever it lives (a shared or remote-backed
+scope included), and no record of it, answered or older, lets the summary say
+it may leave. -/
+theorem private_always_withheld (shared : String → Bool) (rb : Bool) (scope : Option String)
+    (answered : Bool) :
+    withheld shared rb scope .priv = true ∧
+    mayLeave shared (recordSubject true answered shared rb scope .priv) = false := by
+  cases answered <;> simp [withheld, mayLeave, recordSubject]
 
 /-! ### 1c. Licence source (`summariseProvenance`, core-policy#9)
 
@@ -601,6 +625,51 @@ theorem old_pack_hit_swallows :
 theorem persistable_hit_durable (h : HitAt) (hp : persistable h = true) : durable h = true := by
   simp [durable, durableWith, hp]
 
+/-! ### 5a. Which hits are the writer's own (`_hitHolder`)
+
+Branch for branch. `goesRemote` is `_isRemoteWriteScope`: a write to that scope
+goes to its url store, false when a local store is selected for it. -/
+
+structure Hit where
+  pack        : Bool                  -- `_pack`
+  storeScope  : Option Nat            -- `_storeScope`
+  found       : Option (Bool × Bool)  -- `_findEngramStore`: (is the primary file, readonly)
+  urlWritable : Bool                  -- a writable url entry serves `storeScope`
+
+def hitHolder (goesRemote : Nat → Bool) (hit : Hit) (scope : Nat) : HitAt :=
+  if hit.pack then .readonlyOrPack else
+  match hit.storeScope with
+  | none => .primary
+  | some t =>
+    match hit.found with
+    | some (true, _) => .primary
+    | some (false, ro) => if ro then .readonlyOrPack else .secondaryW
+    | none =>
+      if !hit.urlWritable then .readonlyOrPack
+      else if t == scope && goesRemote scope then .ownRemote else .remoteCache
+
+/-- A url store's cached row absorbs a write exactly when it is cached for the
+very scope written, that store is writable, and the write to that scope goes
+to it. In particular, with a local store selected for the scope, the cached
+row (even of the identical scope) is never mutated and the write gets its own
+row. -/
+theorem cache_row_yields_to_local_store (goesRemote : Nat → Bool) (hit : Hit) (scope t : Nat)
+    (hp : hit.pack = false) (hs : hit.storeScope = some t) (hf : hit.found = none) :
+    (persistable (hitHolder goesRemote hit scope) = true ↔
+      (hit.urlWritable = true ∧ t = scope ∧ goesRemote scope = true)) ∧
+    (goesRemote scope = false →
+      mutatesHit (hitHolder goesRemote hit scope) = false ∧
+      storesNewRow (hitHolder goesRemote hit scope) = true) := by
+  cases hw : hit.urlWritable <;> cases hg : goesRemote scope <;>
+    by_cases ht : t = scope <;>
+    simp [hitHolder, hp, hs, hf, hw, hg, ht, persistable, mutatesHit, storesNewRow]
+
+/-- Non-vacuity: the cached row of the scope written, with the write going to
+that store, is the writer's own. -/
+theorem own_remote_reachable :
+    hitHolder (fun _ => true) ⟨false, some 3, none, true⟩ 3 = .ownRemote ∧
+    hitHolder (fun _ => false) ⟨false, some 3, none, true⟩ 3 = .remoteCache := by decide
+
 /-! ### 5b. An explicit team write is not absorbed by a cross-scope hit
 
 Code: `_crossScopeRecurrenceApplies(scope) = !_isRemoteWriteScope(scope)`,
@@ -716,9 +785,6 @@ theorem rerun_changes_nothing (s : Store) (ks : List Nat) :
     run realNew s1 ks = (ks.map (fun _ => Act.skipped), s1) :=
   run_all_present _ _ (fun k hk => run_mem s ks k hk)
 
-/-- Dry run and real run still agree (action lists), for every store and file. -/
-theorem dry_predicts_real_store (s : Store) (ks : List Nat) :
-    (run dry s ks).1 = (run realNew s ks).1 := rfl
 
 /-- Non-vacuity: a fresh record is imported and a present one skipped. -/
 theorem reimport_reachable : (run realNew [(7, 1)] [7, 8]).1 = [.skipped, .imported] := by decide
@@ -729,6 +795,118 @@ theorem old_rerun_bumps :
     (run realOld [] [1]).2 = [(1, 1)] ∧ run realOld [(1, 1)] [1] = ([.skipped], [(1, 2)]) := by decide
 
 end Reimport
+
+/-! ### 6b. The dry run predicts the real run (`importers/engine.ts`)
+
+The real run asks `wouldDeduplicate` against a store that grows with every
+record it imports. The dry run writes nothing: it asks `wouldDeduplicate`
+against the unchanged store, and then its in-file map, looked up by hash where
+learn() dedups across scopes (`dedupScopeFor(...).acrossScopes`, the oracle
+`across`) and by (hash, scope) where it does not; a new record sets both keys.
+Secrets are refused in both modes before dedup; a statement that normalises to
+nothing is never deduplicated. -/
+namespace ImportParity
+
+inductive Rec where
+  | secret
+  | unhashable
+  | row (hash scope : Nat)
+
+inductive Act | imported | skipped | error
+  deriving DecidableEq, Repr
+
+abbrev Rows := List (Nat × Nat)
+
+/-- `wouldDeduplicate`: a row with the same hash, in the same scope unless
+learn() dedups across scopes for this record. -/
+def dedups (across : Nat → Bool) (rows : Rows) (h sc : Nat) : Bool :=
+  rows.any (fun r => r.1 == h && (across sc || r.2 == sc))
+
+def realStep (across : Nat → Bool) (rows : Rows) : Rec → Act × Rows
+  | .secret => (.error, rows)
+  | .unhashable => (.imported, rows)
+  | .row h sc => if dedups across rows h sc then (.skipped, rows) else (.imported, (h, sc) :: rows)
+
+inductive Key | hash (h : Nat) | pair (h sc : Nat)
+  deriving DecidableEq
+
+def dryStep (across : Nat → Bool) (store : Rows) (keys : List Key) : Rec → Act × List Key
+  | .secret => (.error, keys)
+  | .unhashable => (.imported, keys)
+  | .row h sc =>
+    if dedups across store h sc then (.skipped, keys)
+    else if keys.contains (if across sc then .hash h else .pair h sc) then (.skipped, keys)
+    else (.imported, .hash h :: .pair h sc :: keys)
+
+def realRun (across : Nat → Bool) (rows : Rows) : List Rec → List Act
+  | [] => []
+  | r :: rs => let (a, rows') := realStep across rows r; a :: realRun across rows' rs
+
+def dryRun (across : Nat → Bool) (store : Rows) (keys : List Key) : List Rec → List Act
+  | [] => []
+  | r :: rs => let (a, keys') := dryStep across store keys r; a :: dryRun across store keys' rs
+
+/-- The keys the dry run holds for the rows the real run has added. -/
+def keysOf : Rows → List Key
+  | [] => []
+  | (h, sc) :: rest => .hash h :: .pair h sc :: keysOf rest
+
+theorem keys_hit_iff (across : Nat → Bool) (added : Rows) (h sc : Nat) :
+    (keysOf added).contains (if across sc then .hash h else .pair h sc) = dedups across added h sc := by
+  induction added with
+  | nil => rfl
+  | cons r rest ih =>
+    obtain ⟨h', sc'⟩ := r
+    simp only [keysOf, dedups, List.any_cons] at ih ⊢
+    rw [← ih]
+    cases hc : across sc <;> simp <;> grind
+
+theorem dedups_append (across : Nat → Bool) (a b : Rows) (h sc : Nat) :
+    dedups across (a ++ b) h sc = (dedups across b h sc || dedups across a h sc) := by
+  simp [dedups, List.any_append, Bool.or_comm]
+
+theorem parity (across : Nat → Bool) (store added : Rows) (recs : List Rec) :
+    dryRun across store (keysOf added) recs = realRun across (added ++ store) recs := by
+  induction recs generalizing added with
+  | nil => rfl
+  | cons r rs ih =>
+    cases r with
+    | secret => simp only [dryRun, dryStep, realRun, realStep]; rw [ih]
+    | unhashable => simp only [dryRun, dryStep, realRun, realStep]; rw [ih]
+    | row h sc =>
+      simp only [dryRun, dryStep, realRun, realStep, dedups_append, keys_hit_iff]
+      cases hs : dedups across store h sc <;> cases ha : dedups across added h sc <;> simp
+      · have := ih ((h, sc) :: added); simpa [keysOf] using this
+      · exact ih added
+      · exact ih added
+      · exact ih added
+
+/-- For every store, file and dedup policy, the dry run reports exactly the
+actions the real run takes. -/
+theorem dry_predicts_real_store (across : Nat → Bool) (store : Rows) (recs : List Rec) :
+    dryRun across store [] recs = realRun across store recs :=
+  parity across store [] recs
+
+/-- A scope-blind in-file map (hash only). -/
+def dryStepBlind (across : Nat → Bool) (store : Rows) (keys : List Key) : Rec → Act × List Key
+  | .secret => (.error, keys)
+  | .unhashable => (.imported, keys)
+  | .row h sc =>
+    if dedups across store h sc then (.skipped, keys)
+    else if keys.contains (.hash h) then (.skipped, keys)
+    else (.imported, .hash h :: .pair h sc :: keys)
+
+def dryRunBlind (across : Nat → Bool) (store : Rows) (keys : List Key) : List Rec → List Act
+  | [] => []
+  | r :: rs => let (a, keys') := dryStepBlind across store keys r; a :: dryRunBlind across store keys' rs
+
+/-- Counterexample on the scope-blind map: one statement in two shared scopes
+(no cross-scope dedup) is predicted skipped the second time, yet imported. -/
+theorem blind_dry_mispredicts :
+    dryRunBlind (fun _ => false) [] [] [.row 1 10, .row 1 20] = [.imported, .skipped] ∧
+    realRun (fun _ => false) [] [.row 1 10, .row 1 20] = [.imported, .imported] := by decide
+
+end ImportParity
 
 /-! ## 7. Coordinator item — an update that retires leaves a trace
 

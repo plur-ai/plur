@@ -59,7 +59,13 @@ anchors:
   packages/core/src/actor-keys.ts#tmp:
     kind: guarantee
     rule: A private key file is written through a temp file and rename, so a crash never leaves a partial key.
-    none: no test interrupts the key write
+    tests:
+      - >-
+        packages/core/test/formal-secrets-install-keywrite.test.ts::a write that fails part way leaves no key file and
+        no temp file
+      - >-
+        packages/core/test/formal-secrets-install-keywrite.test.ts::a rename that fails leaves no key file and no temp
+        file
   packages/core/src/async-mutex.ts#KeyedAsyncMutex.run:
     kind: guarantee
     rule: Evicting an idle per-key lock never lets two waiters on the same key hold different locks at once.
@@ -865,7 +871,9 @@ anchors:
   packages/core/src/folder-ask.ts#skippedStoreHintClaimed:
     kind: guarantee
     rule: Checking whether the skipped-store hint was given never writes anything.
-    none: no test checks the lookup leaves the marker folder untouched
+    tests:
+      - packages/core/test/formal-folder-rules-writes.test.ts::with no marker folder, the lookup creates none
+      - packages/core/test/formal-folder-rules-writes.test.ts::with a marker folder, the lookup adds and removes nothing
   packages/core/src/folder-ask.ts#skippedStoreHintLine:
     kind: note
     why: >-
@@ -895,6 +903,10 @@ anchors:
       - >-
         packages/cli/test/folder-ask-nonce-per-answer.test.ts::every offered command carries its own nonce and works
         exactly once; none grants another answer
+    lean:
+      - PlurSpec/FolderRules.lean:issued_grants_only_its_answer
+      - PlurSpec/FolderRules.lean:issued_works_once
+      - PlurSpec/FolderRules.lean:trusted_distinguished
   packages/core/src/folder-map-check.ts#FolderEntrySchema:
     kind: guarantee
     rule: >-
@@ -922,6 +934,8 @@ anchors:
     rule: A yes/no word in a mode field is never guessed into a mode.
     tests:
       - "packages/core/test/folder-map-repair-invariant.test.ts::R3: a mode becomes on only from a literal on"
+    lean:
+      - PlurSpec/FolderRules.lean:suggest_safe
   packages/core/src/folder-map-check.ts#keepsWhatWasWritten:
     kind: guarantee
     rule: >-
@@ -936,6 +950,9 @@ anchors:
     rule: A one-letter-off mode guess never switches memory on and never selects remote-only.
     tests:
       - "packages/core/test/folder-map-repair-invariant.test.ts::R3: a mode becomes on only from a literal on"
+    lean:
+      - PlurSpec/FolderRules.lean:guess_never_on
+      - PlurSpec/FolderRules.lean:guess_never_remote_only
   packages/core/src/folder-map-check.ts#onWithoutLiteralOn:
     kind: guarantee
     rule: >-
@@ -956,7 +973,10 @@ anchors:
   packages/core/src/folder-map-check.ts#parses:
     kind: guarantee
     rule: Indentation is re-written only when the folder map does not parse.
-    none: no test gives a parseable map with another problem and checks its indentation is left alone
+    tests:
+      - >-
+        packages/core/test/formal-folder-rules-writes.test.ts::a parseable map with a wrong mode keeps its own
+        indentation
   packages/core/src/folder-map-check.ts#parts:
     kind: guarantee
     rule: >-
@@ -1049,6 +1069,8 @@ anchors:
         shows the token
     promises:
       - OFF-3
+    lean:
+      - PlurSpec/FolderRules.lean:malformed_never_on
   packages/core/src/folders.ts#SetFolderOptions:
     kind: guarantee
     rule: >-
@@ -1124,6 +1146,8 @@ anchors:
       - packages/core/test/folders.test.ts::off wins over a more specific on entry and over a .plur.yaml
     promises:
       - OFF-1
+    lean:
+      - PlurSpec/FolderRules.lean:off_always_off
   packages/core/src/folders.ts#hit:
     kind: note
     why: Explains why untrust also clears a mis-cased grant even though that grant never applied.
@@ -1145,13 +1169,20 @@ anchors:
       - >-
         packages/core/test/folder-lows-1562.test.ts::the same pid with another start time is another process: nothing to
         reuse
+    lean:
+      - PlurSpec/FolderRules.lean:no_start_no_match
+      - PlurSpec/FolderRules.lean:match_same_pid_close
+      - PlurSpec/FolderRules.lean:reused_pid_far_start
   packages/core/src/folders.ts#issueFolderNonceUnlocked:
     kind: note
     why: Explains the order of cleanup when issuing a nonce.
   packages/core/src/folders.ts#load:
     kind: guarantee
     rule: Importing legacy trust entries never overwrites a folder map another writer created meanwhile.
-    none: no test races the import against a concurrent map write
+    tests:
+      - >-
+        packages/core/test/formal-folder-rules-writes.test.ts::importing trust.yaml never overwrites a map another
+        writer created meanwhile
   packages/core/src/folders.ts#loadFolderMap:
     kind: guarantee
     rule: >-
@@ -1164,12 +1195,17 @@ anchors:
     rule: >-
       Every read-modify-write of the folder map, legacy trust list and nonce files is serialised under one lock, so
       parallel edits never lose writes.
-    none: no test runs parallel folder-map writes
+    tests:
+      - >-
+        packages/core/test/formal-folder-rules-writes.test.ts::parallel folder-map writes from several processes lose
+        none
   packages/core/src/folders.ts#map:
     kind: guarantee
     rule: A refused or failed folder-map write never consumes the nonce.
     tests:
       - packages/core/test/folders.test.ts::rm from the ask flow takes a nonce too, and a failed rm does not consume it
+    lean:
+      - PlurSpec/FolderRules.lean:failed_write_keeps_nonce
   packages/core/src/folders.ts#mode:
     kind: guarantee
     rule: A name-only entry can only make a folder's mode more restrictive; its on never becomes the mode.
@@ -1186,6 +1222,8 @@ anchors:
       - >-
         packages/core/test/folder-remote-only.test.ts::beats a project marker in the folder: a repo cannot turn
         remote-only back into local memory
+    lean:
+      - PlurSpec/FolderRules.lean:remote_only_kept
   packages/core/src/folders.ts#namesSameFolder:
     kind: guarantee
     rule: >-
@@ -1256,6 +1294,8 @@ anchors:
       - packages/core/test/folders.test.ts::a write refuses a malformed file rather than overwriting it
     promises:
       - OFF-3
+    lean:
+      - PlurSpec/FolderRules.lean:malformed_never_on
   packages/core/src/folders.ts#resolveFolderPolicy:
     kind: guarantee
     rule: >-
@@ -1270,6 +1310,12 @@ anchors:
     promises:
       - OFF-1
       - OFF-4
+    lean:
+      - PlurSpec/FolderRules.lean:off_always_off
+      - PlurSpec/FolderRules.lean:remote_only_kept
+      - PlurSpec/FolderRules.lean:untrusted_asks
+      - PlurSpec/FolderRules.lean:explicit_ask_kept
+      - PlurSpec/FolderRules.lean:home_keeps_asking
   packages/core/src/folders.ts#same:
     kind: guarantee
     rule: >-
@@ -1296,6 +1342,8 @@ anchors:
         packages/core/test/folder-remote-only.test.ts::changes only the scope; it never switches the folder back to
         local memory
       - packages/core/test/folders.test.ts::an ask-flow nonce works once, for its folder only
+    lean:
+      - PlurSpec/FolderRules.lean:nonce_single_use
   packages/core/src/folders.ts#stem:
     kind: guarantee
     rule: A folder-map repair backup never overwrites an earlier backup.
@@ -1327,6 +1375,10 @@ anchors:
     tests:
       - packages/core/test/folders.test.ts::a missing or stale nonce is refused and nothing is written
       - packages/core/test/folders.test.ts::a nonce record with no bound answer authorises nothing
+    lean:
+      - PlurSpec/FolderRules.lean:verify_binds
+      - PlurSpec/FolderRules.lean:unbound_record_authorises_nothing
+      - PlurSpec/FolderRules.lean:failed_write_keeps_nonce
   packages/core/src/folders.ts#where:
     kind: guarantee
     rule: >-
@@ -1577,3 +1629,24 @@ anchors:
     rule: A checkpoint is still written, unsigned, when the signing key cannot be read or signing fails.
     tests:
       - "packages/core/test/actor-keys.test.ts::signing failure is best-effort: unsigned checkpoint is written on error"
+  packages/core/src/remote-recall.ts#isLegacyRateLimitCooldown:
+    kind: guarantee
+    rule: >-
+      A breaker cooldown is never read as an older file's host-wide 429, whatever another token's 429 left in
+      last_state.
+    lean:
+      - PlurSpec/RemoteHealth.lean:breaker_never_legacy
+      - PlurSpec/RemoteHealth.lean:breaker_trial_reachable
+      - PlurSpec/RemoteHealth.lean:save_clears_breaker
+      - PlurSpec/RemoteHealth.lean:legacy_still_honoured
+    tests:
+      - >-
+        packages/core/test/formal-remote-health-breaker.test.ts::the breaker still allows its trial read after the
+        half-open wait
+      - packages/core/test/formal-remote-health-breaker.test.ts::a successful save still ends the breaker cooldown
+      - >-
+        packages/core/test/formal-remote-health-breaker.test.ts::the write leg reports the cooldown as the breaker, not
+        a rate limit
+      - >-
+        packages/core/test/formal-remote-health-breaker.test.ts::a host-wide 429 cooldown from an older file is still
+        honoured to its end

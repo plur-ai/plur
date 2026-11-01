@@ -297,7 +297,12 @@ export const remoteResultsMethods: RemoteResultsMethods & ThisType<Plur> = {
         this._lastRemoteOutcomes.set(normalizeEndpointUrl(o.url), { outcome: o, observed_at })
       }
       return result
-    }).catch((): RemoteRecallResult => ({ engrams: [], scores: new Map(), outcomes: [] })), { hostUrls: hosts.map(h => h.url) })
+    // A failed leg reached no host: every dialed host is reported unreachable,
+    // never an empty outcome list, which would read as `not_dialed` (complete).
+    }).catch((): RemoteRecallResult => ({
+      engrams: [], scores: new Map(),
+      outcomes: hosts.map(h => ({ url: h.url, state: 'unreachable' as const, ms: 0, count: 0, detail: 'internal_error' })),
+    })), { hostUrls: hosts.map(h => h.url) })
   },
 
   _filterRemoteRows(rows: Engram[], options?: RecallOptions & { include_expired?: boolean }): Engram[] {

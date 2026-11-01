@@ -1,0 +1,29 @@
+"packages/core/src/storage-pglite.ts#clause":
+  lean: ["PlurSpec/BackendScopes.lean:pg_agrees", "PlurSpec/BackendScopes.lean:like_esc_prefix"]
+  tests: ["packages/core/test/formal-backend-scopes-case.test.ts::PGLite adapter: project scope + grant"]
+"packages/core/src/storage-postgres.ts#buildFilterClause":
+  lean: ["PlurSpec/BackendScopes.lean:pg_agrees", "PlurSpec/BackendScopes.lean:like_esc_prefix"]
+  tests: ["packages/core/test/formal-backend-scopes-case.test.ts::Postgres clause run on a real Postgres engine: project scope"]
+"packages/core/src/storage-postgres.ts#clause":
+  lean: ["PlurSpec/BackendScopes.lean:pg_agrees"]
+  tests: ["packages/core/test/formal-backend-scopes-case.test.ts::Postgres clause run on a real Postgres engine: project scope + grant"]
+"packages/core/src/storage-indexed.ts#clauses":
+  lean: ["PlurSpec/BackendScopes.lean:sqlite_agrees"]
+  tests: ["packages/core/test/formal-backend-scopes-case.test.ts::SQLite index: project scope + grant"]
+"packages/core/src/scope-util.ts#isPersonalScope":
+  lean: ["PlurSpec/BackendScopes.lean:sqlShared_fold"]
+  tests: ["packages/core/test/formal-backend-scopes-case.test.ts::PGLite adapter: project scope"]
+"packages/core/src/store/remote-only-store-guard.ts#(module)":
+  lean: ["PlurSpec/BackendScopes.lean:save_keeps_hidden", "PlurSpec/BackendScopes.lean:update_keeps_hidden", "PlurSpec/BackendScopes.lean:append_safe", "PlurSpec/BackendScopes.lean:read_only_visible"]
+  tests: ["packages/core/test/formal-backend-scopes-guard.test.ts::a whole-corpus save keeps every hidden row in place and refuses to touch one"]
+"packages/core/src/store/remote-only-store-guard.ts#heldState":
+  tests: ["packages/core/test/formal-backend-scopes-guard.test.ts::the remembered hold state does not share objects with a returned row"]
+"packages/core/src/store/remote-only-store-guard.ts#QueueHoldStore._queued":
+  tests: ["packages/core/test/formal-backend-scopes-guard.test.ts::a row read without the queue marker cannot gain a malformed one"]
+"packages/core/src/store/remote-only-store-guard.ts#QueueHoldStore.loadByIds":
+  tests: ["packages/core/test/formal-backend-scopes-guard.test.ts::forwards every non-write member of the inner store, bound to it, and wraps the three writes"]
+"packages/core/src/store/remote-only-store-guard.ts#RemoteOnlyStoreGuard.allIds":
+  tests: ["packages/core/test/formal-backend-scopes-guard.test.ts::allIds lists every id, hidden rows included, and nothing else"]
+"packages/core/src/remote-only.ts#RemoteOnlyBinding":
+  lean: ["PlurSpec/BackendScopes.lean:blocked_refuses_append"]
+  tests: ["packages/core/test/formal-backend-scopes-guard.test.ts::a blocked binding refuses even a well-formed queued save"]

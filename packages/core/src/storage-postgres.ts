@@ -1554,9 +1554,10 @@ export function buildFilterClause(filter: StorageFilter): { where: string; param
     // triple per granted scope, appended to the visibility OR — identical to
     // the PGLite copy above and the SQLite/in-memory arms; keep all four in
     // lockstep. VISIBILITY ONLY: the `scopes` authorization clause is never
-    // widened by grants.
+    // widened by grants. The personal-family arm case-folds the prefix like
+    // isSharedScope; the containment arms compare exactly like isScopeWithin.
     let clause =
-      `((NOT (scope LIKE 'group:%' OR scope LIKE 'project:%' OR scope LIKE 'space:%' OR scope LIKE 'team:%' OR scope LIKE 'org:%' OR scope = 'public' OR scope LIKE 'public:%' OR scope LIKE 'public/%'))`
+      `((NOT (lower(scope) LIKE 'group:%' OR lower(scope) LIKE 'project:%' OR lower(scope) LIKE 'space:%' OR lower(scope) LIKE 'team:%' OR lower(scope) LIKE 'org:%' OR lower(scope) = 'public' OR lower(scope) LIKE 'public:%' OR lower(scope) LIKE 'public/%'))`
       + ` OR scope = $${i++} OR scope LIKE $${i++} || ':%' ESCAPE '\\' OR scope LIKE $${i++} || '/%' ESCAPE '\\'`
     // The caller's scope is escaped: an unescaped `%` here matches across
     // unrelated namespaces, defeating the segment-aware containment guard

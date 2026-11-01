@@ -1041,13 +1041,15 @@ function _knownSession(id: string, plur: Plur, viaServer: boolean): boolean {
  *   workspace's answer (the default itself is not changed).
  * - No session (none, several unnamed, or unknown id — never the process slot): the scope every root agrees on, or
  *   none. Roots are resolved right before core admits the write. An explicit `scope` still wins in core; without a
- *   FolderScopeContext the session alone decides.
+ *   FolderScopeContext the session alone decides, and an id core has no registration for is no session.
  */
 async function _writeSession(args: Record<string, unknown>, plur: Plur, base?: string | undefined, read = false, explicitDestinations = false): Promise<string> {
   const explicit = typeof args.session_id === 'string' && args.session_id.length > 0 ? args.session_id : undefined
   const chosen = base !== undefined ? base : (explicit ?? _implicitSessionId())
   const ctx = _folderContext(args)
-  if (!ctx) return chosen ?? NO_SESSION
+  // Without the server, an id core holds no registration for is no session:
+  // core would answer it with the process slot the last-started session set.
+  if (!ctx) return chosen !== undefined && _knownSession(chosen, plur, false) ? chosen : NO_SESSION
   // An id this process never registered has no default.
   const session = chosen !== undefined && _knownSession(chosen, plur, true) ? chosen : NO_SESSION
   let ws: Awaited<ReturnType<FolderScopeContext['resolve']>> = null
@@ -4995,15 +4997,20 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
           scope: { type: 'string', description: 'Scope for the new engram' },
           domain: { type: 'string', description: 'Domain tag for the new engram' },
           tags: { type: 'array', items: { type: 'string' }, description: 'Tags for the new engram' },
+          session_id: { type: 'string', description: 'Session this memory belongs to (from plur_session_start). Optional when one session is open. With none or several open and no session_id, no session default applies.' },
         },
         required: ['episode_id'],
       },
       handler: async (args, plur) => {
+        // A split window answers with plur_learn's refusal.
+        let session: string
+        try { session = await _writeSession(args, plur) }
+        catch (err) { if (err instanceof RootsDisagreeError) return err.refusal; throw err }
         const engram = await plur.episodeToEngram(args.episode_id as string, {
           scope: args.scope as string | undefined,
           // The same default as every other new write: never the process-wide
           // slot.
-          session: await _writeSession(args, plur),
+          session: session,
           domain: args.domain as string | undefined,
           tags: args.tags as string[] | undefined,
         })

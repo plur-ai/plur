@@ -69,7 +69,10 @@ export function agyIsSessionStarted(conversationId: string): boolean {
   return sessionDirTrusted(SESSION_DIR) && existsSync(agySentinelPath(conversationId))
 }
 
-/** Same fail-open contract as codex-hook-io's incrementCounter: an unpersistable counter reports itself as exceeded. */
+/**
+ * Same fail-open contract as codex-hook-io's incrementCounter: an unpersistable counter reports itself as exceeded.
+ * Read-then-write, unlike ticketCounter: racing hooks can read the same value and both return it.
+ */
 export function agyIncrementCounter(path: string): number {
   if (!ensureDir()) return Number.MAX_SAFE_INTEGER
   let n = 0

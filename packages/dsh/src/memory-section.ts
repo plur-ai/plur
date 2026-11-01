@@ -53,7 +53,8 @@ export function estimateTokens(text: string): number {
 /**
  * Render the memory block for the `plur:memory` system-prompt section.
  * Sections are dropped whole, never truncated mid-engram (a half engram reads as complete). Under budget pressure
- * `consider` goes first, then `directives`; `constraints` never.
+ * `consider` goes first, then `directives`; `constraints` last, and then replaced by a WITHHELD
+ * notice, never dropped silently. When not even the notice fits, the block is empty.
  *
  * @param injection - the result of a PLUR injection call.
  * @param budgetTokens - approximate token ceiling for the whole block.

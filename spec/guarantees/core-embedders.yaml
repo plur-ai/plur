@@ -3,23 +3,28 @@ anchors:
     kind: guarantee
     rule: The search instruction is added to queries only, never to stored text.
     tests:
-    - packages/core/test/hybrid-meaning-ranking.test.ts::stored text and similarity scores do not
+      - packages/core/test/hybrid-meaning-ranking.test.ts::stored text and similarity scores do not
   packages/core/src/embedders/embedding-gemma.ts#(module):
     kind: guarantee
     rule: EmbeddingGemma vectors come from the model's normalized sentence output, never a mean-pool of hidden states.
-    none: no test checks which model output is read
+    tests:
+      - >-
+        packages/core/test/formal-secrets-install-gemma.test.ts::returns the sentence_embedding output, not a pooled
+        last_hidden_state
   packages/core/src/embedders/embedding-gemma.ts#load:
     kind: guarantee
     rule: With downloads off, an EmbeddingGemma model missing from disk is refused before the library is asked.
     tests:
-    - 'packages/core/test/offline-inferred-model-download-siblings.test.ts::EmbeddingGemma: an uncached model makes no transport
-      attempt after the failed check'
+      - >-
+        packages/core/test/offline-inferred-model-download-siblings.test.ts::EmbeddingGemma: an uncached model makes no
+        transport attempt after the failed check
     promises:
-    - TEAM-5
+      - TEAM-5
   packages/core/src/embedders/embedding-gemma.ts#makeEmbeddingGemmaAdapter.isLoaded:
     kind: guarantee
     rule: Checking whether the model is loaded never downloads it.
-    none: no test checks that isLoaded starts no download
+    tests:
+      - packages/core/test/formal-secrets-install-gemma.test.ts::isLoaded never loads or downloads the model
   packages/core/src/embedders/index.ts#_resetEmbedderCache:
     kind: note
     why: Marks a test-only helper; production code not calling it is a convention, not a rule.
@@ -28,26 +33,31 @@ anchors:
     why: Explains why an unparsable config.json counts as no usable model at that location.
   packages/core/src/embedders/transformers-base.ts#loadPipeline:
     kind: guarantee
-    rule: The model loader never uses the Xet transfer, and with downloads off a missing model is refused before the library
+    rule: >-
+      The model loader never uses the Xet transfer, and with downloads off a missing model is refused before the library
       is asked.
     tests:
-    - packages/core/test/offline-inferred-model-download.test.ts::the default model loader makes no transport attempt for
-      an uncached model
+      - >-
+        packages/core/test/offline-inferred-model-download.test.ts::the default model loader makes no transport attempt
+        for an uncached model
     promises:
-    - TEAM-5
+      - TEAM-5
   packages/core/src/embedders/transformers-base.ts#refuseMissingModelOffline:
     kind: guarantee
-    rule: With downloads off, every automatic model download is refused for a model not on disk, and a model on disk loads
+    rule: >-
+      With downloads off, every automatic model download is refused for a model not on disk, and a model on disk loads
       from disk only.
     tests:
-    - 'packages/core/test/offline-inferred-model-download-siblings.test.ts::bge reranker: an uncached model makes no transport
-      attempt after the failed check'
-    - 'packages/core/test/offline-inferred-model-download-siblings.test.ts::control: a model on disk is not refused after
-      the failed check'
+      - >-
+        packages/core/test/offline-inferred-model-download-siblings.test.ts::bge reranker: an uncached model makes no
+        transport attempt after the failed check
+      - >-
+        packages/core/test/offline-inferred-model-download-siblings.test.ts::control: a model on disk is not refused
+        after the failed check
     promises:
-    - TEAM-5
+      - TEAM-5
   packages/core/src/embedders/types.ts#EmbedderAdapter:
     kind: guarantee
     rule: Duplicate checks and injection thresholds compare texts as written and never add the search instruction.
     tests:
-    - packages/core/test/hybrid-meaning-ranking.test.ts::stored text and similarity scores do not
+      - packages/core/test/hybrid-meaning-ranking.test.ts::stored text and similarity scores do not

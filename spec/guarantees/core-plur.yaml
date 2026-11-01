@@ -395,7 +395,10 @@ anchors:
   packages/core/src/plur/folders-policy.ts#policy:
     kind: guarantee
     rule: Binding to a folder only reads the folder map and never imports a legacy trust.yaml.
-    none: no test binds a folder with a legacy trust.yaml present and checks that nothing was imported
+    tests:
+      - >-
+        packages/core/test/formal-folder-rules-writes.test.ts::bindFolder honours the legacy grant and writes no
+        folders.yaml
   packages/core/src/plur/folders-policy.ts#remoteScopes:
     kind: guarantee
     rule: A personal url store never qualifies as the destination of a remote-only folder.
@@ -627,7 +630,11 @@ anchors:
     rule: >-
       When a remote-only folder's team server did not serve a read, the session has no memory and says so; it never
       silently falls back to the personal store.
-    none: no test checks the remote_only flag on an injection result when the team server is unreachable
+    tests:
+      - >-
+        packages/core/test/formal-inject-budget-injection.test.ts::not dialled, failed or missing outcomes are reported
+        as not served
+      - packages/core/test/formal-inject-budget-injection.test.ts::a folder with no scope is never reported as served
   packages/core/src/plur/injection.ts#injectionMethods._formatInjection:
     kind: guarantee
     rule: >-
@@ -642,15 +649,24 @@ anchors:
   packages/core/src/plur/injection.ts#modelMissing:
     kind: guarantee
     rule: When the embedding model is not on disk, injection runs keyword-only and never starts a download.
-    none: no injection test removes the model and checks no download starts (the recall path has one)
+    tests:
+      - >-
+        packages/core/test/recall-model-missing-1587.test.ts::keyword results at once, with the reason and the next
+        step; no process spawned, no download
   packages/core/src/plur/injection.ts#recordedSessionId:
     kind: guarantee
     rule: The no-session marker is never recorded as a session id in injection history.
-    none: no test injects with the no-session marker and inspects the recorded session id
+    tests:
+      - >-
+        packages/core/test/formal-inject-budget-injection.test.ts::an inject with the no-session marker records no
+        session id
   packages/core/src/plur/injection.ts#remotePromise.session:
     kind: guarantee
     rule: The workspace dial scope used for a read with no session default is never recorded as a session.
-    none: no test checks that the dial scope is kept out of the recorded session
+    tests:
+      - >-
+        packages/core/test/formal-inject-budget-injection.test.ts::the workspace dial scope is never recorded as a
+        session
   packages/core/src/plur/injection.ts#result.grantedScopes:
     kind: guarantee
     rule: Mounted-store visibility grants never widen the caller's scope authorization list during injection.
@@ -661,7 +677,10 @@ anchors:
   packages/core/src/plur/injection.ts#st:
     kind: guarantee
     rule: Embeddings the user turned off are never flagged as a degraded injection.
-    none: no test injects with embeddings disabled and checks no degradation is reported
+    tests:
+      - >-
+        packages/core/test/formal-inject-budget-injection.test.ts::injectHybrid with embeddings disabled reports
+        bm25-only and no degradation
   packages/core/src/plur/injection.ts#withoutPacks:
     kind: guarantee
     rule: A pack memory is scored once in injection, by the pack rules, never a second time under the personal rules.
@@ -1243,8 +1262,13 @@ anchors:
       always-dial one, unless a scope was chosen explicitly.
     lean:
       - PlurSpec/GitFolder.lean:adapter_local_never_dials
+      - PlurSpec/RemoteHealth.lean:complete_means_reached
+      - PlurSpec/RemoteHealth.lean:new_catch_incomplete
     tests:
       - packages/core/test/git-folder-binding.test.ts::local and unknown bindings never dial even always-dial stores
+      - >-
+        packages/core/test/formal-remote-health-results.test.ts::recallWithMeta: results_complete is false and the host
+        is named
   packages/core/src/plur/remote-results.ts#scope:
     kind: guarantee
     rule: >-
@@ -1389,7 +1413,12 @@ anchors:
     rule: >-
       A cached remote row absorbs a duplicate save only when a write to that scope actually goes to that remote store,
       not when a local store is selected for the scope.
-    none: no test or theorem checks the choice between a selected local store and another store's cached row
+    lean:
+      - PlurSpec/R2CoreA.lean:cache_row_yields_to_local_store
+    tests:
+      - >-
+        packages/core/test/user-scope-remote-recall.test.ts::L2: a cached remote row does not swallow a write that the
+        selection keeps local
   packages/core/src/plur/scope-guards.ts#scopeGuardsMethods._learnHashMatch:
     kind: guarantee
     rule: A save queued from a remote-only folder never absorbs a new write as a duplicate.

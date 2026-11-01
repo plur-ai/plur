@@ -21,11 +21,13 @@ export interface TensionScanResult {
   new_tensions: number
   tensions: TensionPair[]
   /**
-   * Pairs the pre-filters removed for a reason that is a policy, not a
-   * structural impossibility. A skip that leaves no trace is
-   * indistinguishable from a pair that was never a candidate, so every
-   * policy skip is counted here and its pair key (sorted ids joined by
-   * ':') listed. Always present; zero when nothing was skipped.
+   * Pairs the measured-under gate removed (`measured_under_pairs: 'skip'`).
+   * A skip that leaves no trace is indistinguishable from a pair that was
+   * never a candidate, so a measured-under skip is never silent: it is
+   * counted here and its pair key (sorted ids joined by ':') listed. Always
+   * present; zero when nothing was skipped. Not counted: snapshot pairs
+   * dropped by `snapshot_pairs: 'skip'`, expired validity windows,
+   * supersedes links and already-recorded pairs.
    */
   skipped: { measured_under: number; measured_under_pairs: string[] }
 }

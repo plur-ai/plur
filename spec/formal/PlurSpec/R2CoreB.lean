@@ -122,14 +122,71 @@ theorem old_gate_crosses_trust_boundary (M : Row σ → Row σ → Bool) (s p : 
     gateOld M (packLoad p packRaw) (remoteLoadOld s ⟨some p, none, c⟩) = true := by
   simpa [gateOld, originOld, packLoad, remoteLoadOld] using hM
 
-/-- **Main property.** The origin of a loaded remote row is exactly its store,
-never a pack origin, whatever the server sent. -/
-theorem remote_origin_is_store (s : String) (r : Row σ) :
-    origin (remoteLoad s r) = .store s := rfl
+/-! The row as the server sends it: any keys, in any order. Loader markers are
+the `_`-prefixed keys; `user n u` is any other key the row ships, `u` saying
+whether its name starts with `_`. -/
+inductive Key where
+  | pack | storeScope | originalId
+  | user (name : String) (underscore : Bool)
+  deriving DecidableEq
+
+def marker : Key → Bool
+  | .user _ u => u
+  | _ => true
+
+abbrev KRow := List (Key × String)
+
+/-- `engramOrigin` on the key/value row: lookup reads the first binding. -/
+def originKV (r : KRow) : O :=
+  match r.lookup .pack, r.lookup .storeScope with
+  | some _, some _ => .ambiguous
+  | some p, none   => .pack p
+  | none, some s   => .store s
+  | none, none     => .primary
+
+/-- `stampStoreRow` (and `withoutLoaderMarkers` then the loader's stamp):
+drop every `_` key, then set `_originalId` and `_storeScope`. -/
+def stampKV (s id : String) (r : KRow) : KRow :=
+  (.storeScope, s) :: (.originalId, id) :: r.filter (fun kv => !marker kv.1)
+
+/-- The stamp without the strip. -/
+def stampKVOld (s id : String) (r : KRow) : KRow := (.storeScope, s) :: (.originalId, id) :: r
+
+theorem lookup_pack_stripped (r : KRow) : (r.filter (fun kv => !marker kv.1)).lookup .pack = none := by
+  induction r with
+  | nil => rfl
+  | cons kv rest ih =>
+    obtain ⟨k, v⟩ := kv
+    cases k with
+    | pack => simpa [List.filter, marker] using ih
+    | storeScope => simpa [List.filter, marker] using ih
+    | originalId => simpa [List.filter, marker] using ih
+    | user n u =>
+      cases u
+      · have hne : (Key.pack == Key.user n false) = false := rfl
+        simp only [List.filter, marker, Bool.not_false]
+        simp only [List.lookup, hne]
+        exact ih
+      · simpa [List.filter, marker] using ih
+
+/-- **Main property.** For every row the server sends, whatever keys it ships
+(`_pack`, `_storeScope` or anything else), the loaded row's origin is exactly
+its store; the abstract `Row` loader agrees. -/
+theorem remote_origin_is_store (s id : String) (r : KRow) (r' : Row σ) :
+    originKV (stampKV s id r) = .store s ∧ origin (remoteLoad s r') = .store s := by
+  refine ⟨?_, rfl⟩
+  have h1 : (Key.pack == Key.storeScope) = false := rfl
+  have h2 : (Key.pack == Key.originalId) = false := rfl
+  have h3 : (Key.storeScope == Key.storeScope) = true := rfl
+  simp only [originKV, stampKV, List.lookup, h1, h2, h3, lookup_pack_stripped]
+
+/-- Counterexample on the stamp without the strip: a row shipping `_pack` is ambiguous. -/
+theorem old_stamp_keeps_pack :
+    originKV (stampKVOld "s" "i" [(.pack, "P")]) = .ambiguous := by decide
 
 theorem remote_origin_never_pack (s p : String) (r : Row σ) :
     origin (remoteLoad s r) ≠ .pack p := by
-  simp [remote_origin_is_store]
+  simp [origin, remoteLoad, strip]
 
 /-- Defence in depth (tensions.ts): even a loader that does NOT strip — the
 file-backed store loader — can no longer yield a pack origin. -/
@@ -159,7 +216,7 @@ theorem gate_never_crosses (M : Row σ → Row σ → Bool) (p s : String) (x y 
 theorem gate_same_store_reachable (M : Row σ → Row σ → Bool) (s : String) (a b : Row σ)
     (hM : M (remoteLoad s a) (remoteLoad s b) = true) :
     gate M (remoteLoad s a) (remoteLoad s b) = true := by
-  simp [gate, remote_origin_is_store, hM]
+  simpa [gate, origin, remoteLoad, strip] using hM
 
 end Origin
 

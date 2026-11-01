@@ -1,796 +1,1207 @@
 anchors:
   packages/cli/src/commands/audit.ts#detectEntityConflict:
     kind: note
-    why: "Describes how the conflict heuristic matches negation phrases; it states no rule the code must keep."
+    why: Describes how the conflict heuristic matches negation phrases; it states no rule the code must keep.
   packages/cli/src/commands/audit.ts#printText:
     kind: guarantee
-    rule: "With --quiet, plur audit still prints its findings; only the banner and hints are dropped."
-    none: "no test runs plur audit with --quiet"
+    rule: With --quiet, plur audit still prints its findings; only the banner and hints are dropped.
+    none: no test runs plur audit with --quiet
   packages/cli/src/commands/audit.ts#refused:
     kind: guarantee
-    rule: "plur audit is refused in a remote-only folder."
-    tests: ["packages/cli/test/folder-remote-only.test.ts::plur tensions --scan and plur audit are refused in a remote-only folder"]
+    rule: plur audit is refused in a remote-only folder.
+    tests:
+      - >-
+        packages/cli/test/folder-remote-only.test.ts::plur tensions --scan and plur audit are refused in a remote-only
+        folder
   packages/cli/src/commands/checkpoint.ts#data:
     kind: note
-    why: "Explains that core refuses to attest an unreadable store; this code only turns that throw into a readable message."
+    why: Explains that core refuses to attest an unreadable store; this code only turns that throw into a readable message.
   packages/cli/src/commands/checkpoint.ts#run:
     kind: guarantee
-    rule: "plur checkpoint on a store with no engrams.yaml exits 1 with an explanation instead of crashing."
-    none: "no test runs plur checkpoint on an empty store"
+    rule: plur checkpoint on a store with no engrams.yaml exits 1 with an explanation instead of crashing.
+    none: no test runs plur checkpoint on an empty store
   packages/cli/src/commands/doctor.ts#buildOpencodeReport:
     kind: guarantee
-    rule: "When the registry lookup is skipped or cannot answer, doctor reports the opencode plugin as unknown, never as a wrong yes or no."
-    tests: ["packages/cli/test/doctor.test.ts::reports pluginResolvable: unknown (never a false"]
+    rule: >-
+      When the registry lookup is skipped or cannot answer, doctor reports the opencode plugin as unknown, never as a
+      wrong yes or no.
+    tests:
+      - "packages/cli/test/doctor.test.ts::reports pluginResolvable: unknown (never a false"
   packages/cli/src/commands/doctor.ts#checkEmbedder.env:
     kind: note
-    why: "Explains why the probe child gets a marker variable; the refusal itself lives in the probe command."
+    why: Explains why the probe child gets a marker variable; the refusal itself lives in the probe command.
   packages/cli/src/commands/doctor.ts#checkOpencodePluginPublished:
     kind: guarantee
-    rule: "The npm registry lookup is bounded so doctor never hangs, and offline or failed lookups answer unknown."
-    tests: ["packages/cli/test/doctor-offline-no-network.test.ts::offline: no request, answer unknown"]
+    rule: The npm registry lookup is bounded so doctor never hangs, and offline or failed lookups answer unknown.
+    tests:
+      - "packages/cli/test/doctor-offline-no-network.test.ts::offline: no request, answer unknown"
   packages/cli/src/commands/doctor.ts#checkOutbox:
     kind: guarantee
-    rule: "The outbox check never throws; an unreadable store is reported as no outbox data."
-    none: "no test makes the outbox read fail inside doctor"
+    rule: The outbox check never throws; an unreadable store is reported as no outbox data.
+    none: no test makes the outbox read fail inside doctor
   packages/cli/src/commands/doctor.ts#claims_problem:
     kind: note
-    why: "Explains why an unrecordable push claim matters; the failing verdict is stated on the report type."
+    why: Explains why an unrecordable push claim matters; the failing verdict is stated on the report type.
   packages/cli/src/commands/doctor.ts#claudeCodeHooks:
     kind: note
-    why: "Explains why hooks without the MCP server count as a broken half-install."
+    why: Explains why hooks without the MCP server count as a broken half-install.
   packages/cli/src/commands/doctor.ts#ClaudeCodeMcpReport:
     kind: guarantee
-    rule: "A plur entry in ~/.claude/settings.json never counts as a Claude Code MCP registration."
-    tests: ["packages/cli/test/init-claude-user-mcp-1561.test.ts::hooks installed, server only in settings.json: not registered, fails, and names the fix"]
+    rule: A plur entry in ~/.claude/settings.json never counts as a Claude Code MCP registration.
+    tests:
+      - >-
+        packages/cli/test/init-claude-user-mcp-1561.test.ts::hooks installed, server only in settings.json: not
+        registered, fails, and names the fix
   packages/cli/src/commands/doctor.ts#codexReport:
     kind: guarantee
-    rule: "The Codex check judges only the Codex registration; another working editor never makes it pass."
-    tests: ["packages/cli/test/codex-runtime-1623.test.ts::doctor fails without a Codex registration even if another editor works"]
+    rule: The Codex check judges only the Codex registration; another working editor never makes it pass.
+    tests:
+      - >-
+        packages/cli/test/codex-runtime-1623.test.ts::doctor fails without a Codex registration even if another editor
+        works
   packages/cli/src/commands/doctor.ts#DEFAULT_PROBE_TIMEOUT_MS:
     kind: note
     why: "Explains why the probe timeout is long: hooks cannot finish the first model download."
   packages/cli/src/commands/doctor.ts#DoctorReport:
     kind: guarantee
-    rule: "A server registered only in settings.json, an unset token variable, a queued team write that can never be delivered, or a broken folder map each fail the overall check; token values are never shown."
-    tests: ["packages/cli/test/init-claude-user-mcp-1561.test.ts::hooks installed, server only in settings.json: not registered, fails, and names the fix", "packages/cli/test/doctor.test.ts::an unset token_env variable fails the overall verdict and the exit code", "packages/cli/test/doctor.test.ts::reports a store whose token_env variable is unset, without a value", "packages/cli/test/outbox-needs-action.test.ts::plur doctor fails the outbox check on a 403-refused write and exits non-zero"]
+    rule: >-
+      A server registered only in settings.json, an unset token variable, a queued team write that can never be
+      delivered, or a broken folder map each fail the overall check; token values are never shown.
+    tests:
+      - >-
+        packages/cli/test/init-claude-user-mcp-1561.test.ts::hooks installed, server only in settings.json: not
+        registered, fails, and names the fix
+      - packages/cli/test/doctor.test.ts::an unset token_env variable fails the overall verdict and the exit code
+      - packages/cli/test/doctor.test.ts::reports a store whose token_env variable is unset, without a value
+      - >-
+        packages/cli/test/outbox-needs-action.test.ts::plur doctor fails the outbox check on a 403-refused write and
+        exits non-zero
   packages/cli/src/commands/doctor.ts#finish:
     kind: guarantee
-    rule: "Every handshake verdict names the server command that was probed."
-    none: "no test asserts the probed subject on the handshake result"
+    rule: Every handshake verdict names the server command that was probed.
+    none: no test asserts the probed subject on the handshake result
   packages/cli/src/commands/doctor.ts#hasPlur:
     kind: guarantee
-    rule: "A commented-out Codex plur table, or one named like plurality, does not count as a plur registration."
-    none: "no test feeds doctor a commented-out or look-alike Codex table"
+    rule: A commented-out Codex plur table, or one named like plurality, does not count as a plur registration.
+    none: no test feeds doctor a commented-out or look-alike Codex table
   packages/cli/src/commands/doctor.ts#isClaudeSettingsFile:
     kind: note
     why: "States a fact about Claude Code: it never reads MCP servers from its settings files."
   packages/cli/src/commands/doctor.ts#OpencodeReport:
     kind: guarantee
-    rule: "An opencode plugin whose resolvability cannot be determined is reported unknown, never coerced to yes or no."
-    tests: ["packages/cli/test/doctor.test.ts::reports pluginResolvable: unknown (never a false"]
+    rule: An opencode plugin whose resolvability cannot be determined is reported unknown, never coerced to yes or no.
+    tests:
+      - "packages/cli/test/doctor.test.ts::reports pluginResolvable: unknown (never a false"
   packages/cli/src/commands/doctor.ts#plur:
     kind: guarantee
     rule: "Doctor only looks: it never registers a project store or imports trust.yaml."
-    tests: ["packages/cli/test/folder-safety-1588.test.ts::folders.yaml is not created by doctor when only trust.yaml exists"]
+    tests:
+      - packages/cli/test/folder-safety-1588.test.ts::folders.yaml is not created by doctor when only trust.yaml exists
   packages/cli/src/commands/doctor.ts#printText:
     kind: guarantee
-    rule: "With --quiet, doctor drops only its banner; every finding, including the passing lines, still prints."
-    tests: ["packages/cli/test/quiet.test.ts::suppresses only the banner; every finding still prints"]
+    rule: With --quiet, doctor drops only its banner; every finding, including the passing lines, still prints.
+    tests:
+      - packages/cli/test/quiet.test.ts::suppresses only the banner; every finding still prints
   packages/cli/src/commands/doctor.ts#spawnEnv:
     kind: note
-    why: "Explains why the probe uses the entry's own environment."
+    why: Explains why the probe uses the entry's own environment.
   packages/cli/src/commands/doctor.ts#spec:
     kind: note
     why: "States a Windows fact: npx and .cmd files cannot be spawned directly."
   packages/cli/src/commands/doctor.ts#staticChecksPass:
     kind: guarantee
-    rule: "A connection doctor did not check is never reported as ok; it is reported unverified."
-    tests: ["packages/cli/test/doctor.test.ts::with hooks and plur MCP present and no handshake, reports unverified (not ok, not fail)"]
+    rule: A connection doctor did not check is never reported as ok; it is reported unverified.
+    tests:
+      - >-
+        packages/cli/test/doctor.test.ts::with hooks and plur MCP present and no handshake, reports unverified (not ok,
+        not fail)
   packages/cli/src/commands/embedder-probe.ts#run:
     kind: guarantee
-    rule: "The embedder probe refuses to run unless doctor started it."
-    tests: ["packages/cli/test/embedder-probe.test.ts::refuses to run when called directly (no PLUR_INTERNAL_PROBE env var)"]
+    rule: The embedder probe refuses to run unless doctor started it.
+    tests:
+      - packages/cli/test/embedder-probe.test.ts::refuses to run when called directly (no PLUR_INTERNAL_PROBE env var)
   packages/cli/src/commands/feedback.ts#FLAGS_WITH_VALUES:
     kind: guarantee
-    rule: "plur feedback refuses a flag it does not accept instead of silently dropping it."
-    tests: ["packages/cli/test/save-deadline-outbox.test.ts::6: feedback refuses an unknown flag and a stray extra argument"]
+    rule: plur feedback refuses a flag it does not accept instead of silently dropping it.
+    tests:
+      - "packages/cli/test/save-deadline-outbox.test.ts::6: feedback refuses an unknown flag and a stray extra argument"
   packages/cli/src/commands/feedback.ts#id:
     kind: guarantee
-    rule: "plur feedback refuses an id that names both a local and a remote memory unless --scope picks one, and refuses an extra argument."
-    tests: ["packages/cli/test/save-deadline-outbox.test.ts::6: feedback refuses an unknown flag and a stray extra argument", "packages/cli/test/save-deadline-outbox.test.ts::6: feedback --scope primary rates a local engram whose id also exists remotely"]
+    rule: >-
+      plur feedback refuses an id that names both a local and a remote memory unless --scope picks one, and refuses an
+      extra argument.
+    tests:
+      - "packages/cli/test/save-deadline-outbox.test.ts::6: feedback refuses an unknown flag and a stray extra argument"
+      - >-
+        packages/cli/test/save-deadline-outbox.test.ts::6: feedback --scope primary rates a local engram whose id also
+        exists remotely
   packages/cli/src/commands/folders.ts#nonceRequired:
     kind: guarantee
-    rule: "Unless both stdin and stdout are terminals, folders set/rm and trust are refused without a valid nonce."
-    tests: ["packages/cli/test/folders.test.ts::outside a terminal, set and rm without --nonce are refused", "packages/cli/test/folders.test.ts::only a TTY on both stdin and stdout skips the nonce"]
+    rule: Unless both stdin and stdout are terminals, folders set/rm and trust are refused without a valid nonce.
+    tests:
+      - packages/cli/test/folders.test.ts::outside a terminal, set and rm without --nonce are refused
+      - packages/cli/test/folders.test.ts::only a TTY on both stdin and stdout skips the nonce
   packages/cli/src/commands/folders.ts#nonceSession:
     kind: guarantee
-    rule: "A --session flag that disagrees with the host's session is refused, so the host's nonce binding cannot be overridden."
-    tests: ["packages/cli/test/folder-not-now-session-flag.test.ts::--session that disagrees with PLUR_FOLDER_SESSION is refused"]
+    rule: >-
+      A --session flag that disagrees with the host's session is refused, so the host's nonce binding cannot be
+      overridden.
+    tests:
+      - >-
+        packages/cli/test/folder-not-now-session-flag.test.ts::--session that disagrees with PLUR_FOLDER_SESSION is
+        refused
   packages/cli/src/commands/folders.ts#repair:
     kind: guarantee
-    rule: "folders repair without --yes in a non-interactive run changes nothing and exits nonzero; with --yes it backs up, writes atomically and re-checks."
-    tests: ["packages/cli/test/folders-repair.test.ts::non-interactive without --yes is a dry run: shows the diff, changes nothing, exits nonzero", "packages/cli/test/folders-repair.test.ts::--yes: backup, atomic write, re-checked, exit 0"]
+    rule: >-
+      folders repair without --yes in a non-interactive run changes nothing and exits nonzero; with --yes it backs up,
+      writes atomically and re-checks.
+    tests:
+      - >-
+        packages/cli/test/folders-repair.test.ts::non-interactive without --yes is a dry run: shows the diff, changes
+        nothing, exits nonzero
+      - "packages/cli/test/folders-repair.test.ts::--yes: backup, atomic write, re-checked, exit 0"
   packages/cli/src/commands/folders.ts#repairCommandFor:
     kind: guarantee
-    rule: "The suggested repair command quotes the store path so pasting it never runs what the path holds."
-    none: "no test checks the quoting of the suggested repair command"
+    rule: The suggested repair command quotes the store path so pasting it never runs what the path holds.
+    none: no test checks the quoting of the suggested repair command
   packages/cli/src/commands/forget.ts#{ warnings }:
     kind: guarantee
-    rule: "plur forget never reports a retire that happened as a failure, nor a failure as a retire."
-    tests: ["packages/cli/test/forget-namespaced.test.ts::surfaces the #1114 refusal when the declared store cannot be reached", "packages/cli/test/forget-namespaced.test.ts::retires a remote engram by its namespaced id (--json)"]
+    rule: plur forget never reports a retire that happened as a failure, nor a failure as a retire.
+    tests:
+      - >-
+        packages/cli/test/forget-namespaced.test.ts::surfaces the #1114 refusal when the declared store cannot be
+        reached
+      - packages/cli/test/forget-namespaced.test.ts::retires a remote engram by its namespaced id (--json)
   packages/cli/src/commands/forget.ts#printWarnings:
     kind: guarantee
-    rule: "Forget warnings are printed even with --quiet."
-    none: "no test runs plur forget with --quiet and a warning"
+    rule: Forget warnings are printed even with --quiet.
+    none: no test runs plur forget with --quiet and a warning
   packages/cli/src/commands/forget.ts#run:
     kind: guarantee
-    rule: "plur forget refuses a --scope with no value, and refuses a remote --scope in search mode."
-    tests: ["packages/cli/test/forget-namespaced.test.ts::--scope without a value is a usage error", "packages/cli/test/forget-namespaced.test.ts::search mode refuses a remote --scope"]
+    rule: plur forget refuses a --scope with no value, and refuses a remote --scope in search mode.
+    tests:
+      - packages/cli/test/forget-namespaced.test.ts::--scope without a value is a usage error
+      - packages/cli/test/forget-namespaced.test.ts::search mode refuses a remote --scope
   packages/cli/src/commands/forget.ts#withWarnings:
     kind: note
     why: "Uses \"always\" loosely: an ordinary retire keeps its old output shape."
   packages/cli/src/commands/hook-agy-pre-invocation.ts#ask:
     kind: guarantee
-    rule: "Asking the folder question in Antigravity never registers the folder's .plur store."
-    tests: ["packages/cli/test/folder-ask-unsafe-paths.test.ts::config.yaml is unchanged by the question in all four editors, and the store never reaches another folder"]
+    rule: Asking the folder question in Antigravity never registers the folder's .plur store.
+    tests:
+      - >-
+        packages/cli/test/folder-ask-unsafe-paths.test.ts::config.yaml is unchanged by the question in all four editors,
+        and the store never reaches another folder
   packages/cli/src/commands/hook-agy-pre-invocation.ts#projectRemote:
     kind: guarantee
-    rule: "Antigravity recall resolves project settings from the workspace path, not the hook's working directory."
-    tests: ["packages/cli/test/hook-agy-pre-invocation.test.ts::resolves project config from the workspace path, not process.cwd()"]
+    rule: Antigravity recall resolves project settings from the workspace path, not the hook's working directory.
+    tests:
+      - >-
+        packages/cli/test/hook-agy-pre-invocation.test.ts::resolves project config from the workspace path, not
+        process.cwd()
   packages/cli/src/commands/hook-agy-pre-invocation.ts#rawCached:
     kind: guarantee
-    rule: "A cached turn from another conversation is never replayed, even after a file-name collision."
-    tests: ["packages/cli/test/hook-agy-pre-invocation.test.ts::never replays another conversation", "packages/cli/test/agy-hook-io.test.ts::rejects a record whose embedded conversationId differs"]
+    rule: A cached turn from another conversation is never replayed, even after a file-name collision.
+    tests:
+      - packages/cli/test/hook-agy-pre-invocation.test.ts::never replays another conversation
+      - packages/cli/test/agy-hook-io.test.ts::rejects a record whose embedded conversationId differs
   packages/cli/src/commands/hook-agy-pre-invocation.ts#unresolved:
     kind: guarantee
-    rule: "A cached turn is never replayed when the folder map cannot be read, or in a remote-only folder unless it was cached there for the same team scope."
-    tests: ["packages/cli/test/folder-remote-only.test.ts::agy: a cache from another remote-only scope, or under an unreadable map, is not replayed", "packages/cli/test/folder-remote-only.test.ts::agy: a turn cache written before the folder became remote-only is not replayed"]
+    rule: >-
+      A cached turn is never replayed when the folder map cannot be read, or in a remote-only folder unless it was
+      cached there for the same team scope.
+    tests:
+      - >-
+        packages/cli/test/folder-remote-only.test.ts::agy: a cache from another remote-only scope, or under an
+        unreadable map, is not replayed
+      - >-
+        packages/cli/test/folder-remote-only.test.ts::agy: a turn cache written before the folder became remote-only is
+        not replayed
   packages/cli/src/commands/hook-auto-rate.ts#EDITORS:
     kind: guarantee
-    rule: "The auto-rate hook prints nothing on stdout and never does store work inside the editor's hook timeout."
-    tests: ["packages/cli/test/hook-auto-rate-remote.test.ts::a slow store never holds up the hook"]
+    rule: The auto-rate hook prints nothing on stdout and never does store work inside the editor's hook timeout.
+    tests:
+      - packages/cli/test/hook-auto-rate-remote.test.ts::a slow store never holds up the hook
   packages/cli/src/commands/hook-auto-rate.ts#folder:
     kind: guarantee
-    rule: "For Cursor the rating worker uses the scope decided for the whole workspace and never re-decides it from one root."
-    none: "no test checks the scope a Cursor rating worker uses across several roots"
+    rule: For Cursor the rating worker uses the scope decided for the whole workspace and never re-decides it from one root.
+    tests:
+      - >-
+        packages/cli/test/formal-hook-counters-auto-rate.test.ts::Cursor: the queued turn carries the scope decided for
+        the whole workspace, or an explicit none
   packages/cli/src/commands/hook-auto-rate.ts#guard:
     kind: guarantee
-    rule: "The rating worker never exits in the middle of a store write; at its ceiling it waits, bounded, for the store to go idle."
-    none: "no test reaches the worker ceiling during a store write"
+    rule: >-
+      The rating worker never exits in the middle of a store write; at its ceiling it waits, bounded, for the store to
+      go idle.
+    none: no test reaches the worker ceiling during a store write
   packages/cli/src/commands/hook-auto-rate.ts#run:
     kind: guarantee
-    rule: "When the worker cannot start, the turn is rated inline instead of dropped, without waiting on another worker's lock."
-    none: "no test makes the worker spawn fail"
+    rule: >-
+      When the worker cannot start, the turn is rated inline instead of dropped, without waiting on another worker's
+      lock.
+    lean:
+      - PlurSpec/HookCounters.lean:inline_never_waits
+    tests:
+      - >-
+        packages/cli/test/formal-hook-counters-auto-rate.test.ts::when the worker cannot start, the turn is rated inline
+        without waiting on a lock
+      - >-
+        packages/cli/test/formal-hook-counters-auto-rate.test.ts::leaves at once even while a live older worker holds
+        the lock and a .queue-ws turn is pending
   packages/cli/src/commands/hook-codex-guard.ts#MAX_BLOCKS_BEFORE_FALLBACK:
     kind: guarantee
-    rule: "The Codex guard only denies or stays silent, never allows, and after one nudge it marks the session started so it cannot lock the agent."
-    tests: ["packages/cli/test/hook-codex-guard.test.ts::never emits allow or ask", "packages/cli/test/hook-codex-guard.test.ts::gives up after one nudge and marks the session started anyway"]
+    rule: >-
+      The Codex guard only denies or stays silent, never allows, and after one nudge it marks the session started so it
+      cannot lock the agent.
+    tests:
+      - packages/cli/test/hook-codex-guard.test.ts::never emits allow or ask
+      - packages/cli/test/hook-codex-guard.test.ts::gives up after one nudge and marks the session started anyway
   packages/cli/src/commands/hook-codex-inject.ts#ask:
     kind: guarantee
-    rule: "Asking the folder question in Codex never registers the folder's .plur store."
-    tests: ["packages/cli/test/folder-ask-unsafe-paths.test.ts::config.yaml is unchanged by the question in all four editors, and the store never reaches another folder"]
+    rule: Asking the folder question in Codex never registers the folder's .plur store.
+    tests:
+      - >-
+        packages/cli/test/folder-ask-unsafe-paths.test.ts::config.yaml is unchanged by the question in all four editors,
+        and the store never reaches another folder
   packages/cli/src/commands/hook-codex-post-tool.ts#TOOLS_BETWEEN_NUDGES:
     kind: note
-    why: "Explains why the sentinel and nudge ride on PostToolUse in Codex; \"never\" describes when SessionStart did not run."
+    why: Explains why the sentinel and nudge ride on PostToolUse in Codex; "never" describes when SessionStart did not run.
   packages/cli/src/commands/hook-codex-session-end.ts#run:
     kind: guarantee
-    rule: "Session end never deletes files through a symlinked or foreign session directory."
-    tests: ["packages/cli/test/session-dir-hardening-1060.test.ts::does not delete a victim file through a symlinked dir"]
+    rule: Session end never deletes files through a symlinked or foreign session directory.
+    tests:
+      - packages/cli/test/session-dir-hardening-1060.test.ts::does not delete a victim file through a symlinked dir
   packages/cli/src/commands/hook-codex-session-start.ts#refusal:
     kind: guarantee
-    rule: "When the project's remote settings were refused, the Codex session start says so to the model."
-    none: "no test checks the refusal notice in Codex session-start output"
+    rule: When the project's remote settings were refused, the Codex session start says so to the model.
+    none: no test checks the refusal notice in Codex session-start output
   packages/cli/src/commands/hook-codex-session-start.ts#run:
     kind: note
     why: "Explains why the hook is synchronous: Codex delivers async hook context late or never."
   packages/cli/src/commands/hook-correction-detect.ts#(module):
     kind: guarantee
-    rule: "The correction hook only adds a reminder; it never blocks the prompt or saves anything itself."
-    none: "no test asserts the hook emits no block decision and writes nothing"
+    rule: The correction hook only adds a reminder; it never blocks the prompt or saves anything itself.
+    none: no test asserts the hook emits no block decision and writes nothing
   packages/cli/src/commands/hook-cursor-guard.ts#MAX_BLOCKS_BEFORE_FALLBACK:
     kind: guarantee
-    rule: "The Cursor guard emits a deny or nothing, never an allow, and after one nudge it marks the session started."
-    tests: ["packages/cli/test/hook-cursor-guard.test.ts::allows through once the sentinel exists", "packages/cli/test/hook-cursor-guard.test.ts::marks the sentinel when falling back open after the block threshold"]
+    rule: The Cursor guard emits a deny or nothing, never an allow, and after one nudge it marks the session started.
+    tests:
+      - packages/cli/test/hook-cursor-guard.test.ts::allows through once the sentinel exists
+      - packages/cli/test/hook-cursor-guard.test.ts::marks the sentinel when falling back open after the block threshold
   packages/cli/src/commands/hook-cursor-post-tool.ts#REMINDER_INTERVAL_MS:
     kind: guarantee
-    rule: "The Cursor learn reminder goes to its own rule file, never over the session-context rule file."
-    tests: ["packages/cli/test/hook-cursor-post-tool.test.ts::does not clobber the session-context rule file when reminding"]
+    rule: The Cursor learn reminder goes to its own rule file, never over the session-context rule file.
+    tests:
+      - packages/cli/test/hook-cursor-post-tool.test.ts::does not clobber the session-context rule file when reminding
   packages/cli/src/commands/hook-cursor-session-start.ts#about:
     kind: guarantee
-    rule: "The Cursor folder question never creates a missing workspace root."
-    none: "no test asks about a workspace root that does not exist"
+    rule: The Cursor folder question never creates a missing workspace root.
+    none: no test asks about a workspace root that does not exist
   packages/cli/src/commands/hook-cursor-session-start.ts#ask:
     kind: guarantee
-    rule: "Asking the folder question in Cursor never registers the folder's .plur store."
-    tests: ["packages/cli/test/folder-ask-unsafe-paths.test.ts::config.yaml is unchanged by the question in all four editors, and the store never reaches another folder"]
+    rule: Asking the folder question in Cursor never registers the folder's .plur store.
+    tests:
+      - >-
+        packages/cli/test/folder-ask-unsafe-paths.test.ts::config.yaml is unchanged by the question in all four editors,
+        and the store never reaches another folder
   packages/cli/src/commands/hook-cursor-session-start.ts#removeStaleAsk:
     kind: guarantee
-    rule: "A folder question left in the Cursor rule file by an earlier session is removed once the folder is not on; only our own question file is touched."
-    tests: ["packages/cli/test/hook-folder-map.test.ts::off: silent, and a question left in the rule file by an earlier session is removed"]
+    rule: >-
+      A folder question left in the Cursor rule file by an earlier session is removed once the folder is not on; only
+      our own question file is touched.
+    tests:
+      - >-
+        packages/cli/test/hook-folder-map.test.ts::off: silent, and a question left in the rule file by an earlier
+        session is removed
   packages/cli/src/commands/hook-cursor-session-start.ts#run:
     kind: guarantee
-    rule: "The Cursor context rule file is rewritten on every session start, even with no memories or on failure, so it never shows a stale session."
-    none: "no test checks the rule file after a failed or empty session start"
+    rule: >-
+      The Cursor context rule file is rewritten on every session start, even with no memories or on failure, so it never
+      shows a stale session.
+    none: no test checks the rule file after a failed or empty session start
   packages/cli/src/commands/hook-inject.ts#{ result, mode, hybrid }:
     kind: guarantee
-    rule: "When hybrid search misses its deadline or fails, the turn is served by local keyword search, which never contacts a server."
-    tests: ["packages/cli/test/hook-inject-sync.test.ts::falls back to BM25 when hybrid misses the deadline, instead of waiting on it"]
+    rule: >-
+      When hybrid search misses its deadline or fails, the turn is served by local keyword search, which never contacts
+      a server.
+    tests:
+      - >-
+        packages/cli/test/hook-inject-sync.test.ts::falls back to BM25 when hybrid misses the deadline, instead of
+        waiting on it
   packages/cli/src/commands/hook-inject.ts#aside:
     kind: guarantee
-    rule: "Taking over a stale inject lock never deletes a fresh lock another hook just took."
-    lean: ["PlurSpec/R2CLI.lean:new_never_removes_live"]
-    tests: ["packages/cli/test/formal-gaps-inject-lock-takeover.test.ts::a hook that saw the lock stale does not delete a fresh lock another hook just took"]
+    rule: Taking over a stale inject lock never deletes a fresh lock another hook just took.
+    lean:
+      - PlurSpec/R2CLI.lean:new_never_removes_live
+    tests:
+      - >-
+        packages/cli/test/formal-gaps-inject-lock-takeover.test.ts::a hook that saw the lock stale does not delete a
+        fresh lock another hook just took
   packages/cli/src/commands/hook-inject.ts#askFolder:
     kind: guarantee
-    rule: "An undecided folder gets its question once per session, keyed on the session id, and later prompts print nothing."
-    tests: ["packages/cli/test/hook-folder-map.test.ts::an unmapped folder asks once per session, with no memories, then stays silent"]
+    rule: An undecided folder gets its question once per session, keyed on the session id, and later prompts print nothing.
+    tests:
+      - >-
+        packages/cli/test/hook-folder-map.test.ts::an unmapped folder asks once per session, with no memories, then
+        stays silent
   packages/cli/src/commands/hook-inject.ts#claudeHookEventName:
     kind: guarantee
-    rule: "Hook context is always wrapped with the name of the event that fired, so Claude Code passes it to the model."
-    tests: ["packages/cli/test/hook-inject-output.test.ts::the payload hook_event_name wins over the flag default", "packages/cli/test/hook-inject-output.test.ts::UserPromptSubmit shape is used even when the payload omits hook_event_name"]
+    rule: Hook context is always wrapped with the name of the event that fired, so Claude Code passes it to the model.
+    tests:
+      - packages/cli/test/hook-inject-output.test.ts::the payload hook_event_name wins over the flag default
+      - >-
+        packages/cli/test/hook-inject-output.test.ts::UserPromptSubmit shape is used even when the payload omits
+        hook_event_name
   packages/cli/src/commands/hook-inject.ts#counter:
     kind: guarantee
-    rule: "An injection attempt is counted before the heavy work, so a killed run still counts toward the cap."
-    tests: ["packages/cli/test/hook-inject-session-key.test.ts::stops retrying the full injection after 2 attempts that did not finish"]
+    rule: An injection attempt is counted before the heavy work, so a killed run still counts toward the cap.
+    tests:
+      - >-
+        packages/cli/test/hook-inject-session-key.test.ts::stops retrying the full injection after 2 attempts that did
+        not finish
   packages/cli/src/commands/hook-inject.ts#degradationLines:
     kind: guarantee
-    rule: "Team-server degradation lines print only on a state change and at most once per four hours per host; cooldown and unsupported outcomes never print."
-    none: "no test checks the rate limit or the silent outcomes of degradation lines"
+    rule: >-
+      Team-server degradation lines print only on a state change and at most once per four hours per host; cooldown and
+      unsupported outcomes never print.
+    none: no test checks the rate limit or the silent outcomes of degradation lines
   packages/cli/src/commands/hook-inject.ts#injectOpts:
     kind: guarantee
-    rule: "Prompt text reaches a team server from an unrelated folder only for a store the user marked dial: always; a project cannot turn that on."
-    tests: ["packages/cli/test/hook-inject-trust.test.ts::does not send prompt text to a host an untrusted .plur.yaml names"]
+    rule: >-
+      Prompt text reaches a team server from an unrelated folder only for a store the user marked dial: always; a
+      project cannot turn that on.
+    tests:
+      - packages/cli/test/hook-inject-trust.test.ts::does not send prompt text to a host an untrusted .plur.yaml names
   packages/cli/src/commands/hook-inject.ts#injectSession:
     kind: guarantee
-    rule: "Project remote settings are gated on directory trust and fail closed; an abandoned hybrid search does not hold the prompt open."
-    tests: ["packages/cli/test/hook-inject-trust.test.ts::does not send prompt text to a host an untrusted .plur.yaml names", "packages/cli/test/hook-inject-sync.test.ts::the exit waits for the abandoned hybrid search itself"]
+    rule: >-
+      Project remote settings are gated on directory trust and fail closed; an abandoned hybrid search does not hold the
+      prompt open.
+    tests:
+      - packages/cli/test/hook-inject-trust.test.ts::does not send prompt text to a host an untrusted .plur.yaml names
+      - packages/cli/test/hook-inject-sync.test.ts::the exit waits for the abandoned hybrid search itself
   packages/cli/src/commands/hook-inject.ts#isReminderDue:
     kind: note
     why: "Uses \"never\" loosely: a missing reminder file means no reminder was sent yet."
   packages/cli/src/commands/hook-inject.ts#legacyMarkerKeys:
     kind: guarantee
-    rule: "With a payload session id, only markers derived from that id are read, never environment or parent-process ones, so a new session is not skipped."
-    tests: ["packages/cli/test/session-key-h1.test.ts::a new payload session still gets its session-start injection"]
+    rule: >-
+      With a payload session id, only markers derived from that id are read, never environment or parent-process ones,
+      so a new session is not skipped.
+    tests:
+      - packages/cli/test/session-key-h1.test.ts::a new payload session still gets its session-start injection
   packages/cli/src/commands/hook-inject.ts#lock:
     kind: guarantee
-    rule: "A crashed hook's inject lock goes stale, so it never blocks later prompts for good."
-    tests: ["packages/cli/test/hook-inject-lock.test.ts::proceeds when a real lock has aged past PLUR_LOCK_STALE_MS"]
+    rule: A crashed hook's inject lock goes stale, so it never blocks later prompts for good.
+    tests:
+      - packages/cli/test/hook-inject-lock.test.ts::proceeds when a real lock has aged past PLUR_LOCK_STALE_MS
   packages/cli/src/commands/hook-inject.ts#logRemoteAttempt:
     kind: note
     why: "States a POSIX fact: small appends are atomic; the write itself is best-effort."
   packages/cli/src/commands/hook-inject.ts#MAX_INJECT_ATTEMPTS:
     kind: note
-    why: "Explains why the attempt cap exists; the cap itself is backed on the attempt counter."
+    why: Explains why the attempt cap exists; the cap itself is backed on the attempt counter.
   packages/cli/src/commands/hook-inject.ts#nice:
     kind: guarantee
-    rule: "The background embedding build runs at the lowest CPU priority unless the user raises it."
-    none: "no test checks the priority of the background build"
+    rule: The background embedding build runs at the lowest CPU priority unless the user raises it.
+    none: no test checks the priority of the background build
   packages/cli/src/commands/hook-inject.ts#path:
     kind: guarantee
-    rule: "A failing state-dir write never crashes the prompt."
-    tests: ["packages/cli/test/hook-inject-lock.test.ts::never crashes the prompt when the state dir is unwritable"]
+    rule: A failing state-dir write never crashes the prompt.
+    tests:
+      - packages/cli/test/hook-inject-lock.test.ts::never crashes the prompt when the state dir is unwritable
   packages/cli/src/commands/hook-inject.ts#plur:
     kind: guarantee
-    rule: "Asking the folder question in Claude Code never registers the folder's .plur store."
-    tests: ["packages/cli/test/folder-ask-unsafe-paths.test.ts::config.yaml is unchanged by the question in all four editors, and the store never reaches another folder", "packages/cli/test/folder-safety-1588.test.ts::a parent .mcp.json naming plur: the repository is asked, no store is registered"]
+    rule: Asking the folder question in Claude Code never registers the folder's .plur store.
+    tests:
+      - >-
+        packages/cli/test/folder-ask-unsafe-paths.test.ts::config.yaml is unchanged by the question in all four editors,
+        and the store never reaches another folder
+      - >-
+        packages/cli/test/folder-safety-1588.test.ts::a parent .mcp.json naming plur: the repository is asked, no store
+        is registered
   packages/cli/src/commands/hook-inject.ts#processDeferredWrapups:
     kind: guarantee
-    rule: "An orphaned session checkpoint from a remote-only folder, or one whose folder cannot be resolved, is never captured on this machine."
-    tests: ["packages/cli/test/folder-remote-only.test.ts::C-1: the deferred wrap-up captures nothing when the checkpoint folder cannot be resolved"]
+    rule: >-
+      An orphaned session checkpoint from a remote-only folder, or one whose folder cannot be resolved, is never
+      captured on this machine.
+    tests:
+      - >-
+        packages/cli/test/folder-remote-only.test.ts::C-1: the deferred wrap-up captures nothing when the checkpoint
+        folder cannot be resolved
   packages/cli/src/commands/hook-inject.ts#projectRemote:
     kind: guarantee
-    rule: "An untrusted .plur.yaml cannot choose the session scope the model is told to save under."
-    tests: ["packages/cli/test/hook-inject-trust.test.ts::does not apply the scope it requests until trusted"]
+    rule: An untrusted .plur.yaml cannot choose the session scope the model is told to save under.
+    tests:
+      - packages/cli/test/hook-inject-trust.test.ts::does not apply the scope it requests until trusted
   packages/cli/src/commands/hook-inject.ts#readableMarkerPath:
     kind: guarantee
-    rule: "A session started before an upgrade is not injected twice, and a refused state dir reads and writes nothing."
-    tests: ["packages/cli/test/session-key-h1.test.ts::a session already started under the sid- key is not re-injected after upgrade", "packages/cli/test/session-key-h1.test.ts::both dirs refused: the legacy fallback reads nothing, writes nothing, and the hook exits 0"]
+    rule: A session started before an upgrade is not injected twice, and a refused state dir reads and writes nothing.
+    tests:
+      - >-
+        packages/cli/test/session-key-h1.test.ts::a session already started under the sid- key is not re-injected after
+        upgrade
+      - >-
+        packages/cli/test/session-key-h1.test.ts::both dirs refused: the legacy fallback reads nothing, writes nothing,
+        and the hook exits 0
   packages/cli/src/commands/hook-inject.ts#REMOTE_INJECT_LOG_DIR:
     kind: guarantee
-    rule: "The team-server leg of injection never blocks the prompt."
-    none: "no test of the remote leg names this log path; the bounded remote timeout is not tested here"
+    rule: The team-server leg of injection never blocks the prompt.
+    none: no test of the remote leg names this log path; the bounded remote timeout is not tested here
   packages/cli/src/commands/hook-inject.ts#run:
     kind: guarantee
-    rule: "A watchdog makes the hook process exit even if something in the run hangs."
-    tests: ["packages/cli/test/hook-force-exit-lock.test.ts::the Claude Code watchdog, waiting for its lock, still exits before the harness kills the hook"]
+    rule: A watchdog makes the hook process exit even if something in the run hangs.
+    tests:
+      - >-
+        packages/cli/test/hook-force-exit-lock.test.ts::the Claude Code watchdog, waiting for its lock, still exits
+        before the harness kills the hook
   packages/cli/src/commands/hook-inject.ts#sessionDir:
     kind: guarantee
-    rule: "Session state lives only in a private, owned, non-symlinked directory; when none is usable nothing is persisted and the prompt still works."
-    lean: ["PlurSpec/R2CLI.lean:trusted_iff_not_plantable"]
-    tests: ["packages/cli/test/hook-session-dir-refusal.test.ts::hook-inject with both dirs refused: exits 0, still injects, persists nothing"]
+    rule: >-
+      Session state lives only in a private, owned, non-symlinked directory; when none is usable nothing is persisted
+      and the prompt still works.
+    lean:
+      - PlurSpec/R2CLI.lean:trusted_iff_not_plantable
+    tests:
+      - >-
+        packages/cli/test/hook-session-dir-refusal.test.ts::hook-inject with both dirs refused: exits 0, still injects,
+        persists nothing
   packages/cli/src/commands/hook-inject.ts#startEmbeddingWarmup:
     kind: note
-    why: "Notes that the child claims the marker atomically; the claim rule is stated on the marker check."
+    why: Notes that the child claims the marker atomically; the claim rule is stated on the marker check.
   packages/cli/src/commands/hook-inject.ts#stopping:
     kind: guarantee
-    rule: "A run stopped by the watchdog never prints or marks the session as started."
-    none: "no test checks output of a run stopped by the watchdog"
+    rule: A run stopped by the watchdog never prints or marks the session as started.
+    none: no test checks output of a run stopped by the watchdog
   packages/cli/src/commands/hook-inject.ts#takeInjectLock:
     kind: guarantee
     rule: "Concurrent hooks of one session never load the embedder at once: only one run injects."
-    tests: ["packages/cli/test/hook-inject-lock-concurrent.test.ts::exactly one run injects; the others bail without charging the attempt cap"]
+    tests:
+      - >-
+        packages/cli/test/hook-inject-lock-concurrent.test.ts::exactly one run injects; the others bail without charging
+        the attempt cap
   packages/cli/src/commands/hook-inject.ts#WARM_MARKER:
     kind: guarantee
-    rule: "Only one background embedding build runs per store, and it takes no store write lock."
-    tests: ["packages/cli/test/hook-inject-warm.test.ts::a second fallback while a build is running starts no second build"]
+    rule: Only one background embedding build runs per store, and it takes no store write lock.
+    tests:
+      - packages/cli/test/hook-inject-warm.test.ts::a second fallback while a build is running starts no second build
   packages/cli/src/commands/hook-inject.ts#warmMarkerHeld:
     kind: guarantee
-    rule: "A marker left by a killed build never blocks warming."
-    tests: ["packages/cli/test/hook-inject-warm.test.ts::a marker left by a dead build does not block the next fallback"]
+    rule: A marker left by a killed build never blocks warming.
+    tests:
+      - packages/cli/test/hook-inject-warm.test.ts::a marker left by a dead build does not block the next fallback
   packages/cli/src/commands/hook-inject.ts#watchdog:
     kind: guarantee
-    rule: "The watchdog releases only its own inject lock, never one another run has taken over."
-    tests: ["packages/cli/test/formal-gaps-inject-lock-takeover.test.ts::a holder whose lock was taken over as stale leaves the new holder"]
+    rule: The watchdog releases only its own inject lock, never one another run has taken over.
+    tests:
+      - >-
+        packages/cli/test/formal-gaps-inject-lock-takeover.test.ts::a holder whose lock was taken over as stale leaves
+        the new holder
   packages/cli/src/commands/hook-learn-check.ts#CHECKPOINT_INTERVAL:
     kind: guarantee
-    rule: "The learn nudge fires at most once per message and never after plur_learn was called in that reply."
-    tests: ["packages/cli/test/hook-learn-check.test.ts::nudges once per signalling message, not on every later Stop that still sees it", "packages/cli/test/hook-learn-check.test.ts::does not nudge when plur_learn was already called in that reply"]
+    rule: The learn nudge fires at most once per message and never after plur_learn was called in that reply.
+    tests:
+      - >-
+        packages/cli/test/hook-learn-check.test.ts::nudges once per signalling message, not on every later Stop that
+        still sees it
+      - packages/cli/test/hook-learn-check.test.ts::does not nudge when plur_learn was already called in that reply
   packages/cli/src/commands/hook-learn-check.ts#checkpointDir:
     kind: guarantee
-    rule: "A checkpoint is never written into a symlinked or foreign directory; it is skipped instead."
-    tests: ["packages/cli/test/hook-learn-check-dir.test.ts::never writes the checkpoint into a refused checkpoint dir"]
+    rule: A checkpoint is never written into a symlinked or foreign directory; it is skipped instead.
+    tests:
+      - packages/cli/test/hook-learn-check-dir.test.ts::never writes the checkpoint into a refused checkpoint dir
   packages/cli/src/commands/hook-learn-check.ts#checkpointRoot:
     kind: guarantee
-    rule: "An empty PLUR_PATH means the default store, never the working directory."
-    tests: ["packages/cli/test/hook-learn-check-dir.test.ts::an empty PLUR_PATH puts the checkpoint under ~/.plur, not the working directory"]
+    rule: An empty PLUR_PATH means the default store, never the working directory.
+    tests:
+      - >-
+        packages/cli/test/hook-learn-check-dir.test.ts::an empty PLUR_PATH puts the checkpoint under ~/.plur, not the
+        working directory
   packages/cli/src/commands/hook-learn-check.ts#counter:
     kind: guarantee
-    rule: "The Stop hook never crashes the response when its state dir is unwritable; it prints nothing and exits 0."
-    tests: ["packages/cli/test/hook-learn-check.test.ts::never crashes the response when the state dir is unwritable"]
+    rule: The Stop hook never crashes the response when its state dir is unwritable; it prints nothing and exits 0.
+    tests:
+      - packages/cli/test/hook-learn-check.test.ts::never crashes the response when the state dir is unwritable
   packages/cli/src/commands/hook-learn-check.ts#incrementCounter:
     kind: guarantee
     rule: "Concurrent Stop hooks each get a distinct count: exactly 1..n after n calls."
-    lean: ["PlurSpec/R2CLI.lean:ticket_distinct"]
-    tests: ["packages/cli/test/formal-r2-cli-inject-session.test.ts::concurrent Cursor stop hooks: every value 1..n handed out exactly once"]
+    lean:
+      - PlurSpec/R2CLI.lean:ticket_distinct
+      - PlurSpec/HookCounters.lean:ticket_distinct_any_schedule
+    tests:
+      - >-
+        packages/cli/test/formal-r2-cli-inject-session.test.ts::concurrent Cursor stop hooks: every value 1..n handed
+        out exactly once
   packages/cli/src/commands/hook-learn-check.ts#NOTHING_TO_KEEP:
     kind: note
-    why: "Explains the wording of the nudge's \"nothing to keep\" answer."
+    why: Explains the wording of the nudge's "nothing to keep" answer.
   packages/cli/src/commands/hook-learn-check.ts#nudgeMarkerPath:
     kind: guarantee
-    rule: "A later Stop that sees the same message never nudges for it again, and two racing Stops cannot both nudge."
-    tests: ["packages/cli/test/hook-learn-check.test.ts::nudges once per signalling message, not on every later Stop that still sees it"]
+    rule: A later Stop that sees the same message never nudges for it again, and two racing Stops cannot both nudge.
+    tests:
+      - >-
+        packages/cli/test/hook-learn-check.test.ts::nudges once per signalling message, not on every later Stop that
+        still sees it
   packages/cli/src/commands/hook-learn-check.ts#run:
     kind: guarantee
-    rule: "A continuation Stop forced by our own nudge never nudges again."
-    tests: ["packages/cli/test/hook-learn-check.test.ts::never nudges on a continuation Stop, even when the message signals"]
+    rule: A continuation Stop forced by our own nudge never nudges again.
+    tests:
+      - packages/cli/test/hook-learn-check.test.ts::never nudges on a continuation Stop, even when the message signals
   packages/cli/src/commands/hook-learn-check.ts#tmpPath:
     kind: guarantee
-    rule: "A checkpoint is written atomically, so a reader never sees a partial file."
-    none: "no test races a reader against a checkpoint write"
+    rule: A checkpoint is written atomically, so a reader never sees a partial file.
+    none: no test races a reader against a checkpoint write
   packages/cli/src/commands/hook-observe.ts#run:
     kind: guarantee
-    rule: "The observe hook always passes its input through to stdout unchanged."
-    tests: ["packages/cli/test/hook-noop.test.ts::hook-observe passes stdin through and writes no observations"]
+    rule: The observe hook always passes its input through to stdout unchanged.
+    tests:
+      - packages/cli/test/hook-noop.test.ts::hook-observe passes stdin through and writes no observations
   packages/cli/src/commands/hook-session-end.ts#closeSession:
     kind: guarantee
-    rule: "An unparseable checkpoint, or one whose capture failed, is kept rather than deleted, and a failed capture never fails the session."
-    lean: ["PlurSpec/R2CLI.lean:session_end_removed_only_after_capture"]
-    tests: ["packages/cli/test/hook-session-end.test.ts::retains (does not delete) an unparseable checkpoint", "packages/cli/test/hook-session-end.test.ts::retains the checkpoint when capture fails"]
+    rule: >-
+      An unparseable checkpoint, or one whose capture failed, is kept rather than deleted, and a failed capture never
+      fails the session.
+    lean:
+      - PlurSpec/R2CLI.lean:session_end_removed_only_after_capture
+    tests:
+      - packages/cli/test/hook-session-end.test.ts::retains (does not delete) an unparseable checkpoint
+      - packages/cli/test/hook-session-end.test.ts::retains the checkpoint when capture fails
   packages/cli/src/commands/hook-session-end.ts#run:
     kind: guarantee
-    rule: "The session-end outbox flush runs after the checkpoint close, never instead of it, and is bound to the payload's folder."
-    tests: ["packages/cli/test/folder-remote-only.test.ts::the session-end outbox flush is bound to the payload folder, not the hook process folder"]
+    rule: >-
+      The session-end outbox flush runs after the checkpoint close, never instead of it, and is bound to the payload's
+      folder.
+    tests:
+      - >-
+        packages/cli/test/folder-remote-only.test.ts::the session-end outbox flush is bound to the payload folder, not
+        the hook process folder
   packages/cli/src/commands/hook-session-end.ts#sessionKeys:
     kind: guarantee
-    rule: "The session-end hook never blocks the session and retries queued team writes within a bounded budget."
-    tests: ["packages/cli/test/hook-outbox-flush.test.ts::Claude Code session-end exits within its budget when the store never finishes connecting"]
+    rule: The session-end hook never blocks the session and retries queued team writes within a bounded budget.
+    tests:
+      - >-
+        packages/cli/test/hook-outbox-flush.test.ts::Claude Code session-end exits within its budget when the store
+        never finishes connecting
   packages/cli/src/commands/hook-session-guard.ts#blockCount:
     kind: guarantee
-    rule: "The session guard never crashes the tool call it gates; on an unwritable state dir it lets the tool through."
-    tests: ["packages/cli/test/hook-session-guard.test.ts::never crashes the tool call when the state dir is unwritable"]
+    rule: The session guard never crashes the tool call it gates; on an unwritable state dir it lets the tool through.
+    tests:
+      - packages/cli/test/hook-session-guard.test.ts::never crashes the tool call when the state dir is unwritable
   packages/cli/src/commands/hook-session-guard.ts#blockCountPath:
     kind: guarantee
-    rule: "A symlinked or foreign guard state dir is refused, and the tool is let through."
-    none: "no test plants a symlinked guard state dir"
+    rule: A symlinked or foreign guard state dir is refused, and the tool is let through.
+    none: no test plants a symlinked guard state dir
   packages/cli/src/commands/hook-session-guard.ts#isExempt:
     kind: guarantee
-    rule: "plur_session_start is never denied, even when the plur server is registered under another name."
-    tests: ["packages/cli/test/formal-r2-cli-session-dir.test.ts::claude: a namespaced plur_session_start is exempt, like every other harness"]
+    rule: plur_session_start is never denied, even when the plur server is registered under another name.
+    tests:
+      - >-
+        packages/cli/test/formal-r2-cli-session-dir.test.ts::claude: a namespaced plur_session_start is exempt, like
+        every other harness
   packages/cli/src/commands/hook-session-guard.ts#MAX_BLOCKS_BEFORE_FALLBACK:
     kind: guarantee
-    rule: "The session guard nudges at most once per session, then lets every tool through."
-    tests: ["packages/cli/test/hook-session-guard.test.ts::nudges once then fails open"]
+    rule: The session guard nudges at most once per session, then lets every tool through.
+    tests:
+      - packages/cli/test/hook-session-guard.test.ts::nudges once then fails open
   packages/cli/src/commands/hook-session-guard.ts#run:
     kind: guarantee
-    rule: "An off or undecided folder never has its tools blocked."
-    tests: ["packages/cli/test/hook-folder-map.test.ts::off: inject, remind, guard, observe and learn-check are silent and write nothing"]
+    rule: An off or undecided folder never has its tools blocked.
+    tests:
+      - >-
+        packages/cli/test/hook-folder-map.test.ts::off: inject, remind, guard, observe and learn-check are silent and
+        write nothing
   packages/cli/src/commands/identity.ts#FLAGS:
     kind: guarantee
-    rule: "plur identity never guesses the attribution name from the OS account; unset stays unset."
-    none: "no test checks that an unset identity is not filled from the OS account"
+    rule: plur identity never guesses the attribution name from the OS account; unset stays unset.
+    none: no test checks that an unset identity is not filled from the OS account
   packages/cli/src/commands/import.ts#(module):
     kind: guarantee
-    rule: "Every import goes through the normal save path, so duplicate and secret checks apply; nothing is appended raw."
-    none: "no test runs plur import against the duplicate or secret checks"
+    rule: Every import goes through the normal save path, so duplicate and secret checks apply; nothing is appended raw.
+    none: no test runs plur import against the duplicate or secret checks
   "packages/cli/src/commands/init.ts#{ config: mcpConfig, ok: mcpParses }":
     kind: guarantee
-    rule: "An unparseable Cursor mcp.json is refused, never read as empty and written back."
-    none: "no test runs init --cursor against a malformed mcp.json"
+    rule: An unparseable Cursor mcp.json is refused, never read as empty and written back.
+    none: no test runs init --cursor against a malformed mcp.json
   packages/cli/src/commands/init.ts#clean:
     kind: guarantee
-    rule: "Running init again does not duplicate PLUR's hooks."
-    tests: ["packages/cli/test/init.test.ts::is idempotent — re-running does not duplicate hooks or mcp entries"]
+    rule: Running init again does not duplicate PLUR's hooks.
+    tests:
+      - packages/cli/test/init.test.ts::is idempotent — re-running does not duplicate hooks or mcp entries
   packages/cli/src/commands/init.ts#CODEX_TRUST_NOTICE:
     kind: note
-    why: "States a fact about Codex: it refuses unreviewed hooks, which is why the install report asks the user to review them."
+    why: >-
+      States a fact about Codex: it refuses unreviewed hooks, which is why the install report asks the user to review
+      them.
   packages/cli/src/commands/init.ts#containLeg:
     kind: guarantee
-    rule: "A failure in one editor's install leg never aborts the others or hides the rest of the report."
-    tests: ["packages/cli/test/init-skills.test.ts::does not abort the rest of init when the skills leg actually fails"]
+    rule: A failure in one editor's install leg never aborts the others or hides the rest of the report.
+    tests:
+      - packages/cli/test/init-skills.test.ts::does not abort the rest of init when the skills leg actually fails
   packages/cli/src/commands/init.ts#hooksStatus:
     kind: guarantee
-    rule: "A malformed Cursor hooks.json is refused, never overwritten."
-    tests: ["packages/cli/test/init-cursor.test.ts::refuses to overwrite a malformed .cursor/hooks.json"]
+    rule: A malformed Cursor hooks.json is refused, never overwritten.
+    tests:
+      - packages/cli/test/init-cursor.test.ts::refuses to overwrite a malformed .cursor/hooks.json
   packages/cli/src/commands/init.ts#installClaudeCodeMcp:
     kind: guarantee
-    rule: "The MCP server is registered in ~/.claude.json keeping every other key; an old settings.json entry is moved after a backup; an unparseable ~/.claude.json is refused untouched."
-    tests: ["packages/cli/test/init-claude-user-mcp-1561.test.ts::moves an old settings.json entry to ~/.claude.json with its env and extra keys, after a backup", "packages/cli/test/init-claude-user-mcp-1561.test.ts::an unparseable ~/.claude.json is refused: neither it nor the old settings entry is touched"]
+    rule: >-
+      The MCP server is registered in ~/.claude.json keeping every other key; an old settings.json entry is moved after
+      a backup; an unparseable ~/.claude.json is refused untouched.
+    tests:
+      - >-
+        packages/cli/test/init-claude-user-mcp-1561.test.ts::moves an old settings.json entry to ~/.claude.json with its
+        env and extra keys, after a backup
+      - >-
+        packages/cli/test/init-claude-user-mcp-1561.test.ts::an unparseable ~/.claude.json is refused: neither it nor
+        the old settings entry is touched
   packages/cli/src/commands/init.ts#installOpencode:
     kind: guarantee
-    rule: "An opencode config that does not parse, or has the wrong shape, is never coerced to empty and written over."
-    tests: ["packages/cli/test/init-opencode.test.ts::refuses a top-level-array config — reports PLUR as NOT installed, leaves the file untouched", "packages/cli/test/init-opencode.test.ts::refuses a config whose plugin field is not an array"]
+    rule: An opencode config that does not parse, or has the wrong shape, is never coerced to empty and written over.
+    tests:
+      - >-
+        packages/cli/test/init-opencode.test.ts::refuses a top-level-array config — reports PLUR as NOT installed,
+        leaves the file untouched
+      - packages/cli/test/init-opencode.test.ts::refuses a config whose plugin field is not an array
   packages/cli/src/commands/init.ts#installSkills:
     kind: note
     why: "Explains why skills are compared by bytes, not timestamps: npm normalises published mtimes."
   packages/cli/src/commands/init.ts#isInteractive:
     kind: guarantee
-    rule: "A non-interactive install never prompts and writes telemetry off."
-    tests: ["packages/cli/test/init-telemetry.test.ts::non-interactive install writes enabled:false, never enabled:true"]
+    rule: A non-interactive install never prompts and writes telemetry off.
+    tests:
+      - packages/cli/test/init-telemetry.test.ts::non-interactive install writes enabled:false, never enabled:true
   packages/cli/src/commands/init.ts#mcpStatus:
     kind: guarantee
-    rule: "A refused ~/.claude.json never aborts the rest of the install."
-    none: "no test checks that the other legs complete after the Claude Code MCP leg is refused"
+    rule: A refused ~/.claude.json never aborts the rest of the install.
+    none: no test checks that the other legs complete after the Claude Code MCP leg is refused
   packages/cli/src/commands/init.ts#migrateRepoHooks:
     kind: guarantee
-    rule: "Migrating a repo removes only PLUR's hooks from it, never the user's settings, and user settings reached through another spelling are never treated as a repo."
-    tests: ["packages/cli/test/init-user-settings-1467.test.ts::moves the hooks to user settings, removes only PLUR", "packages/cli/test/init-user-settings-1467.test.ts::run from $HOME spelled through a symlink: user settings are not mistaken for a repo file"]
+    rule: >-
+      Migrating a repo removes only PLUR's hooks from it, never the user's settings, and user settings reached through
+      another spelling are never treated as a repo.
+    tests:
+      - packages/cli/test/init-user-settings-1467.test.ts::moves the hooks to user settings, removes only PLUR
+      - >-
+        packages/cli/test/init-user-settings-1467.test.ts::run from $HOME spelled through a symlink: user settings are
+        not mistaken for a repo file
   packages/cli/src/commands/init.ts#npxCmd:
     kind: guarantee
-    rule: "The npx fallback entry is always pinned to this version, never floating."
-    tests: ["packages/cli/test/windows-init-1267.test.ts::win32: falls back to cmd.exe /c npx (pinned) when the js entry cannot be resolved"]
+    rule: The npx fallback entry is always pinned to this version, never floating.
+    tests:
+      - >-
+        packages/cli/test/windows-init-1267.test.ts::win32: falls back to cmd.exe /c npx (pinned) when the js entry
+        cannot be resolved
   packages/cli/src/commands/init.ts#promptIdentity:
     kind: guarantee
-    rule: "The identity question is asked once, never repeated after a decision, never blocks a script, and never falls back to the OS account name; a failed write does not fail init."
-    none: "no test exercises the identity prompt"
+    rule: >-
+      The identity question is asked once, never repeated after a decision, never blocks a script, and never falls back
+      to the OS account name; a failed write does not fail init.
+    none: no test exercises the identity prompt
   packages/cli/src/commands/init.ts#promptTelemetryOptIn:
     kind: guarantee
-    rule: "With PLUR_TELEMETRY set, init writes no telemetry config and does not prompt."
-    tests: ["packages/cli/test/init-telemetry.test.ts::promptTelemetryOptIn: explicit PLUR_TELEMETRY skips the prompt and writes nothing"]
+    rule: With PLUR_TELEMETRY set, init writes no telemetry config and does not prompt.
+    tests:
+      - >-
+        packages/cli/test/init-telemetry.test.ts::promptTelemetryOptIn: explicit PLUR_TELEMETRY skips the prompt and
+        writes nothing
   packages/cli/src/commands/init.ts#refusal:
     kind: guarantee
-    rule: "A Claude Code settings file that does not parse is left byte-identical and the refusal is reported, never replaced by a merge into an empty object."
-    tests: ["packages/cli/test/config-clobber-1059.test.ts::leaves the file byte-identical and reports the refusal"]
+    rule: >-
+      A Claude Code settings file that does not parse is left byte-identical and the refusal is reported, never replaced
+      by a merge into an empty object.
+    tests:
+      - packages/cli/test/config-clobber-1059.test.ts::leaves the file byte-identical and reports the refusal
   packages/cli/src/commands/init.ts#run:
     kind: note
-    why: "Explains to maintainers that Cursor setup always comes with the Claude Code hooks; no rule of its own."
+    why: Explains to maintainers that Cursor setup always comes with the Claude Code hooks; no rule of its own.
   packages/cli/src/commands/init.ts#runCodex:
     kind: note
-    why: "Describes how the Codex binary is chosen on Windows; \"never the sh shim\" names the choice, not a safety rule."
+    why: Describes how the Codex binary is chosen on Windows; "never the sh shim" names the choice, not a safety rule.
   packages/cli/src/commands/init.ts#Settings:
     kind: note
-    why: "Module header; \"never reads\" states a fact about Claude Code."
+    why: Module header; "never reads" states a fact about Claude Code.
   packages/cli/src/commands/init.ts#skillsStatus:
     kind: guarantee
-    rule: "An unwritable skills directory never aborts the hooks and MCP registration."
-    tests: ["packages/cli/test/init-skills.test.ts::does not abort the rest of init when the skills leg actually fails"]
+    rule: An unwritable skills directory never aborts the hooks and MCP registration.
+    tests:
+      - packages/cli/test/init-skills.test.ts::does not abort the rest of init when the skills leg actually fails
   packages/cli/src/commands/init.ts#stripPlurHooks:
     kind: guarantee
-    rule: "Removing PLUR's hooks never deletes a user's hook that shares an entry with one."
-    tests: ["packages/cli/test/init-windows-1267.test.ts::removes only PLUR hooks from an entry and keeps hooks PLUR did not write"]
+    rule: Removing PLUR's hooks never deletes a user's hook that shares an entry with one.
+    tests:
+      - >-
+        packages/cli/test/init-windows-1267.test.ts::removes only PLUR hooks from an entry and keeps hooks PLUR did not
+        write
   packages/cli/src/commands/init.ts#target:
     kind: guarantee
-    rule: "Antigravity setup only writes the project AGENTS.md, never the Codex global one it would not read."
-    none: "no test runs init --antigravity with a Codex AGENTS.md present"
+    rule: Antigravity setup only writes the project AGENTS.md, never the Codex global one it would not read.
+    none: no test runs init --antigravity with a Codex AGENTS.md present
   packages/cli/src/commands/init.ts#telemetryConfigPath:
     kind: note
-    why: "Summarises the telemetry prompt rules; the rules are backed on the prompt function."
+    why: Summarises the telemetry prompt rules; the rules are backed on the prompt function.
   packages/cli/src/commands/init.ts#telemetryResult:
     kind: guarantee
-    rule: "Telemetry is asked once; a non-interactive install is never opted in without consent."
-    tests: ["packages/cli/test/init-telemetry.test.ts::non-interactive install writes enabled:false, never enabled:true"]
+    rule: Telemetry is asked once; a non-interactive install is never opted in without consent.
+    tests:
+      - packages/cli/test/init-telemetry.test.ts::non-interactive install writes enabled:false, never enabled:true
   packages/cli/src/commands/init.ts#wanted:
     kind: guarantee
-    rule: "A folder whose untrusted .plur.yaml requests a scope gets no folder-map entry from init, so the trust question still asks."
-    tests: ["packages/cli/test/init-user-settings-1467.test.ts::an untrusted .plur.yaml that asks for a scope: hooks move, no map entry"]
+    rule: >-
+      A folder whose untrusted .plur.yaml requests a scope gets no folder-map entry from init, so the trust question
+      still asks.
+    tests:
+      - >-
+        packages/cli/test/init-user-settings-1467.test.ts::an untrusted .plur.yaml that asks for a scope: hooks move, no
+        map entry
   packages/cli/src/commands/init.ts#workspaceSibling:
     kind: note
-    why: "Explains the development-checkout lookup; \"never\" describes what happens without it."
+    why: Explains the development-checkout lookup; "never" describes what happens without it.
   packages/cli/src/commands/init.ts#writePlurSection:
     kind: guarantee
-    rule: "A PLUR section the user wrote or edited is never replaced; only a text PLUR shipped is upgraded."
-    tests: ["packages/cli/test/init-memory-footer.test.ts::a user-edited AGENTS.md section is kept as it was"]
+    rule: A PLUR section the user wrote or edited is never replaced; only a text PLUR shipped is upgraded.
+    tests:
+      - packages/cli/test/init-memory-footer.test.ts::a user-edited AGENTS.md section is kept as it was
   "packages/cli/src/commands/inject.ts#{ session: dial_session, remote }":
     kind: guarantee
-    rule: "plur inject --fast never contacts a server, and an off, undecided or broken-map folder contacts no store; the internal key is never recorded as a session."
-    none: "no test runs plur inject --fast or plur inject in an off folder and checks that no store is contacted"
+    rule: >-
+      plur inject --fast never contacts a server, and an off, undecided or broken-map folder contacts no store; the
+      internal key is never recorded as a session.
+    none: no test runs plur inject --fast or plur inject in an off folder and checks that no store is contacted
   packages/cli/src/commands/inject.ts#FLAGS_WITH_VALUES:
     kind: guarantee
-    rule: "plur inject refuses a flag it cannot honour, such as --domain, instead of ignoring it."
-    tests: ["packages/cli/test/inject-scope-filter.test.ts::--domain (which inject cannot honour) is refused, not silently ignored"]
+    rule: plur inject refuses a flag it cannot honour, such as --domain, instead of ignoring it.
+    tests:
+      - >-
+        packages/cli/test/inject-scope-filter.test.ts::--domain (which inject cannot honour) is refused, not silently
+        ignored
   packages/cli/src/commands/inject.ts#run.remote:
     kind: guarantee
-    rule: "plur inject --fast reports its server leg as not dialed."
-    none: "no test checks the remote field of plur inject --fast"
+    rule: plur inject --fast reports its server leg as not dialed.
+    none: no test checks the remote field of plur inject --fast
   packages/cli/src/commands/keys.ts#(module):
     kind: note
-    why: "Describes where keys live; \"never in a store or repo\" describes the chosen location rather than a checked rule."
+    why: Describes where keys live; "never in a store or repo" describes the chosen location rather than a checked rule.
   packages/cli/src/commands/keys.ts#runInit:
     kind: guarantee
-    rule: "plur keys init refuses to make a key for an unidentified actor."
-    tests: ["packages/cli/test/keys-init-identity.test.ts::refuses with no identity configured, and makes no key"]
+    rule: plur keys init refuses to make a key for an unidentified actor.
+    tests:
+      - packages/cli/test/keys-init-identity.test.ts::refuses with no identity configured, and makes no key
   packages/cli/src/commands/learn.ts#ctx.session_id:
     kind: guarantee
-    rule: "A memory saved from the CLI always records a session id."
-    none: "no test checks the session id recorded by plur learn"
+    rule: A memory saved from the CLI always records a session id.
+    none: no test checks the session id recorded by plur learn
   packages/cli/src/commands/learn.ts#delivered:
     kind: guarantee
-    rule: "A team save that stayed on this machine is always reported with a warning."
-    tests: ["packages/cli/test/learn-delivery.test.ts::text output prints the warning for a shared scope that stayed local, even with --quiet"]
+    rule: A team save that stayed on this machine is always reported with a warning.
+    tests:
+      - >-
+        packages/cli/test/learn-delivery.test.ts::text output prints the warning for a shared scope that stayed local,
+        even with --quiet
   packages/cli/src/commands/learn.ts#domainHint:
     kind: guarantee
-    rule: "The domain hint is advisory and never fails the save."
-    none: "no test makes the domain hint fail during plur learn"
+    rule: The domain hint is advisory and never fails the save.
+    none: no test makes the domain hint fail during plur learn
   packages/cli/src/commands/learn.ts#engram:
     kind: guarantee
-    rule: "plur learn always goes through the routed save, so a team scope is queued for the server rather than silently kept local."
-    tests: ["packages/cli/test/save-deadline-outbox.test.ts::2a: a team save against a hanging server is queued in the outbox, exit 0, bounded"]
+    rule: >-
+      plur learn always goes through the routed save, so a team scope is queued for the server rather than silently kept
+      local.
+    tests:
+      - >-
+        packages/cli/test/save-deadline-outbox.test.ts::2a: a team save against a hanging server is queued in the
+        outbox, exit 0, bounded
   packages/cli/src/commands/learn.ts#FLAGS_WITH_VALUES:
     kind: guarantee
-    rule: "plur learn refuses a flag it does not accept instead of dropping it."
-    tests: ["packages/cli/test/known-flags.test.ts::exits non-zero on an unknown flag instead of succeeding"]
+    rule: plur learn refuses a flag it does not accept instead of dropping it.
+    tests:
+      - packages/cli/test/known-flags.test.ts::exits non-zero on an unknown flag instead of succeeding
   packages/cli/src/commands/learn.ts#REMOTE_WRITE_TIMEOUT_MS:
     kind: guarantee
-    rule: "A slow team server never cuts the local save short; only the server leg times out and the save goes to the outbox."
-    tests: ["packages/cli/test/save-deadline-outbox.test.ts::2a: a team save against a hanging server is queued in the outbox, exit 0, bounded"]
+    rule: A slow team server never cuts the local save short; only the server leg times out and the save goes to the outbox.
+    tests:
+      - >-
+        packages/cli/test/save-deadline-outbox.test.ts::2a: a team save against a hanging server is queued in the
+        outbox, exit 0, bounded
   packages/cli/src/commands/learn.ts#run:
     kind: guarantee
-    rule: "Outbox queuing, sensitive-content demotion and delivery warnings are printed even with --quiet."
-    tests: ["packages/cli/test/quiet.test.ts::learn --quiet still prints the scope-demotion warning (outcome differs from request)", "packages/cli/test/learn-delivery.test.ts::text output prints the warning for a shared scope that stayed local, even with --quiet"]
+    rule: Outbox queuing, sensitive-content demotion and delivery warnings are printed even with --quiet.
+    tests:
+      - >-
+        packages/cli/test/quiet.test.ts::learn --quiet still prints the scope-demotion warning (outcome differs from
+        request)
+      - >-
+        packages/cli/test/learn-delivery.test.ts::text output prints the warning for a shared scope that stayed local,
+        even with --quiet
   packages/cli/src/commands/list.ts#clipToWidth:
     kind: guarantee
-    rule: "Shortening a statement never splits a character and keeps wide characters within the column width."
-    tests: ["packages/cli/test/list-width.test.ts::never produces a replacement character", "packages/cli/test/list-width.test.ts::keeps a wide-character row inside the same column width as a Latin one"]
+    rule: Shortening a statement never splits a character and keeps wide characters within the column width.
+    tests:
+      - packages/cli/test/list-width.test.ts::never produces a replacement character
+      - packages/cli/test/list-width.test.ts::keeps a wide-character row inside the same column width as a Latin one
   packages/cli/src/commands/list.ts#FLAGS_WITH_VALUES:
     kind: guarantee
-    rule: "plur list refuses any flag it does not declare."
-    tests: ["packages/cli/test/known-flags.test.ts::exits non-zero on an unknown flag instead of succeeding"]
+    rule: plur list refuses any flag it does not declare.
+    tests:
+      - packages/cli/test/known-flags.test.ts::exits non-zero on an unknown flag instead of succeeding
   packages/cli/src/commands/list.ts#plur:
     kind: guarantee
-    rule: "plur list never writes to the store."
-    tests: ["packages/cli/test/readonly-commands.test.ts::list and status leave engrams.yaml byte-identical and drop no .lock files"]
+    rule: plur list never writes to the store.
+    tests:
+      - >-
+        packages/cli/test/readonly-commands.test.ts::list and status leave engrams.yaml byte-identical and drop no .lock
+        files
   packages/cli/src/commands/login.ts#deviceSignIn:
     kind: guarantee
-    rule: "A sign-in page off the server's own origin, or a code outside the allowed alphabet, is refused before anything is printed; a key that fails the checks is refused; sign-in itself writes nothing."
-    lean: ["PlurSpec/Login.lean:refusing_no_key"]
-    tests: ["packages/cli/test/enterprise-device-login.test.ts::a verification_uri that is not on the server", "packages/cli/test/enterprise-device-login.test.ts::a user_code outside the C3 alphabet is refused", "packages/cli/test/enterprise-device-login.test.ts::a token_type other than Bearer is refused"]
+    rule: >-
+      A sign-in page off the server's own origin, or a code outside the allowed alphabet, is refused before anything is
+      printed; a key that fails the checks is refused; sign-in itself writes nothing.
+    lean:
+      - PlurSpec/Login.lean:refusing_no_key
+    tests:
+      - packages/cli/test/enterprise-device-login.test.ts::a verification_uri that is not on the server
+      - packages/cli/test/enterprise-device-login.test.ts::a user_code outside the C3 alphabet is refused
+      - packages/cli/test/enterprise-device-login.test.ts::a token_type other than Bearer is refused
   packages/cli/src/commands/login.ts#elsewhere:
     kind: guarantee
-    rule: "When another entry keeps serving the personal scope after sign-in, the command says so and exits 1."
-    tests: ["packages/cli/test/enterprise-device-login.test.ts::an older entry for the server that keeps the personal scope: saved, but the personal writes still go there"]
+    rule: When another entry keeps serving the personal scope after sign-in, the command says so and exits 1.
+    tests:
+      - >-
+        packages/cli/test/enterprise-device-login.test.ts::an older entry for the server that keeps the personal scope:
+        saved, but the personal writes still go there
   packages/cli/src/commands/login.ts#formatStatusLines:
     kind: guarantee
-    rule: "The --status lines never include token values."
-    none: "no test of the rendered status lines asserts that a token value is absent"
+    rule: The --status lines never include token values.
+    none: no test of the rendered status lines asserts that a token value is absent
   packages/cli/src/commands/login.ts#HELP:
     kind: guarantee
-    rule: "plur login --status never prints tokens and exits 1 when any token is expired or invalid."
-    tests: ["packages/cli/test/login.test.ts::VALID: reachable host + accepted opaque token → exit 0, full JSON row, no token leaked", "packages/cli/test/login.test.ts::marks a locally-expired token EXPIRED with probe skipped, and fails the report"]
+    rule: plur login --status never prints tokens and exits 1 when any token is expired or invalid.
+    tests:
+      - >-
+        packages/cli/test/login.test.ts::VALID: reachable host + accepted opaque token → exit 0, full JSON row, no token
+        leaked
+      - packages/cli/test/login.test.ts::marks a locally-expired token EXPIRED with probe skipped, and fails the report
   packages/cli/src/commands/login.ts#pollForToken:
     kind: guarantee
-    rule: "Polling ends only with a checked key, a refusal or the timeout; waiting answers alone never yield a key, and a fourth transient error in a row refuses."
-    lean: ["PlurSpec/Login.lean:waiting_no_key", "PlurSpec/Login.lean:transient_bounded"]
-    tests: ["packages/cli/test/login.test.ts::throws when timeout is reached before approval", "packages/cli/test/enterprise-device-login.test.ts::slow_down twice: each adds 5 s and the added time is kept"]
+    rule: >-
+      Polling ends only with a checked key, a refusal or the timeout; waiting answers alone never yield a key, and a
+      fourth transient error in a row refuses.
+    lean:
+      - PlurSpec/Login.lean:waiting_no_key
+      - PlurSpec/Login.lean:transient_bounded
+    tests:
+      - packages/cli/test/login.test.ts::throws when timeout is reached before approval
+      - "packages/cli/test/enterprise-device-login.test.ts::slow_down twice: each adds 5 s and the added time is kept"
   packages/cli/src/commands/login.ts#ra:
     kind: guarantee
-    rule: "A Retry-After shorter than the poll interval never makes the poll faster than the interval."
-    tests: ["packages/cli/test/enterprise-device-login.test.ts::/auth/token 429 with a Retry-After shorter than the interval still waits the interval (no tight loop)"]
+    rule: A Retry-After shorter than the poll interval never makes the poll faster than the interval.
+    tests:
+      - >-
+        packages/cli/test/enterprise-device-login.test.ts::/auth/token 429 with a Retry-After shorter than the interval
+        still waits the interval (no tight loop)
   packages/cli/src/commands/login.ts#remediationFor:
     kind: guarantee
-    rule: "Remediation for an expired or invalid enterprise token never suggests running plur login."
-    tests: ["packages/cli/test/login.test.ts::EXPIRED/INVALID remediation gives the sign-in-URL + plur_stores_add flow and never suggests running plur login"]
+    rule: Remediation for an expired or invalid enterprise token never suggests running plur login.
+    tests:
+      - >-
+        packages/cli/test/login.test.ts::EXPIRED/INVALID remediation gives the sign-in-URL + plur_stores_add flow and
+        never suggests running plur login
   packages/cli/src/commands/login.ts#requestDeviceCode:
     kind: guarantee
-    rule: "A 429 on the device-code request is retried once, after Retry-After; a second one is refused with a plain message."
-    tests: ["packages/cli/test/enterprise-device-login.test.ts::/auth/device 429: one retry after Retry-After, then a plain message"]
+    rule: A 429 on the device-code request is retried once, after Retry-After; a second one is refused with a plain message.
+    tests:
+      - >-
+        packages/cli/test/enterprise-device-login.test.ts::/auth/device 429: one retry after Retry-After, then a plain
+        message
   packages/cli/src/commands/login.ts#runSignIn:
     kind: guarantee
-    rule: "A config backup that cannot be made owner-only refuses the whole write and leaves no copy of the key."
-    tests: ["packages/cli/test/enterprise-device-login.test.ts::a backup that cannot be made owner-only is refused, and no copy of the key is left"]
+    rule: A config backup that cannot be made owner-only refuses the whole write and leaves no copy of the key.
+    tests:
+      - >-
+        packages/cli/test/enterprise-device-login.test.ts::a backup that cannot be made owner-only is refused, and no
+        copy of the key is left
   packages/cli/src/commands/login.ts#runStatus:
     kind: guarantee
-    rule: "The --status report is printed even with --quiet."
-    none: "no test runs plur login --status with --quiet"
+    rule: The --status report is printed even with --quiet.
+    none: no test runs plur login --status with --quiet
   packages/cli/src/commands/login.ts#saved:
     kind: guarantee
-    rule: "Nothing is written until the key is checked and the server named the user; a ctrl-C before that leaves config.yaml unchanged."
-    lean: ["PlurSpec/Login.lean:interrupt_no_write", "PlurSpec/Login.lean:no_write_without_me"]
-    tests: ["packages/cli/test/enterprise-device-login.test.ts::ctrl-C while waiting for approval: exit 130, config.yaml byte-identical, no config.json"]
+    rule: >-
+      Nothing is written until the key is checked and the server named the user; a ctrl-C before that leaves config.yaml
+      unchanged.
+    lean:
+      - PlurSpec/Login.lean:interrupt_no_write
+      - PlurSpec/Login.lean:no_write_without_me
+    tests:
+      - >-
+        packages/cli/test/enterprise-device-login.test.ts::ctrl-C while waiting for approval: exit 130, config.yaml
+        byte-identical, no config.json
   packages/cli/src/commands/login.ts#signalReload:
     kind: guarantee
-    rule: "plur login never signals the process named in server.pid; it only says how a server picks up the new key."
-    tests: ["packages/cli/test/login.test.ts::asks for a restart when a PID file exists (it may be stale; nothing is signalled)"]
+    rule: plur login never signals the process named in server.pid; it only says how a server picks up the new key.
+    tests:
+      - >-
+        packages/cli/test/login.test.ts::asks for a restart when a PID file exists (it may be stale; nothing is
+        signalled)
   packages/cli/src/commands/login.ts#STATUS_PROBE_TIMEOUT_MS:
     kind: guarantee
-    rule: "The --status live probe is short so the status readout never hangs."
-    none: "no test checks the status probe timeout"
+    rule: The --status live probe is short so the status readout never hangs.
+    none: no test checks the status probe timeout
   packages/cli/src/commands/manifest.ts#(module):
     kind: guarantee
-    rule: "A session manifest carries ids and hashes only, never text, scopes, tags or domains, and is anchored on Swarm only when receipts.store is swarm."
-    promises: [PROOF-2, PROOF-4]
+    rule: >-
+      A session manifest carries ids and hashes only, never text, scopes, tags or domains, and is anchored on Swarm only
+      when receipts.store is swarm.
+    promises:
+      - PROOF-2
+      - PROOF-4
   packages/cli/src/commands/migrate.ts#pgliteExplicit:
     kind: guarantee
-    rule: "A PGLite index the user's config actively selects is never reported as orphaned."
-    tests: ["packages/cli/test/doctor.test.ts::calls store.pglite an orphan only when NO selection route picks pglite"]
+    rule: A PGLite index the user's config actively selects is never reported as orphaned.
+    tests:
+      - packages/cli/test/doctor.test.ts::calls store.pglite an orphan only when NO selection route picks pglite
   packages/cli/src/commands/migrate.ts#run:
     kind: guarantee
-    rule: "plur migrate up or down is refused in a remote-only folder."
-    tests: ["packages/cli/test/folder-remote-only.test.ts::plur migrate up/down in a remote-only folder is refused"]
+    rule: plur migrate up or down is refused in a remote-only folder.
+    tests:
+      - packages/cli/test/folder-remote-only.test.ts::plur migrate up/down in a remote-only folder is refused
   packages/cli/src/commands/outbox.ts#(module):
     kind: guarantee
-    rule: "plur outbox is read-only unless --flush is given, and never prints the target URL."
-    none: "no test checks that plur outbox omits the target URL or writes nothing without --flush"
+    rule: plur outbox is read-only unless --flush is given, and never prints the target URL.
+    none: no test checks that plur outbox omits the target URL or writes nothing without --flush
   packages/cli/src/commands/outbox.ts#entries:
     kind: guarantee
-    rule: "plur outbox --flush reports the entries as they were before the flush, not the emptied queue."
-    none: "no test checks the entries reported by a successful flush"
+    rule: plur outbox --flush reports the entries as they were before the flush, not the emptied queue.
+    none: no test checks the entries reported by a successful flush
   packages/cli/src/commands/packs.ts#apply:
     kind: guarantee
-    rule: "packs migrate-integrity is a dry run unless --yes is given."
-    tests: ["packages/cli/test/packs.test.ts::packs migrate-integrity is a dry run without --yes"]
+    rule: packs migrate-integrity is a dry run unless --yes is given.
+    tests:
+      - packages/cli/test/packs.test.ts::packs migrate-integrity is a dry run without --yes
   packages/cli/src/commands/packs.ts#FLAGS_WITH_VALUES:
     kind: guarantee
-    rule: "A flag no packs subcommand accepts, such as install --dry-run, is refused instead of installing."
-    tests: ["packages/cli/test/known-flags.test.ts::refuses the flag that made a tester install a pack they meant to preview"]
+    rule: A flag no packs subcommand accepts, such as install --dry-run, is refused instead of installing.
+    tests:
+      - packages/cli/test/known-flags.test.ts::refuses the flag that made a tester install a pack they meant to preview
   packages/cli/src/commands/packs.ts#force:
     kind: guarantee
-    rule: "--force overrides only an integrity mismatch; a secret, a declared-private memory or an unreadable file is still refused."
-    tests: ["packages/cli/test/packs.test.ts::--force does NOT reach the refusals"]
-    promises: [PCK-2]
+    rule: >-
+      --force overrides only an integrity mismatch; a secret, a declared-private memory or an unreadable file is still
+      refused.
+    tests:
+      - packages/cli/test/packs.test.ts::--force does NOT reach the refusals
+    promises:
+      - PCK-2
   packages/cli/src/commands/packs.ts#LICENCE_SOURCE_WORDS:
     kind: guarantee
-    rule: "A licence source outside the closed set never renders as raw text, not even an inherited key such as constructor."
-    tests: ["packages/cli/test/packs.test.ts::preview never prints a licence source the closed set does not contain"]
+    rule: A licence source outside the closed set never renders as raw text, not even an inherited key such as constructor.
+    tests:
+      - packages/cli/test/packs.test.ts::preview never prints a licence source the closed set does not contain
   packages/cli/src/commands/packs.ts#run:
     kind: guarantee
-    rule: "A pack baseline carried from v1 is labelled as carried, never shown as a verified install, and a licence source is never printed raw."
-    tests: ["packages/cli/test/packs.test.ts::a baseline carried from v1 is labelled as carried in migrate and in list", "packages/cli/test/packs.test.ts::preview never prints a licence source the closed set does not contain"]
+    rule: >-
+      A pack baseline carried from v1 is labelled as carried, never shown as a verified install, and a licence source is
+      never printed raw.
+    tests:
+      - packages/cli/test/packs.test.ts::a baseline carried from v1 is labelled as carried in migrate and in list
+      - packages/cli/test/packs.test.ts::preview never prints a licence source the closed set does not contain
   packages/cli/src/commands/provenance.ts#clip:
     kind: guarantee
-    rule: "Trimming provenance text never cuts a character in half."
-    none: "no test trims provenance text containing an emoji"
+    rule: Trimming provenance text never cuts a character in half.
+    none: no test trims provenance text containing an emoji
   packages/cli/src/commands/provenance.ts#FLAGS:
     kind: guarantee
-    rule: "plur provenance prints \"not recorded\" instead of a blank for anything that was not recorded."
-    none: "no test checks the \"not recorded\" wording of plur provenance"
+    rule: plur provenance prints "not recorded" instead of a blank for anything that was not recorded.
+    none: no test checks the "not recorded" wording of plur provenance
   packages/cli/src/commands/provenance.ts#run:
     kind: guarantee
-    rule: "The --json output carries structured values, never the padded display lines."
-    none: "no test checks that provenance JSON holds structured values rather than display lines"
+    rule: The --json output carries structured values, never the padded display lines.
+    none: no test checks that provenance JSON holds structured values rather than display lines
   packages/cli/src/commands/recall.ts#FLAGS_WITH_VALUES:
     kind: guarantee
-    rule: "plur recall refuses --tags and --type, which it cannot honour, instead of ignoring them."
-    none: "no test runs plur recall with --tags or --type"
+    rule: plur recall refuses --tags and --type, which it cannot honour, instead of ignoring them.
+    none: no test runs plur recall with --tags or --type
   packages/cli/src/commands/recall.ts#remoteMissing:
     kind: guarantee
-    rule: "An incomplete recall is never shown as a plain \"no results\"; it says what is missing and why."
-    tests: ["packages/cli/test/recall-json-report-1586.test.ts::an empty result still says whether it is complete"]
-    promises: [TEAM-2]
+    rule: An incomplete recall is never shown as a plain "no results"; it says what is missing and why.
+    tests:
+      - packages/cli/test/recall-json-report-1586.test.ts::an empty result still says whether it is complete
+    promises:
+      - TEAM-2
   packages/cli/src/commands/recall.ts#run.id:
     kind: guarantee
-    rule: "A team row's id keeps its store prefix, so it never collides with a local id and forget or feedback route it to its store."
-    tests: ["packages/cli/test/forget-namespaced.test.ts::retires a remote engram by its namespaced id (--json)"]
+    rule: >-
+      A team row's id keeps its store prefix, so it never collides with a local id and forget or feedback route it to
+      its store.
+    tests:
+      - packages/cli/test/forget-namespaced.test.ts::retires a remote engram by its namespaced id (--json)
   packages/cli/src/commands/receipt.ts#dormantLabel:
     kind: note
     why: "Explains why the label avoids \"never retrieved\": logging only began at a known date."
   packages/cli/src/commands/reindex-hashes.ts#(module):
     kind: guarantee
-    rule: "Hash repair runs only under its own command and the store lock; reading and doctor never repair."
-    none: "no test checks that plur reindex-hashes takes the store lock"
+    rule: Hash repair runs only under its own command and the store lock; reading and doctor never repair.
+    none: no test checks that plur reindex-hashes takes the store lock
   packages/cli/src/commands/reindex-hashes.ts#plur:
     kind: guarantee
-    rule: "plur reindex-hashes without --apply cannot write to the store."
-    none: "no test runs plur reindex-hashes without --apply and checks the store is unchanged"
+    rule: plur reindex-hashes without --apply cannot write to the store.
+    none: no test runs plur reindex-hashes without --apply and checks the store is unchanged
   packages/cli/src/commands/remote.ts#connect:
     kind: guarantee
-    rule: "A folder named with glob characters is stored literally, and $HOME swapped in by a symlink is refused again under the lock."
-    none: "no test connects a folder whose name holds glob characters or is swapped mid-run"
+    rule: >-
+      A folder named with glob characters is stored literally, and $HOME swapped in by a symlink is refused again under
+      the lock.
+    none: no test connects a folder whose name holds glob characters or is swapped mid-run
   packages/cli/src/commands/remote.ts#folder:
     kind: guarantee
-    rule: "Connecting $HOME, an ancestor of it or the filesystem root is refused before any server is contacted, and nothing is written."
-    tests: ["packages/cli/test/remote.test.ts::refuses %s"]
+    rule: >-
+      Connecting $HOME, an ancestor of it or the filesystem root is refused before any server is contacted, and nothing
+      is written.
+    tests:
+      - packages/cli/test/remote.test.ts::refuses %s
   packages/cli/src/commands/remote.ts#HELP:
     kind: guarantee
-    rule: "plur remote verifies the token for every scope and writes nothing if any is refused; the token never goes into a repository file and is never printed."
-    tests: ["packages/cli/test/remote.test.ts::an unauthorised scope writes nothing, even when an earlier --scopes entry is fine", "packages/cli/test/remote.test.ts::the token is never printed, in text mode either", "packages/cli/test/remote.test.ts::connects: url store in config.yaml, folder mapped in folders.yaml, nothing in .plur.yaml"]
+    rule: >-
+      plur remote verifies the token for every scope and writes nothing if any is refused; the token never goes into a
+      repository file and is never printed.
+    tests:
+      - >-
+        packages/cli/test/remote.test.ts::an unauthorised scope writes nothing, even when an earlier --scopes entry is
+        fine
+      - packages/cli/test/remote.test.ts::the token is never printed, in text mode either
+      - >-
+        packages/cli/test/remote.test.ts::connects: url store in config.yaml, folder mapped in folders.yaml, nothing in
+        .plur.yaml
   packages/cli/src/commands/rerank-eval.ts#run:
     kind: guarantee
-    rule: "A harmful reranker verdict never disables reranking; it only exits 1."
-    none: "no test runs plur rerank-eval to a harmful verdict"
+    rule: A harmful reranker verdict never disables reranking; it only exits 1.
+    none: no test runs plur rerank-eval to a harmful verdict
   packages/cli/src/commands/restore.ts#run:
     kind: guarantee
-    rule: "plur restore is refused in a remote-only folder and changes nothing."
-    tests: ["packages/cli/test/folder-remote-only.test.ts::plur restore in a remote-only folder is refused and changes nothing"]
+    rule: plur restore is refused in a remote-only folder and changes nothing.
+    tests:
+      - >-
+        packages/cli/test/folder-remote-only.test.ts::plur restore in a remote-only folder is refused and changes
+        nothing
   packages/cli/src/commands/scopes.ts#run:
     kind: guarantee
-    rule: "Personal scopes are never offered for registration, and a refused register exits 1 without truncating JSON output."
-    tests: ["packages/cli/test/scopes.test.ts::register a scope no configured remote authorizes → reports failure and exits 1"]
+    rule: Personal scopes are never offered for registration, and a refused register exits 1 without truncating JSON output.
+    tests:
+      - packages/cli/test/scopes.test.ts::register a scope no configured remote authorizes → reports failure and exits 1
   packages/cli/src/commands/status.ts#plur:
     kind: guarantee
-    rule: "plur status never writes to the store."
-    tests: ["packages/cli/test/readonly-commands.test.ts::list and status leave engrams.yaml byte-identical and drop no .lock files"]
+    rule: plur status never writes to the store.
+    tests:
+      - >-
+        packages/cli/test/readonly-commands.test.ts::list and status leave engrams.yaml byte-identical and drop no .lock
+        files
   packages/cli/src/commands/status.ts#run:
     kind: guarantee
-    rule: "With --quiet, plur status still prints its fields; only the banner is dropped."
-    tests: ["packages/cli/test/quiet.test.ts::status --quiet drops the banner but keeps the fields"]
+    rule: With --quiet, plur status still prints its fields; only the banner is dropped.
+    tests:
+      - packages/cli/test/quiet.test.ts::status --quiet drops the banner but keeps the fields
   packages/cli/src/commands/stores.ts#addRemote:
     kind: guarantee
-    rule: "plur stores add writes nothing when the token is rejected or the scope is not authorised, and the token is never printed."
-    tests: ["packages/cli/test/stores-add-url.test.ts::rejected token: exit 1, nothing written", "packages/cli/test/stores-add-url.test.ts::scope not authorised: exit 1, names the authorised scopes, nothing written", "packages/cli/test/stores-add-url.test.ts::a server echoing the token in any encoding: nothing printed, text or --json"]
+    rule: >-
+      plur stores add writes nothing when the token is rejected or the scope is not authorised, and the token is never
+      printed.
+    tests:
+      - "packages/cli/test/stores-add-url.test.ts::rejected token: exit 1, nothing written"
+      - >-
+        packages/cli/test/stores-add-url.test.ts::scope not authorised: exit 1, names the authorised scopes, nothing
+        written
+      - >-
+        packages/cli/test/stores-add-url.test.ts::a server echoing the token in any encoding: nothing printed, text or
+        --json
   packages/cli/src/commands/stores.ts#flagValue:
     kind: note
-    why: "Describes the helper's return value; the refusal happens in its callers."
+    why: Describes the helper's return value; the refusal happens in its callers.
   packages/cli/src/commands/stores.ts#skippedStoreLines:
     kind: guarantee
-    rule: "A folder path in a suggested command is quoted or escaped, never run as shell words when pasted."
-    none: "no test pastes the skipped-store command with a hostile path"
+    rule: A folder path in a suggested command is quoted or escaped, never run as shell words when pasted.
+    none: no test pastes the skipped-store command with a hostile path
   packages/cli/src/commands/sync.ts#run:
     kind: guarantee
-    rule: "A failed outbox flush or index pass is always reported, even with --quiet, and does not fail the sync."
-    tests: ["packages/cli/test/quiet-sync.test.ts::still prints the index-failure warning under --quiet", "packages/cli/test/outbox-needs-action.test.ts::plur sync says an entry was held back and needs action"]
+    rule: A failed outbox flush or index pass is always reported, even with --quiet, and does not fail the sync.
+    tests:
+      - packages/cli/test/quiet-sync.test.ts::still prints the index-failure warning under --quiet
+      - packages/cli/test/outbox-needs-action.test.ts::plur sync says an entry was held back and needs action
   packages/cli/src/commands/trust.ts#TRUST_COVERS:
     kind: guarantee
-    rule: "A project file can never grant itself trust; only plur trust does."
-    tests: ["packages/cli/test/hook-inject-trust.test.ts::does not apply the scope it requests until trusted"]
+    rule: A project file can never grant itself trust; only plur trust does.
+    tests:
+      - packages/cli/test/hook-inject-trust.test.ts::does not apply the scope it requests until trusted
   packages/cli/src/commands/trust.ts#trusted:
     kind: guarantee
-    rule: "plur trust refuses rather than overwrite a folder map it cannot read."
-    tests: ["packages/cli/test/folders.test.ts::trust refuses (exit 1) rather than overwriting a malformed folders.yaml"]
+    rule: plur trust refuses rather than overwrite a folder map it cannot read.
+    tests:
+      - packages/cli/test/folders.test.ts::trust refuses (exit 1) rather than overwriting a malformed folders.yaml
   packages/cli/src/commands/ui-server.ts#parseHostValue:
     kind: guarantee
-    rule: "A --host with a missing value is refused instead of taking the next flag."
-    tests: ["packages/cli/test/ui-host.test.ts::a forgotten value does not swallow the next flag"]
+    rule: A --host with a missing value is refused instead of taking the next flag.
+    tests:
+      - packages/cli/test/ui-host.test.ts::a forgotten value does not swallow the next flag
   packages/cli/src/commands/ui-server.ts#planViewer:
     kind: guarantee
-    rule: "The Host allowlist never includes the unspecified address, and names are allowed only when the operator vouches for them."
-    tests: ["packages/cli/test/ui-host.test.ts::an unspecified bind lists interface addresses, canonical, never the unspecified address", "packages/cli/test/ui-host.test.ts::--allow-host refuses the unspecified address, which no client can send"]
+    rule: >-
+      The Host allowlist never includes the unspecified address, and names are allowed only when the operator vouches
+      for them.
+    tests:
+      - >-
+        packages/cli/test/ui-host.test.ts::an unspecified bind lists interface addresses, canonical, never the
+        unspecified address
+      - packages/cli/test/ui-host.test.ts::--allow-host refuses the unspecified address, which no client can send
   packages/cli/src/commands/ui-server.ts#urlHostFor:
     kind: note
-    why: "Explains why the printed URL uses loopback for an all-interfaces bind; no rule of its own."
+    why: Explains why the printed URL uses loopback for an all-interfaces bind; no rule of its own.
   packages/cli/src/commands/ui-server.ts#ViewerPlan:
     kind: guarantee
-    rule: "A viewer bound past loopback warns and never reveals the folder."
-    tests: ["packages/cli/test/ui-host.test.ts::a widened server never renders the button nor serves the route"]
+    rule: A viewer bound past loopback warns and never reveals the folder.
+    tests:
+      - packages/cli/test/ui-host.test.ts::a widened server never renders the button nor serves the route
   packages/cli/src/commands/ui.ts#bound:
     kind: guarantee
-    rule: "If the socket did not bind to loopback, the folder-reveal route is refused."
-    none: "no test binds a loopback name that resolves off this machine"
+    rule: If the socket did not bind to loopback, the folder-reveal route is refused.
+    none: no test binds a loopback name that resolves off this machine
   packages/cli/src/commands/ui.ts#openBrowser:
     kind: guarantee
-    rule: "A launched browser never writes into our output or holds our pipe open."
-    none: "no test checks the browser process's stdio"
+    rule: A launched browser never writes into our output or holds our pipe open.
+    none: no test checks the browser process's stdio
   packages/cli/src/commands/ui.ts#plur:
     kind: guarantee
-    rule: "Browsing memory with plur ui never writes to the store."
-    none: "no test runs plur ui and checks the store is unchanged"
+    rule: Browsing memory with plur ui never writes to the store.
+    none: no test runs plur ui and checks the store is unchanged
   packages/cli/src/commands/ui.ts#server.allowedHosts:
     kind: guarantee
-    rule: "A request whose Host header names another domain, as a rebound browser sends, is refused."
-    tests: ["packages/cli/test/ui-host.test.ts::attacker domain in Host, with the fetch-metadata a rebound browser sends"]
+    rule: A request whose Host header names another domain, as a rebound browser sends, is refused.
+    tests:
+      - packages/cli/test/ui-host.test.ts::attacker domain in Host, with the fetch-metadata a rebound browser sends
   packages/cli/src/commands/untrust.ts#run:
     kind: guarantee
-    rule: "plur untrust removes only an exact grant, and when an ancestor grant still covers the folder it says so instead of claiming it was not trusted."
-    none: "no test untrusts a folder that an ancestor grant still covers"
+    rule: >-
+      plur untrust removes only an exact grant, and when an ancestor grant still covers the folder it says so instead of
+      claiming it was not trusted.
+    none: no test untrusts a folder that an ancestor grant still covers
   packages/cli/src/commands/upload.ts#plur:
     kind: guarantee
-    rule: "An upload preview never registers a project store or changes memory."
-    tests: ["packages/cli/test/upload.test.ts::previews eligible scopes without changing memory or configuration bytes"]
-    promises: [EFI-11]
+    rule: An upload preview never registers a project store or changes memory.
+    tests:
+      - packages/cli/test/upload.test.ts::previews eligible scopes without changing memory or configuration bytes
+    promises:
+      - EFI-11
   packages/cli/src/commands/verify-manifest.ts#(module):
     kind: guarantee
-    rule: "plur verify --manifest exits 0 only when every held memory matches and, for a download, the hash and the expected notary's signature check out; a gateway's own notary is not trusted by default."
-    lean: ["PlurSpec/Provenance.lean:exit_zero_iff", "PlurSpec/Provenance.lean:download_exit_zero_iff"]
-    tests: ["packages/cli/test/verify-manifest-integrity.test.ts::a non-default gateway naming its own notary is not trusted by default"]
+    rule: >-
+      plur verify --manifest exits 0 only when every held memory matches and, for a download, the hash and the expected
+      notary's signature check out; a gateway's own notary is not trusted by default.
+    lean:
+      - PlurSpec/Provenance.lean:exit_zero_iff
+      - PlurSpec/Provenance.lean:download_exit_zero_iff
+    tests:
+      - >-
+        packages/cli/test/verify-manifest-integrity.test.ts::a non-default gateway naming its own notary is not trusted
+        by default
   packages/cli/src/commands/verify.ts#plur:
     kind: guarantee
-    rule: "plur verify can never write to the store it examines."
-    none: "no test runs plur verify and checks the store is unchanged"
+    rule: plur verify can never write to the store it examines.
+    none: no test runs plur verify and checks the store is unchanged

@@ -1,0 +1,37 @@
+"packages/mcp/src/tools.ts#engram.session":
+  lean: ["PlurSpec/McpTools.lean:episode_never_process_slot", "PlurSpec/McpTools.lean:episode_ambiguous_no_default"]
+  tests:
+    - "packages/mcp/test/formal-mcp-tools-session.test.ts::episode to engram, one session open, no id: takes that session's default"
+    - "packages/mcp/test/formal-mcp-tools-session.test.ts::episode to engram, two sessions open, no id: neither session's default"
+    - "packages/mcp/test/formal-mcp-tools-session.test.ts::episode to engram, no session open: the process slot is not used"
+    - "packages/mcp/test/formal-mcp-tools-session.test.ts::episode to engram, two sessions open, named session: takes the named session's default"
+"packages/mcp/src/tools.ts#session":
+  lean: ["PlurSpec/McpTools.lean:unknown_id_no_default"]
+  tests:
+    - "packages/mcp/test/formal-mcp-tools-session.test.ts::through the server, a session id this process never started supplies no default (learn and episode)"
+    - "packages/mcp/test/formal-mcp-tools-session.test.ts::without the server, a session id never started or registered supplies no default (not the last-started session's)"
+"packages/mcp/src/tools.ts#clearCtx":
+  lean: ["PlurSpec/McpTools.lean:clear_unknown_via_server"]
+  tests: ["packages/mcp/test/formal-mcp-tools-session.test.ts::through the server, clearing the scope of a session this server did not start restores nothing"]
+"packages/mcp/src/server.ts#callTail":
+  lean: ["PlurSpec/McpTools.lean:run_inv", "PlurSpec/McpTools.lean:busy_arrival_waits", "PlurSpec/McpTools.lean:failed_call_releases"]
+  tests:
+    - "packages/mcp/test/formal-mcp-tools-serial.test.ts::a second call does not start while the first is still running"
+    - "packages/mcp/test/formal-mcp-tools-serial.test.ts::a call that fails does not block the next one"
+"packages/mcp/src/tools.ts#SESSION_TTL_MS":
+  lean: ["PlurSpec/McpTools.lean:open_within_ttl", "PlurSpec/McpTools.lean:implicit_unexpired"]
+  tests:
+    - "packages/mcp/test/formal-mcp-tools-session.test.ts::an expired session is never the implicit session, and a later start is the lone open one"
+    - "packages/mcp/test/formal-mcp-tools-session.test.ts::a session still inside its TTL keeps its default"
+"packages/mcp/src/tools.ts#_pendingScopeEvictions":
+  lean: ["PlurSpec/McpTools.lean:expired_registration_cleared"]
+"packages/mcp/src/tools.ts#_resolveWriteSession":
+  lean: ["PlurSpec/McpTools.lean:ambiguous_no_session_default"]
+"packages/mcp/src/tools.ts#_writeSession":
+  lean: ["PlurSpec/McpTools.lean:write_never_process_slot", "PlurSpec/McpTools.lean:ambiguous_no_session_default"]
+"packages/mcp/src/tools.ts#_resolveScopeSession":
+  lean: ["PlurSpec/McpTools.lean:ambiguous_change_refused", "PlurSpec/McpTools.lean:accepted_set_targets_session"]
+  tests: ["packages/mcp/test/formal-mcp-tools-session.test.ts::a session-scope set or clear with two sessions open and no id is refused, and changes nothing"]
+"packages/mcp/src/tools.ts#getAllToolDefinitions.handler":
+  lean: ["PlurSpec/McpTools.lean:ambiguous_change_refused"]
+  tests: ["packages/mcp/test/formal-mcp-tools-session.test.ts::a session-scope set or clear with two sessions open and no id is refused, and changes nothing"]

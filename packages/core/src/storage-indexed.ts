@@ -5,7 +5,7 @@ import { withoutRemoteOnlyQueued } from './remote-only-rows.js'
 import { isPersonalScope, isScopeWithin } from './scope-util.js'
 import type { Engram } from './schemas/engram.js'
 import type { StoreEntry } from './schemas/config.js'
-import { escapeLikePattern, type StorageFilter } from './storage-adapter.js'
+import type { StorageFilter } from './storage-adapter.js'
 
 const require = createRequire(import.meta.url)
 
@@ -153,18 +153,22 @@ export class IndexedStorage {
       // never a sibling prefix (mirrors isScopeWithin). Mounted-scope grants add
       // the same triple per grant as OR-clauses; VISIBILITY ONLY, never widening
       // the `scopes` allow-list. Keep in lockstep with makeVisibilityPredicate
-      // and the pglite/postgres arms. LIKE arms are escaped and the explicit
-      // ESCAPE is required (SQLite has no default LIKE escape).
-      const clauses = ['personal = 1', "scope = ?", "scope LIKE ? || ':%' ESCAPE '\\'", "scope LIKE ? || '/%' ESCAPE '\\'"]
-      params.push(filter.scope, escapeLikePattern(filter.scope), escapeLikePattern(filter.scope))
+      // and the pglite/postgres arms. Prefixes are tested with `instr(...) = 1`,
+      // not LIKE: SQLite LIKE is case-insensitive, so it would admit
+      // `PROJECT:a:x` under `project:a`, which isScopeWithin does not.
+      const within = ['scope = ?', "instr(scope, ? || ':') = 1", "instr(scope, ? || '/') = 1"]
+      const clauses = ['personal = 1', ...within]
+      params.push(filter.scope, filter.scope, filter.scope)
       for (const g of filter.visibilityGrants ?? []) {
-        clauses.push("scope = ?", "scope LIKE ? || ':%' ESCAPE '\\'", "scope LIKE ? || '/%' ESCAPE '\\'")
-        params.push(g, escapeLikePattern(g), escapeLikePattern(g))
+        clauses.push(...within)
+        params.push(g, g, g)
       }
       conditions.push(`(${clauses.join(' OR ')})`)
     }
     if (filter.domain) {
-      conditions.push("domain LIKE ? || '%'")
+      // Exact, case-sensitive prefix like the in-memory `startsWith`; LIKE would
+      // case-fold and treat `_` / `%` in the filter as wildcards.
+      conditions.push('instr(domain, ?) = 1')
       params.push(filter.domain)
     }
 

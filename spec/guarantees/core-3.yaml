@@ -24,6 +24,12 @@ anchors:
     rule: a reranker failure during a self-eval run is raised to the caller, never silently swallowed
     tests:
       - packages/core/test/reranker-eval.test.ts::propagates reranker failures instead of silently falling back
+  packages/core/src/sanitize.ts#collapseLineTerminators:
+    kind: guarantee
+    rule: collapsing line terminators removes the entry-forgery boundary and applying it twice gives the same result as once
+    tests:
+      - packages/core/test/sanitize.test.ts::is idempotent, because the local route sanitises twice
+      - packages/core/test/sanitize.test.ts::renders as one entry once sanitised
   packages/core/src/sanitize.ts#SPACES_AROUND_TERMINATORS:
     kind: guarantee
     rule: >-
@@ -32,12 +38,6 @@ anchors:
     tests:
       - packages/core/test/sanitize.test.ts::collapses every terminator the renderer recognises, not just LF
       - packages/core/test/sanitize.test.ts::holds for every terminator in the class, not only the line feed
-  packages/core/src/sanitize.ts#collapseLineTerminators:
-    kind: guarantee
-    rule: collapsing line terminators removes the entry-forgery boundary and applying it twice gives the same result as once
-    tests:
-      - packages/core/test/sanitize.test.ts::is idempotent, because the local route sanitises twice
-      - packages/core/test/sanitize.test.ts::renders as one entry once sanitised
   packages/core/src/save-destination.ts#formatSaveDestination:
     kind: guarantee
     rule: >-
@@ -53,6 +53,18 @@ anchors:
   packages/core/src/scope-routing.ts#AutoRouteDecision:
     kind: note
     why: documents what each auto-route action value means; the refusal rule itself lives in decideAutoRoute
+  packages/core/src/scope-routing.ts#decideAutoRoute:
+    kind: guarantee
+    rule: an unscoped write is never auto-routed into a shared scope unless the install opted in
+    lean:
+      - PlurSpec/WritePath.lean:final_shared_needs_human
+    tests:
+      - >-
+        packages/core/test/route-unscoped.test.ts::refuses a confident SHARED domain match and falls to the unscoped
+        default
+      - "packages/core/test/route-unscoped.test.ts::every shared prefix is refused, not just group:"
+    promises:
+      - PRV-4
   packages/core/src/scope-routing.ts#DecideAutoRouteOptions:
     kind: guarantee
     rule: an unscoped write reaches a remote personal scope only when that scope is known to be the user's own namespace
@@ -78,6 +90,16 @@ anchors:
       - >-
         packages/core/test/scope-routing.test.ts::keyword-coincidence + ONE coincidental tag still does NOT clear the
         threshold
+  packages/core/src/scope-routing.ts#scoreScope:
+    kind: guarantee
+    rule: a reverse domain match or keyword overlap alone never lets a generic engram land in a shared scope
+    tests:
+      - >-
+        packages/core/test/route-unscoped.test.ts::R2-C OVER-ROUTE REGRESSION: a BROAD engram (domain ⊃ cover) does NOT
+        deterministically route into a narrow shared scope
+      - >-
+        packages/core/test/scope-routing.test.ts::keyword-only overlap, however many tokens, does NOT clear the
+        auto-route threshold
   packages/core/src/scope-routing.ts#SUGGEST_DISPLAY_MIN_CONFIDENCE:
     kind: note
     why: explains how the default display floor was sized between the one-keyword and two-keyword confidence bands
@@ -91,28 +113,6 @@ anchors:
       - >-
         packages/core/test/scope-routing.test.ts::R2-C: REVERSE direction (domain ⊃ cover) leaves
         coverContainsDomain:false and is down-weighted below threshold
-  packages/core/src/scope-routing.ts#decideAutoRoute:
-    kind: guarantee
-    rule: an unscoped write is never auto-routed into a shared scope unless the install opted in
-    lean:
-      - PlurSpec/WritePath.lean:final_shared_needs_human
-    tests:
-      - >-
-        packages/core/test/route-unscoped.test.ts::refuses a confident SHARED domain match and falls to the unscoped
-        default
-      - "packages/core/test/route-unscoped.test.ts::every shared prefix is refused, not just group:"
-    promises:
-      - PRV-4
-  packages/core/src/scope-routing.ts#scoreScope:
-    kind: guarantee
-    rule: a reverse domain match or keyword overlap alone never lets a generic engram land in a shared scope
-    tests:
-      - >-
-        packages/core/test/route-unscoped.test.ts::R2-C OVER-ROUTE REGRESSION: a BROAD engram (domain ⊃ cover) does NOT
-        deterministically route into a narrow shared scope
-      - >-
-        packages/core/test/scope-routing.test.ts::keyword-only overlap, however many tokens, does NOT clear the
-        auto-route threshold
   packages/core/src/scope-target.ts#isLocalOnlyScope:
     kind: guarantee
     rule: >-
@@ -135,11 +135,6 @@ anchors:
       - >-
         packages/core/test/user-scope-remote-recall.test.ts::three stores sharing one scope: the ownership check
         examines the entry the write lands on
-  packages/core/src/scope-util.ts#SHARED_SCOPE_PREFIXES:
-    kind: note
-    why: >-
-      defines which scope prefixes count as shared; the visibility and leak-guard rules are stated where they are
-      applied
   packages/core/src/scope-util.ts#isPersonalScope:
     kind: guarantee
     rule: >-
@@ -152,6 +147,9 @@ anchors:
       - >-
         packages/core/test/read-side-scope-visibility.test.ts::predicate sanity: personal-family scopes are personal,
         shared are not
+      - "packages/core/test/formal-backend-scopes-case.test.ts::PGLite adapter: "
+    lean:
+      - PlurSpec/BackendScopes.lean:sqlShared_fold
   packages/core/src/scope-util.ts#makeVisibilityPredicate:
     kind: guarantee
     rule: >-
@@ -181,6 +179,11 @@ anchors:
       - >-
         packages/core/test/scope-pushdown.test.ts::does NOT expand descendants and does NOT pass personal-family scopes
         through
+  packages/core/src/scope-util.ts#SHARED_SCOPE_PREFIXES:
+    kind: note
+    why: >-
+      defines which scope prefixes count as shared; the visibility and leak-guard rules are stated where they are
+      applied
   packages/core/src/search-orchestrator.ts#runHybrid:
     kind: guarantee
     rule: a search is labelled hybrid only when its semantic leg actually ran
@@ -191,6 +194,33 @@ anchors:
       - "packages/core/test/formal-r2-retrieval-labels.test.ts::(a) embeddings disabled by the user: also not hybrid"
     promises:
       - REC-3
+  packages/core/src/secrets.ts#detectSensitive:
+    kind: guarantee
+    rule: >-
+      input over the scan limit is reported as unscanned rather than passed as clean, and cutting it never throws or
+      yields invalid text
+    tests:
+      - >-
+        packages/core/test/secrets.test.ts::#386 fail-closed: an input larger than the ceiling reports scan_truncated
+        even when the scanned prefix is clean
+      - >-
+        packages/core/test/secrets.test.ts::truncation at the ceiling produces valid UTF-8 even when it splits a
+        multibyte char (no throw)
+      - >-
+        packages/core/test/formal-secrets-install-truncate.test.ts::detectSensitive scans the cut text and still reports
+        the input as truncated
+  packages/core/src/secrets.ts#found:
+    kind: guarantee
+    rule: an invisible character inside a host name or address does not hide it from the sensitive-content scan
+    tests:
+      - "packages/core/test/secrets.test.ts::detectSensitive: a zero-width space inside an internal host"
+      - "packages/core/test/secrets.test.ts::detectSensitive: a zero-width joiner inside a public IP"
+  packages/core/src/secrets.ts#host:
+    kind: guarantee
+    rule: every internal-host match carries the host token, and a match without one is skipped rather than thrown on
+    tests:
+      - "packages/core/test/secrets.test.ts::alt (a) internal-suffix label: groups.host === host token"
+      - "packages/core/test/secrets.test.ts::alt (d) staging inner label: groups.host === host token"
   packages/core/src/secrets.ts#INJECTION_PATTERNS:
     kind: note
     why: says outright that the prompt-injection patterns are a heuristic, not a guarantee
@@ -206,38 +236,6 @@ anchors:
     rule: a MAC address or other colon string that is not a valid IPv6 address is never flagged as one
     tests:
       - packages/core/test/secrets.test.ts::does NOT flag a MAC address (six 2-hex groups)
-  packages/core/src/secrets.ts#SECRET_PATTERNS:
-    kind: guarantee
-    rule: >-
-      a vendor token prefix glued onto the end of a longer word is not reported as a credential, so prose naming a
-      prefix stays clean
-    tests:
-      - packages/core/test/secrets.test.ts::does not flag a GitHub prefix glued onto a longer identifier
-      - packages/core/test/secrets.test.ts::does not flag ASIA glued onto a longer word
-  packages/core/src/secrets.ts#detectSensitive:
-    kind: guarantee
-    rule: >-
-      input over the scan limit is reported as unscanned rather than passed as clean, and cutting it never throws or
-      yields invalid text
-    tests:
-      - >-
-        packages/core/test/secrets.test.ts::#386 fail-closed: an input larger than the ceiling reports scan_truncated
-        even when the scanned prefix is clean
-      - >-
-        packages/core/test/secrets.test.ts::truncation at the ceiling produces valid UTF-8 even when it splits a
-        multibyte char (no throw)
-  packages/core/src/secrets.ts#found:
-    kind: guarantee
-    rule: an invisible character inside a host name or address does not hide it from the sensitive-content scan
-    tests:
-      - "packages/core/test/secrets.test.ts::detectSensitive: a zero-width space inside an internal host"
-      - "packages/core/test/secrets.test.ts::detectSensitive: a zero-width joiner inside a public IP"
-  packages/core/src/secrets.ts#host:
-    kind: guarantee
-    rule: every internal-host match carries the host token, and a match without one is skipped rather than thrown on
-    tests:
-      - "packages/core/test/secrets.test.ts::alt (a) internal-suffix label: groups.host === host token"
-      - "packages/core/test/secrets.test.ts::alt (d) staging inner label: groups.host === host token"
   packages/core/src/secrets.ts#maskFinding:
     kind: guarantee
     rule: >-
@@ -250,17 +248,31 @@ anchors:
   packages/core/src/secrets.ts#matchInternalHost:
     kind: guarantee
     rule: the internal-host scan loop always advances, so it cannot spin forever on a zero-width match
-    none: no test feeds a zero-width match; the pattern cannot produce one today
+    lean:
+      - PlurSpec/SecretsInstall.lean:loop_terminates
+      - PlurSpec/SecretsInstall.lean:nextIndex_advances
   packages/core/src/secrets.ts#percentDecodedView:
     kind: guarantee
     rule: percent-decoding for the credential scan never throws on malformed escapes
     tests:
       - packages/core/test/secrets.test.ts::tolerates malformed percent sequences
       - packages/core/test/secrets.test.ts::flags a GitHub token after a percent-encoded =
+  packages/core/src/secrets.ts#SECRET_PATTERNS:
+    kind: guarantee
+    rule: >-
+      a vendor token prefix glued onto the end of a longer word is not reported as a credential, so prose naming a
+      prefix stays clean
+    tests:
+      - packages/core/test/secrets.test.ts::does not flag a GitHub prefix glued onto a longer identifier
+      - packages/core/test/secrets.test.ts::does not flag ASIA glued onto a longer word
   packages/core/src/secrets.ts#truncateToScanLimit:
     kind: guarantee
     rule: cutting text to the scan limit never throws and always yields valid text
-    none: no test calls it directly on a split multi-byte character; only detectSensitive's own copy of the logic is tested
+    tests:
+      - >-
+        packages/core/test/formal-secrets-install-truncate.test.ts::splitting %s at the limit yields valid text, never
+        throwing (offset %i)
+      - packages/core/test/formal-secrets-install-truncate.test.ts::returns text at or under the limit unchanged
   packages/core/src/seen-on-server.ts#(module):
     kind: guarantee
     rule: >-
@@ -270,6 +282,9 @@ anchors:
       - >-
         packages/core/test/seen-on-server-store.test.ts::S1: concurrent writers lose no line while the file is being
         bounded
+    lean:
+      - PlurSpec/RemoteHealth.lean:append_survives_one_rotation
+      - PlurSpec/RemoteHealth.lean:append_keeps
   packages/core/src/seen-on-server.ts#seenOnServer:
     kind: guarantee
     rule: a damaged seen-on-server record is ignored, never an error
@@ -305,32 +320,6 @@ anchors:
       - >-
         packages/core/test/server-discovery.test.ts::an empty org_id rejects everything as org-prefix and is degraded: a
         non-empty cache stays
-  packages/core/src/server-discovery.ts#ScopeHolder:
-    kind: guarantee
-    rule: an entry named as holding the personal scope shows only the url origin, never a user name, password or key
-    tests:
-      - >-
-        packages/core/test/register-enterprise-server-stale.test.ts::another server holding the personal scope: named by
-        origin and scope, no key anywhere
-  packages/core/src/server-discovery.ts#ServerRegistration:
-    kind: guarantee
-    rule: >-
-      registration with removal of stale holders is refused, writing nothing, when a holder cannot be removed; with
-      keepSignIn an existing sign-in for the server is never replaced
-    tests:
-      - >-
-        packages/core/test/register-enterprise-server-stale.test.ts::when the holder cannot be removed for the caller,
-        it refuses and writes nothing
-      - >-
-        packages/core/test/register-enterprise-server-stale.test.ts::keepSignIn: a sign-in config.yaml holds for the
-        server is never replaced; nothing is written
-  packages/core/src/server-discovery.ts#SignInHeldError:
-    kind: guarantee
-    rule: with keepSignIn, a sign-in config.yaml already holds for the server is never replaced
-    tests:
-      - >-
-        packages/core/test/register-enterprise-server-stale.test.ts::keepSignIn: a sign-in config.yaml holds for the
-        server is never replaced; nothing is written
   packages/core/src/server-discovery.ts#acceptDiscoveredScopes:
     kind: guarantee
     rule: scope discovery does no I/O, and an answer that cannot be checked never clears or replaces a non-empty cache
@@ -366,6 +355,25 @@ anchors:
       - >-
         packages/core/test/register-enterprise-server.test.ts::refuses to claim a personal scope another entry already
         serves (another server), writing nothing
+  packages/core/src/server-discovery.ts#ScopeHolder:
+    kind: guarantee
+    rule: an entry named as holding the personal scope shows only the url origin, never a user name, password or key
+    tests:
+      - >-
+        packages/core/test/register-enterprise-server-stale.test.ts::another server holding the personal scope: named by
+        origin and scope, no key anywhere
+  packages/core/src/server-discovery.ts#ServerRegistration:
+    kind: guarantee
+    rule: >-
+      registration with removal of stale holders is refused, writing nothing, when a holder cannot be removed; with
+      keepSignIn an existing sign-in for the server is never replaced
+    tests:
+      - >-
+        packages/core/test/register-enterprise-server-stale.test.ts::when the holder cannot be removed for the caller,
+        it refuses and writes nothing
+      - >-
+        packages/core/test/register-enterprise-server-stale.test.ts::keepSignIn: a sign-in config.yaml holds for the
+        server is never replaced; nothing is written
   packages/core/src/server-discovery.ts#si:
     kind: guarantee
     rule: a newly registered entry does not take over personal scope writes that another server or key already serves
@@ -376,6 +384,13 @@ anchors:
       - >-
         packages/core/test/register-enterprise-server.test.ts::refuses a new writable entry that would outrank a
         readonly entry serving its personal scope with another key
+  packages/core/src/server-discovery.ts#SignInHeldError:
+    kind: guarantee
+    rule: with keepSignIn, a sign-in config.yaml already holds for the server is never replaced
+    tests:
+      - >-
+        packages/core/test/register-enterprise-server-stale.test.ts::keepSignIn: a sign-in config.yaml holds for the
+        server is never replaced; nothing is written
   packages/core/src/session-manifest.ts#(module):
     kind: guarantee
     rule: a session manifest never contains engram text, scope names, tags or domains, nor a bare statement hash
@@ -419,9 +434,25 @@ anchors:
         packages/core/test/storage-adapter-role.test.ts::refuses a primary-role adapter even if it somehow carries the
         methods
       - packages/core/test/storage-adapter-role.test.ts::narrows an index adapter that implements the rebuild contract
+  packages/core/src/storage-adapter.ts#asDerivedIndex:
+    kind: guarantee
+    rule: a primary store, or an index adapter missing the rebuild methods, is refused rather than called into
+    tests:
+      - >-
+        packages/core/test/storage-adapter-role.test.ts::refuses a primary-role adapter even if it somehow carries the
+        methods
+      - >-
+        packages/core/test/storage-adapter-role.test.ts::refuses an index-role adapter that does not implement the
+        rebuild methods
   packages/core/src/storage-adapter.ts#DerivedIndexAdapter:
     kind: note
     why: the presence of the rebuild methods is enforced by the type; the runtime check lives in asDerivedIndex
+  packages/core/src/storage-adapter.ts#efSearchFor:
+    kind: guarantee
+    rule: the vector search depth is never below the requested limit, and operator tuning can raise it but never lower it
+    tests:
+      - packages/core/test/vector-index-strategy.test.ts::never returns less than the limit, for any limit
+      - packages/core/test/vector-index-strategy.test.ts::lets an operator raise the floor but never lower it
   packages/core/src/storage-adapter.ts#ScopeRestriction:
     kind: guarantee
     rule: >-
@@ -453,22 +484,6 @@ anchors:
         packages/core/test/pglite-scope-pushdown.test.ts::SECURITY: grants never widen the scopes authorization
         allow-list
       - "packages/core/test/scope-pushdown.test.ts::#775 SECURITY: grants never widen the scopes authorization allow-list"
-  packages/core/src/storage-adapter.ts#asDerivedIndex:
-    kind: guarantee
-    rule: a primary store, or an index adapter missing the rebuild methods, is refused rather than called into
-    tests:
-      - >-
-        packages/core/test/storage-adapter-role.test.ts::refuses a primary-role adapter even if it somehow carries the
-        methods
-      - >-
-        packages/core/test/storage-adapter-role.test.ts::refuses an index-role adapter that does not implement the
-        rebuild methods
-  packages/core/src/storage-adapter.ts#efSearchFor:
-    kind: guarantee
-    rule: the vector search depth is never below the requested limit, and operator tuning can raise it but never lower it
-    tests:
-      - packages/core/test/vector-index-strategy.test.ts::never returns less than the limit, for any limit
-      - packages/core/test/vector-index-strategy.test.ts::lets an operator raise the floor but never lower it
   packages/core/src/storage-indexed.ts#IndexedStorage.getDb:
     kind: note
     why: explains that re-running the full YAML sync after a partial backfill is safe
@@ -477,16 +492,6 @@ anchors:
     rule: an empty permitted-scope list returns nothing from the SQLite index, never everything
     tests:
       - "packages/core/test/scope-pushdown.test.ts::SECURITY: an empty permitted-scope list matches NOTHING"
-  packages/core/src/storage-indexed.ts#clauses:
-    kind: guarantee
-    rule: >-
-      a scope filter on the SQLite index admits a scope and its true descendants but never a string-prefix sibling, and
-      grants never widen the allow-list
-    tests:
-      - >-
-        packages/core/test/scope-pushdown.test.ts::#775: visibilityGrants admit the granted scope AND its true
-        descendants under a scope filter
-      - "packages/core/test/scope-pushdown.test.ts::#775 SECURITY: grants never widen the scopes authorization allow-list"
   packages/core/src/storage-indexed.ts#nsId:
     kind: note
     why: points to the shared id-namespacing rule every loader uses
@@ -502,6 +507,53 @@ anchors:
       - >-
         packages/core/test/remote-only-derived-copies.test.ts::the SQLite index leaves a queued save of a secondary
         store out too
+  packages/core/src/storage-indexed.ts#within:
+    kind: guarantee
+    rule: >-
+      a scope filter on the SQLite index admits a scope and its true descendants but never a string-prefix sibling, and
+      grants never widen the allow-list
+    tests:
+      - >-
+        packages/core/test/scope-pushdown.test.ts::#775: visibilityGrants admit the granted scope AND its true
+        descendants under a scope filter
+      - "packages/core/test/scope-pushdown.test.ts::#775 SECURITY: grants never widen the scopes authorization allow-list"
+      - "packages/core/test/formal-backend-scopes-case.test.ts::SQLite index: "
+    lean:
+      - PlurSpec/BackendScopes.lean:sqlite_agrees
+  "packages/core/src/storage-pglite.ts#{ engrams: unique, renames }":
+    kind: guarantee
+    rule: two different engrams sharing an id in an index batch are both kept, the later one under a fresh id
+    lean:
+      - PlurSpec/R2Persist.lean:resolve_no_loss
+      - PlurSpec/R2Persist.lean:resolve_idem
+    tests:
+      - >-
+        packages/core/test/pglite-duplicate-ids.test.ts::syncFromYaml keeps both copies: the first under its id, the
+        later under a fresh id (P1)
+  packages/core/src/storage-pglite.ts#clause:
+    kind: guarantee
+    rule: the PGLite scope filter never admits a string-prefix sibling, and mounted grants never widen the allow-list
+    tests:
+      - >-
+        packages/core/test/pglite-scope-pushdown.test.ts::SECURITY: grants never widen the scopes authorization
+        allow-list
+      - >-
+        packages/core/test/pglite-adapter.test.ts::#402 personal-family scopes (local, user:*) pass a project recall —
+        not just global
+      - "packages/core/test/formal-backend-scopes-case.test.ts::PGLite adapter: "
+    lean:
+      - PlurSpec/BackendScopes.lean:pg_agrees
+      - PlurSpec/BackendScopes.lean:like_esc_prefix
+  packages/core/src/storage-pglite.ts#engrams:
+    kind: guarantee
+    rule: a queued remote-only save is never copied into the PGLite index
+    tests:
+      - packages/core/test/remote-only-derived-copies.test.ts::PGLite, by sync and by reindex
+  packages/core/src/storage-pglite.ts#expectedDim:
+    kind: guarantee
+    rule: an embedding of the wrong dimension is refused, never stored
+    tests:
+      - packages/core/test/embed-dim-contract.test.ts::rejects wrong shapes
   packages/core/src/storage-pglite.ts#PGLiteAdapter.initSchema:
     kind: note
     why: explains that the added column migration is additive and safe to run on every open
@@ -535,42 +587,45 @@ anchors:
       - >-
         packages/core/test/pglite-precision.test.ts::keeps a halfvec column when reopened WITHOUT a precision option (no
         silent down-migration)
-  packages/core/src/storage-pglite.ts#clause:
+  packages/core/src/storage-postgres.ts#{ rows }:
     kind: guarantee
-    rule: the PGLite scope filter never admits a string-prefix sibling, and mounted grants never widen the allow-list
+    rule: >-
+      the keyword pushdown never cuts candidates by the limit before scoring, so it ranks the same as scoring the whole
+      corpus locally
+    tests:
+      - packages/core/test/postgres-bm25-pushdown.test.ts::ranks identically to loading the corpus and scoring locally
+  packages/core/src/storage-postgres.ts#{ where, params }:
+    kind: guarantee
+    rule: every scope restriction is applied inside the vector query, never to the returned rows
+    tests:
+      - packages/core/test/postgres-bm25-pushdown.test.ts::searchVector applies the restriction inside the k-NN query
+  packages/core/src/storage-postgres.ts#buildFilterClause:
+    kind: guarantee
+    rule: >-
+      the Postgres scope filter passes every personal-family scope and admits a scope only exactly or on a real
+      delimiter, never a string-prefix sibling
     tests:
       - >-
-        packages/core/test/pglite-scope-pushdown.test.ts::SECURITY: grants never widen the scopes authorization
-        allow-list
+        packages/core/test/postgres-bm25-pushdown.test.ts::does no hierarchy expansion — an allow-list is exact
+        membership
       - >-
-        packages/core/test/pglite-adapter.test.ts::#402 personal-family scopes (local, user:*) pass a project recall —
-        not just global
-  packages/core/src/storage-pglite.ts#engrams:
-    kind: guarantee
-    rule: a queued remote-only save is never copied into the PGLite index
-    tests:
-      - packages/core/test/remote-only-derived-copies.test.ts::PGLite, by sync and by reindex
-  packages/core/src/storage-pglite.ts#expectedDim:
-    kind: guarantee
-    rule: an embedding of the wrong dimension is refused, never stored
-    tests:
-      - packages/core/test/embed-dim-contract.test.ts::rejects wrong shapes
-  "packages/core/src/storage-pglite.ts#{ engrams: unique, renames }":
-    kind: guarantee
-    rule: two different engrams sharing an id in an index batch are both kept, the later one under a fresh id
+        packages/core/test/scope-pushdown.test.ts::each grant appends one segment-aware containment triple to the
+        visibility clause
+      - "packages/core/test/formal-backend-scopes-case.test.ts::Postgres clause run on a real Postgres engine: "
     lean:
-      - PlurSpec/R2Persist.lean:resolve_no_loss
-      - PlurSpec/R2Persist.lean:resolve_idem
+      - PlurSpec/BackendScopes.lean:pg_agrees
+      - PlurSpec/BackendScopes.lean:like_esc_prefix
+  packages/core/src/storage-postgres.ts#clause:
+    kind: guarantee
+    rule: mounted-scope grants never widen the Postgres permitted-scope clause
     tests:
-      - >-
-        packages/core/test/pglite-duplicate-ids.test.ts::syncFromYaml keeps both copies: the first under its id, the
-        later under a fresh id (P1)
+      - packages/core/test/scope-pushdown.test.ts::grants never touch the scopes authorization clause
+      - "packages/core/test/formal-backend-scopes-case.test.ts::Postgres clause run on a real Postgres engine: "
+    lean:
+      - PlurSpec/BackendScopes.lean:pg_agrees
   packages/core/src/storage-postgres.ts#DEFAULT_POSTGRES_SCHEMA:
     kind: note
     why: explains why the default schema has its own name instead of public
-  packages/core/src/storage-postgres.ts#PostgresAdapter.DUPLICATE_OBJECT_CODES:
-    kind: note
-    why: "explains why benign duplicate-object errors are tolerated: Postgres IF NOT EXISTS is not atomic"
   packages/core/src/storage-postgres.ts#PostgresAdapter._searchBM25Full:
     kind: guarantee
     rule: >-
@@ -618,6 +673,9 @@ anchors:
     kind: guarantee
     rule: an error on an idle database connection is logged and never crashes the process
     none: no test emits an idle-client error
+  packages/core/src/storage-postgres.ts#PostgresAdapter.DUPLICATE_OBJECT_CODES:
+    kind: note
+    why: "explains why benign duplicate-object errors are tolerated: Postgres IF NOT EXISTS is not atomic"
   packages/core/src/storage-postgres.ts#PostgresAdapter.efSearchForLimit:
     kind: guarantee
     rule: the vector search depth used for a query is never below the requested limit
@@ -677,23 +735,6 @@ anchors:
     kind: guarantee
     rule: the 'exact' index mode never builds an approximate vector index
     none: the only test checks the declared strategy, not that no index gets built
-  packages/core/src/storage-postgres.ts#buildFilterClause:
-    kind: guarantee
-    rule: >-
-      the Postgres scope filter passes every personal-family scope and admits a scope only exactly or on a real
-      delimiter, never a string-prefix sibling
-    tests:
-      - >-
-        packages/core/test/postgres-bm25-pushdown.test.ts::does no hierarchy expansion — an allow-list is exact
-        membership
-      - >-
-        packages/core/test/scope-pushdown.test.ts::each grant appends one segment-aware containment triple to the
-        visibility clause
-  packages/core/src/storage-postgres.ts#clause:
-    kind: guarantee
-    rule: mounted-scope grants never widen the Postgres permitted-scope clause
-    tests:
-      - packages/core/test/scope-pushdown.test.ts::grants never touch the scopes authorization clause
   packages/core/src/storage-postgres.ts#refuseDuplicateIds:
     kind: guarantee
     rule: an update batch carrying one id twice is refused and nothing is written
@@ -711,18 +752,6 @@ anchors:
   packages/core/src/storage-postgres.ts#toRow.search_text:
     kind: note
     why: relies on the tokenizer never putting the separator inside a token; an assumption about ftsTokenize
-  packages/core/src/storage-postgres.ts#{ rows }:
-    kind: guarantee
-    rule: >-
-      the keyword pushdown never cuts candidates by the limit before scoring, so it ranks the same as scoring the whole
-      corpus locally
-    tests:
-      - packages/core/test/postgres-bm25-pushdown.test.ts::ranks identically to loading the corpus and scoring locally
-  packages/core/src/storage-postgres.ts#{ where, params }:
-    kind: guarantee
-    rule: every scope restriction is applied inside the vector query, never to the returned rows
-    tests:
-      - packages/core/test/postgres-bm25-pushdown.test.ts::searchVector applies the restriction inside the k-NN query
   packages/core/src/store-duplicates.ts#removePrimaryStoreEntries:
     kind: guarantee
     rule: >-
@@ -743,16 +772,6 @@ anchors:
       - >-
         packages/core/test/server-entry-writeback-identity.test.ts::metadata computed before another process inserted a
         server entry at index 0 lands on its own entry
-  packages/core/src/store-expand.ts#RESERVED_ENTRY_KEYS:
-    kind: guarantee
-    rule: per-scope metadata can never set the url, scope, token, readonly or other routing keys of an entry
-    tests:
-      - >-
-        packages/core/test/multi-scope-store-entry.test.ts::scope_settings cannot override the url, scope, token or
-        readonly of an expanded entry
-      - >-
-        packages/core/test/formal-store-entry.test.ts::scope_settings and top-level keys named
-        url/token/scope/readonly/path are ignored
   packages/core/src/store-expand.ts#expandServerEntry:
     kind: guarantee
     rule: a scope name that fails the safe grammar is dropped without its text reaching the log
@@ -776,6 +795,16 @@ anchors:
   packages/core/src/store-expand.ts#legacyMetadata:
     kind: note
     why: relies on the scope-settings schema never failing on a single field value; an assumption about that schema
+  packages/core/src/store-expand.ts#RESERVED_ENTRY_KEYS:
+    kind: guarantee
+    rule: per-scope metadata can never set the url, scope, token, readonly or other routing keys of an entry
+    tests:
+      - >-
+        packages/core/test/multi-scope-store-entry.test.ts::scope_settings cannot override the url, scope, token or
+        readonly of an expanded entry
+      - >-
+        packages/core/test/formal-store-entry.test.ts::scope_settings and top-level keys named
+        url/token/scope/readonly/path are ignored
   packages/core/src/store-expand.ts#serverEntryIdentities:
     kind: guarantee
     rule: an entry inserted with a different identity never receives another server entry's metadata
@@ -835,42 +864,6 @@ anchors:
       - SYN-1
       - SYN-4
       - SYN-6
-  packages/core/src/sync.ts#PACK_ALLOW_NAMES:
-    kind: guarantee
-    rule: only allowlisted pack files are ever synced, so a secret file inside a pack never reaches the sync repository
-    tests:
-      - packages/core/test/sync.test.ts::never commits a secret nested inside a pack dir (#387 review)
-    promises:
-      - SYN-2
-  packages/core/src/sync.ts#SECRET_PATHS:
-    kind: guarantee
-    rule: secret-bearing files are never tracked by sync, and one an older client committed is untracked on the next sync
-    tests:
-      - packages/core/test/sync.test.ts::untracks a config.yaml committed by a vulnerable client on the next sync
-      - >-
-        packages/core/test/sync.test.ts::untracks an agent-keystore.json committed by a vulnerable client on the next
-        sync (#392)
-    promises:
-      - SYN-2
-  packages/core/src/sync.ts#SIBLING_DUMP_OPTS:
-    kind: guarantee
-    rule: >-
-      a stripped side-record file is written byte-identically each time, so an unchanged store never produces a new
-      commit
-    tests:
-      - >-
-        packages/core/test/sync.test.ts::shared: no new commit when only a stripped sibling record changes
-        (deterministic blob, #396 property)
-  packages/core/src/sync.ts#SYNC_PATHS:
-    kind: guarantee
-    rule: >-
-      sync stages only the allowlisted store files, so config, secrets and machine-local derived files never reach the
-      sync repository whatever the gitignore says
-    tests:
-      - packages/core/test/sync.test.ts::never commits config.yaml even when it holds a Bearer token
-      - packages/core/test/sync.test.ts::does not commit machine-local derived files (engrams.db, store.pglite/)
-    promises:
-      - SYN-2
   packages/core/src/sync.ts#assertNoUnmergedStoreFiles:
     kind: guarantee
     rule: sync refuses to stage while a store file is unmerged, so conflict markers are never committed and pushed
@@ -927,6 +920,13 @@ anchors:
         link, and persists it
     promises:
       - SYN-5
+  packages/core/src/sync.ts#PACK_ALLOW_NAMES:
+    kind: guarantee
+    rule: only allowlisted pack files are ever synced, so a secret file inside a pack never reaches the sync repository
+    tests:
+      - packages/core/test/sync.test.ts::never commits a secret nested inside a pack dir (#387 review)
+    promises:
+      - SYN-2
   packages/core/src/sync.ts#packStorePaths:
     kind: guarantee
     rule: only the allowlisted pack files are staged, and staging never fails on a pattern that matches nothing
@@ -1004,6 +1004,25 @@ anchors:
       - >-
         packages/core/test/formal-r2-apply-persist-sync-collision.test.ts::both records survive under distinct ids; the
         pulled one keeps the id
+  packages/core/src/sync.ts#SECRET_PATHS:
+    kind: guarantee
+    rule: secret-bearing files are never tracked by sync, and one an older client committed is untracked on the next sync
+    tests:
+      - packages/core/test/sync.test.ts::untracks a config.yaml committed by a vulnerable client on the next sync
+      - >-
+        packages/core/test/sync.test.ts::untracks an agent-keystore.json committed by a vulnerable client on the next
+        sync (#392)
+    promises:
+      - SYN-2
+  packages/core/src/sync.ts#SIBLING_DUMP_OPTS:
+    kind: guarantee
+    rule: >-
+      a stripped side-record file is written byte-identically each time, so an unchanged store never produces a new
+      commit
+    tests:
+      - >-
+        packages/core/test/sync.test.ts::shared: no new commit when only a stripped sibling record changes
+        (deterministic blob, #396 property)
   packages/core/src/sync.ts#stageBlob:
     kind: guarantee
     rule: the commit never contains withheld content while the working tree keeps all of it
@@ -1036,6 +1055,16 @@ anchors:
       - >-
         packages/core/test/sync-two-devices-offline.test.ts::one record per pair survives and keeps the most advanced
         state
+  packages/core/src/sync.ts#SYNC_PATHS:
+    kind: guarantee
+    rule: >-
+      sync stages only the allowlisted store files, so config, secrets and machine-local derived files never reach the
+      sync repository whatever the gitignore says
+    tests:
+      - packages/core/test/sync.test.ts::never commits config.yaml even when it holds a Bearer token
+      - packages/core/test/sync.test.ts::does not commit machine-local derived files (engrams.db, store.pglite/)
+    promises:
+      - SYN-2
   packages/core/src/telemetry-counters.ts#(module):
     kind: guarantee
     rule: >-
@@ -1116,20 +1145,6 @@ anchors:
     tests:
       - packages/core/test/tension-lifecycle.test.ts::recorded pairs are excluded from future scans (no LLM call)
       - packages/core/test/tension-lifecycle.test.ts::dismissed pairs stay suppressed
-  packages/core/src/tensions.ts#TemporalGateOptions:
-    kind: guarantee
-    rule: the measured-under gate never removes a pair that crosses a trust boundary
-    lean:
-      - PlurSpec/R2CoreB.lean:gate_never_crosses
-    tests:
-      - packages/core/test/tensions-measured-under-gate.test.ts::a cross-origin pair reaches the judge in every mode
-  packages/core/src/tensions.ts#TensionScanResult:
-    kind: guarantee
-    rule: every pair the scan skips by policy is counted and named in the result
-    tests:
-      - >-
-        packages/core/test/tensions-measured-under-gate.test.ts::getCandidatePairsDetailed counts and names the skipped
-        pair
   packages/core/src/tensions.ts#engramOrigin:
     kind: guarantee
     rule: a loaded row cannot forge a primary origin or borrow a pack or store origin it was not loaded from
@@ -1174,6 +1189,25 @@ anchors:
     tests:
       - packages/core/test/tensions.test.ts::falls back to a single-pair call when a batch verdict is missing
       - packages/core/test/tensions.test.ts::falls back to single-pair calls when the whole batch call throws
+  packages/core/src/tensions.ts#TemporalGateOptions:
+    kind: guarantee
+    rule: the measured-under gate never removes a pair that crosses a trust boundary
+    lean:
+      - PlurSpec/R2CoreB.lean:gate_never_crosses
+    tests:
+      - packages/core/test/tensions-measured-under-gate.test.ts::a cross-origin pair reaches the judge in every mode
+  packages/core/src/tensions.ts#TensionScanResult:
+    kind: guarantee
+    rule: >-
+      every pair the measured-under gate skips is counted and named in the result; snapshot, expired, supersedes and
+      recorded skips are not counted
+    tests:
+      - >-
+        packages/core/test/tensions-measured-under-gate.test.ts::getCandidatePairsDetailed counts and names the skipped
+        pair
+      - >-
+        packages/core/test/formal-inject-budget-tensions.test.ts::a snapshot pair skipped by policy is dropped and not
+        counted in skipped
   packages/core/src/trust.ts#isDirectoryTrusted:
     kind: guarantee
     rule: >-
@@ -1192,10 +1226,6 @@ anchors:
     rule: trusting a directory twice records one grant
     tests:
       - packages/core/test/trust.test.ts::trustDirectory is idempotent — trusting twice does not duplicate the entry
-  packages/core/src/types.ts#InjectOptions:
-    kind: guarantee
-    rule: the keyword-only inject never contacts a remote server, whatever the remote flag says
-    none: no test checks that the keyword-only inject makes no remote call
   packages/core/src/types.ts#InjectionResult:
     kind: guarantee
     rule: >-
@@ -1205,6 +1235,10 @@ anchors:
       - >-
         packages/core/test/folder-remote-only.test.ts::inject returns no memory and says the server was not reached; it
         never falls back to the local store
+  packages/core/src/types.ts#InjectOptions:
+    kind: guarantee
+    rule: the keyword-only inject never contacts a remote server, whatever the remote flag says
+    none: no test checks that the keyword-only inject makes no remote call
   packages/core/src/types.ts#LearnAsyncResult:
     kind: guarantee
     rule: >-

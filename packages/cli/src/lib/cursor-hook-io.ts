@@ -139,9 +139,9 @@ export function stopCountPath(conversationId: string): string {
 
 /**
  * Shared counter for hook-cursor-guard.ts (block count) and
- * hook-cursor-stop.ts (stop count). A read-increment-write is not atomic
- * across the independent process each hook invocation is, so two close events
- * could both read the same count and lose an increment.
+ * hook-cursor-stop.ts (stop count). Each hook invocation is its own process;
+ * ticketCounter hands every caller a distinct value, so racing events never
+ * share a count or lose an increment.
  */
 export function incrementCounter(path: string): number {
   // The counter's directory must pass the same vetting as every other

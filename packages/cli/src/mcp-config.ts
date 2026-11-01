@@ -103,9 +103,13 @@ export function buildMcpServerEntry(opts?: { env?: Record<string, string> }): Mc
   // A pinned version's cache is immutable; upgrades happen when `plur init`
   // rewrites the config to a new pin. Same convention as the hermes/python
   // bridges' _NPX_CLI_VERSION pin.
-  // The constant is compile-time, but it reaches a /bin/sh -lc string, so
-  // anything not release-shaped is refused in favour of a harmless form.
-  const version = /^\d+\.\d+\.\d+([.-][0-9A-Za-z.]+)?$/.test(CLI_VERSION) ? CLI_VERSION : 'latest'
+  // The constant is compile-time, but it reaches a /bin/sh -lc string, so a
+  // version that is not release-shaped is refused: it can be neither pinned
+  // safely nor replaced by @latest.
+  const version = /^\d+\.\d+\.\d+([.-][0-9A-Za-z.]+)?$/.test(CLI_VERSION) ? CLI_VERSION : null
+  if (version === null) {
+    throw new Error(`plur: cannot pin the npx MCP entry to CLI version ${JSON.stringify(CLI_VERSION)} (not a release version)`)
+  }
   const spec = `@plur-ai/mcp@${version}`
   if (platform() === 'win32') {
     return {

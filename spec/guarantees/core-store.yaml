@@ -14,16 +14,19 @@ anchors:
     kind: guarantee
     rule: The lock file is never visible without its owner token, and callers in one process get the lock in arrival order.
     tests:
-    - packages/core/test/async-lock-empty-takeover.test.ts::core never exposes an empty lock while acquiring
-    - packages/core/test/async-lock-contention.test.ts::grants the lock in FIFO order
+      - packages/core/test/async-lock-empty-takeover.test.ts::core never exposes an empty lock while acquiring
+      - packages/core/test/async-lock-contention.test.ts::grants the lock in FIFO order
   packages/core/src/store/async-lock.ts#abandonedByAge:
     kind: guarantee
-    rule: A lock whose holder is known to be alive is never stolen, a known-dead holder is stolen at once, and only an empty
+    rule: >-
+      A lock whose holder is known to be alive is never stolen, a known-dead holder is stolen at once, and only an empty
       lock is taken after the short grace period.
     tests:
-    - packages/core/test/async-lock-empty-takeover.test.ts::an old lock with a LIVE owner token is never taken early
-    - packages/core/test/async-lock-empty-takeover.test.ts::a non-empty lock we cannot probe keeps the full stale threshold
-    - packages/core/test/async-lock.test.ts::steals immediately from a holder whose process is gone
+      - packages/core/test/async-lock-empty-takeover.test.ts::an old lock with a LIVE owner token is never taken early
+      - >-
+        packages/core/test/async-lock-empty-takeover.test.ts::a non-empty lock we cannot probe keeps the full stale
+        threshold
+      - packages/core/test/async-lock.test.ts::steals immediately from a holder whose process is gone
   packages/core/src/store/async-lock.ts#acquireTimeout:
     kind: guarantee
     rule: Raising the stale threshold never makes waiters give up before a stale lock could be stolen.
@@ -35,14 +38,17 @@ anchors:
     kind: guarantee
     rule: A steal-guard slot whose writer is alive, or that was just created and not yet written, is never judged dead.
     tests:
-    - packages/core/test/formal-r2-persist-guard.test.ts::a guard slot held by a live stealer is never removed or bypassed
-      (sync twin)
+      - >-
+        packages/core/test/formal-r2-persist-guard.test.ts::a guard slot held by a live stealer is never removed or
+        bypassed (sync twin)
   packages/core/src/store/async-lock.ts#publishLockFile:
     kind: guarantee
     rule: A lock file never exists without its owner token; a killed process leaves at most an inert private file.
     tests:
-    - packages/core/test/async-lock-empty-takeover.test.ts::core never exposes an empty lock while acquiring
-    - 'packages/core/test/async-lock-no-hardlink.test.ts::async: holds the lock with the token written, then releases it'
+      - packages/core/test/async-lock-empty-takeover.test.ts::core never exposes an empty lock while acquiring
+      - >-
+        packages/core/test/async-lock-no-hardlink.test.ts::async: holds the lock with the token written, then releases
+        it
   packages/core/src/store/async-lock.ts#startHeartbeat:
     kind: guarantee
     rule: The lock heartbeat never keeps the process alive.
@@ -51,173 +57,246 @@ anchors:
     kind: guarantee
     rule: A steal-guard slot is only removed by the process that wrote it while its judged lock is still in place.
     lean:
-    - PlurSpec/R2Persist.lean:ladder_mutex
-    - PlurSpec/R2Persist.lean:ladder_guard_excl
+      - PlurSpec/R2Persist.lean:ladder_mutex
+      - PlurSpec/R2Persist.lean:ladder_guard_excl
     tests:
-    - packages/core/test/formal-r2-persist-guard.test.ts::a guard slot held by a live stealer is never removed or bypassed
-      (sync twin)
+      - >-
+        packages/core/test/formal-r2-persist-guard.test.ts::a guard slot held by a live stealer is never removed or
+        bypassed (sync twin)
   packages/core/src/store/async-lock.ts#stealLock:
     kind: guarantee
-    rule: Only one contender can remove an abandoned lock, it only deletes a file it has already moved away, and its claim
+    rule: >-
+      Only one contender can remove an abandoned lock, it only deletes a file it has already moved away, and its claim
       file is never left behind.
     lean:
-    - PlurSpec/R2Persist.lean:ladder_mutex
+      - PlurSpec/R2Persist.lean:ladder_mutex
     tests:
-    - packages/core/test/async-lock-empty-takeover.test.ts::concurrent acquirers in separate processes racing to take over
-      abandoned empty locks never hold it together
+      - >-
+        packages/core/test/async-lock-empty-takeover.test.ts::concurrent acquirers in separate processes racing to take
+        over abandoned empty locks never hold it together
   packages/core/src/store/async-lock.ts#takeOver:
     kind: guarantee
-    rule: Two processes can never both take over the same abandoned lock, and a holder that refreshed its lock after being
+    rule: >-
+      Two processes can never both take over the same abandoned lock, and a holder that refreshed its lock after being
       judged is not stolen from.
     lean:
-    - PlurSpec/R2Persist.lean:ladder_mutex
-    - PlurSpec/R2Persist.lean:ladder_guard_excl
+      - PlurSpec/R2Persist.lean:ladder_mutex
+      - PlurSpec/R2Persist.lean:ladder_guard_excl
     tests:
-    - packages/core/test/formal-r2-persist-guard.test.ts::two live stealers never share the guard, so at most one holder is
-      in the critical section
-    - 'packages/core/test/async-lock-takeover-recheck.test.ts::async: a holder that refreshed its lock after being judged
-      is not stolen from'
+      - >-
+        packages/core/test/formal-r2-persist-guard.test.ts::two live stealers never share the guard, so at most one
+        holder is in the critical section
+      - >-
+        packages/core/test/async-lock-takeover-recheck.test.ts::async: a holder that refreshed its lock after being
+        judged is not stolen from
   packages/core/src/store/async-lock.ts#touchIfOurs:
     kind: guarantee
     rule: The heartbeat touches the lock only while it still carries our token, and never throws.
     tests:
-    - packages/core/test/formal-apply-budget-lock.test.ts::never touches a lock it does not hold (token checked)
+      - packages/core/test/formal-apply-budget-lock.test.ts::never touches a lock it does not hold (token checked)
   packages/core/src/store/async-lock.ts#warnIfThresholdTooShort:
     kind: guarantee
     rule: A stale threshold too short for the heartbeat bound is warned about once per value and never refused.
     tests:
-    - packages/core/test/formal-r2-persist-followups.test.ts::warns once for a threshold the git-blocked heartbeat cannot
-      keep fresh
-    - packages/core/test/formal-r2-persist-followups.test.ts::does not warn for the default or for a threshold that clears
-      the bound
+      - >-
+        packages/core/test/formal-r2-persist-followups.test.ts::warns once for a threshold the git-blocked heartbeat
+        cannot keep fresh
+      - >-
+        packages/core/test/formal-r2-persist-followups.test.ts::does not warn for the default or for a threshold that
+        clears the bound
   packages/core/src/store/memory-primary-store.ts#MemoryPrimaryStore.updateMany:
     kind: guarantee
-    rule: 'A row handed to updateMany is never dropped: a missing id is re-inserted and no other row is deleted.'
+    rule: "A row handed to updateMany is never dropped: a missing id is re-inserted and no other row is deleted."
     tests:
-    - packages/core/test/primary-store.test.ts::updateMany UPSERTS a missing id
-    - packages/core/test/primary-store.test.ts::updateMany replaces exactly the matching rows and deletes nothing
+      - packages/core/test/primary-store.test.ts::updateMany UPSERTS a missing id
+      - packages/core/test/primary-store.test.ts::updateMany replaces exactly the matching rows and deletes nothing
   packages/core/src/store/primary-store.ts#PrimaryStore:
     kind: guarantee
-    rule: A primary store that declares neither a failing load nor targeted writes is refused when attached, and an authoritative
-      load always reads the backing medium.
+    rule: >-
+      A primary store that declares neither a failing load nor targeted writes is refused when attached, and an
+      authoritative load always reads the backing medium.
     tests:
-    - packages/core/test/primary-store.test.ts::load() bypasses the cache entirely
+      - packages/core/test/primary-store.test.ts::load() bypasses the cache entirely
   packages/core/src/store/primary-store.ts#SaveOptions:
     kind: guarantee
     rule: A save that would unexpectedly shrink the corpus is refused unless the caller is a deliberate remover.
     lean:
-    - PlurSpec/R2Persist.lean:fixed_fail_closed
+      - PlurSpec/R2Persist.lean:fixed_fail_closed
     tests:
-    - packages/core/test/store-corruption-guard.test.ts::still refuses a 50% shrink on a store large enough to take the fast
-      path
-    - packages/core/test/store-corruption-guard.test.ts::allows a deliberate shrink when the caller declares it
+      - >-
+        packages/core/test/store-corruption-guard.test.ts::still refuses a 50% shrink on a store large enough to take
+        the fast path
+      - packages/core/test/store-corruption-guard.test.ts::allows a deliberate shrink when the caller declares it
     promises:
-    - DUR-4
+      - DUR-4
   packages/core/src/store/readonly-store-guard.ts#(module):
     kind: guarantee
-    rule: 'A read-only command can never write through the store: every write rejects with one typed error.'
+    rule: "A read-only command can never write through the store: every write rejects with one typed error."
     tests:
-    - packages/core/test/readonly-query-adapter.test.ts::still refuses every write
-    - packages/core/test/readonly-query-adapter.test.ts::does not invent a query surface for a store that has none
+      - packages/core/test/readonly-query-adapter.test.ts::still refuses every write
+      - packages/core/test/readonly-query-adapter.test.ts::does not invent a query surface for a store that has none
   packages/core/src/store/readonly-store-guard.ts#ReadonlyStoreGuard.nextEngramId:
     kind: guarantee
     rule: A read-only store never allocates an engram id.
     tests:
-    - packages/core/test/readonly-query-adapter.test.ts::still refuses every write
+      - packages/core/test/readonly-query-adapter.test.ts::still refuses every write
   packages/core/src/store/remote-only-store-guard.ts#(module):
     kind: guarantee
     rule: While bound to a remote-only folder, no store read or write reaches a personal row.
     tests:
-    - packages/core/test/folder-remote-only-guard.test.ts::getById / getByIds do not return a personal row
-    - packages/core/test/folder-remote-only-guard.test.ts::forget, setPinned, feedback and updateEngram refuse a personal
-      row and leave it unchanged
+      - packages/core/test/folder-remote-only-guard.test.ts::getById / getByIds do not return a personal row
+      - >-
+        packages/core/test/folder-remote-only-guard.test.ts::forget, setPinned, feedback and updateEngram refuse a
+        personal row and leave it unchanged
+      - >-
+        packages/core/test/formal-backend-scopes-guard.test.ts::a whole-corpus save keeps every hidden row in place and
+        refuses to touch one
+    lean:
+      - PlurSpec/BackendScopes.lean:save_keeps_hidden
+      - PlurSpec/BackendScopes.lean:update_keeps_hidden
+      - PlurSpec/BackendScopes.lean:append_safe
+      - PlurSpec/BackendScopes.lean:read_only_visible
   packages/core/src/store/remote-only-store-guard.ts#heldState:
     kind: guarantee
     rule: The remembered hold state never shares objects with rows handed to callers.
-    none: no test mutates a returned row to check the hold copy
+    tests:
+      - >-
+        packages/core/test/formal-backend-scopes-guard.test.ts::the remembered hold state does not share objects with a
+        returned row
   packages/core/src/store/remote-only-store-guard.ts#QueueHoldStore._queued:
     kind: guarantee
     rule: A row read without the remote-only queue marker cannot gain one except through the hold check.
-    none: no test writes a marker onto a row read without one
+    tests:
+      - >-
+        packages/core/test/formal-backend-scopes-guard.test.ts::a row read without the queue marker cannot gain a
+        malformed one
   packages/core/src/store/remote-only-store-guard.ts#QueueHoldStore.loadByIds:
     kind: guarantee
     rule: Every non-write capability of the inner store is forwarded, so one added later is never silently dropped.
-    none: no test enumerates the forwarded surface of the queue hold
+    tests:
+      - >-
+        packages/core/test/formal-backend-scopes-guard.test.ts::forwards every non-write member of the inner store,
+        bound to it, and wraps the three writes
   packages/core/src/store/remote-only-store-guard.ts#queueHoldViolation:
     kind: guarantee
-    rule: A queued remote-only save can only be written back with the same scope, active status and marker; deleting it is
+    rule: >-
+      A queued remote-only save can only be written back with the same scope, active status and marker; deleting it is
       always allowed.
     tests:
-    - 'packages/core/test/remote-only-derived-copies.test.ts::a half-stripped marker still holds the save: no demotion, and
-      the hold refuses it'
-    - packages/core/test/folder-remote-only-guard.test.ts::a queued remote-only save cannot be rescoped or updated to a local
-      scope, bound or not
+      - >-
+        packages/core/test/remote-only-derived-copies.test.ts::a half-stripped marker still holds the save: no demotion,
+        and the hold refuses it
+      - >-
+        packages/core/test/folder-remote-only-guard.test.ts::a queued remote-only save cannot be rescoped or updated to
+        a local scope, bound or not
   packages/core/src/store/remote-only-store-guard.ts#RemoteOnlyStoreGuard.afterCommit:
     kind: guarantee
     rule: Background work registered through the guard runs after the inner store commits, never before.
     tests:
-    - packages/core/test/folder-remote-only-gate1663.test.ts::a commit callback reaches the wrapped transactional store
+      - >-
+        packages/core/test/folder-remote-only-gate1663.test.ts::a commit callback reaches the wrapped transactional
+        store
   packages/core/src/store/remote-only-store-guard.ts#RemoteOnlyStoreGuard.allIds:
     kind: guarantee
     rule: Listing ids for id minting returns ids only, never content.
-    none: no test checks what allIds returns
+    tests:
+      - >-
+        packages/core/test/formal-backend-scopes-guard.test.ts::allIds lists every id, hidden rows included, and nothing
+        else
   packages/core/src/store/remote-store.ts#body:
     kind: guarantee
     rule: A /me answer whose body is not an object is read as an older server that sent nothing, never a crash.
-    none: no test sends a non-object /me body
+    tests:
+      - >-
+        packages/core/test/formal-remote-health-store.test.ts::a 200 whose body is JSON null reads as an older server
+        with no fields
+      - packages/core/test/remote-me-contract.test.ts
   packages/core/src/store/remote-store.ts#CAPABILITY_CACHE:
     kind: guarantee
     rule: Capability checks call /me at most once per server and token, never once per rating.
     tests:
-    - packages/core/test/feedback-source-remote.test.ts::looks the capability up once per process, not once per rating
-    - packages/core/test/feedback-source-remote.test.ts::a capability learned from an earlier /me (session start) costs no
-      further call
+      - packages/core/test/feedback-source-remote.test.ts::looks the capability up once per process, not once per rating
+      - >-
+        packages/core/test/feedback-source-remote.test.ts::a capability learned from an earlier /me (session start)
+        costs no further call
   packages/core/src/store/remote-store.ts#ctrl:
     kind: guarantee
     rule: Writes, /me and explicit retries always reach the network, even while the host is marked down.
     tests:
-    - packages/core/test/remote-host-breaker.test.ts::fetchBounded PROBES during an open cooldown instead of fast-failing
+      - >-
+        packages/core/test/remote-host-breaker.test.ts::fetchBounded PROBES during an open cooldown instead of
+        fast-failing
   packages/core/src/store/remote-store.ts#dropped:
     kind: guarantee
     rule: Values dropped from a /me answer are reported by field and reason, never by value.
-    none: no test checks the dropped-field report for leaked values
+    tests:
+      - >-
+        packages/core/test/remote-me-contract.test.ts::a dropped C1 value is logged by field and reason only, never by
+        its value
   packages/core/src/store/remote-store.ts#HOST_DOWN_COOLDOWN_MS:
     kind: guarantee
     rule: Only network failures trip the host breaker, never HTTP answers, and writes never fast-fail on it.
     tests:
-    - packages/core/test/remote-host-breaker.test.ts::fetchBounded PROBES during an open cooldown instead of fast-failing
+      - >-
+        packages/core/test/remote-host-breaker.test.ts::fetchBounded PROBES during an open cooldown instead of
+        fast-failing
+      - >-
+        packages/core/test/formal-remote-health-store.test.ts::an HTTP error or a malformed body from a live host never
+        marks it, and clears an earlier mark
+    lean:
+      - PlurSpec/RemoteHealth.lean:marked_iff_last_net
+      - PlurSpec/RemoteHealth.lean:answered_clears
+      - PlurSpec/RemoteHealth.lean:other_origin_untouched
+      - PlurSpec/RemoteHealth.lean:dead_host_dials_once
   packages/core/src/store/remote-store.ts#LOAD_FETCH_TIMEOUT_MS:
     kind: guarantee
     rule: A page fetch that never receives headers is cut after a fixed timeout.
-    none: no test stalls a page fetch past the load timeout
+    tests:
+      - >-
+        packages/core/test/formal-remote-health-store.test.ts::a page fetch that never receives headers is cut after
+        LOAD_FETCH_TIMEOUT_MS
+      - >-
+        packages/core/test/formal-remote-health-store.test.ts::a bounded request that never answers throws
+        RemoteTimeoutError after LOAD_FETCH_TIMEOUT_MS
   packages/core/src/store/remote-store.ts#NEVER_STRIP:
     kind: guarantee
     rule: Salvaging a drifted remote row never strips visibility or pinned; such a row is dropped instead.
     tests:
-    - packages/core/test/remote-host-breaker.test.ts::fails CLOSED on privacy/privilege fields
+      - packages/core/test/remote-host-breaker.test.ts::fails CLOSED on privacy/privilege fields
   packages/core/src/store/remote-store.ts#normalizeEndpointUrl:
     kind: guarantee
-    rule: Spellings of one server compare as the same endpoint, userinfo is never part of its identity, and the configured
+    rule: >-
+      Spellings of one server compare as the same endpoint, userinfo is never part of its identity, and the configured
       value is never rewritten.
     tests:
-    - packages/core/test/codex3-endpoint-identity.test.ts::userinfo is never part of the identity
-    - packages/core/test/codex3-endpoint-identity.test.ts::a key given for an equivalent spelling rotates the server entry
-      and keeps the url as written
+      - packages/core/test/codex3-endpoint-identity.test.ts::userinfo is never part of the identity
+      - >-
+        packages/core/test/codex3-endpoint-identity.test.ts::a key given for an equivalent spelling rotates the server
+        entry and keeps the url as written
   packages/core/src/store/remote-store.ts#paginationComplete:
     kind: guarantee
     rule: An interrupted pagination never replaces a previous good cache with a partial one.
     tests:
-    - packages/core/test/remote-store-cache.test.ts::page 1 OK + page 2 AbortError
-    - packages/core/test/remote-store-cache.test.ts::5xx on page 2 does not overwrite prior good cache
+      - packages/core/test/remote-store-cache.test.ts::page 1 OK + page 2 AbortError
+      - packages/core/test/remote-store-cache.test.ts::5xx on page 2 does not overwrite prior good cache
   packages/core/src/store/remote-store.ts#r.headers:
     kind: guarantee
     rule: The idempotency key is never derived from the engram id, and no key means no header.
     tests:
-    - packages/core/test/outbox-flush-budget.test.ts::sends an idempotency key that is NOT the local engram id
+      - packages/core/test/outbox-flush-budget.test.ts::sends an idempotency key that is NOT the local engram id
   packages/core/src/store/remote-store.ts#RemoteAbortedError:
     kind: guarantee
     rule: A request cut by the caller's own deadline never marks the host down or feeds the breaker.
-    none: no test aborts a request by the caller budget and checks the host state
+    lean:
+      - PlurSpec/RemoteHealth.lean:caller_abort_never_marks
+      - PlurSpec/RemoteHealth.lean:marked_iff_last_net
+    tests:
+      - >-
+        packages/core/test/formal-remote-health-store.test.ts::a request cut by the caller's own deadline throws
+        RemoteAbortedError and does not mark the host
+      - >-
+        packages/core/test/formal-remote-health-store.test.ts::a caller signal already aborted before the request does
+        not mark the host
   packages/core/src/store/remote-store.ts#RemoteStore:
     kind: note
     why: Explains that request URLs reuse the identity fold, so the two cannot differ by construction.
@@ -225,54 +304,64 @@ anchors:
     kind: guarantee
     rule: No request is sent without the token a token_env names.
     tests:
-    - packages/core/test/config-token-env-1561.test.ts::a team save sends nothing and queues with a reason that names the
-      variable
-    - packages/core/test/config-token-env-1561.test.ts::the remote health check sends no /me and names the variable
+      - >-
+        packages/core/test/config-token-env-1561.test.ts::a team save sends nothing and queues with a reason that names
+        the variable
+      - packages/core/test/config-token-env-1561.test.ts::the remote health check sends no /me and names the variable
   packages/core/src/store/remote-store.ts#RemoteStore.existsById:
     kind: guarantee
-    rule: Only an authoritative 404 reads as absent; any failure throws, and the probe is bounded so it cannot outlast the
+    rule: >-
+      Only an authoritative 404 reads as absent; any failure throws, and the probe is bounded so it cannot outlast the
       store lock.
     tests:
-    - packages/core/test/remote-exists-by-id.test.ts::returns false ONLY on an authoritative 404
-    - packages/core/test/remote-exists-by-id.test.ts::THROWS on a transport failure rather than reporting absence
-    - packages/core/test/remote-exists-by-id.test.ts::is BOUNDED
+      - packages/core/test/remote-exists-by-id.test.ts::returns false ONLY on an authoritative 404
+      - packages/core/test/remote-exists-by-id.test.ts::THROWS on a transport failure rather than reporting absence
+      - packages/core/test/remote-exists-by-id.test.ts::is BOUNDED
   packages/core/src/store/remote-store.ts#RemoteStore.patch:
     kind: note
-    why: 'States an assumption about the server: it applies a PATCH atomically.'
+    why: "States an assumption about the server: it applies a PATCH atomically."
   packages/core/src/store/remote-store.ts#scopes_malformed:
     kind: guarantee
-    rule: A missing, non-list or partly rejected scope list never reads as an authoritative empty list that clears the cache.
+    rule: >-
+      A missing, non-list or partly rejected scope list never reads as an authoritative empty list that clears the
+      cache.
     lean:
-    - PlurSpec/RoutingDiscovery.lean:malformed_keeps_cache
-    - PlurSpec/RoutingDiscovery.lean:nonempty_cache_replaced_only_by_ok
+      - PlurSpec/RoutingDiscovery.lean:malformed_keeps_cache
+      - PlurSpec/RoutingDiscovery.lean:nonempty_cache_replaced_only_by_ok
   packages/core/src/store/remote-store.ts#TokenEnvUnsetError:
     kind: guarantee
-    rule: With its token variable unset, no request reaches the server, and the message never suggests writing the token into
-      config.
+    rule: >-
+      With its token variable unset, no request reaches the server, and the message never suggests writing the token
+      into config.
     tests:
-    - packages/core/test/config-token-env-1561.test.ts::a team save sends nothing and queues with a reason that names the
-      variable
+      - >-
+        packages/core/test/config-token-env-1561.test.ts::a team save sends nothing and queues with a reason that names
+        the variable
   packages/core/src/store/remote-store.ts#valid_from:
     kind: note
-    why: 'A fact about data shape: production engrams never carry the flat fields this fallback reads.'
+    why: "A fact about data shape: production engrams never carry the flat fields this fallback reads."
   packages/core/src/store/remote-store.ts#why:
     kind: guarantee
     rule: Malformed /me scope metadata is logged by path and code only, never with server-supplied values.
-    none: no test checks the log line for server values
+    tests:
+      - >-
+        packages/core/test/formal-remote-health-store.test.ts::malformed scope metadata is logged by path and code only,
+        never with server values
   packages/core/src/store/remote-store.ts#withoutLoaderMarkers:
     kind: guarantee
     rule: A remote row can never carry loader markers such as _pack; they are stripped when it is loaded.
     lean:
-    - PlurSpec/R2CoreB.lean:remote_origin_is_store
-    - PlurSpec/R2CoreB.lean:remote_origin_never_pack
+      - PlurSpec/R2CoreB.lean:remote_origin_is_store
+      - PlurSpec/R2CoreB.lean:remote_origin_never_pack
     tests:
-    - packages/core/test/formal-r2-coreb-ingestion.test.ts::RemoteStore.load (the load leg) strips a server-supplied `_pack`
-      nested in row.data
+      - >-
+        packages/core/test/formal-r2-coreb-ingestion.test.ts::RemoteStore.load (the load leg) strips a server-supplied
+        `_pack` nested in row.data
   packages/core/src/store/yaml-primary-store.ts#(module):
     kind: guarantee
     rule: Every write invalidates the read cache, so a just-saved engram is always visible.
     tests:
-    - packages/core/test/primary-store.test.ts::loadCached() reflects a save made through the same store
+      - packages/core/test/primary-store.test.ts::loadCached() reflects a save made through the same store
   packages/core/src/store/yaml-primary-store.ts#AVG_YAML_BYTES_PER_ENGRAM:
     kind: note
     why: Explains why a rough size estimate is good enough for backend selection.
@@ -280,6 +369,6 @@ anchors:
     kind: guarantee
     rule: Loading an unreadable store file throws instead of returning an empty corpus.
     tests:
-    - packages/core/test/primary-store.test.ts::THROWS for an unparseable file rather than reporting it as empty
+      - packages/core/test/primary-store.test.ts::THROWS for an unparseable file rather than reporting it as empty
     promises:
-    - DUR-3
+      - DUR-3

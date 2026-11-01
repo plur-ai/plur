@@ -616,6 +616,16 @@ function persistHostChanges(
   withRemoteHealthLock(statePath, readApplyWrite, readApplyWrite)
 }
 
+/**
+ * Is the host-wide cooldown an older file's 429 rather than the network breaker?
+ * The breaker always records `cooldown_opened_at`; an older file's 429 never did.
+ * `last_state` alone cannot tell them apart: another token's 429 answered after
+ * the breaker opened also leaves `rate_limited` there.
+ */
+function isLegacyRateLimitCooldown(h: HostHealth): boolean {
+  return h.last_state === 'rate_limited' && h.cooldown_opened_at === undefined
+}
+
 /** When the current breaker cooldown opened. */
 function cooldownOpenedAt(h: HostHealth): number {
   return h.cooldown_opened_at ?? ((h.cooldown_until ?? 0) - BREAKER_COOLDOWN_MS)
@@ -636,7 +646,7 @@ function claimHalfOpenTrial(
     const ch: HostHealth = cur.hosts[key] ?? {}
     if (!((ch.cooldown_until ?? 0) > now)) return { result: 'free', current: { ...ch } }
     // A legacy host-wide 429 is honoured to its end (see remoteRecall).
-    if (ch.last_state === 'rate_limited') return { result: 'denied' }
+    if (isLegacyRateLimitCooldown(ch)) return { result: 'denied' }
     const openedAt = cooldownOpenedAt(ch)
     if (now - openedAt < BREAKER_HALF_OPEN_AFTER_MS) return { result: 'denied' }
     if ((ch.half_open_trial_at ?? -Infinity) >= openedAt) return { result: 'denied' }
@@ -668,11 +678,11 @@ export function isHostInCooldown(
     const h = health.hosts[normalizeEndpointUrl(url)]
     if (h?.cooldown_until && h.cooldown_until > now) {
       // Host-wide `cooldown_until` is the network breaker; only an older file
-      // carries a 429 here, which `last_state` still labels. The skip decision is the same either way.
+      // carries a 429 here (see isLegacyRateLimitCooldown). The skip decision is the same either way.
       return {
         inCooldown: true,
         until: h.cooldown_until,
-        reason: h.last_state === 'rate_limited' ? 'rate_limit' : 'breaker',
+        reason: isLegacyRateLimitCooldown(h) ? 'rate_limit' : 'breaker',
       }
     }
     const th = token !== undefined ? h?.tokens?.[tokenHealthKey(token)] : undefined
@@ -716,7 +726,7 @@ export function recordWriteOutcome(
         // (timeout / unreachable). A host-wide 429 cooldown is the server's
         // own instruction to back off, not a reachability guess: a save does
         // not end it.
-        const rateLimited = h.last_state === 'rate_limited' && (h.cooldown_until ?? 0) > now
+        const rateLimited = isLegacyRateLimitCooldown(h) && (h.cooldown_until ?? 0) > now
         if (!rateLimited) {
           delete h.cooldown_until
           delete h.cooldown_opened_at
@@ -1023,8 +1033,9 @@ export async function remoteRecall(
       delete h.half_open_trial_at
       h.failures = 0
     }
-    /** The host answered: a trial read that got any HTTP answer closes the
-     *  breaker — the breaker is about reachability, and the host is reachable. */
+    /** The host answered below 500: a trial read closes the breaker, since the
+     *  breaker is about reachability. A status that still counts as a failure
+     *  (an unclassified 4xx) re-opens it below, as any failed trial does. */
     const closeBreakerIfTrial = () => {
       if (!trial) return
       h.cooldown_until = 0
@@ -1046,7 +1057,7 @@ export async function remoteRecall(
     if ((h.cooldown_until ?? 0) > t0) {
       // A legacy host-wide 429 cooldown is honoured to the end — Retry-After
       // is the server's own instruction, not a reachability guess.
-      if (h.last_state === 'rate_limited') return finish('skipped_cooldown')
+      if (isLegacyRateLimitCooldown(h)) return finish('skipped_cooldown')
       // A trial that could not be dialed anyway would burn the cooldown's one
       // trial on nothing.
       if ((h.unsupported_until ?? 0) > t0) return finish('skipped_cooldown')
@@ -1118,7 +1129,8 @@ export async function remoteRecall(
       // The host answered: a run of client_slow results is over.
       h.client_slow_streak = 0
       force(key, 'client_slow_streak')
-      // Any answer below 500 proves the host reachable (a 5xx is counted below).
+      // Any answer below 500 proves the host reachable; a 5xx, and a 4xx other
+      // than 401/403/404/422/429, still count as failures below.
       if (res.status < 500) closeBreakerIfTrial()
 
       if (res.status === 401) {

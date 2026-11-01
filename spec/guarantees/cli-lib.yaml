@@ -1,262 +1,437 @@
 anchors:
   packages/cli/src/lib/agy-hook-io.ts#AgyTurnCache:
     kind: guarantee
-    rule: "An Antigravity turn cached under another folder mode is never replayed in a remote-only folder."
-    tests: ["packages/cli/test/folder-remote-only.test.ts::agy: a turn cache written before the folder became remote-only is not replayed"]
+    rule: An Antigravity turn cached under another folder mode is never replayed in a remote-only folder.
+    tests:
+      - >-
+        packages/cli/test/folder-remote-only.test.ts::agy: a turn cache written before the folder became remote-only is
+        not replayed
   packages/cli/src/lib/agy-hook-io.ts#AgyUserInput:
     kind: guarantee
-    rule: "A later user message in the Antigravity transcript is always treated as a new turn, even with the same text and no step index."
-    lean: ["PlurSpec/R2CLI.lean:fixed_later_line_is_new"]
-    tests: ["packages/cli/test/hook-agy-pre-invocation.test.ts::a new user message is a new turn — new recall, new cache"]
+    rule: >-
+      A later user message in the Antigravity transcript is always treated as a new turn, even with the same text and no
+      step index.
+    lean:
+      - PlurSpec/R2CLI.lean:fixed_later_line_is_new
+    tests:
+      - packages/cli/test/hook-agy-pre-invocation.test.ts::a new user message is a new turn — new recall, new cache
   packages/cli/src/lib/agy-hook-io.ts#lastUserInput:
     kind: guarantee
-    rule: "An unreadable or unparseable Antigravity transcript yields no prompt, never an error."
-    tests: ["packages/cli/test/antigravity-hooks.test.ts::returns null for a missing file — the caller degrades, never throws", "packages/cli/test/antigravity-hooks.test.ts::survives a torn final line"]
+    rule: An unreadable or unparseable Antigravity transcript yields no prompt, never an error.
+    tests:
+      - packages/cli/test/antigravity-hooks.test.ts::returns null for a missing file — the caller degrades, never throws
+      - packages/cli/test/antigravity-hooks.test.ts::survives a torn final line
   packages/cli/src/lib/agy-hook-io.ts#TRANSCRIPT_READ_CAP:
     kind: guarantee
-    rule: "The Antigravity hook never reads more than a fixed trailing window of the transcript."
-    none: "no test checks the read cap on a large transcript"
+    rule: The Antigravity hook never reads more than a fixed trailing window of the transcript.
+    none: no test checks the read cap on a large transcript
   packages/cli/src/lib/auto-rate.ts#(module):
     kind: guarantee
-    rule: "Each injected engram gets at most one automatic verdict per session, inject hooks record ids only (never text), and the end-of-turn hook does no store work."
-    tests: ["packages/cli/test/hook-auto-rate.test.ts::rates each injected engram at most once per session", "packages/cli/test/hook-auto-rate-remote.test.ts::a worker killed while a verdict is in flight never applies it twice (write-ahead)"]
+    rule: >-
+      Each injected engram gets at most one automatic verdict per session, inject hooks record ids only (never text),
+      and the end-of-turn hook does no store work.
+    tests:
+      - packages/cli/test/hook-auto-rate.test.ts::rates each injected engram at most once per session
+      - >-
+        packages/cli/test/hook-auto-rate-remote.test.ts::a worker killed while a verdict is in flight never applies it
+        twice (write-ahead)
   packages/cli/src/lib/auto-rate.ts#agyReplySinceLastUser:
     kind: guarantee
-    rule: "Reading the Antigravity reply from the transcript never raises an error: any read or parse failure counts as no reply."
-    none: "no test feeds an unreadable transcript to the reply reader"
+    rule: >-
+      Reading the Antigravity reply from the transcript never raises an error: any read or parse failure counts as no
+      reply.
+    none: no test feeds an unreadable transcript to the reply reader
   packages/cli/src/lib/auto-rate.ts#appendIds:
     kind: guarantee
-    rule: "Recording injected or rated ids never breaks the hook; if it cannot be written the turn is just not rated."
-    tests: ["packages/cli/test/hook-auto-rate-h2.test.ts::a verdict whose write-ahead record failed is skipped, on this turn and every later one"]
+    rule: Recording injected or rated ids never breaks the hook; if it cannot be written the turn is just not rated.
+    tests:
+      - >-
+        packages/cli/test/hook-auto-rate-h2.test.ts::a verdict whose write-ahead record failed is skipped, on this turn
+        and every later one
   packages/cli/src/lib/auto-rate.ts#AUTO_RATE_MAX_TURNS:
     kind: note
-    why: "Explains why the number of turns an engram is checked against is capped."
+    why: Explains why the number of turns an engram is checked against is capped.
   packages/cli/src/lib/auto-rate.ts#autoRateTurn:
     kind: guarantee
-    rule: "Auto-rating never throws, never applies a verdict twice even if killed mid-way, and a capture uses no scope other than the one decided for the workspace."
-    tests: ["packages/cli/test/hook-auto-rate-remote.test.ts::a worker killed while a verdict is in flight never applies it twice (write-ahead)", "packages/cli/test/hook-cursor-workspace-roots.test.ts::M1: auto-capture, roots alpha + beta → stored with no scope"]
+    rule: >-
+      Auto-rating never throws, never applies a verdict twice even if killed mid-way, and a capture uses no scope other
+      than the one decided for the workspace.
+    tests:
+      - >-
+        packages/cli/test/hook-auto-rate-remote.test.ts::a worker killed while a verdict is in flight never applies it
+        twice (write-ahead)
+      - >-
+        packages/cli/test/hook-cursor-workspace-roots.test.ts::M1: auto-capture, roots alpha + beta → stored with no
+        scope
   packages/cli/src/lib/auto-rate.ts#captureDeadline:
     kind: guarantee
-    rule: "Batches left behind by a killed worker are processed only by the worker holding the lock."
-    none: "no test checks that orphaned batches are read only under the lock"
+    rule: Batches left behind by a killed worker are processed only by the worker holding the lock.
+    none: no test checks that orphaned batches are read only under the lock
   packages/cli/src/lib/auto-rate.ts#configPath:
     kind: guarantee
-    rule: "Captured reply text goes to a shared scope only when the user set that scope (folder map or trusted .plur.yaml); otherwise it stays local, and an off folder captures nothing."
-    tests: ["packages/cli/test/hook-auto-rate-remote.test.ts::an untrusted .plur.yaml cannot send captured reply text to a team store", "packages/cli/test/hook-cursor-workspace-roots.test.ts::afterAgentResponse (auto-rate/capture): workspace off, plugin folder on → nothing captured"]
+    rule: >-
+      Captured reply text goes to a shared scope only when the user set that scope (folder map or trusted .plur.yaml);
+      otherwise it stays local, and an off folder captures nothing.
+    tests:
+      - >-
+        packages/cli/test/hook-auto-rate-remote.test.ts::an untrusted .plur.yaml cannot send captured reply text to a
+        team store
+      - >-
+        packages/cli/test/hook-cursor-workspace-roots.test.ts::afterAgentResponse (auto-rate/capture): workspace off,
+        plugin folder on → nothing captured
   packages/cli/src/lib/auto-rate.ts#engrams:
     kind: guarantee
-    rule: "A remote server that does not advertise feedback support is never asked for engrams to rate."
-    tests: ["packages/cli/test/hook-auto-rate-remote.test.ts::never fetches or rates a remote engram when the server lacks the capability"]
+    rule: A remote server that does not advertise feedback support is never asked for engrams to rate.
+    tests:
+      - >-
+        packages/cli/test/hook-auto-rate-remote.test.ts::never fetches or rates a remote engram when the server lacks
+        the capability
   packages/cli/src/lib/auto-rate.ts#hasLeftoverBatches:
     kind: note
-    why: "Explains why a pending .queue-ws file counts as leftover work (older workers never read it)."
+    why: Explains why a pending .queue-ws file counts as leftover work (older workers never read it).
   packages/cli/src/lib/auto-rate.ts#heldByOlderWorker:
     kind: note
-    why: "Describes what older worker versions do; no rule of this code."
+    why: Describes what older worker versions do; no rule of this code.
   packages/cli/src/lib/auto-rate.ts#kept:
     kind: note
-    why: "Explains why ids that cannot be rated are marked done instead of reloaded."
+    why: Explains why ids that cannot be rated are marked done instead of reloaded.
   packages/cli/src/lib/auto-rate.ts#project:
     kind: guarantee
     rule: "The workspace scope decision only narrows a capture's scope, never widens it: disagreeing roots mean no scope."
-    tests: ["packages/cli/test/hook-cursor-workspace-roots.test.ts::M1: auto-capture, roots alpha + beta → stored with no scope", "packages/cli/test/hook-cursor-workspace-roots.test.ts::M1: auto-capture, roots alpha + an unscoped on root → stored with no scope"]
+    tests:
+      - >-
+        packages/cli/test/hook-cursor-workspace-roots.test.ts::M1: auto-capture, roots alpha + beta → stored with no
+        scope
+      - >-
+        packages/cli/test/hook-cursor-workspace-roots.test.ts::M1: auto-capture, roots alpha + an unscoped on root →
+        stored with no scope
   packages/cli/src/lib/auto-rate.ts#takeOverStaleWorkerLock:
     kind: guarantee
-    rule: "Taking over a stale auto-rate worker lock never removes a live lock acquired in the meantime."
-    tests: ["packages/cli/test/hook-auto-rate-h2.test.ts::a stale worker lock is taken over atomically: a late contender cannot remove the new holder"]
+    rule: Taking over a stale auto-rate worker lock never removes a live lock acquired in the meantime.
+    tests:
+      - >-
+        packages/cli/test/hook-auto-rate-h2.test.ts::a stale worker lock is taken over atomically: a late contender
+        cannot remove the new holder
+    lean:
+      - PlurSpec/HookCounters.lean:stale_taken_over_at_most_once
+      - PlurSpec/HookCounters.lean:live_holder_restored
   packages/cli/src/lib/auto-rate.ts#waitUntil:
     kind: note
-    why: "Explains why a worker waits for a lock held by an older version across an upgrade."
+    why: Explains why a worker waits for a lock held by an older version across an upgrade.
   packages/cli/src/lib/codex-binary.ts#parseRelease:
     kind: note
-    why: "The matched word only describes a parse failure returning null; no rule."
+    why: The matched word only describes a parse failure returning null; no rule.
   packages/cli/src/lib/codex-binary.ts#resolveCodexBinary:
     kind: guarantee
-    rule: "On Windows the Codex binary chosen is never npm's extensionless sh shim."
-    tests: ["packages/cli/test/windows-codex-1603.test.ts::never uses the extensionless shim alone", "packages/cli/test/windows-codex-1603.test.ts::picks codex.cmd over npm"]
+    rule: On Windows the Codex binary chosen is never npm's extensionless sh shim.
+    tests:
+      - packages/cli/test/windows-codex-1603.test.ts::never uses the extensionless shim alone
+      - packages/cli/test/windows-codex-1603.test.ts::picks codex.cmd over npm
   packages/cli/src/lib/codex-hook-io.ts#emitContext:
     kind: note
-    why: "States Codex's own output rules (event name must match, empty output is valid); an assumption about Codex."
+    why: States Codex's own output rules (event name must match, empty output is valid); an assumption about Codex.
   packages/cli/src/lib/codex-hook-io.ts#ensureSessionDir:
     kind: guarantee
-    rule: "A hook session folder that is a planted symlink, owned by someone else or not tightenable to owner-only is refused, and nothing is persisted there."
-    tests: ["packages/cli/test/session-dir-hardening-1060.test.ts::refuses a pre-planted symlink", "packages/cli/test/session-dir-hardening-1060.test.ts::creates the directory 0700"]
+    rule: >-
+      A hook session folder that is a planted symlink, owned by someone else or not tightenable to owner-only is
+      refused, and nothing is persisted there.
+    tests:
+      - packages/cli/test/session-dir-hardening-1060.test.ts::refuses a pre-planted symlink
+      - packages/cli/test/session-dir-hardening-1060.test.ts::creates the directory 0700
   packages/cli/src/lib/codex-hook-io.ts#hybridEnabled:
     kind: guarantee
-    rule: "The hybrid-injection off switch accepts 0, false, off and no."
-    none: "the test only checks \"0\"; no test checks the other spellings"
+    rule: The hybrid-injection off switch accepts 0, false, off and no.
+    tests:
+      - >-
+        packages/cli/test/formal-hook-counters-codex.test.ts::every off spelling, in any case and padding, turns hybrid
+        injection off
   packages/cli/src/lib/codex-hook-io.ts#incrementCounter:
     kind: guarantee
-    rule: "A hook counter that cannot be persisted reports itself as exceeded, so the guard fails open instead of denying every tool."
-    tests: ["packages/cli/test/codex-hook-io.test.ts::reports the counter as exceeded so the guard fails open, not closed"]
+    rule: >-
+      A hook counter that cannot be persisted reports itself as exceeded, so the guard fails open instead of denying
+      every tool.
+    tests:
+      - packages/cli/test/codex-hook-io.test.ts::reports the counter as exceeded so the guard fails open, not closed
+      - >-
+        packages/cli/test/formal-hook-counters-codex.test.ts::two racing guard hooks get distinct counts, so exactly one
+        denies
+      - packages/cli/test/formal-hook-counters-codex.test.ts::a race followed by a later call still counts 1..3
+    lean:
+      - PlurSpec/HookCounters.lean:fail_open
+      - PlurSpec/HookCounters.lean:guard_denies_at_most_once
+      - PlurSpec/HookCounters.lean:ticket_distinct_any_schedule
   packages/cli/src/lib/codex-hook-io.ts#noExit:
     kind: guarantee
-    rule: "A Codex hook's forced exit cannot be switched off by anything except the one named test opt-out."
-    none: "no test checks that other environment settings leave the force-exit on"
+    rule: A Codex hook's forced exit cannot be switched off by anything except the one named test opt-out.
+    none: no test checks that other environment settings leave the force-exit on
   packages/cli/src/lib/codex-hook-io.ts#runCodexHook:
     kind: guarantee
-    rule: "A Codex hook always ends with exit code 0 and reports a crash on stderr, never stdout."
-    tests: ["packages/cli/test/codex-hook-io.test.ts::swallows a throwing body and reports it on stderr, never stdout", "packages/cli/test/codex-hook-io.test.ts::forces exitCode to 0 even when something else set it non-zero"]
+    rule: A Codex hook always ends with exit code 0 and reports a crash on stderr, never stdout.
+    tests:
+      - packages/cli/test/codex-hook-io.test.ts::swallows a throwing body and reports it on stderr, never stdout
+      - packages/cli/test/codex-hook-io.test.ts::forces exitCode to 0 even when something else set it non-zero
   packages/cli/src/lib/codex-hook-io.ts#sessionDirSafeToSweep:
     kind: guarantee
-    rule: "The stale-file sweep never deletes through a symlinked or foreign-owned folder, and never creates or chmods it."
-    tests: ["packages/cli/test/session-dir-hardening-1060.test.ts::does not delete a victim file through a symlinked dir"]
+    rule: The stale-file sweep never deletes through a symlinked or foreign-owned folder, and never creates or chmods it.
+    tests:
+      - packages/cli/test/session-dir-hardening-1060.test.ts::does not delete a victim file through a symlinked dir
   packages/cli/src/lib/codex-hook-io.ts#sessionDirTrusted:
     kind: guarantee
-    rule: "Hook state is believed only from a real, owner-only folder of this user; nothing in a folder others could plant into is read."
-    lean: ["PlurSpec/R2CLI.lean:trusted_iff_not_plantable", "PlurSpec/R2CLI.lean:fixed_never_reads_plantable"]
+    rule: >-
+      Hook state is believed only from a real, owner-only folder of this user; nothing in a folder others could plant
+      into is read.
+    lean:
+      - PlurSpec/R2CLI.lean:trusted_iff_not_plantable
+      - PlurSpec/R2CLI.lean:fixed_never_reads_plantable
   packages/cli/src/lib/codex-hook-io.ts#ticketCounter:
     kind: guarantee
-    rule: "The shared counter hands every caller a distinct value; n appends give exactly 1..n."
-    lean: ["PlurSpec/R2CLI.lean:ticket_distinct", "PlurSpec/R2CLI.lean:sequential_counts"]
-    tests: ["packages/cli/test/formal-r2-cli-inject-session.test.ts::concurrent Cursor stop hooks: every value 1..n handed out exactly once", "packages/cli/test/formal-r2-cli-inject-session.test.ts::sequential calls count 1..n"]
+    rule: The shared counter hands every caller a distinct value; n appends give exactly 1..n.
+    lean:
+      - PlurSpec/R2CLI.lean:ticket_distinct
+      - PlurSpec/R2CLI.lean:sequential_counts
+      - PlurSpec/HookCounters.lean:ticket_distinct_any_schedule
+    tests:
+      - >-
+        packages/cli/test/formal-r2-cli-inject-session.test.ts::concurrent Cursor stop hooks: every value 1..n handed
+        out exactly once
+      - packages/cli/test/formal-r2-cli-inject-session.test.ts::sequential calls count 1..n
   packages/cli/src/lib/command-spawn.ts#cmdArg:
     kind: guarantee
-    rule: "An argument that cmd.exe cannot carry safely (%, a double quote or a line break) is refused, never altered."
-    tests: ["packages/cli/test/windows-codex-1603.test.ts::refuses an argument cmd.exe cannot carry safely", "packages/cli/test/windows-codex-1604-audit.test.ts::turns delayed expansion off and refuses %"]
+    rule: An argument that cmd.exe cannot carry safely (%, a double quote or a line break) is refused, never altered.
+    tests:
+      - packages/cli/test/windows-codex-1603.test.ts::refuses an argument cmd.exe cannot carry safely
+      - packages/cli/test/windows-codex-1604-audit.test.ts::turns delayed expansion off and refuses %
   packages/cli/src/lib/command-spawn.ts#commandSpawn:
     kind: note
-    why: "The matched word states a fact about Node (it refuses to spawn a .cmd directly), which explains the cmd.exe route."
+    why: The matched word states a fact about Node (it refuses to spawn a .cmd directly), which explains the cmd.exe route.
   packages/cli/src/lib/cursor-hook-io.ts#incrementCounter:
     kind: guarantee
-    rule: "The Cursor counter is written only in a vetted folder and never creates one; when it cannot be read or written it reports itself as exceeded."
-    lean: ["PlurSpec/R2CLI.lean:fixed_writes_only_vetted"]
-    tests: ["packages/cli/test/session-dir-hardening-1060.test.ts::reports an unwritable counter as exceeded instead of throwing out of the hook"]
+    rule: >-
+      The Cursor counter is written only in a vetted folder and never creates one; when it cannot be read or written it
+      reports itself as exceeded.
+    lean:
+      - PlurSpec/R2CLI.lean:fixed_writes_only_vetted
+      - PlurSpec/HookCounters.lean:ticket_distinct_any_schedule
+    tests:
+      - >-
+        packages/cli/test/session-dir-hardening-1060.test.ts::reports an unwritable counter as exceeded instead of
+        throwing out of the hook
   packages/cli/src/lib/cursor-hook-io.ts#markSessionStarted:
     kind: guarantee
-    rule: "The Cursor session marker is never written into a refused folder."
-    lean: ["PlurSpec/R2CLI.lean:fixed_writes_only_vetted"]
+    rule: The Cursor session marker is never written into a refused folder.
+    lean:
+      - PlurSpec/R2CLI.lean:fixed_writes_only_vetted
   packages/cli/src/lib/cursor-hook-io.ts#pruneStaleSessions:
     kind: guarantee
-    rule: "Pruning old Cursor session files never throws, and one failed file does not stop the rest."
-    none: "no test checks pruning with a failing file"
+    rule: Pruning old Cursor session files never throws, and one failed file does not stop the rest.
+    none: no test checks pruning with a failing file
   packages/cli/src/lib/cursor-hook-io.ts#removeGeneratedContextRules:
     kind: guarantee
-    rule: "Removing PLUR's generated Cursor rules never deletes through a symlinked .cursor or rules folder, and never removes a file PLUR did not generate."
-    tests: ["packages/cli/test/cursor-off-context-1605.test.ts::removes only generated context/reminders in every off workspace root"]
+    rule: >-
+      Removing PLUR's generated Cursor rules never deletes through a symlinked .cursor or rules folder, and never
+      removes a file PLUR did not generate.
+    tests:
+      - >-
+        packages/cli/test/cursor-off-context-1605.test.ts::removes only generated context/reminders in every off
+        workspace root
   packages/cli/src/lib/cursor-hook-io.ts#sessionsDir:
     kind: guarantee
-    rule: "A Cursor session folder that fails vetting is never pruned."
-    none: "no test checks that a refused Cursor session folder is left unpruned"
+    rule: A Cursor session folder that fails vetting is never pruned.
+    none: no test checks that a refused Cursor session folder is left unpruned
   packages/cli/src/lib/cursor-hook-io.ts#touchReminder:
     kind: guarantee
-    rule: "The reminder timer is reset only in a vetted folder and never throws."
-    none: "no test covers the reminder timer"
+    rule: The reminder timer is reset only in a vetted folder and never throws.
+    none: no test covers the reminder timer
   packages/cli/src/lib/cursor-hook-io.ts#writeContextRule:
     kind: guarantee
-    rule: "Reminders are written to their own rule file and never overwrite the recalled memory rule."
-    none: "no test writes a reminder and checks the context rule is unchanged"
+    rule: Reminders are written to their own rule file and never overwrite the recalled memory rule.
+    none: no test writes a reminder and checks the context rule is unchanged
   packages/cli/src/lib/folder-gate.ts#allKnownRoots:
     kind: guarantee
-    rule: "A folder map that cannot be read turns memory off for every Cursor root and removes every root's generated rule."
-    tests: ["packages/cli/test/folder-remote-only.test.ts::Cursor: an unreadable map removes the generated rules of every root, with or without a conversation id"]
+    rule: A folder map that cannot be read turns memory off for every Cursor root and removes every root's generated rule.
+    tests:
+      - >-
+        packages/cli/test/folder-remote-only.test.ts::Cursor: an unreadable map removes the generated rules of every
+        root, with or without a conversation id
   packages/cli/src/lib/folder-gate.ts#allRoots:
     kind: guarantee
-    rule: "A remote-only root keeps the Cursor workspace remote-only; it is never turned into on."
-    tests: ["packages/cli/test/folder-remote-only.test.ts::Cursor: a payload cwd in a remote-only folder inside an on root keeps the workspace remote-only", "packages/cli/test/folder-remote-only.test.ts::Cursor: a root given through a link inside a remote-only folder keeps the workspace remote-only"]
+    rule: A remote-only root keeps the Cursor workspace remote-only; it is never turned into on.
+    tests:
+      - >-
+        packages/cli/test/folder-remote-only.test.ts::Cursor: a payload cwd in a remote-only folder inside an on root
+        keeps the workspace remote-only
+      - >-
+        packages/cli/test/folder-remote-only.test.ts::Cursor: a root given through a link inside a remote-only folder
+        keeps the workspace remote-only
   packages/cli/src/lib/folder-gate.ts#askable:
     kind: guarantee
-    rule: "Asking about a missing workspace root never creates that folder."
-    tests: ["packages/cli/test/hook-cursor-workspace-roots.test.ts::nothing loaded, nothing created"]
+    rule: Asking about a missing workspace root never creates that folder.
+    tests:
+      - packages/cli/test/hook-cursor-workspace-roots.test.ts::nothing loaded, nothing created
   packages/cli/src/lib/folder-gate.ts#bindHookFolder:
     kind: guarantee
-    rule: "A hook engine that cannot be bound to its folder fails loudly instead of acting as on in a remote-only folder."
-    tests: ["packages/cli/test/folder-remote-only.test.ts::S7: binding a hook instance that cannot be bound fails loudly", "packages/cli/test/folder-gate-fail-closed.test.ts::binds the instance closed"]
+    rule: A hook engine that cannot be bound to its folder fails loudly instead of acting as on in a remote-only folder.
+    tests:
+      - "packages/cli/test/folder-remote-only.test.ts::S7: binding a hook instance that cannot be bound fails loudly"
+      - packages/cli/test/folder-gate-fail-closed.test.ts::binds the instance closed
   packages/cli/src/lib/folder-gate.ts#cursorHookFolder:
     kind: guarantee
-    rule: "A Cursor hook decides for the whole workspace: unusable roots fail closed, any off root makes it off, and a remote-only root makes it remote-only."
-    tests: ["packages/cli/test/hook-cursor-workspace-roots.test.ts::two roots: one off → off, even when the other is on", "packages/cli/test/cursor-workspace-git-agreement.test.ts::a conflicting Cursor window never binds the first root as its Git destination"]
+    rule: >-
+      A Cursor hook decides for the whole workspace: unusable roots fail closed, any off root makes it off, and a
+      remote-only root makes it remote-only.
+    tests:
+      - "packages/cli/test/hook-cursor-workspace-roots.test.ts::two roots: one off → off, even when the other is on"
+      - >-
+        packages/cli/test/cursor-workspace-git-agreement.test.ts::a conflicting Cursor window never binds the first root
+        as its Git destination
   packages/cli/src/lib/folder-gate.ts#folderReadContext:
     kind: guarantee
-    rule: "plur recall and inject contact no store in an off folder or under a broken folder map, whatever --scope says; local memory is always read."
-    tests: ["packages/cli/test/recall-folder-off-remote.test.ts::off folder: an explicit --scope contacts no store either", "packages/cli/test/recall-folder-off-remote.test.ts::no store is contacted, with or without --scope"]
+    rule: >-
+      plur recall and inject contact no store in an off folder or under a broken folder map, whatever --scope says;
+      local memory is always read.
+    tests:
+      - "packages/cli/test/recall-folder-off-remote.test.ts::off folder: an explicit --scope contacts no store either"
+      - packages/cli/test/recall-folder-off-remote.test.ts::no store is contacted, with or without --scope
   packages/cli/src/lib/folder-gate.ts#hookFolderPolicy:
     kind: guarantee
-    rule: "A folder resolver failure never breaks a hook and never switches memory on; it fails safe to asking."
-    tests: ["packages/cli/test/folder-gate-failsafe.test.ts::a resolver that throws gives ask (resolver-error), not on from the marker"]
+    rule: A folder resolver failure never breaks a hook and never switches memory on; it fails safe to asking.
+    tests:
+      - >-
+        packages/cli/test/folder-gate-failsafe.test.ts::a resolver that throws gives ask (resolver-error), not on from
+        the marker
   packages/cli/src/lib/folder-gate.ts#on:
     kind: guarantee
-    rule: "An undecided home-or-above Cursor root is on without a scope, never a question."
-    tests: ["packages/cli/test/hook-cursor-workspace-roots.test.ts::L4/N2: a single home-folder root, undecided → no question"]
+    rule: An undecided home-or-above Cursor root is on without a scope, never a question.
+    tests:
+      - "packages/cli/test/hook-cursor-workspace-roots.test.ts::L4/N2: a single home-folder root, undecided → no question"
   packages/cli/src/lib/folder-gate.ts#remoteOnlyCommandRefusal:
     kind: guarantee
-    rule: "CLI commands that would keep memory on this machine are refused in a remote-only folder."
-    tests: ["packages/cli/test/folder-remote-only.test.ts::plur restore in a remote-only folder is refused and changes nothing", "packages/cli/test/folder-remote-only.test.ts::plur migrate up/down in a remote-only folder is refused"]
+    rule: CLI commands that would keep memory on this machine are refused in a remote-only folder.
+    tests:
+      - >-
+        packages/cli/test/folder-remote-only.test.ts::plur restore in a remote-only folder is refused and changes
+        nothing
+      - packages/cli/test/folder-remote-only.test.ts::plur migrate up/down in a remote-only folder is refused
   packages/cli/src/lib/hook-command.ts#claudeVersionOutput:
     kind: note
-    why: "The matched words describe a lookup that can fail and return null; no rule."
+    why: The matched words describe a lookup that can fail and return null; no rule.
   packages/cli/src/lib/hook-command.ts#hookCommandPrefix:
     kind: note
-    why: "Notes which platform uses this helper; no rule of the code."
+    why: Notes which platform uses this helper; no rule of the code.
   packages/cli/src/lib/hook-command.ts#resolveShortPath:
     kind: note
-    why: "The matched words describe a lookup that can fail and return null; no rule."
+    why: The matched words describe a lookup that can fail and return null; no rule.
   packages/cli/src/lib/hook-command.ts#windowsHookCommand:
     kind: guarantee
-    rule: "Windows hook commands never rely on shell quoting: an unquoted forward-slash path, else the 8.3 short name, else a marked fallback."
-    tests: ["packages/cli/test/hook-decisions-h2-h3.test.ts::a path without whitespace: forward slashes, no quotes, for every string editor", "packages/cli/test/hook-decisions-h2-h3.test.ts::a path with a space uses the 8.3 short path when there is one"]
+    rule: >-
+      Windows hook commands never rely on shell quoting: an unquoted forward-slash path, else the 8.3 short name, else a
+      marked fallback.
+    tests:
+      - >-
+        packages/cli/test/hook-decisions-h2-h3.test.ts::a path without whitespace: forward slashes, no quotes, for every
+        string editor
+      - packages/cli/test/hook-decisions-h2-h3.test.ts::a path with a space uses the 8.3 short path when there is one
   packages/cli/src/lib/hook-outbox-flush.ts#(module):
     kind: guarantee
-    rule: "The hook outbox flush never throws, keeps failed entries queued, and does not load the store when nothing is queued."
-    tests: ["packages/cli/test/hook-outbox-flush.test.ts::leaves entries queued and still exits 0 when the remote fails", "packages/cli/test/hook-outbox-flush.test.ts::is false for a missing store and a store with no queued writes"]
+    rule: >-
+      The hook outbox flush never throws, keeps failed entries queued, and does not load the store when nothing is
+      queued.
+    tests:
+      - packages/cli/test/hook-outbox-flush.test.ts::leaves entries queued and still exits 0 when the remote fails
+      - packages/cli/test/hook-outbox-flush.test.ts::is false for a missing store and a store with no queued writes
   packages/cli/src/lib/hook-outbox-flush.ts#CURSOR_STOP_MIN_INTERVAL_MS:
     kind: guarantee
-    rule: "Cursor's per-turn stop hook retries the outbox at most once per interval."
-    tests: ["packages/cli/test/hook-outbox-flush.test.ts::Cursor stop fires every turn, so it retries at most once per interval"]
+    rule: Cursor's per-turn stop hook retries the outbox at most once per interval.
+    tests:
+      - >-
+        packages/cli/test/hook-outbox-flush.test.ts::Cursor stop fires every turn, so it retries at most once per
+        interval
   packages/cli/src/lib/hook-outbox-flush.ts#flushOutboxForHook:
     kind: guarantee
-    rule: "Retrying queued remote writes from a hook never throws and stays within its budget."
-    tests: ["packages/cli/test/hook-outbox-flush.test.ts::leaves entries queued and still exits 0 when the remote fails", "packages/cli/test/hook-outbox-flush.test.ts::cuts a slow remote at the budget and exits 0 promptly, entries still queued"]
+    rule: Retrying queued remote writes from a hook never throws and stays within its budget.
+    tests:
+      - packages/cli/test/hook-outbox-flush.test.ts::leaves entries queued and still exits 0 when the remote fails
+      - >-
+        packages/cli/test/hook-outbox-flush.test.ts::cuts a slow remote at the budget and exits 0 promptly, entries
+        still queued
   packages/cli/src/lib/learn-signal.ts#claimNudge:
     kind: guarantee
-    rule: "Each message gets at most one learn nudge, the marker is never written through a symlink, and an unwritable marker means no nudge."
-    tests: ["packages/cli/test/learn-signal.test.ts::claims once: the second claim for the same marker loses", "packages/cli/test/learn-signal.test.ts::never writes through a planted symlink, and does not nudge", "packages/cli/test/learn-signal.test.ts::an unwritable marker location is \"do not nudge\", every time"]
+    rule: >-
+      Each message gets at most one learn nudge, the marker is never written through a symlink, and an unwritable marker
+      means no nudge.
+    tests:
+      - "packages/cli/test/learn-signal.test.ts::claims once: the second claim for the same marker loses"
+      - packages/cli/test/learn-signal.test.ts::never writes through a planted symlink, and does not nudge
+      - packages/cli/test/learn-signal.test.ts::an unwritable marker location is "do not nudge", every time
   packages/cli/src/lib/learn-signal.ts#IMPERATIVE_RULES:
     kind: note
-    why: "Describes the never/always phrasing the detector looks for; the words are subject matter, not a rule."
+    why: Describes the never/always phrasing the detector looks for; the words are subject matter, not a rule.
   packages/cli/src/lib/learn-signal.ts#lastUserMessage:
     kind: guarantee
-    rule: "Reading the last user message reads only a bounded tail and returns null, never an error, for anything unreadable."
-    tests: ["packages/cli/test/learn-signal.test.ts::returns null — never throws — for a missing, empty, directory or non-string path", "packages/cli/test/learn-signal.test.ts::reads only a bounded tail of a large transcript"]
+    rule: Reading the last user message reads only a bounded tail and returns null, never an error, for anything unreadable.
+    tests:
+      - >-
+        packages/cli/test/learn-signal.test.ts::returns null — never throws — for a missing, empty, directory or
+        non-string path
+      - packages/cli/test/learn-signal.test.ts::reads only a bounded tail of a large transcript
   packages/cli/src/lib/legacy-plur-yaml.ts#cleanupLegacyProjectAtSessionStart:
     kind: guarantee
-    rule: "The legacy project cleanup never prints file contents or a token, and its warning is emitted before injection so a later failure cannot hide it."
-    tests: ["packages/cli/test/legacy-plur-yaml.test.ts::warns about tracked tokens without exposing the token", "packages/cli/test/legacy-plur-yaml.test.ts::emits a safe tracked-token warning before later injection can fail"]
+    rule: >-
+      The legacy project cleanup never prints file contents or a token, and its warning is emitted before injection so a
+      later failure cannot hide it.
+    tests:
+      - packages/cli/test/legacy-plur-yaml.test.ts::warns about tracked tokens without exposing the token
+      - packages/cli/test/legacy-plur-yaml.test.ts::emits a safe tracked-token warning before later injection can fail
   packages/cli/src/lib/open-url.ts#urlOpener:
     kind: guarantee
-    rule: "On Windows a URL is opened with rundll32, never cmd /c start, so it is not split at &."
-    tests: ["packages/cli/test/windows-codex-1604-audit.test.ts::uses rundll32 url.dll,FileProtocolHandler on Windows"]
+    rule: On Windows a URL is opened with rundll32, never cmd /c start, so it is not split at &.
+    tests:
+      - packages/cli/test/windows-codex-1604-audit.test.ts::uses rundll32 url.dll,FileProtocolHandler on Windows
   packages/cli/src/lib/plur-configured.ts#isPlurConfigured:
     kind: guarantee
-    rule: "Project detection never counts a plur entry in the global settings as configuring a project."
-    tests: ["packages/cli/test/plur-configured.test.ts::returns false when only global ~/.claude/settings.json has a plur server", "packages/cli/test/plur-configured.test.ts::returns false when only global settings has a plur server, project NESTED under home"]
+    rule: Project detection never counts a plur entry in the global settings as configuring a project.
+    tests:
+      - >-
+        packages/cli/test/plur-configured.test.ts::returns false when only global ~/.claude/settings.json has a plur
+        server
+      - >-
+        packages/cli/test/plur-configured.test.ts::returns false when only global settings has a plur server, project
+        NESTED under home
   packages/cli/src/lib/project-remote.ts#(module):
     kind: note
-    why: "Points to the core module that holds the fail-closed gate; this file only re-exports it."
+    why: Points to the core module that holds the fail-closed gate; this file only re-exports it.
   packages/cli/src/lib/server-session.ts#cachedServerLines:
     kind: guarantee
-    rule: "A failure to read the cached server status never discards memory that was already injected."
-    tests: ["packages/cli/test/hook-server-status-failure.test.ts::retains successful memory when cached status fails"]
+    rule: A failure to read the cached server status never discards memory that was already injected.
+    tests:
+      - packages/cli/test/hook-server-status-failure.test.ts::retains successful memory when cached status fails
   packages/cli/src/lib/session-key.ts#legacyHookSessionKeys:
     kind: guarantee
-    rule: "Keys used by older installs are only read, never written."
-    none: "no test checks that nothing is written under a legacy key"
+    rule: Keys used by older installs are only read, never written.
+    none: no test checks that nothing is written under a legacy key
   packages/cli/src/lib/session-key.ts#safeSessionKey:
     kind: guarantee
-    rule: "A session id is turned into a filesystem-safe key, so it cannot traverse out of the session folder."
-    tests: ["packages/cli/test/codex-hook-io.test.ts::sanitizes ids so a traversal attempt cannot escape the session dir"]
+    rule: A session id is turned into a filesystem-safe key, so it cannot traverse out of the session folder.
+    tests:
+      - packages/cli/test/codex-hook-io.test.ts::sanitizes ids so a traversal attempt cannot escape the session dir
   packages/cli/src/lib/session-task.ts#fallback:
     kind: guarantee
-    rule: "An empty PLUR_PATH counts as unset for the hook session fallback folder, never the current directory."
-    none: "no test sets an empty PLUR_PATH for the session fallback folder"
+    rule: An empty PLUR_PATH counts as unset for the hook session fallback folder, never the current directory.
+    none: no test sets an empty PLUR_PATH for the session fallback folder
   packages/cli/src/lib/session-task.ts#removeSessionTask:
     kind: note
-    why: "States how unlink behaves (it does not follow a symlink); a fact about the platform call."
+    why: States how unlink behaves (it does not follow a symlink); a fact about the platform call.
   packages/cli/src/lib/session-task.ts#writeSessionTask:
     kind: guarantee
-    rule: "The session task file is written owner-only and replaces, never follows, a symlink planted at its path; a write failure never breaks the hook."
-    none: "no test plants a symlink at the task file path"
+    rule: >-
+      The session task file is written owner-only and replaces, never follows, a symlink planted at its path; a write
+      failure never breaks the hook.
+    none: no test plants a symlink at the task file path
   packages/cli/src/lib/store-lock-exit.ts#EXIT_LOCK_WAIT_MS:
     kind: guarantee
-    rule: "A force-exiting hook never exits in the middle of its own store write, so it leaves no empty lock behind."
-    tests: ["packages/cli/test/hook-force-exit-lock.test.ts::runCodexHook — the exit of every Codex and Antigravity hook — waits for its own store lock", "packages/cli/test/hook-force-exit-lock.test.ts::hook-inject, when its watchdog fires mid-write"]
+    rule: A force-exiting hook never exits in the middle of its own store write, so it leaves no empty lock behind.
+    tests:
+      - >-
+        packages/cli/test/hook-force-exit-lock.test.ts::runCodexHook — the exit of every Codex and Antigravity hook —
+        waits for its own store lock
+      - packages/cli/test/hook-force-exit-lock.test.ts::hook-inject, when its watchdog fires mid-write

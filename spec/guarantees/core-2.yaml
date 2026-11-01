@@ -119,6 +119,8 @@ anchors:
       - >-
         packages/core/test/pinned-two-tier-inject.test.ts::a non-finite hard ratio falls back to the default instead of
         disabling the cap
+    lean:
+      - PlurSpec/ScopeInject.lean:pinned_within_share
   packages/core/src/inject.ts#InjectionContext:
     kind: guarantee
     rule: Scopes granted by mounted stores only widen what is visible; they never widen an explicit allow-list of scopes.
@@ -156,6 +158,9 @@ anchors:
       - packages/core/test/pinned-two-tier-inject.test.ts::a soft pin in an earlier pass cannot spend the hard tier
     promises:
       - INJ-6
+    lean:
+      - PlurSpec/ScopeInject.lean:pinned_within_share
+      - PlurSpec/ScopeInject.lean:soft_cannot_spend_reserve
   packages/core/src/inject.ts#formatLayer3:
     kind: note
     why: Explains why the meta line says "Last active" rather than "Last verified".
@@ -202,11 +207,15 @@ anchors:
         fields
   packages/core/src/inject.ts#originLines:
     kind: guarantee
-    rule: Every delivered memory says which scope it came from, on its own line.
+    rule: Every delivered memory with a non-empty scope says which scope it came from, on its own line.
     tests:
       - >-
         packages/core/test/progressive-disclosure.test.ts::formatLayer1 renders the whole statement and its scope, never
         the summary (INJ-7)
+      - >-
+        packages/core/test/formal-inject-budget-origin.test.ts::every delivered memory with a scope shows it, in
+        directives, constraints and consider
+      - packages/core/test/formal-inject-budget-origin.test.ts::an empty scope is delivered without a scope line
     promises:
       - INJ-7
   packages/core/src/inject.ts#pinned:
@@ -234,8 +243,12 @@ anchors:
     rule: The whole injection, including the consider pool and spreading activation, never exceeds the token budget.
     lean:
       - PlurSpec/ScopeInject.lean:total_le_budget
+      - PlurSpec/ScopeInject.lean:tokens_used_bound
+      - PlurSpec/ScopeInject.lean:sections_le_budget
+      - PlurSpec/ScopeInject.lean:pools_le_budget
     tests:
       - packages/core/test/formal-apply-budget-inject.test.ts::holds across budgets, including tiny ones
+      - packages/core/test/formal-inject-budget-sections.test.ts::holds across pinned shares and budgets
     promises:
       - INJ-2
   packages/core/src/inject.ts#scoreEngram:
@@ -251,8 +264,12 @@ anchors:
     rule: A visible pinned memory is delivered even when it shares no keywords with the task.
     lean:
       - PlurSpec/ScopeInject.lean:good_case_reachable
+      - PlurSpec/ScopeInject.lean:tokens_used_bound
     tests:
       - packages/core/test/inject.test.ts::pinned engram with no keyword overlap survives the minRelevance filter
+      - >-
+        packages/core/test/formal-inject-budget-sections.test.ts::pinned_ratio 1: pins fill the budget, the constraints
+        floor gets nothing more
   packages/core/src/inject.ts#skipForApproval:
     kind: guarantee
     rule: A memory awaiting approval is never given to the agent, though explicit recall still finds it.
@@ -311,6 +328,12 @@ anchors:
       - >-
         packages/core/test/instruction-section.test.ts::user prose and a ### subsection after a shipped section at end
         of file survive
+    lean:
+      - PlurSpec/SecretsInstall.lean:upgrade_keeps_user_text
+      - PlurSpec/SecretsInstall.lean:user_text_kept
+      - PlurSpec/SecretsInstall.lean:match_is_shipped
+      - PlurSpec/SecretsInstall.lean:edited_not_matched
+      - PlurSpec/SecretsInstall.lean:unmodified_shipped_matched
   packages/core/src/instruction-section.ts#backupFile:
     kind: guarantee
     rule: >-
@@ -1089,8 +1112,11 @@ anchors:
         packages/core/test/folder-remote-only-guard.test.ts::S-1: an unreadable folders.yaml refuses even an explicit
         team-scope save
       - packages/core/test/folder-remote-only-guard.test.ts::a bound instance reads and writes nothing
+      - packages/core/test/formal-backend-scopes-guard.test.ts::a blocked binding refuses even a well-formed queued save
     promises:
       - OFF-3
+    lean:
+      - PlurSpec/BackendScopes.lean:blocked_refuses_append
   packages/core/src/remote-only.ts#name:
     kind: guarantee
     rule: Folder and scope names in a refusal are printed escaped, so they can never act as instructions or commands.
@@ -1105,9 +1131,15 @@ anchors:
       memory and says it was degraded.
     tests:
       - packages/core/test/remote-recall.test.ts::host down → local results still served, degradation recorded
+      - >-
+        packages/core/test/formal-remote-health-results.test.ts::recallWithMeta: results_complete is false and the host
+        is named
     promises:
       - TEAM-1
       - TEAM-2
+    lean:
+      - PlurSpec/RemoteHealth.lean:complete_means_reached
+      - PlurSpec/RemoteHealth.lean:deadline_neutral
   packages/core/src/remote-recall.ts#BudgetExpiry:
     kind: guarantee
     rule: A timeout caused by this process's own blocked event loop is not counted against the server's breaker.
@@ -1136,7 +1168,10 @@ anchors:
   packages/core/src/remote-recall.ts#HostRecallOutcome:
     kind: guarantee
     rule: A recall outcome's diagnostic detail is bounded text chosen by PLUR, never free text from the server.
-    none: no test checks that server text cannot reach the outcome detail
+    tests:
+      - >-
+        packages/core/test/formal-remote-health-breaker.test.ts::an HTTP 500 outcome detail carries the status only,
+        never the server's text
   packages/core/src/remote-recall.ts#MAX_STARVATION_CREDIT_MS:
     kind: guarantee
     rule: Extra time credited for a blocked event loop is capped, so a starved request still ends.
@@ -1149,6 +1184,8 @@ anchors:
     rule: A recall never overwrites the record of which degradation header was last printed.
     tests:
       - packages/core/test/remote-recall.test.ts::a remoteRecall persist does not erase a concurrent hook-header claim
+    lean:
+      - PlurSpec/RemoteHealth.lean:skip_never_written
   packages/core/src/remote-recall.ts#PROBE_CLEARABLE_STATES:
     kind: guarantee
     rule: >-
@@ -1160,11 +1197,19 @@ anchors:
   packages/core/src/remote-recall.ts#RATE_LIMIT_MAX_COOLDOWN_MS:
     kind: guarantee
     rule: A server's Retry-After is honoured for at most one hour.
-    none: no test sends an oversized Retry-After
+    lean:
+      - PlurSpec/RemoteHealth.lean:rate_limit_capped
+    tests:
+      - >-
+        packages/core/test/formal-remote-health-breaker.test.ts::a Retry-After above one hour is honoured for at most
+        one hour
   packages/core/src/remote-recall.ts#RECALL_BOOKKEEPING_LOCK_WAIT_MS:
     kind: guarantee
     rule: A recall does not wait behind a writer for its usage bookkeeping; past a short wait it skips the bookkeeping.
-    none: no test holds the store lock during a recall and checks the bookkeeping is skipped
+    tests:
+      - >-
+        packages/core/test/recall-deadline-1586-audit.test.ts::a lock released just after the deadline does not let the
+        write land
   packages/core/src/remote-recall.ts#RemoteStoreStatusEntry:
     kind: note
     why: Instructs renderers not to present an old observation as the server's current state.
@@ -1176,11 +1221,17 @@ anchors:
     lean:
       - PlurSpec/R2CoreB.lean:noninterference
       - PlurSpec/R2CoreB.lean:other_tokens_irrelevant
+      - PlurSpec/RemoteHealth.lean:respond_token_isolation
+      - PlurSpec/RemoteHealth.lean:others_never_touch
+      - PlurSpec/RemoteHealth.lean:other_token_survives
     tests:
       - >-
         packages/core/test/formal-r2-coreb-health.test.ts::a healthy token interleaved with a revoked one does not reset
         the revoked token
       - packages/core/test/formal-r2-coreb-health.test.ts::never persists a token in the health file
+      - >-
+        packages/core/test/formal-remote-health-breaker.test.ts::one token's 403s and 429 leave another token's record
+        untouched
   packages/core/src/remote-recall.ts#UNSUPPORTED_TTL_MS:
     kind: guarantee
     rule: A 404 marks a server unsupported for a bounded time, not for the life of the process.
@@ -1204,6 +1255,9 @@ anchors:
       - >-
         packages/core/test/recall-deadline-1586-audit.test.ts::with the health-file lock held by a live process, a due
         trial is not dialed
+    lean:
+      - PlurSpec/RemoteHealth.lean:at_most_one_trial
+      - PlurSpec/RemoteHealth.lean:breaker_trial_reachable
   packages/core/src/remote-recall.ts#claimHookDegradationLines:
     kind: guarantee
     rule: >-
@@ -1219,6 +1273,8 @@ anchors:
     rule: A single 403 is never read as a revoked token; it takes two in a row.
     tests:
       - packages/core/test/remote-recall.test.ts::403 requires 2 CONSECUTIVE before reading as revocation (forbidden)
+    lean:
+      - PlurSpec/RemoteHealth.lean:refusal_never_counts
   packages/core/src/remote-recall.ts#hookRemoteHeaderLine:
     kind: guarantee
     rule: Cooldown and unsupported states never print a line into a prompt header.
@@ -1239,6 +1295,10 @@ anchors:
     tests:
       - packages/core/test/remote-recall.test.ts::a writer with a stale entry snapshot does not erase another writer
       - "packages/core/test/recall-deadline-1586-audit.test.ts::a dial writes only the fields it changed: another token"
+    lean:
+      - PlurSpec/RemoteHealth.lean:untouched_survives
+      - PlurSpec/RemoteHealth.lean:increments_add
+      - PlurSpec/RemoteHealth.lean:other_token_survives
   packages/core/src/remote-recall.ts#printKey:
     kind: guarantee
     rule: A plain healthy answer never prints a header; a healthy answer that narrowed scopes prints once like a state.
@@ -1247,11 +1307,17 @@ anchors:
   packages/core/src/remote-recall.ts#processHostRows:
     kind: guarantee
     rule: A server row without tags cannot make scoring throw.
-    none: no test sends a remote row without tags
+    tests:
+      - packages/core/test/formal-remote-health-breaker.test.ts::a server row without tags is given an empty tag list
   packages/core/src/remote-recall.ts#readApplyWrite:
     kind: guarantee
     rule: A server's health record time never moves backwards.
-    none: no test checks the record time under concurrent updates
+    lean:
+      - PlurSpec/RemoteHealth.lean:time_never_backwards
+    tests:
+      - >-
+        packages/core/test/formal-remote-health-breaker.test.ts::a record time never moves backwards when an older
+        observation is saved
   packages/core/src/remote-recall.ts#recordWriteOutcome:
     kind: guarantee
     rule: Write failures open the same per-server breaker that recall uses, and a write success clears it.
@@ -1260,6 +1326,9 @@ anchors:
       - >-
         packages/core/test/outbox-circuit-breaker.test.ts::a write SUCCESS clears the count, so both legs see a
         recovered host
+    lean:
+      - PlurSpec/RemoteHealth.lean:save_clears_breaker
+      - PlurSpec/RemoteHealth.lean:writeFail_inv
   packages/core/src/remote-recall.ts#remoteRecall:
     kind: guarantee
     rule: Remote recall never throws and never runs past its budget or deadline.
@@ -1273,7 +1342,10 @@ anchors:
   packages/core/src/remote-recall.ts#settleBy:
     kind: guarantee
     rule: Waiting for a deadline never rejects; a failure comes back as a result.
-    none: no test checks settleBy directly
+    tests:
+      - >-
+        packages/core/test/formal-remote-health-breaker.test.ts::never rejects: a rejection comes back as a result, a
+        slow promise as not done
   packages/core/src/remote-recall.ts#stampStoreRow:
     kind: guarantee
     rule: >-
@@ -1296,12 +1368,20 @@ anchors:
   packages/core/src/remote-recall.ts#update:
     kind: guarantee
     rule: A write outcome is applied to the server's current health entry under the lock, never to an earlier snapshot.
-    none: no test races two write outcomes against the health file
+    tests:
+      - >-
+        packages/core/test/formal-remote-health-breaker.test.ts::a write outcome is applied to the entry as it is now,
+        not an earlier read
   packages/core/src/remote-recall.ts#withRemoteHealthLock:
     kind: guarantee
     rule: If the health-file lock cannot be taken, the work runs unlocked rather than failing recall or dropping a header.
-    none: no test makes the lock unavailable and checks recall still runs
+    tests:
+      - >-
+        packages/core/test/formal-remote-health-breaker.test.ts::with the health-file lock held, recall still answers
+        and the header is still claimed
   packages/core/src/remote-recall.ts#writeRemoteHealth:
     kind: guarantee
     rule: Health state is written atomically under a unique temporary name, and a failed write never breaks recall.
-    none: no test checks concurrent or failing health-file writes
+    tests:
+      - packages/core/test/formal-remote-health-breaker.test.ts::an unwritable health file never breaks recall
+      - packages/core/test/formal-remote-health-breaker.test.ts::health writes leave no temporary file behind

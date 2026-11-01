@@ -1,6 +1,7 @@
 /**
  * Per-actor Ed25519 signing keys for engram store checkpoints.
- *   ~/.plur/keys/<identity>.key — PKCS#8 DER, mode 0600, never in a repo or store
+ *   <store>/keys/<identity>.key — PKCS#8 DER, mode 0600 (or PLUR_KEYS_DIR, see
+ *                                 keysDirFor); never synced: the store's .gitignore lists keys/
  *   <store-root>/keys.yaml      — public registry (identity → SPKI DER base64, added_at)
  * With a key for the acting identity, `emitCheckpoint` adds an Ed25519
  * `signature` over the event's canonical bytes; `plur verify --signatures`
