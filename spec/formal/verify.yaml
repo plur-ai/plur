@@ -126,6 +126,10 @@ models:
       - packages/core/src/plur/tensions.ts
       - packages/core/src/plur/types.ts
       - packages/core/src/store/remote-store.ts
+      - packages/core/src/git-origin.ts
+      - packages/core/src/schemas/config.ts
+      - packages/core/src/server-discovery.ts
+      - packages/core/src/store-resolver.ts
   - model: PlurSpec/Outbox.lean
     covers:
       - packages/core/src/index.ts
@@ -152,6 +156,8 @@ models:
       - packages/core/src/outbox-health.ts
       - packages/core/src/store/remote-store.ts
       - packages/core/src/remote-recall.ts
+      - packages/core/src/git-origin.ts
+      - packages/core/src/server-discovery.ts
   - model: PlurSpec/ScopeInject.lean
     covers:
       - packages/core/src/scope-util.ts
@@ -162,6 +168,7 @@ models:
       - packages/core/src/telemetry-miss-signal.ts
       - packages/core/src/learner.ts
       - packages/core/src/decay.ts
+      - packages/core/src/plur/scope-guards.ts
   - model: PlurSpec/Persistence.lean
     covers:
       - packages/core/src/engrams.ts
@@ -184,6 +191,7 @@ models:
       - packages/core/src/owner-only.ts
       - packages/core/src/config-file.ts
       - packages/core/src/store-duplicates.ts
+      - packages/core/src/plur/discovery.ts
   - model: PlurSpec/Adapters.lean
     covers:
       - packages/python/plur_ai/client.py
@@ -211,6 +219,7 @@ models:
       - packages/gateway/src/llm.ts
       - packages/gateway/src/claude-hooks.ts
       - packages/gateway/src/hook-command.ts
+      - packages/core/src/session-scopes.ts
   - model: PlurSpec/R2CoreA.lean
     covers:
       - packages/core/src/index.ts
@@ -236,11 +245,14 @@ models:
       - packages/core/src/plur/types.ts
       - packages/core/src/provenance.ts
       - packages/core/src/importers/engine.ts
+      - packages/core/src/server-discovery.ts
   - model: PlurSpec/R2CoreB.lean
     covers:
       - packages/core/src/remote-recall.ts
       - packages/core/src/store/remote-store.ts
       - packages/core/src/tensions.ts
+      - packages/core/src/git-origin.ts
+      - packages/core/src/plur/store-io.ts
   - model: PlurSpec/R2Retrieval.lean
     covers:
       - packages/core/src/telemetry-counters.ts
@@ -250,6 +262,8 @@ models:
       - packages/core/src/query-expansion.ts
       - packages/core/src/capsule.ts
       - packages/core/src/embeddings.ts
+      - packages/core/src/hybrid-search.ts
+      - packages/core/src/importers/engine.ts
   - model: PlurSpec/R2Persist.lean
     covers:
       - packages/core/src/store/async-lock.ts
@@ -261,6 +275,8 @@ models:
       - packages/core/src/storage-postgres.ts
       - packages/core/src/storage-pglite.ts
       - packages/core/src/migrations/runner.ts
+      - packages/core/src/config-file.ts
+      - packages/core/src/storage-indexed.ts
   - model: PlurSpec/R2CLI.lean
     covers:
       - packages/cli/src/lib/codex-hook-io.ts
@@ -273,6 +289,8 @@ models:
       - packages/cli/src/commands/hook-agy-pre-invocation.ts
       - packages/cli/src/commands/doctor.ts
       - packages/core/src/deadline.ts
+      - packages/cli/src/lib/session-task.ts
+      - packages/cli/src/lib/store-lock-exit.ts
   - model: PlurSpec/R2Integrations.lean
     covers:
       - packages/mcp/src/tools.ts
@@ -320,6 +338,8 @@ models:
       - packages/core/src/plur/store-io.ts
       - packages/core/src/plur/tensions.ts
       - packages/core/src/plur/types.ts
+      - packages/core/src/server-discovery.ts
+      - packages/core/src/store-resolver.ts
   - model: PlurSpec/RoutingDiscovery.lean
     covers:
       - packages/core/src/store-resolver.ts
@@ -345,6 +365,8 @@ models:
       - packages/core/src/plur/store-io.ts
       - packages/core/src/plur/tensions.ts
       - packages/core/src/plur/types.ts
+      - packages/core/src/scope-target.ts
+      - packages/core/src/store/remote-store.ts
   - model: PlurSpec/GitScope.lean
     covers:
       - packages/core/src/git-origin.ts

@@ -380,7 +380,7 @@ def isLocalOnlyOld (s : Sc) : Bool :=
   s == "primary".toList || s == "local".toList || s == "global".toList
     || "project:".toList.isPrefixOf s
 
-/-- `_offendingHitsForScope` guard (index.ts): scan when shared OR remote-backed.
+/-- `_offendingHitsForScope` guard (plur/scope-guards.ts): scan when shared OR remote-backed.
 `remote` is `_isRemoteBackedScope` — config, so an oracle. -/
 def leakGuard (remote : Sc → Bool) (s : Sc) : Bool := isShared s || remote s
 

@@ -765,7 +765,7 @@ theorem restore_no_collision_reachable :
     lookup (restore [(1, 5), (3, 8)] [(2, 7)]) 2 = some 7 := by decide
 
 /-! ### Owner decision P1b (2026-09-27): re-id the held LOCAL record.
-`sync.ts` `rekeyHeldAgainstPulled`: the pulled record keeps the id; the held record,
+`sync.ts` `restoreWithheld`, via engrams.ts `mergeHeldRecords`: the pulled record keeps the id; the held record,
 never pushed, gets a fresh id (`fr`, the loader's `freshDuplicateId`), recorded in
 history; an exact copy of a pulled record is not appended twice. -/
 
@@ -1202,7 +1202,7 @@ theorem reattach_example : reattach [1, 3] [1] [(1, 9), (3, 4)] = [(4, 9), (3, 4
 
 end DupIds
 
-/-! ## 4. Corpus write and version stamp (migrations/runner.ts `saveAndStamp`). The
+/-! ## 4. Corpus write and version stamp (migrations/runner.ts `commitMigration`). The
 corpus is abstracted to the schema version it is at; `stamp` is config.yaml's
 `schema_version`. -/
 namespace Stamp

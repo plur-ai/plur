@@ -495,7 +495,7 @@ which is a field of an installed spec, not the classifier.
 
 Checked against the main merge (2026-09-30): #1270 (decisions H2, H3, F4)
 replaced init.ts's local `isPlurHookSpec` with the shared matcher in
-lib/hook-command.ts. `plurBinary` now reads as "PLUR's own launcher runs it":
+packages/gateway/src/hook-command.ts. `plurBinary` now reads as "PLUR's own launcher runs it":
 the plur-hook shim or the npx fallback as an anchored shell-string prefix
 (backslashes and case normalised, length-capped), `cmd.exe /c` plus those,
 or the exec form `node <cli js entry>` for an entry `plur init` recorded.

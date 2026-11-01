@@ -1,8 +1,8 @@
 /-!
 # PlurSpec.Persistence — sync, migrations, locks, backups, outbox order, packs
 
-Models of `packages/core/src/{sync.ts, migrations/runner.ts, store/async-lock.ts,
-storage-postgres.ts, backup.ts, outbox-order.ts, learn-async.ts, packs.ts}`.
+Models of `packages/core/src/{sync.ts, file-lock.ts, atomic-write.ts, migrations/runner.ts, store/async-lock.ts,
+storage-postgres.ts, backup.ts, outbox-order.ts, learn-async.ts, packs/}`.
 Findings, verdicts and replays: `spec/formal/findings/persistence.md`.
 
 Payloads (engram records, YAML bytes, git merges) are abstract: every theorem holds
@@ -746,7 +746,7 @@ theorem fixed_steal_reachable :
 end Lock
 
 /-! ## 3b. Lock heartbeat (decision P1; async-lock.ts `startHeartbeat`,
-`heartbeatHeldLocks`; sync.ts `withLock`, `git`)
+`heartbeatHeldLocks`; file-lock.ts `withLock`; sync.ts `git`)
 
 A contender that cannot probe the holder (another host) steals iff the lock's
 age exceeds `T` (staleThreshold). Time in whole units; `age` = time since the
@@ -1106,7 +1106,7 @@ theorem ro_updates_plain : writeRO ⟨false, false, 1⟩ ⟨false, false, 1⟩ 2
 
 end LearnAsync
 
-/-! ## 8. Packs (packs.ts `computePackHash`, registry `addToRegistry`/`uninstallPack`)
+/-! ## 8. Packs (packs/integrity.ts `computePackHash`, registry `addToRegistry`/`uninstallPack`)
 
 The hash is `H(SKILL.md ‖ engrams.yaml)` for ANY hash oracle `H` — so it can only be
 as injective as the unframed concatenation, which is not. A missing file hashes as an
@@ -1148,7 +1148,7 @@ theorem registry_shared_row :
 
 end Packs
 
-/-! ## AtomicTemp — `atomicWrite` protects its temporary file from the first byte (sync.ts)
+/-! ## AtomicTemp — `atomicWrite` protects its temporary file from the first byte (atomic-write.ts)
 
 Codex round 2, finding 3. The temporary file used to be created at the platform
 default (0644 under umask 022 — readable by other accounts), filled and fsynced, and
@@ -1180,7 +1180,7 @@ Windows ALWAYS protects the empty temp file and refuses when it cannot
 destination), and every config.yaml writer goes through `writeConfigFile`, which
 marks the write `secret` (`Writer`, `every_config_writer_protected`). The writer
 list is the code's: `setIdentity`, `persistStores`, `_updateRawStores`,
-`persistDismissedScopes` (index.ts), `setSchemaVersion` (migrations/runner.ts),
+`persistDismissedScopes` (plur/discovery.ts), `setSchemaVersion` (migrations/runner.ts),
 `removePrimaryStoreEntries` (store-duplicates.ts) — test/config-owner-only.test.ts
 fails when a writer calls atomicWrite with the config mode directly. An
 unprotected writer (`viaHelper w = false`) is the counterexample
@@ -1454,7 +1454,7 @@ theorem config_write_reachable :
 
 /-! ### #1631 gate: the owner's opt-out on a drive without access lists
 
-`PLUR_ALLOW_UNPROTECTED_CONFIG` (sync.ts `refuseUnprotected`, 2026-10-18 gate). On a drive
+`PLUR_ALLOW_UNPROTECTED_CONFIG` (atomic-write.ts `refuseUnprotected`, 2026-10-18 gate). On a drive
 that cannot keep access lists (FAT/exFAT, some network shares) icacls fails, so every
 credential write would be refused and PLUR could not save its config. With the variable
 set, a `secret` write whose destination cannot be inspected still TRIES to protect its temp

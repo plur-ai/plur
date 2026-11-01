@@ -10,7 +10,7 @@ owner decision C3 (2026-09-29): `flushOutbox` / `_flushOutboxClaimed`,
 learn()'s immediate push, the per-entry claims (`_claimOutboxEntry`,
 `_releaseOutboxClaim`, `_outboxClaimUntil`), the refusal classification
 (`outbox-health.ts`) and the per-host breaker as the write and recall legs feed
-it (`remote-recall.ts`). Code: `packages/core/src/index.ts`.
+it (`remote-recall.ts`). Code: `packages/core/src/plur/outbox.ts`.
 Findings: `spec/formal/findings/outbox.md`.
 
 There are no row leases (C3) and no "maybe delivered" state (C4): a queued

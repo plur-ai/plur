@@ -49,7 +49,7 @@ Models, as the code does it (not as it should), the provenance work landing in 0
   `packages/cli/src/lib/notary.ts` `checkNotarySignature` (§9, commit c21b371e); the
   expected notary (`expectedNotaryFor` in `packages/gateway/src/client.ts`, and
   `--trust-gateway-notary`; commit 7c4d9486, code review of 0.23 finding 9) (§9).
-* `packages/core/src/index.ts` `receiptsConfig()` and `packages/mcp/src/tools.ts`
+* `packages/core/src/plur/store-io.ts` `receiptsConfig()` and `packages/mcp/src/tools.ts`
   plur_session_end anchoring (§10).
 
 Hashes are opaque. `computeEventHash` is a function `h : C → Option H → H` of the
