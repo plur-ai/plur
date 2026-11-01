@@ -156,6 +156,12 @@ jobs:
         run: python3 spec/vectors/verify.py --index spec/vectors/index.json --capsules spec/vectors/capsules.json
       - name: Type-check test suites
         run: pnpm typecheck:tests
+      # Every hard rule a comment states, and every promise, has a recorded
+      # backing in spec/guarantees: a Lean theorem, a test, a promise eval, or a reason.
+      - name: Guarantee inventory — checker self-test
+        run: python3 scripts/test_check_guarantees.py
+      - name: Guarantee inventory — every stated rule is accounted for
+        run: node scripts/check-guarantees.mjs
       # D1-followup gate (#177): the KNOWN_ISSUES Stage 3b v2 tracking sentinel
       # must be present and point at a GitHub issue. macOS grep lacks -P, so this
       # is a portable Node check (mirrors release.sh).

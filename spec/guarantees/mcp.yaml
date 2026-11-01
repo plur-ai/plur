@@ -1,0 +1,647 @@
+anchors:
+  packages/mcp/src/background-discovery.ts#(module):
+    kind: guarantee
+    rule: >-
+      Company-server scope discovery is never awaited on the way to a tool answer and never rejects; a failure is one
+      log line naming the server by its safe origin only.
+    tests:
+      - packages/mcp/test/background-discovery.test.ts::startup and session_start return while /me is still hanging
+      - >-
+        packages/mcp/test/background-discovery.test.ts::a failing /me does not delay session_start, keeps the cache and
+        is logged by safe origin only
+  packages/mcp/src/background-discovery.ts#safeOrigin:
+    kind: guarantee
+    rule: A server is named in logs by scheme, host and port only, never with credentials, path or query.
+    tests:
+      - >-
+        packages/mcp/test/background-discovery.test.ts::a url with credentials never reaches the log or the discovery
+        field
+  packages/mcp/src/background-discovery.ts#settled:
+    kind: guarantee
+    rule: A discovery refresh that did not finish is reported as failed, never as the cached ok status.
+    tests:
+      - >-
+        packages/mcp/test/background-discovery.test.ts::a refresh that rejects is reported as failed, not as the cached
+        ok, and leaks no rejection
+  packages/mcp/src/background-discovery.ts#startBackgroundDiscovery:
+    kind: guarantee
+    rule: "At most one discovery refresh runs at a time, and its work never rejects: every failure becomes a failed status."
+    tests:
+      - packages/mcp/test/background-discovery.test.ts::each session_start runs at most one discovery
+      - >-
+        packages/mcp/test/background-discovery.test.ts::a refresh that rejects is reported as failed, not as the cached
+        ok, and leaks no rejection
+  packages/mcp/src/background-discovery.ts#startedAt:
+    kind: guarantee
+    rule: >-
+      A discovery outcome is dated by when its check started, so a status another process writes meanwhile is seen as
+      newer.
+    tests:
+      - >-
+        packages/mcp/test/background-discovery.test.ts::a status another process writes during this check beats this
+        check's older outcome
+  packages/mcp/src/background-discovery.ts#whenDiscoverySettled:
+    kind: note
+    why: A test helper; the comment notes it is not used on a tool's path.
+  packages/mcp/src/drop-log.ts#PAYLOAD_DROP_LOG_MAX_ENTRIES:
+    kind: guarantee
+    rule: >-
+      The payload-drop log records field names and frame metadata only, never values; it keeps only the newest entries;
+      a logging failure never breaks the tool call.
+    tests:
+      - packages/mcp/test/server.test.ts::records a partial drop with field NAMES but never values
+      - "packages/mcp/test/drop-log.test.ts::is bounded: never grows past PAYLOAD_DROP_LOG_MAX_ENTRIES"
+      - packages/mcp/test/drop-log.test.ts::write failures are swallowed
+  packages/mcp/src/drop-log.ts#PayloadDropRecord:
+    kind: guarantee
+    rule: A drop record lists the names of the fields that arrived, never their values.
+    tests:
+      - packages/mcp/test/server.test.ts::records a partial drop with field NAMES but never values
+  packages/mcp/src/drop-log.ts#recordPayloadDrop:
+    kind: guarantee
+    rule: >-
+      Recording a payload drop never throws, and appending and trimming happen under one lock so no record is lost to a
+      concurrent trim.
+    tests:
+      - packages/mcp/test/drop-log.test.ts::write failures are swallowed
+  packages/mcp/src/folder-gate.ts#ancestorHosts:
+    kind: guarantee
+    rule: >-
+      A parent process is matched only with its start time, so a reused process id never passes for the host that asked
+      the folder question.
+    none: no test reuses a process id
+  packages/mcp/src/folder-gate.ts#askFor:
+    kind: guarantee
+    rule: >-
+      After the user answers not now, memory is off for the rest of the session and the folder question is not asked
+      again.
+    tests:
+      - packages/mcp/test/folder-host-question.test.ts::after it memory is off without the question
+  packages/mcp/src/folder-gate.ts#createFolderGate:
+    kind: guarantee
+    rule: >-
+      The server never writes the folder map itself; folder-question nonces are bound to this session, and home and
+      filesystem roots are never asked about.
+    promises:
+      - OFF-4
+  packages/mcp/src/folder-gate.ts#createFolderGate.check:
+    kind: guarantee
+    rule: >-
+      An answered folder's scope reaches writes through the workspace resolver; the process-wide scope slot is never
+      set.
+    none: no test checks the process-wide slot after a folder is decided
+  packages/mcp/src/folder-gate.ts#createWorkspaceDirs:
+    kind: guarantee
+    rule: >-
+      When the editor's roots cannot be fetched or a root is not a local folder, the call fails closed and never falls
+      back to the server's start folder; failures are never cached.
+    tests:
+      - packages/mcp/test/folder-off.test.ts::a failed roots/list fails closed for that call (no start-folder fallback)
+      - packages/mcp/test/folder-off.test.ts::a failed roots/list is not cached
+  packages/mcp/src/folder-gate.ts#dirs:
+    kind: guarantee
+    rule: A root that cannot be turned into a local folder fails the call closed, and nothing is cached.
+    tests:
+      - packages/mcp/test/folder-off.test.ts::a root the server cannot convert fails the call closed, and is not cached
+  packages/mcp/src/folder-gate.ts#FOLDER_GATED_TOOLS:
+    kind: guarantee
+    rule: >-
+      In a folder marked off, every memory tool answers that PLUR is off and touches no store, outbox or remote; every
+      tool is either gated or explicitly ungated, never both.
+    tests:
+      - packages/mcp/test/folder-off.test.ts::a gated call calls nothing on the Plur instance but the folder lookup
+      - >-
+        packages/mcp/test/folder-off.test.ts::every registered tool is either gated or explicitly admin, never both,
+        never neither
+    promises:
+      - OFF-1
+  packages/mcp/src/folder-gate.ts#folderOffAnswer:
+    kind: guarantee
+    rule: An unreadable folder map fails safe and names the file and problem; the folder decision is re-read on every call.
+    tests:
+      - >-
+        packages/mcp/test/folder-off.test.ts::invalid YAML: memory tools read and write nothing and name the file and
+        line
+      - packages/mcp/test/folder-off.test.ts::a decision changed mid-session applies to the next call
+    promises:
+      - OFF-3
+  packages/mcp/src/folder-gate.ts#isFilesystemRoot:
+    kind: guarantee
+    rule: A filesystem root is never asked about as a project folder.
+    none: no test opens the server at a filesystem root
+  packages/mcp/src/folder-gate.ts#off:
+    kind: guarantee
+    rule: An off decision on any workspace folder, the server's own folder included, turns memory off.
+    tests:
+      - >-
+        packages/mcp/test/folder-off.test.ts::a client root in an `off` folder turns the memory tools off even when cwd
+        is elsewhere
+  packages/mcp/src/folder-gate.ts#promise:
+    kind: guarantee
+    rule: >-
+      For a client that does not announce root changes, each call asks for the roots itself and never reuses a request
+      sent before a workspace switch.
+    tests:
+      - >-
+        packages/mcp/test/folder-off.test.ts::a client without listChanged gets its own roots request per call, so a
+        workspace switch is never shared
+  packages/mcp/src/index.ts#applyPlurHooks:
+    kind: guarantee
+    rule: Installing hooks never removes or reorders a user's hooks and never replaces a fuller existing PLUR install.
+    tests:
+      - packages/mcp/test/init-hooks.test.ts::a user hook sharing an entry with the legacy rehydrate hook is kept
+      - >-
+        packages/mcp/test/init-hooks.test.ts::arbitrary top-level keys and user hooks on any event survive a fresh
+        install and a re-run
+  packages/mcp/src/index.ts#compareSemver:
+    kind: note
+    why: "A caveat: calendar versions would compare as far-future, and packs ship semver."
+  packages/mcp/src/index.ts#installClaudeUserMcp:
+    kind: guarantee
+    rule: >-
+      Registering the server backs up every file it changes, writes nothing when nothing changes, and refuses an
+      unparseable settings file without touching either file.
+    tests:
+      - >-
+        packages/mcp/test/init-claude-user-mcp-1561.test.ts::an unparseable ~/.claude.json is refused; neither file is
+        touched
+  packages/mcp/src/index.ts#isPlurCommandHook:
+    kind: guarantee
+    rule: A hook without a command (prompt or agent type) is never treated as PLUR's and never makes init throw.
+    tests:
+      - packages/mcp/test/init-hooks.test.ts::hooks without a command (type prompt / agent) do not make init throw
+  packages/mcp/src/index.ts#MCP_SERVER_CONFIG:
+    kind: guarantee
+    rule: The installed server entry is pinned to this build's version, never @latest.
+    none: no test checks the version pin in the installed entry
+  packages/mcp/src/index.ts#stripPlurHooks:
+    kind: guarantee
+    rule: Removing PLUR's hooks never removes a user's hook.
+    tests:
+      - packages/mcp/test/init-hooks.test.ts::a user's own `npx @plur-ai/cli doctor` PostCompact hook is kept
+  packages/mcp/src/server.ts#announceUpdate:
+    kind: guarantee
+    rule: The periodic update check never keeps the process alive.
+    none: no test checks that the update timer is unref'd
+  packages/mcp/src/server.ts#callTail:
+    kind: guarantee
+    rule: Tool calls run one at a time, so a concurrent call never changes the folder gate or binding under a running one.
+    none: no test checks that tool calls are serialised
+  packages/mcp/src/server.ts#closeWhenIdle:
+    kind: guarantee
+    rule: >-
+      Closing a session ends its folder question at once but never cuts off a tool call that is still running from its
+      answer.
+    tests:
+      - >-
+        packages/mcp/test/folder-ask-stdio.test.ts::a call still running long after stdin ends (store lock held 35 s)
+        still gets its answer
+  packages/mcp/src/server.ts#closing:
+    kind: guarantee
+    rule: When stdin ends or the process is signalled, the session closes and its folder-question nonces are deleted.
+    tests:
+      - >-
+        packages/mcp/test/folder-ask-stdio.test.ts::stdin end closes the session: its nonce file is deleted and its
+        command no longer works
+  packages/mcp/src/server.ts#createServer:
+    kind: guarantee
+    rule: >-
+      Server startup never waits on company-server discovery, and a payload-drop logging failure never replaces the
+      diagnostic error response.
+    tests:
+      - packages/mcp/test/background-discovery.test.ts::startup and session_start return while /me is still hanging
+  packages/mcp/src/server.ts#folderContext.resolve:
+    kind: guarantee
+    rule: >-
+      When the workspace is re-read and comes back local, unknown or unreadable, the write never falls back to an
+      earlier Git scope.
+    lean:
+      - PlurSpec/GitFolder.lean:refreshed_local_stays_local
+      - PlurSpec/GitFolder.lean:failed_refresh_blocks
+    tests:
+      - >-
+        packages/mcp/test/git-origin-workspace.test.ts::an unreadable refreshed workspace cannot use the previous
+        project default
+  packages/mcp/src/server.ts#LOG_WINDOW_MS:
+    kind: guarantee
+    rule: >-
+      The server survives a background unhandled rejection, and exits on an uncaught exception rather than holding the
+      store lock while wedged.
+    tests:
+      - packages/mcp/test/server-survival-1070.test.ts::survives a background unhandled rejection and still answers
+      - packages/mcp/test/server-survival-1070.test.ts::an uncaught EXCEPTION exits code 1
+  packages/mcp/src/server.ts#runStdio:
+    kind: guarantee
+    rule: After stdin ends, a request already in flight still gets its answer.
+    tests:
+      - packages/mcp/test/folder-ask-stdio.test.ts::a request in flight when stdin ends still gets its response
+  packages/mcp/src/server.ts#workspace:
+    kind: guarantee
+    rule: A failure to read the editor's roots fails the call closed.
+    tests:
+      - packages/mcp/test/folder-off.test.ts::a failed roots/list fails closed for that call (no start-folder fallback)
+  packages/mcp/src/telemetry.ts#recordTelemetry:
+    kind: guarantee
+    rule: Recording a telemetry event never throws, and does nothing on an opted-out install.
+    none: no mcp test covers recordTelemetry
+  packages/mcp/src/tools.ts#_pendingScopeEvictions:
+    kind: guarantee
+    rule: An expired session's scope registration is cleared by the next sweep and never leaks for the life of the process.
+    lean:
+      - PlurSpec/Adapters.lean:plur_sweep_no_leak
+    tests:
+      - >-
+        packages/mcp/test/formal-adapters-session.test.ts::an id-only TTL sweep does not leak the expired session's
+        scope registration
+  packages/mcp/src/tools.ts#_resolveScopeSession:
+    kind: guarantee
+    rule: >-
+      With several sessions open and no session id, a session-scope change is refused rather than landing in a slot that
+      would decide another session's writes.
+    tests:
+      - >-
+        packages/mcp/test/session-scope-tool.test.ts::two sessions adjusting scopes stay isolated (ADR-0004); ambiguous
+        writes refuse
+  packages/mcp/src/tools.ts#_resolveWriteSession:
+    kind: guarantee
+    rule: >-
+      An id-less write or injection with not exactly one session open takes no session default, never the last-started
+      session's scope.
+    lean:
+      - PlurSpec/Adapters.lean:unresolved_session_no_default
+      - PlurSpec/Adapters.lean:fixed_ambiguous_no_default
+    tests:
+      - >-
+        packages/mcp/test/formal-apply-surface-session.test.ts::two sessions open, id-less plur_learn: neither session's
+        default is used
+      - >-
+        packages/mcp/test/formal-apply-surface-session.test.ts::two sessions open, id-less inject: core receives
+        NO_SESSION
+  packages/mcp/src/tools.ts#_shellWord:
+    kind: guarantee
+    rule: >-
+      A printed command is never offered for a path holding characters the shell would expand, or a line-break, bidi or
+      zero-width character.
+    none: no test exercises this copy of the quoting rule
+  packages/mcp/src/tools.ts#_warnedUntrustedConfigs:
+    kind: guarantee
+    rule: >-
+      A .plur.yaml scope or domain is adopted only from a directory the user trusted; the check fails closed and an
+      ignored file is reported.
+    lean:
+      - PlurSpec/Adapters.lean:untrusted_never_adopted
+    tests:
+      - >-
+        packages/mcp/test/formal-apply-surface-trust.test.ts::untrusted: session_start ignores the scope and warns with
+        the file and `plur trust`
+      - >-
+        packages/mcp/test/formal-apply-surface-trust.test.ts::untrusted: an unscoped plur_learn neither takes the repo
+        scope nor its domain
+  packages/mcp/src/tools.ts#_writeSession:
+    kind: guarantee
+    rule: >-
+      An unscoped write with no resolvable session never takes the process-wide default; it uses the scope every
+      workspace root agrees on, or none.
+    lean:
+      - PlurSpec/Adapters.lean:fixed_no_session_ignores_slot
+    tests:
+      - "packages/mcp/test/formal-apply-surface-session.test.ts::no session open: the process slot is not used either"
+  packages/mcp/src/tools.ts#{ warnings }:
+    kind: guarantee
+    rule: >-
+      An explicit forget fully retires the memory, however many times it was saved, and an ambiguous unqualified id is
+      refused.
+    promises:
+      - FGT-2
+  packages/mcp/src/tools.ts#anchor:
+    kind: guarantee
+    rule: >-
+      A failed Swarm upload at session end is reported but never fatal: the session still ends and the manifest stays
+      local.
+    none: no test makes the session-end upload fail
+  packages/mcp/src/tools.ts#background:
+    kind: guarantee
+    rule: Session start never probes a company server's scopes inline; that discovery runs in the background.
+    tests:
+      - packages/mcp/test/background-discovery.test.ts::startup and session_start return while /me is still hanging
+  packages/mcp/src/tools.ts#before:
+    kind: guarantee
+    rule: The outbox is read before any flush, so a flush reports what it attempted, not only what is left.
+    tests:
+      - packages/mcp/test/outbox-tool.test.ts::flush:true reports what it attempted, not just what is left
+  packages/mcp/src/tools.ts#buildAdminDispatchTool.handler:
+    kind: guarantee
+    rule: >-
+      The general plur_admin gateway never runs a destructive tool; those are callable only directly, with their own
+      annotations.
+    lean:
+      - PlurSpec/R2Integrations.lean:admin_never_retires
+      - PlurSpec/R2Integrations.lean:fixed_admin_never_removes
+    tests:
+      - packages/mcp/test/tool-profile.test.ts::plur_admin REFUSES to dispatch destructive tools
+    promises:
+      - TOOL-4
+  packages/mcp/src/tools.ts#checkpoint_hash:
+    kind: guarantee
+    rule: Writing the session-end checkpoint is best-effort and never fails the session end.
+    none: no test makes the checkpoint write fail
+  packages/mcp/src/tools.ts#clearCtx:
+    kind: guarantee
+    rule: >-
+      Clearing a session scope through the server with no session record restores nothing: never another session's scope
+      or the process slot.
+    none: no test clears a scope for a session this server did not start
+  packages/mcp/src/tools.ts#composeHints:
+    kind: guarantee
+    rule: Composition hints are reported after the write and never block it.
+    none: the composeHints test checks the hint text, not that the write is unaffected
+  packages/mcp/src/tools.ts#context:
+    kind: guarantee
+    rule: >-
+      A write takes its default scope from the explicitly named session, else from the lone open session; the session
+      itself is never stored on the memory.
+    lean:
+      - PlurSpec/Adapters.lean:entry_points_use_named_session
+      - PlurSpec/Adapters.lean:lone_session_default
+  packages/mcp/src/tools.ts#context.attribution:
+    kind: guarantee
+    rule: Attribution and claim class are passed through as the caller gave them; an agent or claim class is never invented.
+    none: no test checks that missing attribution stays missing
+  packages/mcp/src/tools.ts#context.domain:
+    kind: guarantee
+    rule: An explicit domain argument always wins over the project config's domain.
+    none: no test sets both a domain argument and a project domain
+  packages/mcp/src/tools.ts#covering:
+    kind: guarantee
+    rule: When a pin is refused for lack of room, the suggested unpins always free enough room.
+    none: no test checks the suggested unpins cover the deficit
+  packages/mcp/src/tools.ts#CURSOR_CORE_TOOL_NAMES:
+    kind: guarantee
+    rule: >-
+      Every tool that retires, deletes or overwrites memory is a direct tool in every profile and is kept out of the
+      plur_admin gateway; moving a memory and batch learning are not counted as destructive.
+    lean:
+      - PlurSpec/R2Integrations.lean:fixed_destructive_is_direct
+      - PlurSpec/R2Integrations.lean:fixed_admin_never_removes
+    tests:
+      - >-
+        packages/mcp/test/formal-r2-apply-mcp-removal-gated.test.ts::every destructive tool is a direct tool in the lean
+        and cursor profiles
+      - >-
+        packages/mcp/test/tool4-batch-never-overwrites-report-failure-gated.test.ts::plur_learn_batch is annotated
+        destructiveHint:false
+    promises:
+      - TOOL-4
+  packages/mcp/src/tools.ts#declared:
+    kind: guarantee
+    rule: >-
+      Values from an untrusted .plur.yaml are grammar-checked, quoted and escaped, never copied as free text into the
+      model's context.
+    tests:
+      - >-
+        packages/mcp/test/formal-apply-surface-trust.test.ts::untrusted: hostile scope and domain text never reaches the
+        warning or the guide
+  packages/mcp/src/tools.ts#dedup:
+    kind: guarantee
+    rule: The near-duplicate report runs after the write and never blocks or alters it.
+    none: no test checks that a failing near-duplicate report leaves the write intact
+  packages/mcp/src/tools.ts#describeActionInventory:
+    kind: guarantee
+    rule: >-
+      plur_admin's action list is generated from the dispatcher, never hand-maintained, and is shortened to family
+      counts rather than silently truncated.
+    tests:
+      - >-
+        packages/mcp/test/admin-gateway.test.ts::enumerates every dispatchable action — add or remove a tool and this
+        regenerates
+  packages/mcp/src/tools.ts#describeRefusedRoute:
+    kind: guarantee
+    rule: "A refused auto-route says which kind of scope was refused: a shared scope or a remote personal scope."
+    tests:
+      - >-
+        packages/mcp/test/formal-r2-integrations-session.test.ts::plur_suggest_scope names it a remote personal scope,
+        not a shared one
+  packages/mcp/src/tools.ts#describeToolSurface:
+    kind: guarantee
+    rule: The reported tool surface is exactly what tools/list exposes for the active profile.
+    tests:
+      - packages/mcp/test/tool-surface.test.ts::reports exactly what tools/list exposes — not an approximation
+  packages/mcp/src/tools.ts#endSession:
+    kind: guarantee
+    rule: >-
+      At session end, one suggestion that cannot be learned does not abort the rest; the failed ones are named in the
+      result.
+    tests:
+      - packages/mcp/test/session-provenance.test.ts::stores the others, names the failure, and keeps the episode
+  packages/mcp/src/tools.ts#engram.session:
+    kind: guarantee
+    rule: A memory made from an episode takes the same session default as every other write, never the process-wide slot.
+    none: no test covers session resolution for plur_episode_to_engram
+  packages/mcp/src/tools.ts#fetchLimit:
+    kind: note
+    why: Explains why one extra result is fetched before truncation.
+  packages/mcp/src/tools.ts#folderCtx:
+    kind: guarantee
+    rule: >-
+      Through the server the workspace resolver decides the session scope: the client cannot supply it, and the server
+      folder's .plur.yaml is not a fallback after the workspace says no scope.
+    tests:
+      - >-
+        packages/mcp/test/folder-scope-stdio.test.ts::M1: disagreeing personal scopes, a trusted team .plur.yaml above
+        them: no team, with or without plur_session_start
+  packages/mcp/src/tools.ts#folderOnCommand:
+    kind: guarantee
+    rule: The command to turn memory back on names a non-default store with --path, so it changes the map this server reads.
+    none: no test checks --path in the turn-on command
+  packages/mcp/src/tools.ts#FolderScopeContext:
+    kind: guarantee
+    rule: Cached server status is for the policy the gate admitted, never derived from the process folder.
+    none: no test checks the status source
+  packages/mcp/src/tools.ts#getAllToolDefinitions.annotations:
+    kind: guarantee
+    rule: >-
+      A batch save never overwrites or deletes an existing memory; moving a memory always leaves a copy and is not
+      destructive; a tension scan is not idempotent.
+    lean:
+      - PlurSpec/R2Integrations.lean:fixed_removal_gated
+      - PlurSpec/R2Integrations.lean:rescope_move_dispatched
+    tests:
+      - >-
+        packages/mcp/test/tool4-batch-never-overwrites-report-failure-gated.test.ts::plur_learn_batch with the checker
+        answering
+      - packages/mcp/test/formal-r2-integrations-annotations.test.ts::plur_tensions scan persists new detections
+    promises:
+      - TOOL-4
+      - LRN-8
+  packages/mcp/src/tools.ts#getAllToolDefinitions.delivery:
+    kind: guarantee
+    rule: Every completed save reply carries where it went.
+    promises:
+      - EFI-2
+  packages/mcp/src/tools.ts#getAllToolDefinitions.handler:
+    kind: guarantee
+    rule: >-
+      An unknown export format is refused rather than answered with prose, and a session-scope change with several
+      sessions open is refused rather than landing in the process slot.
+    tests:
+      - packages/mcp/test/provenance-tool.test.ts::refuses a format it does not know, instead of quietly returning prose
+      - packages/mcp/test/session-scope-tool.test.ts::ambiguous writes refuse
+  packages/mcp/src/tools.ts#getAllToolDefinitions.integrity_status:
+    kind: note
+    why: Explains why the three-way integrity status is passed alongside the boolean.
+  packages/mcp/src/tools.ts#getAllToolDefinitions.results:
+    kind: guarantee
+    rule: "Batch learning never overwrites: a checker's update or merge becomes a new linked memory, and the result says so."
+    tests:
+      - >-
+        packages/mcp/test/tool4-batch-never-overwrites-report-failure-gated.test.ts::plur_learn_batch with the checker
+        answering
+    promises:
+      - LRN-8
+  packages/mcp/src/tools.ts#getAllToolDefinitions.skipped:
+    kind: guarantee
+    rule: Pairs a tension scan skips by policy are reported, never dropped silently.
+    none: no test checks the skipped field
+  packages/mcp/src/tools.ts#isFreshInstall:
+    kind: note
+    why: Defines a fresh install; no rule.
+  packages/mcp/src/tools.ts#kwMeta.session:
+    kind: guarantee
+    rule: >-
+      An id-less recall with not exactly one session open passes no session, never the process slot the last-started
+      session owns.
+    lean:
+      - PlurSpec/R2Integrations.lean:recall_ambiguous_no_default
+    tests:
+      - >-
+        packages/mcp/test/formal-r2-integrations-session.test.ts::two sessions open, id-less recall (keyword and
+        hybrid): core receives NO_SESSION
+  packages/mcp/src/tools.ts#matches:
+    kind: guarantee
+    rule: Forget-by-search looks only at local memories and never sends the search phrase to remote hosts.
+    none: no test checks forget-by-search makes no remote request
+  packages/mcp/src/tools.ts#message:
+    kind: guarantee
+    rule: >-
+      An export without a licence is refused with the question to put to the user, and the agent never picks a licence
+      itself.
+    tests:
+      - packages/mcp/test/provenance-tool.test.ts::returns a structured refusal with the question to put to the user
+  packages/mcp/src/tools.ts#outbox_needs:
+    kind: guarantee
+    rule: Reading the outbox summary at session start is best-effort and never fails session start.
+    none: no test makes the outbox summary throw
+  packages/mcp/src/tools.ts#partialDrop:
+    kind: note
+    why: Explains why partial drops are recorded whether or not an array parameter is involved.
+  packages/mcp/src/tools.ts#projectConfig:
+    kind: note
+    why: Describes core's project-config discovery (stops at .git, ignores a home .plur.yaml); the rule lives in core.
+  packages/mcp/src/tools.ts#recallHandler:
+    kind: guarantee
+    rule: Recording what a recall returned never changes or holds up the reply.
+    tests:
+      - packages/mcp/test/session-end-anchor-audit.test.ts::a held history lock does not hold up the recall reply
+  packages/mcp/src/tools.ts#recallHandlerInner:
+    kind: guarantee
+    rule: >-
+      When reranking is configured but did not engage on a non-empty result, the response says so instead of labelling
+      the results reranked.
+    none: no test checks the not-engaged report
+  packages/mcp/src/tools.ts#receiptSummary:
+    kind: guarantee
+    rule: The receipt summary frames the activation rate as coverage, never as an effectiveness score.
+    tests:
+      - packages/mcp/test/receipt-tool.test.ts::handler returns a natural-language summary alongside the counted fields
+  packages/mcp/src/tools.ts#redraft:
+    kind: guarantee
+    rule: A same-day redraft is reported, never blocked.
+    none: no test covers the redraft notice
+  packages/mcp/src/tools.ts#refuseLocalFileInRemoteOnly:
+    kind: guarantee
+    rule: In a remote-only folder, a tool that reads or writes this machine's store files directly is refused.
+    tests:
+      - >-
+        packages/mcp/test/folder-remote-only.test.ts::plur_history without an id and plur_profile return nothing
+        personal in a remote-only folder
+  packages/mcp/src/tools.ts#refuseModelInRemoteOnly:
+    kind: guarantee
+    rule: >-
+      In a remote-only folder, a tool that would send memories to a caller-named model is refused before any memory is
+      read.
+    tests:
+      - >-
+        packages/mcp/test/folder-remote-only.test.ts::plur_tensions scan, plur_extract_meta, plur_validate_meta and
+        plur_report_failure with a model are refused, nothing sent
+  packages/mcp/src/tools.ts#requestedScope:
+    kind: guarantee
+    rule: Registering a store that already exists is reported as already registered, never as newly added.
+    tests:
+      - packages/mcp/test/tools.test.ts::reports status:already_registered on an exact url+scope repeat
+  packages/mcp/src/tools.ts#response.id:
+    kind: guarantee
+    rule: A team memory's id keeps its store prefix, so it never collides with a local memory minted the same day.
+    tests:
+      - packages/mcp/test/team-id-prefix-unique.test.ts::save gives the two same-day engrams different ids
+  packages/mcp/src/tools.ts#retiredNow:
+    kind: guarantee
+    rule: When validation retires a meta-engram, the response says so.
+    none: no test checks the retired notice in the response
+  packages/mcp/src/tools.ts#routed:
+    kind: guarantee
+    rule: >-
+      Each batch item says where it was saved, including a route into a store the caller did not name or a refused
+      shared route.
+    promises:
+      - EFI-2
+  packages/mcp/src/tools.ts#server_discovery:
+    kind: guarantee
+    rule: A refused key or failed company-server check is said in the session guide, never reported as ok.
+    tests:
+      - >-
+        packages/mcp/test/background-discovery.test.ts::a refused key is reported in the discovery field and the guide,
+        never as ok
+  packages/mcp/src/tools.ts#session:
+    kind: guarantee
+    rule: A session id this process never registered supplies no default scope.
+    none: no test passes an unknown session id
+  packages/mcp/src/tools.ts#SESSION_TTL_MS:
+    kind: guarantee
+    rule: A session that is never ended expires after eight hours, so per-session state cannot grow without bound.
+    tests:
+      - >-
+        packages/mcp/test/formal-adapters-session.test.ts::an id-only TTL sweep does not leak the expired session's
+        scope registration
+  packages/mcp/src/tools.ts#SessionTelemetry:
+    kind: guarantee
+    rule: Session injection telemetry is removed at session end and bounded by the session expiry otherwise.
+    tests:
+      - packages/mcp/test/session.test.ts::session telemetry is cleared after session_end — no cross-session bleed
+  packages/mcp/src/tools.ts#summary:
+    kind: note
+    why: Explains why outbox entries are counted by state.
+  packages/mcp/src/tools.ts#temporalEcho:
+    kind: guarantee
+    rule: >-
+      An expiry date extracted from the statement is always echoed back with a confirmation note, never applied
+      silently.
+    tests:
+      - packages/mcp/test/tools.test.ts::echoes an auto-extracted expiry date with a confirmation note
+  packages/mcp/src/tools.ts#truncatedByCount:
+    kind: guarantee
+    rule: The recall truncation telemetry event carries a query hash, scope, domain and time, never the query text.
+    none: no test inspects the truncation telemetry event
+  packages/mcp/src/tools.ts#unsent:
+    kind: guarantee
+    rule: >-
+      Session end states the true number of team memories still unsent, and reports an unreadable queue rather than
+      passing it off as empty.
+    tests:
+      - >-
+        packages/mcp/test/session-end-unsent-outbox.test.ts::states the true unsent count when team memories are still
+        queued
+      - >-
+        packages/mcp/test/session-end-unsent-outbox.test.ts::reports a queue that could not be read instead of looking
+        clean
+    promises:
+      - TOOL-3

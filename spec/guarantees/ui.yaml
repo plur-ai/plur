@@ -1,0 +1,62 @@
+anchors:
+  packages/ui/src/query.ts#createdOn:
+    kind: note
+    why: "Explains why the date in the id is preferred: the learned_at field is rarely set in practice."
+  packages/ui/src/query.ts#MemoryStats:
+    kind: note
+    why: "Describes what a statistics field counts; no rule."
+  packages/ui/src/query.ts#pctNeverRecalled:
+    kind: guarantee
+    rule: "The viewer never shows 100% never-recalled while some memory has been recalled, nor 0% while some has not."
+    tests: ["packages/ui/test/query.test.ts::never claims 100% never-recalled while some HAVE been recalled", "packages/ui/test/query.test.ts::never claims 0% while some have NOT been recalled"]
+  packages/ui/src/query.ts#topByRecall:
+    kind: guarantee
+    rule: "The most-recalled list never includes a memory that was never recalled."
+    tests: ["packages/ui/test/query.test.ts::omits never-recalled engrams"]
+  packages/ui/src/server.ts#bracketed:
+    kind: guarantee
+    rule: "Normalising a Host value twice gives the same result as normalising it once."
+    lean: ["PlurSpec/R2Integrations.lean:norm_idempotent"]
+    tests: ["packages/ui/test/server.test.ts::normalisation is idempotent"]
+  packages/ui/src/server.ts#canonicalHostName:
+    kind: guarantee
+    rule: "A host name carrying a port, credentials, a path or a percent escape is refused, not silently trimmed."
+    tests: ["packages/ui/test/host-policy.test.ts::refuses anything that is not a bare hostname or IP literal"]
+  packages/ui/src/server.ts#createUiServer:
+    kind: guarantee
+    rule: "The DNS-rebinding Host check is applied to every request, even when the server is bound more widely."
+    tests: ["packages/ui/test/server.test.ts::REFUSES an attacker domain"]
+  packages/ui/src/server.ts#headers.'cache-control':
+    kind: guarantee
+    rule: "The memory page is sent with no-store, so it is never written to a disk cache."
+    tests: ["packages/cli/test/ui-server.test.ts::sends no-store, so a memory page is never cached to disk"]
+  packages/ui/src/server.ts#hostIsAllowed:
+    kind: guarantee
+    rule: "A request whose Host is not one of the server's own names is refused, spoof shapes included; a request with no Host is allowed."
+    lean: ["PlurSpec/R2Integrations.lean:present_empty_refused", "PlurSpec/R2Integrations.lean:absent_allowed"]
+    tests: ["packages/ui/test/server.test.ts::refuses every Host spoof shape"]
+  packages/ui/src/server.ts#isUnspecifiedName:
+    kind: guarantee
+    rule: "The unspecified address (0.0.0.0, ::) is never put on the allowlist or printed as a URL."
+    tests: ["packages/cli/test/ui-host.test.ts::an unspecified bind lists interface addresses, canonical, never the unspecified address", "packages/cli/test/ui-host.test.ts::--allow-host refuses the unspecified address"]
+  packages/ui/src/server.ts#normaliseHostName:
+    kind: guarantee
+    rule: "Host normalisation is idempotent and never folds a spoof spelling such as localhost. or 127.1 into an allowed name."
+    lean: ["PlurSpec/R2Integrations.lean:norm_idempotent"]
+    tests: ["packages/ui/test/server.test.ts::normalisation is idempotent", "packages/ui/test/host-policy.test.ts::normaliseHostName leaves a bracketed non-IPv6 value as it is"]
+  packages/ui/src/server.ts#revealFolder:
+    kind: guarantee
+    rule: "The folder opened in the file manager is the store root the host resolved, never a path taken from the request."
+    none: "no test checks that request input cannot reach the opened path"
+  packages/ui/src/server.ts#startViewer:
+    kind: guarantee
+    rule: "The embedded viewer binds only to 127.0.0.1, so it is never reachable from another machine."
+    tests: ["packages/ui/test/server.test.ts::never binds anything but loopback, whatever the host asks for"]
+  packages/ui/src/server.ts#UiServerOptions:
+    kind: guarantee
+    rule: "Extra allowed hosts only widen the Host allowlist; the rebinding check is never skipped."
+    tests: ["packages/ui/test/server.test.ts::REFUSES an attacker domain"]
+  packages/ui/src/server.ts#wide:
+    kind: guarantee
+    rule: "A server that answers to a network name cannot also offer to open the store folder; constructing one is refused."
+    tests: ["packages/ui/test/host-policy.test.ts::throws at construction for any non-loopback allowlist entry"]

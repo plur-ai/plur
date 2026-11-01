@@ -1,0 +1,1307 @@
+anchors:
+  packages/core/src/hybrid-search.ts#applyReranker:
+    kind: guarantee
+    rule: When the optional reranker fails, recall still returns its results in the fused order instead of failing.
+    tests:
+      - packages/core/test/hybrid-rerank.test.ts::falls back to original order if the reranker throws
+  packages/core/src/hybrid-search.ts#reranked:
+    kind: guarantee
+    rule: Recall still returns results when the rerank stage fails.
+    tests:
+      - packages/core/test/hybrid-rerank.test.ts::falls back to original order if the reranker throws
+  packages/core/src/index.ts#(module):
+    kind: note
+    why: Export comments that point to where directory trust, remote-only refusals and atomic file writes are defined.
+  packages/core/src/index.ts#BINDING_CAPTURED:
+    kind: guarantee
+    rule: >-
+      A public call keeps the folder binding that was in effect when it started, even if the instance is rebound while
+      the call waits.
+    tests:
+      - >-
+        packages/core/test/remote-only-binding-capture.test.ts::a rebind mid-call does not change what a remote-only
+        call sees
+      - packages/core/test/remote-only-binding-capture.test.ts::each public prototype method carries the capture wrapper
+  packages/core/src/index.ts#Plur:
+    kind: note
+    why: Explains when the sqlite index is built by default and when it needs an explicit setting.
+  packages/core/src/index.ts#Plur._basePrimaryStore:
+    kind: note
+    why: Tells maintainers to reach primary engram state through the store rather than the raw file helpers.
+  packages/core/src/index.ts#Plur._heldBy:
+    kind: note
+    why: Explains why the holding server is tracked beside the row instead of on it.
+  packages/core/src/index.ts#Plur._llmFailures:
+    kind: note
+    why: Explains why LLM failures are kept as a time window rather than a counter.
+  packages/core/src/index.ts#Plur._meIdentities:
+    kind: guarantee
+    rule: >-
+      An unscoped write is not routed into a personal server scope unless the token's latest identity lookup succeeded;
+      never fetched, offline or rejected all count as unknown.
+    lean:
+      - PlurSpec/ScopeInject.lean:autoRoute_me_only
+    tests:
+      - >-
+        packages/core/test/formal-apply-core-me-only.test.ts::unknown /me identity (never fetched) → refused, fails
+        closed, nothing POSTed
+      - packages/core/test/formal-apply-core-me-only.test.ts::/me unreachable → still refused
+  packages/core/src/index.ts#Plur._metadataOnly:
+    kind: guarantee
+    rule: In a remote-only folder, history keeps only metadata; free text in an event is never recorded.
+    none: no test checks which history fields are dropped in a remote-only folder
+  packages/core/src/index.ts#Plur._queueRetireRemote:
+    kind: guarantee
+    rule: >-
+      A queued remote retire only ever deletes the server copy, never re-sends it, and queuing it twice for the same
+      server id changes nothing.
+    tests:
+      - >-
+        packages/core/test/formal-apply-core-retire-remote.test.ts::flush path: forget during the flush POST queues a
+        retire; the next flush DELETEs it once and never re-POSTs
+  packages/core/src/index.ts#Plur._remoteDelivered:
+    kind: note
+    why: Describes an in-memory record of server-confirmed writes; it states no rule of its own.
+  packages/core/src/index.ts#Plur._remoteOnlyContext:
+    kind: guarantee
+    rule: In a remote-only folder, a write to a scope two servers claim is refused with nothing written.
+    tests:
+      - >-
+        packages/core/test/formal-remote-only-gate.test.ts::a team scope two servers claim is refused with
+        ScopeConflictError; nothing is written
+  packages/core/src/index.ts#Plur._remoteStores:
+    kind: guarantee
+    rule: Peeking at a remote store's cache never triggers a network load; it returns nothing until the cache is warmed.
+    none: no test checks that the cache peek makes no request
+  packages/core/src/index.ts#Plur._rerankerEvalAdvisoryDone:
+    kind: guarantee
+    rule: A harmful reranker self-evaluation is logged once as advice and never turns the reranker off.
+    tests:
+      - >-
+        packages/core/test/reranker-eval.test.ts::logs the harmful advisory ONCE when the env-configured reranker
+        engages — and keeps reranking
+  packages/core/src/index.ts#Plur._secondaryStores:
+    kind: note
+    why: States that file-backed secondary stores use YAML; an implementation fact, not a rule.
+  packages/core/src/index.ts#Plur.close:
+    kind: guarantee
+    rule: Closing an instance stops it recording a shared store's id renames but leaves the store itself open for its owner.
+    tests:
+      - >-
+        packages/core/test/formal-r2-apply-persist-nothing-hidden.test.ts::several Plur instances on one adapter all
+        record the rename; a closed one stops
+  packages/core/src/index.ts#Plur.resolveAutoDiscover:
+    kind: note
+    why: Explains why an environment variable can turn constructor-time discovery off.
+  packages/core/src/index.ts#renameSink:
+    kind: guarantee
+    rule: >-
+      When a shared store renames a clashing id, every attached instance records the rename in its history; it is never
+      only logged.
+    tests:
+      - >-
+        packages/core/test/formal-r2-apply-persist-nothing-hidden.test.ts::several Plur instances on one adapter all
+        record the rename; a closed one stops
+      - >-
+        packages/core/test/formal-r2-apply-persist-nothing-hidden.test.ts::a batch with a clashing id is stored under
+        two ids and the rename is an engram_rekeyed event
+  packages/core/src/index.ts#startDir:
+    kind: guarantee
+    rule: A failure of the one-time legacy tension purge never makes the constructor fail.
+    none: no test makes the purge fail and checks the constructor still succeeds
+  packages/core/src/inject.ts#DEFAULT_PINNED_HARD_RATIO:
+    kind: guarantee
+    rule: Hard-tier pinned memories never take more than their share of the pinned budget, whatever ratio is configured.
+    tests:
+      - >-
+        packages/core/test/pinned-two-tier-inject.test.ts::the hard tier is capped at its share of the pinned budget and
+        the overflow is reported
+      - >-
+        packages/core/test/pinned-two-tier-inject.test.ts::a non-finite hard ratio falls back to the default instead of
+        disabling the cap
+  packages/core/src/inject.ts#InjectionContext:
+    kind: guarantee
+    rule: Scopes granted by mounted stores only widen what is visible; they never widen an explicit allow-list of scopes.
+    tests:
+      - "packages/core/test/inject-scopes.test.ts::ADVERSARIAL: the grant does NOT widen the options.scopes allow-list"
+  packages/core/src/inject.ts#InternalInjectionResult:
+    kind: guarantee
+    rule: Every pinned memory that was not delivered is listed in the injection result with the reason.
+    tests:
+      - >-
+        packages/core/test/pinned-two-tier-inject.test.ts::hard-tier overflow reaches the injection result instead of
+        vanishing
+    promises:
+      - INJ-6
+  packages/core/src/inject.ts#commitment:
+    kind: guarantee
+    rule: A memory's commitment and its confidence are shown as separate fields; one never replaces the other.
+    none: no test checks that both fields render side by side
+  packages/core/src/inject.ts#expiredMarker:
+    kind: guarantee
+    rule: In soft-expiry mode an expired memory that is still delivered always carries the EXPIRED warning.
+    tests:
+      - >-
+        packages/core/test/plur.test.ts::config expiry.mode=soft injects recently-expired engrams with the EXPIRED
+        marker
+  packages/core/src/inject.ts#fillTokenBudget:
+    kind: guarantee
+    rule: >-
+      The pinned share is taken from the whole injection budget once, not once per section pass; a hard-tier pin that
+      does not fit is reported, never dropped silently.
+    tests:
+      - >-
+        packages/core/test/pinned-two-tier-inject.test.ts::hard-tier overflow reaches the injection result instead of
+        vanishing
+      - packages/core/test/pinned-two-tier-inject.test.ts::a soft pin in an earlier pass cannot spend the hard tier
+    promises:
+      - INJ-6
+  packages/core/src/inject.ts#formatLayer3:
+    kind: note
+    why: Explains why the meta line says "Last active" rather than "Last verified".
+  packages/core/src/inject.ts#hardPinnedReserve:
+    kind: note
+    why: Records a known limitation of the hard-tier reserve calculation.
+  packages/core/src/inject.ts#isConstraintCandidate:
+    kind: note
+    why: Warns maintainers to keep this predicate in step with the wire-time routing.
+  packages/core/src/inject.ts#isInjectVisible:
+    kind: guarantee
+    rule: A memory outside the visible scopes is never revived by pinning, an embedding boost or spreading activation.
+    lean:
+      - PlurSpec/ScopeInject.lean:selected_visible
+    tests:
+      - >-
+        packages/core/test/formal-scopeinject-visibility.test.ts::spreading activation does not reach a scope-excluded
+        association target
+      - >-
+        packages/core/test/formal-scopeinject-visibility.test.ts::a semantic-only embedding boost does not revive a
+        scope-excluded engram
+      - >-
+        packages/core/test/formal-scopeinject-visibility.test.ts::a pinned engram in an ungranted shared scope is not
+        injected under project scope
+    promises:
+      - PRV-3
+  packages/core/src/inject.ts#isPrimaryRow:
+    kind: guarantee
+    rule: >-
+      A row from a secondary store or pack never hides another store's row through supersession; only the user's primary
+      rows can.
+    none: no test checks that a store or pack row cannot hide another store's row
+  packages/core/src/inject.ts#meta:
+    kind: guarantee
+    rule: The token estimate for a memory never under-counts a field the renderer prints.
+    lean:
+      - PlurSpec/ScopeInject.lean:estimate_covers_render
+  packages/core/src/inject.ts#metaSafe:
+    kind: guarantee
+    rule: Pack-controlled text cannot forge extra fields in a memory's meta line.
+    tests:
+      - >-
+        packages/core/test/progressive-disclosure.test.ts::a pack-controlled domain cannot forge the meta line authority
+        fields
+  packages/core/src/inject.ts#originLines:
+    kind: guarantee
+    rule: Every delivered memory says which scope it came from, on its own line.
+    tests:
+      - >-
+        packages/core/test/progressive-disclosure.test.ts::formatLayer1 renders the whole statement and its scope, never
+        the summary (INJ-7)
+    promises:
+      - INJ-7
+  packages/core/src/inject.ts#pinned:
+    kind: guarantee
+    rule: Under budget pressure a pack's pinned memory is never admitted ahead of the user's own pinned memory.
+    lean:
+      - PlurSpec/ScopeInject.lean:pinned_priority
+      - PlurSpec/ScopeInject.lean:new_primary_wins
+    tests:
+      - >-
+        packages/core/test/formal-scopeinject-pinned-origin.test.ts::a pack pinned directive does not displace a primary
+        pinned constraint
+      - packages/core/test/pinned-quota.test.ts::does not admit a lower-origin pin after skipping a higher-origin one
+    promises:
+      - INJ-6
+  packages/core/src/inject.ts#pinnedOriginRank:
+    kind: guarantee
+    rule: >-
+      A pinned row's origin rank comes from the loader, so a row cannot claim to be the user's own by carrying its own
+      marker.
+    tests:
+      - packages/core/test/pinned-quota.test.ts::a row cannot claim primary origin by shipping its own marker
+  packages/core/src/inject.ts#remainingAfterSections:
+    kind: guarantee
+    rule: The whole injection, including the consider pool and spreading activation, never exceeds the token budget.
+    lean:
+      - PlurSpec/ScopeInject.lean:total_le_budget
+    tests:
+      - packages/core/test/formal-apply-budget-inject.test.ts::holds across budgets, including tiny ones
+    promises:
+      - INJ-2
+  packages/core/src/inject.ts#scoreEngram:
+    kind: guarantee
+    rule: >-
+      Under a project scope filter, personal scopes and scopes granted by mounted stores stay visible; only shared
+      scopes matching neither are excluded.
+    tests:
+      - packages/core/test/inject-scopes.test.ts::the mounted scope passes a project-scope VISIBILITY filter
+      - "packages/core/test/inject-scopes.test.ts::REGRESSION: without a mount the same group scope stays excluded"
+  packages/core/src/inject.ts#selectAndSpread:
+    kind: guarantee
+    rule: A visible pinned memory is delivered even when it shares no keywords with the task.
+    lean:
+      - PlurSpec/ScopeInject.lean:good_case_reachable
+    tests:
+      - packages/core/test/inject.test.ts::pinned engram with no keyword overlap survives the minRelevance filter
+  packages/core/src/inject.ts#skipForApproval:
+    kind: guarantee
+    rule: A memory awaiting approval is never given to the agent, though explicit recall still finds it.
+    tests:
+      - packages/core/test/draft-approval-gate.test.ts::does not inject a draft engram
+      - packages/core/test/draft-approval-gate.test.ts::still returns a draft from an explicit recall
+    promises:
+      - INJ-4
+  packages/core/src/inject.ts#skipForValidity:
+    kind: guarantee
+    rule: >-
+      A memory that is not yet valid is never injected, and an expired one is skipped in hard mode or once past the
+      grace window.
+    tests:
+      - packages/core/test/plur.test.ts::learn with future valid_from is skipped by inject (not-yet-valid)
+      - packages/core/test/inject.test.ts::hard mode (default) skips recently-expired engrams
+      - packages/core/test/inject.test.ts::soft mode still skips engrams expired beyond the grace window
+    promises:
+      - FDB-5
+  packages/core/src/injection-signal.ts#(module):
+    kind: guarantee
+    rule: >-
+      Automatic ratings below the minimum confidence are never sent, and a reply that both rejects and follows a memory
+      gets no rating.
+    tests:
+      - packages/core/test/injection-signal.test.ts::returns only signals at or above the 0.6 threshold
+      - packages/core/test/injection-signal.test.ts::a statement first negated, then carried out, gets no verdict
+  packages/core/src/injection-signal.ts#AUTO_FEEDBACK_MIN_CONFIDENCE:
+    kind: guarantee
+    rule: An automatic rating below the minimum confidence is never sent.
+    tests:
+      - packages/core/test/injection-signal.test.ts::returns only signals at or above the 0.6 threshold
+  packages/core/src/injection-signal.ts#correctionMemo:
+    kind: note
+    why: Explains a memo that keeps the correction check linear on long replies.
+  packages/core/src/injection-signal.ts#verdict:
+    kind: guarantee
+    rule: >-
+      A memory is rated negative only when every occurrence is rejected and positive only when none is; a mixed reply
+      gets no rating.
+    tests:
+      - packages/core/test/injection-signal.test.ts::a statement first negated, then carried out, gets no verdict
+      - packages/core/test/injection-signal.test.ts::every occurrence rejected is still negative
+  packages/core/src/instruction-history.ts#SHIPPED_PLUR_SECTIONS:
+    kind: guarantee
+    rule: An installer replaces only instruction text PLUR shipped; text a user wrote is never touched.
+    tests:
+      - packages/cli/test/init-memory-footer.test.ts::a user-edited AGENTS.md section is kept as it was
+  packages/core/src/instruction-section.ts#InstructionSectionOptions:
+    kind: guarantee
+    rule: Instruction text PLUR did not write is never removed from a user's file.
+    tests:
+      - >-
+        packages/core/test/instruction-section.test.ts::a section the user edited is left exactly as it was; the new one
+        is added beside it
+      - >-
+        packages/core/test/instruction-section.test.ts::user prose and a ### subsection after a shipped section at end
+        of file survive
+  packages/core/src/instruction-section.ts#backupFile:
+    kind: guarantee
+    rule: >-
+      A backup is created exclusively, so two writers never share or overwrite one, and an unchanged file is not backed
+      up twice.
+    tests:
+      - >-
+        packages/core/test/instruction-section-write-failure.test.ts::the backup is created exclusively, so two writers
+        can never share one
+      - >-
+        packages/core/test/instruction-section.test.ts::(c) backupFile with once: a second backup of unchanged content
+        is not written
+  packages/core/src/instruction-section.ts#hiddenLines:
+    kind: guarantee
+    rule: >-
+      Headings or markers inside fenced code or HTML comments are never treated as structure, and when that cannot be
+      decided the file is left alone.
+    tests:
+      - packages/core/test/instruction-section.test.ts::a marker inside a fence does not count as an installed section
+      - >-
+        packages/core/test/instruction-section-render.test.ts::when it cannot tell whether a block is still open, it
+        leaves the file alone and says why
+  packages/core/src/instruction-section.ts#tabbed:
+    kind: note
+    why: Explains why a tab-indented fence is treated as undecidable.
+  packages/core/src/instruction-section.ts#writeWithBackup:
+    kind: guarantee
+    rule: >-
+      An instruction file is replaced atomically, never written when it changed since it was read, and a failure leaves
+      it untouched; hard links and dangling links are refused.
+    tests:
+      - >-
+        packages/core/test/instruction-section-write-failure.test.ts::a file that changed since the caller read it is
+        not written at all
+      - >-
+        packages/core/test/instruction-section-write-failure.test.ts::a failure while swapping the new file in leaves
+        the target untouched and no temp file
+      - packages/core/test/instruction-section-write-failure.test.ts::a hard-linked file is not written at all
+  packages/core/src/inversion-scan.ts#COMMON_ACTION_VERBS:
+    kind: note
+    why: Describes the heuristic word list.
+  packages/core/src/inversion-scan.ts#InversionSuspect:
+    kind: guarantee
+    rule: The inversion scan only reports suspects and never rewrites a memory.
+    tests:
+      - "packages/core/test/inversion-scan.test.ts::is read-only: never mutates the input array or its entries"
+  packages/core/src/inversion-scan.ts#LEADING_DIRECTIVE_RE:
+    kind: guarantee
+    rule: A statement that opens with its directive word is never flagged as a suspected inversion.
+    tests:
+      - packages/core/test/inversion-scan.test.ts::does not flag a correctly-extracted (post-fix) negation
+  packages/core/src/jwt.ts#decodeJwtPayload:
+    kind: note
+    why: Warns callers that the decoded claims are unverified and only for display.
+  packages/core/src/learn-async.ts#LearnAsyncDeps:
+    kind: guarantee
+    rule: An unscoped save never inherits a server-backed scope from the memory it resembles.
+    tests:
+      - packages/core/test/learn-async-scope.test.ts::saves an unscoped update of a team memory locally, linked to it
+  packages/core/src/learn-async.ts#dedupActor:
+    kind: guarantee
+    rule: A dedup decision names the model behind it only when the caller said which model; one is never invented.
+    none: no test checks the recorded dedup actor
+  packages/core/src/learn-async.ts#executeDedupDecision:
+    kind: guarantee
+    rule: >-
+      A merge or update answer from the duplicate check never rewrites the existing memory; it saves a new linked or
+      superseding one.
+    tests:
+      - >-
+        packages/core/test/learn-async-scope.test.ts::MERGE leaves the existing engram untouched and saves a linked
+        memory
+      - >-
+        packages/core/test/learn-async-scope.test.ts::UPDATE leaves the existing engram_version and version untouched
+        (it supersedes)
+    promises:
+      - LRN-8
+  packages/core/src/learn-async.ts#existing:
+    kind: guarantee
+    rule: >-
+      A changed value is saved as a new memory that supersedes the old one, whose text is never rewritten; a locked
+      memory is never superseded automatically and the pair goes to review.
+    tests:
+      - >-
+        packages/core/test/learn-async-scope.test.ts::UPDATE leaves the existing engram_version and version untouched
+        (it supersedes)
+      - >-
+        packages/core/test/learn-update-supersede-stores.test.ts::secondary target locked between the read and the
+        write: not superseded, the new one is a draft, review opened
+    promises:
+      - LRN-6
+      - LRN-8
+      - LRN-9
+  packages/core/src/learn-async.ts#learnAsync:
+    kind: guarantee
+    rule: >-
+      An explicitly scoped save is only deduplicated against memories in the same scope, and similarity never decides
+      whether a save is written.
+    tests:
+      - packages/core/test/learn-async-scope.test.ts::does not dedup an explicitly-scoped write against a global engram
+      - packages/core/test/dedup-cosine.test.ts::falls back to ADD and says so when similarity is unavailable
+  packages/core/src/learn-async.ts#learnBatch:
+    kind: guarantee
+    rule: >-
+      Batch learning never overwrites an existing memory, caps its AI-check calls while still saving every statement,
+      and one failure does not abort the batch.
+    tests:
+      - >-
+        packages/core/test/learn-batch-cap.test.ts::caps LLM dedup calls at maxLlmCalls and still processes every
+        statement
+      - packages/core/test/batch.test.ts::a caller can map each input to its engram even when a middle item fails (#281)
+    promises:
+      - LRN-5
+      - LRN-8
+  packages/core/src/learn-async.ts#result:
+    kind: guarantee
+    rule: >-
+      Batch learning never overwrites an existing memory: a merge becomes a linked new memory and an update a
+      superseding one.
+    tests:
+      - evals/learn/test_promise_LRN8_changed_value_supersedes.test.ts::new memory supersedes, old text kept
+    promises:
+      - LRN-8
+  packages/core/src/learn-async.ts#saveBesideLocked:
+    kind: guarantee
+    rule: >-
+      When the duplicate check says to update a locked memory, the locked memory stays unchanged and the new statement
+      is saved as a draft for review, never given to the agent until resolved.
+    tests:
+      - >-
+        packages/core/test/learn-update-supersede-stores.test.ts::secondary target locked between the read and the
+        write: not superseded, the new one is a draft, review opened
+    promises:
+      - LRN-9
+  packages/core/src/learn-async.ts#top:
+    kind: guarantee
+    rule: Similarity is only reported; however close a candidate is, it never stops a save.
+    tests:
+      - packages/core/test/dedup-cosine.test.ts::never suppresses a write, however similar the closest candidate is
+  packages/core/src/learn-async.ts#{ enabled = true, threshold = 0.85, mode = 'llm' }:
+    kind: guarantee
+    rule: The similarity threshold only decides what is reported; it never blocks a save.
+    tests:
+      - packages/core/test/dedup-cosine.test.ts::REPORTS a near-duplicate at high similarity but still writes it
+  packages/core/src/learner.ts#ALL_PATTERN_GROUPS:
+    kind: note
+    why: Explains the order in which pattern groups are tried.
+  packages/core/src/learner.ts#CORRECTION_PATTERNS:
+    kind: guarantee
+    rule: >-
+      A plain prohibition is never stored as a fragment that reverses its meaning; a genuine "X, not Y" correction keeps
+      both halves.
+    lean:
+      - PlurSpec/ScopeInject.lean:every_negform_keeps_polarity
+    tests:
+      - packages/core/test/learner.test.ts::does not invert
+      - packages/core/test/learner.test.ts::preserves the full contrast for a genuine
+  packages/core/src/learner.ts#ML_MARK:
+    kind: guarantee
+    rule: >-
+      The per-reply memory line is never captured as a learning, while a real learning that merely starts with "Memory"
+      is kept.
+    tests:
+      - packages/core/test/learner.test.ts::drops the footer
+      - packages/core/test/learner.test.ts::a genuine learning that merely starts with
+  packages/core/src/learner.ts#PLACEHOLDER_BULLET_RE:
+    kind: guarantee
+    rule: A bullet that is only a bracketed template placeholder is never captured as a learning.
+    tests:
+      - packages/core/test/learner.test.ts::drops placeholder bullets copied verbatim from the injected template (A2)
+      - packages/core/test/learner.test.ts::does not drop a real bullet that merely starts with a bracket
+  packages/core/src/learner.ts#PREFERENCE_PATTERNS:
+    kind: guarantee
+    rule: >-
+      An extracted always/never rule keeps its directive word and any negation, so it is never stored as its opposite,
+      and words like "whenever" do not match.
+    lean:
+      - PlurSpec/ScopeInject.lean:extract_preserves_polarity
+      - PlurSpec/ScopeInject.lean:new_whenever_not_matched
+      - PlurSpec/ScopeInject.lean:every_negform_keeps_polarity
+    tests:
+      - packages/core/test/learner.test.ts::on a prohibition instead of storing its opposite
+  packages/core/src/learner.ts#match:
+    kind: guarantee
+    rule: A real learning that follows the memory line inside the learning block is never lost.
+    tests:
+      - packages/core/test/learner.test.ts::are kept, and so is what follows them
+  packages/core/src/memory-block.ts#renderMemoryBlock:
+    kind: guarantee
+    rule: When the instructions fit, the rendered memory section never exceeds the remaining token budget.
+    lean:
+      - PlurSpec/ScopeInject.lean:memBlockNew_le
+    tests:
+      - >-
+        packages/core/test/formal-apply-budget-memblock.test.ts::usedTokens is charged: the whole output stays within
+        tokenBudget - usedTokens
+    promises:
+      - INJ-2
+  packages/core/src/normalize-engram.ts#NormalizeRule:
+    kind: guarantee
+    rule: >-
+      Field normalisation is idempotent, runs before parsing, never touches quarantined entries and never mutates its
+      input.
+    tests:
+      - packages/core/test/normalize-engram.test.ts::is idempotent — a migrated record is untouched, by reference
+      - packages/core/test/normalize-engram.test.ts::never mutates its input
+  packages/core/src/offline.ts#updateCheckDisabledByEnv:
+    kind: guarantee
+    rule: The update check does not run when PLUR is offline or the check is turned off.
+    tests:
+      - packages/core/test/offline-no-network.test.ts::the update check makes no network call of any kind
+    promises:
+      - TEAM-5
+  packages/core/src/outbox-health.ts#NEEDS_ACTION_RETRY_MS:
+    kind: guarantee
+    rule: >-
+      An automatic flush retries a write that needs action at most once a day, an explicit flush retries it at once, and
+      such entries are never dropped.
+    tests:
+      - >-
+        packages/core/test/outbox-needs-action.test.ts::an automatic flush backs off a needs_action entry; nothing is
+        removed or rewritten
+      - >-
+        packages/core/test/outbox-needs-action.test.ts::an explicit flush (force) retries it; only retry bookkeeping
+        changes
+  packages/core/src/outbox-health.ts#REFUSAL_TEXT:
+    kind: note
+    why: Describes the text a server sends when it refuses a write; an assumption about the server.
+  packages/core/src/outbox-order.ts#orderBySupersedes:
+    kind: guarantee
+    rule: >-
+      Queued writes caught in a supersedes cycle are still attempted in their original order, never dropped from the
+      flush.
+    tests:
+      - packages/core/test/formal-persistence-outbox-order.test.ts::cycles are appended in input order, never dropped
+  packages/core/src/owner-only.ts#(module):
+    kind: guarantee
+    rule: >-
+      Owner-only protection runs system tools with an argument list, never a shell, by full system path, and names
+      accounts only by their security id.
+    tests:
+      - >-
+        packages/core/test/config-owner-only.test.ts::icacls is called with an argument array that grants only the
+        account, by its SID
+      - packages/core/test/config-owner-only.test.ts::icacls and whoami run by full path from
+  packages/core/src/owner-only.ts#OwnerOnlyOptions:
+    kind: guarantee
+    rule: >-
+      When the Windows account is unknown nothing is protected and the result says so; the account is identified by its
+      security id, never by name.
+    tests:
+      - >-
+        packages/core/test/config-owner-only.test.ts::account unknown → ok:false (protect) / unknown (check), nothing
+        run
+      - packages/core/test/config-owner-only.test.ts::the account is identified by its SID (whoami)
+  packages/core/src/owner-only.ts#_systemTool:
+    kind: guarantee
+    rule: On Windows with no trustworthy system folder, no tool runs and protection fails closed.
+    tests:
+      - packages/core/test/config-owner-only.test.ts::icacls and whoami run by full path from
+  packages/core/src/owner-only.ts#checkOwnerOnly:
+    kind: guarantee
+    rule: Checking a file only reads it, and a failed read is reported as unknown, never as owner-only.
+    tests:
+      - "packages/core/test/config-owner-only.test.ts::checkOwnerOnly: a failed read is unknown, never ok; it only reads"
+  packages/core/src/owner-only.ts#currentWindowsSid:
+    kind: note
+    why: Describes how the account id is read and cached; the "cannot be read" case simply returns null.
+  packages/core/src/owner-only.ts#decodeSaved:
+    kind: note
+    why: States a fact about the two text encodings used to tell them apart.
+  packages/core/src/owner-only.ts#defaultOwnerOnlyExec:
+    kind: guarantee
+    rule: The default command runner never goes through a shell.
+    tests:
+      - >-
+        packages/core/test/config-owner-only.test.ts::icacls is called with an argument array that grants only the
+        account, by its SID
+  packages/core/src/owner-only.ts#protectOwnerOnly:
+    kind: guarantee
+    rule: Protection reports success only when the owner-only state was set and verified by reading it back.
+    tests:
+      - packages/core/test/config-owner-only.test.ts::chmod that does nothing (fixed-mode mount)
+      - packages/core/test/config-owner-only.test.ts::another principal in the ACL that cannot be removed
+  packages/core/src/owner-only.ts#readAcl:
+    kind: guarantee
+    rule: An access list that cannot be read, or is anything but one well-formed record, is unknown, never owner-only.
+    tests:
+      - >-
+        packages/core/test/config-owner-only.test.ts::a saved list that is not exactly one well-formed descriptor is
+        unknown, never ok (Codex gate round 1)
+  packages/core/src/owner-only.ts#windowsSystemTool:
+    kind: guarantee
+    rule: System tools are run by absolute path, never by bare name, so a planted copy in the working folder cannot run.
+    tests:
+      - packages/core/test/config-owner-only.test.ts::icacls and whoami run by full path from
+      - packages/core/test/config-owner-only.test.ts::a planted icacls.exe in the working folder is never run
+  packages/core/src/packs.ts#InstallOptions:
+    kind: guarantee
+    rule: A pack carrying a secret or a declared private memory is always refused; no install option overrides that.
+    tests:
+      - packages/core/test/pack-lifecycle-conformance.test.ts::allowInjection does not reach a secret
+      - packages/core/test/pack-lifecycle-conformance.test.ts::no install option reaches past it
+  packages/core/src/packs.ts#PackInfo:
+    kind: guarantee
+    rule: >-
+      A pack whose integrity cannot be checked (no registry row, or an ambiguous legacy row) is reported as unverified,
+      never as fine.
+    tests:
+      - >-
+        packages/core/test/registry-config-integrity-805.test.ts::reports tampering as MODIFIED, and an unrecorded pack
+        as UNVERIFIED
+      - >-
+        packages/core/test/registry-config-integrity-805.test.ts::does not report an unverifiable pack as if it were
+        fine
+  packages/core/src/packs.ts#PackProvenanceView:
+    kind: guarantee
+    rule: >-
+      A pack's provenance is never presented as verified; unreadable records and records about memories the pack does
+      not ship are counted and reported, and a licence source outside the known set is never shown as a typed fact.
+    tests:
+      - >-
+        packages/core/test/pack-provenance-preview.test.ts::never claims anything was verified, because nothing is
+        signed
+      - >-
+        packages/core/test/pack-lifecycle-conformance.test.ts::a record about an engram the pack does not ship is
+        counted, not opened
+      - >-
+        packages/core/test/pack-lifecycle-conformance.test.ts::a licence source outside the closed set never reaches the
+        typed view
+  packages/core/src/packs.ts#UninstallResult:
+    kind: note
+    why: "Explains why the result type is the literal true: uninstall throws when the pack is absent."
+  packages/core/src/packs.ts#_installPackDir:
+    kind: guarantee
+    rule: A pack name that would escape the packs folder is refused before any directory is touched.
+    tests:
+      - packages/core/test/packs.test.ts::refuses to install from a source whose basename escapes the packs dir
+    promises:
+      - PCK-3
+  packages/core/src/packs.ts#copyPlainFile:
+    kind: guarantee
+    rule: >-
+      A symbolic link in a pack never reaches the store; the copy itself refuses links even if the earlier check was
+      skipped.
+    tests:
+      - >-
+        packages/core/test/pack-file-scan.test.ts::is refused when a link is absolute, and the target never reaches the
+        store
+  packages/core/src/packs.ts#declaredCount:
+    kind: guarantee
+    rule: The preview warns about every memory that declares itself private before install refuses the pack.
+    tests:
+      - >-
+        packages/core/test/pack-lifecycle-conformance.test.ts::the preview says so before the gate does, and marks the
+        finding as declared
+  packages/core/src/packs.ts#declaredPrivate:
+    kind: guarantee
+    rule: >-
+      A pack that ships a memory explicitly marked private is refused; one that merely omits visibility installs as
+      private and is reported.
+    tests:
+      - packages/core/test/pack-lifecycle-conformance.test.ts::refuses, names the engram, and installs nothing
+      - >-
+        packages/core/test/pack-lifecycle-conformance.test.ts::an engram that omits visibility installs as private here,
+        and is reported rather than refused
+  packages/core/src/packs.ts#displaced:
+    kind: guarantee
+    rule: >-
+      Replacing an installed pack never shows readers a partly copied pack, and a failed swap puts the previous version
+      back.
+    none: no test interrupts the swap or observes the directory during it
+  packages/core/src/packs.ts#engramsPath:
+    kind: guarantee
+    rule: One pack with a corrupt memory file does not stop the other packs being listed.
+    tests:
+      - packages/core/test/corruption-matrix.test.ts::lists the healthy pack when a sibling pack
+  packages/core/src/packs.ts#integrityOk:
+    kind: guarantee
+    rule: A pack recorded under the older integrity format still verifies as it did.
+    tests:
+      - packages/core/test/pack-integrity-v2.test.ts::legacy rows verify under v1 before migration
+  packages/core/src/packs.ts#isUnreadableProvenanceRecord:
+    kind: guarantee
+    rule: >-
+      A file the scan could not read blocks install with no override, except an unreadable provenance record, which is
+      counted and left behind.
+    tests:
+      - >-
+        packages/core/test/pack-lifecycle-conformance.test.ts::installs, counts the record as unreadable, and leaves it
+        behind
+      - >-
+        packages/core/test/pack-lifecycle-conformance.test.ts::an oversize file that is NOT a provenance record still
+        refuses
+  packages/core/src/packs.ts#listPacks.integrity_status:
+    kind: guarantee
+    rule: A pack whose manifest cannot be loaded is still listed, as unverified with its error.
+    tests:
+      - packages/core/test/corruption-matrix.test.ts::lists the healthy pack when a sibling pack
+  packages/core/src/packs.ts#nHasNever:
+    kind: note
+    why: Describes the wording heuristic used to spot opposite-polarity conflicts.
+  packages/core/src/packs.ts#pinnedCount:
+    kind: note
+    why: Explains why the preview flags pinned memories.
+  packages/core/src/packs.ts#preview:
+    kind: guarantee
+    rule: The security scan always runs before a pack is copied and cannot be turned off.
+    tests:
+      - packages/core/test/packs.test.ts::install blocks packs containing secrets
+  packages/core/src/packs.ts#privateIssues:
+    kind: note
+    why: Explains why a declared private memory makes the install refuse; the rule is anchored at declaredPrivate.
+  packages/core/src/packs.ts#readJson:
+    kind: note
+    why: Explains that links are refused earlier, at the pack boundary.
+  packages/core/src/packs.ts#readPackProvenance:
+    kind: guarantee
+    rule: One bad provenance record does not stop the others being read.
+    tests:
+      - packages/core/test/pack-provenance-preview.test.ts::survives a pack whose provenance files are corrupt or forged
+  packages/core/src/packs.ts#refuseSymlinks:
+    kind: guarantee
+    rule: A pack containing a symbolic link is refused before anything reads it, and the refusal names the link.
+    tests:
+      - >-
+        packages/core/test/pack-file-scan.test.ts::is refused when SKILL.md is a link to a deep file carrying a key and
+        an injection
+      - packages/core/test/pack-file-scan.test.ts::names the links, so they can be fixed
+  packages/core/src/packs.ts#scanPackFiles:
+    kind: guarantee
+    rule: Any pack file the scan could not read is reported and blocks the install; nothing is skipped silently.
+    tests:
+      - packages/core/test/pack-file-scan.test.ts::flags a file too large to scan, and install refuses it
+  packages/core/src/packs.ts#shipped:
+    kind: guarantee
+    rule: A provenance record about a memory the pack does not ship is counted by name and never opened.
+    tests:
+      - >-
+        packages/core/test/pack-lifecycle-conformance.test.ts::a record about an engram the pack does not ship is
+        counted, not opened
+  packages/core/src/packs.ts#source:
+    kind: guarantee
+    rule: A licence source outside the known set is never passed through as a typed value.
+    tests:
+      - >-
+        packages/core/test/pack-lifecycle-conformance.test.ts::a licence source outside the closed set never reaches the
+        typed view
+  packages/core/src/packs.ts#sourceName:
+    kind: guarantee
+    rule: Two different packs downloaded into same-named folders never share an install directory.
+    tests:
+      - >-
+        packages/core/test/pack-install-dir-collision.test.ts::a second, different pack from a same-named folder does
+        not replace the first
+    promises:
+      - PCK-3
+  packages/core/src/packs.ts#staleCollisionCopies:
+    kind: guarantee
+    rule: Cleaning up after a collision always keeps different packs and installs the user deliberately made side by side.
+    tests:
+      - >-
+        packages/core/test/pack-legacy-id-and-stale-copy.test.ts::keeps two installations of one pack the user made from
+        differently named sources
+      - packages/core/test/pack-legacy-id-and-stale-copy.test.ts::keeps genuinely different packs apart
+  packages/core/src/packs.ts#superseded:
+    kind: guarantee
+    rule: >-
+      An obsolete pack copy is moved aside before it is deleted, so a reader never loads a half-deleted pack, and a
+      failed removal is reported.
+    none: no test observes readers or a failure during removal of obsolete copies
+  packages/core/src/packs.ts#uninstallPack:
+    kind: guarantee
+    rule: >-
+      Uninstalling a pack removes only its own registry row, never the integrity baseline of another pack with the same
+      name.
+    lean:
+      - PlurSpec/PacksV2.lean:uninstall_preserves_others
+    tests:
+      - packages/core/test/pack-registry-dir.test.ts::uninstalling one leaves the other ok, not unverified
+      - >-
+        packages/core/test/pack-registry-dir.test.ts::a legacy row shared by two directories is not removed when only
+        one of them is uninstalled
+    promises:
+      - PCK-3
+  packages/core/src/packs.ts#walkPack:
+    kind: guarantee
+    rule: >-
+      Walking a pack never follows links, and a pack too large to walk is reported rather than partly scanned in
+      silence.
+    tests:
+      - packages/core/test/pack-file-scan.test.ts::is refused when a directory is a link
+  packages/core/src/pglite-embeddings-export.ts#PgliteEmbeddingsExportReport:
+    kind: guarantee
+    rule: A row that cannot be processed is skipped and counted; it never aborts the export.
+    none: no test feeds a malformed row and checks the export continues
+  packages/core/src/pglite-embeddings-export.ts#copy:
+    kind: note
+    why: States a fact about the typed-array copy constructor.
+  packages/core/src/pglite-embeddings-export.ts#extensions:
+    kind: note
+    why: Explains why the vector extension is loaded.
+  packages/core/src/pglite-embeddings-export.ts#toNumberArray:
+    kind: note
+    why: Explains why the bytes are copied before being viewed as floats.
+  packages/core/src/project-config.ts#atHome:
+    kind: guarantee
+    rule: A .plur.yaml directly in the home folder is never used, whichever spelling of the home folder is given.
+    tests:
+      - packages/core/test/project-config.test.ts::does not match a .plur.yaml that lives directly in HOME
+      - packages/core/test/project-config.test.ts::home refusal survives a symlinked HOME spelling
+  packages/core/src/project-config.ts#canonicalSpellings:
+    kind: guarantee
+    rule: Case folding can only make a fail-closed folder check match more paths, never fewer.
+    tests:
+      - >-
+        packages/core/test/canonicalize.test.ts::canonicalSpellings keeps the case-preserving spelling next to the
+        folded one
+  packages/core/src/project-config.ts#findProjectConfigPath:
+    kind: guarantee
+    rule: >-
+      The .plur.yaml lookup never goes above the repository root, refuses a file in the home folder, and follows the
+      real path inside a repository.
+    tests:
+      - packages/core/test/project-config.test.ts::stops at .git boundary — never escapes to parent dirs
+      - >-
+        packages/core/test/folder-safety-1588.test.ts::P12: a symlink into a repository sub-folder does not pick up a
+        .plur.yaml above the repository
+  packages/core/src/project-config.ts#finishList:
+    kind: guarantee
+    rule: An explicitly empty remote_scopes list is kept as empty rather than treated as absent.
+    none: no test parses an empty remote_scopes list
+  packages/core/src/project-config.ts#tail:
+    kind: note
+    why: Explains how a path that does not exist yet is canonicalised.
+  packages/core/src/project-config.ts#walkForConfig:
+    kind: guarantee
+    rule: The config walk stops at the repository boundary and never escapes the current project.
+    tests:
+      - packages/core/test/project-config.test.ts::stops at .git boundary — never escapes to parent dirs
+  packages/core/src/project-remote.ts#projectRemoteRefusalNotice:
+    kind: guarantee
+    rule: The notice for refused remote settings always names the directory and the command to trust it.
+    tests:
+      - packages/cli/test/formal-audit-1228c.test.ts::the remote-refusal notice keeps core
+  packages/core/src/project-remote.ts#resolveProjectRemoteFromConfig:
+    kind: guarantee
+    rule: If the directory trust check fails, a project's remote settings are dropped.
+    none: no test makes the trust check throw and checks the remote settings are dropped
+  packages/core/src/provenance-store.ts#(module):
+    kind: guarantee
+    rule: With nothing configured, no provenance record is written.
+    tests:
+      - packages/core/test/provenance-store.test.ts::is never when nothing is configured
+      - packages/core/test/provenance-store.test.ts::writes no record while the setting is never
+  packages/core/src/provenance-store.ts#substance:
+    kind: guarantee
+    rule: Restating a record that says the same thing does not write a new file.
+    tests:
+      - packages/core/test/provenance-store.test.ts::returns the same file when nothing about the record changed
+  packages/core/src/provenance.ts#(module):
+    kind: guarantee
+    rule: A provenance record never invents an agent; when the actor is unknown the relationship is left out.
+    tests:
+      - packages/core/test/provenance.test.ts::names nobody when the engram names nobody
+  packages/core/src/provenance.ts#ACTIVITY_OF:
+    kind: note
+    why: Describes which history events map to activities; the "never" refers to events the code does not emit.
+  packages/core/src/provenance.ts#DomainExtension:
+    kind: guarantee
+    rule: A domain extension can add fields only under its own prefix and can never redefine a core term.
+    tests:
+      - packages/core/test/provenance-pack.test.ts::refuses to let a domain claim a core prefix
+      - packages/core/test/provenance-pack.test.ts::refuses to let a domain redefine a core term
+  packages/core/src/provenance.ts#LICENCE_POLICY:
+    kind: guarantee
+    rule: An unrecognised licence yields a policy that grants nothing, never a permissive default and never no policy.
+    tests:
+      - >-
+        packages/core/test/provenance.test.ts::grants nothing for a licence it does not recognise, rather than staying
+        silent
+  packages/core/src/provenance.ts#ProvenanceOptions:
+    kind: guarantee
+    rule: Not knowing whether a scope is backed by a server can only make the record more restrictive.
+    lean:
+      - PlurSpec/R2CoreA.lean:unknown_backing_stricter
+    tests:
+      - >-
+        packages/core/test/formal-r2-corea-provenance.test.ts::a remote-backed personal scope may leave; an unbacked one
+        is withheld
+  packages/core/src/provenance.ts#ProvenanceSummary:
+    kind: guarantee
+    rule: "The summary's permission fields are plain data that fail closed: an unknown licence answers no, never null."
+    tests:
+      - packages/core/test/provenance.test.ts::returns values as data, not as padded display strings
+      - >-
+        packages/core/test/provenance.test.ts::fails closed on the schema default, as it already did on an unknown
+        licence
+  packages/core/src/provenance.ts#agentNodes:
+    kind: guarantee
+    rule: A model's prompt is recorded only by its hash; its text is never stored.
+    tests:
+      - packages/core/test/provenance.test.ts::identifies a prompt by hash and never carries its text
+  packages/core/src/provenance.ts#assertDomainFields:
+    kind: guarantee
+    rule: >-
+      A domain extension that would collide with the core vocabulary is refused with an error, never silently dropped or
+      applied.
+    tests:
+      - packages/core/test/provenance-pack.test.ts::refuses to let a domain claim a core prefix
+      - packages/core/test/provenance-pack.test.ts::refuses to let a domain redefine a core term
+      - packages/core/test/provenance-pack.test.ts::refuses an attribute with no prefix
+  packages/core/src/provenance.ts#buildPackProvenanceRecord:
+    kind: guarantee
+    rule: >-
+      A pack record states the pack licence and says when the members' licences differ, without letting either override
+      the other.
+    tests:
+      - packages/core/test/provenance-pack.test.ts::says when the pack licence and the engram licences are not the same
+  packages/core/src/provenance.ts#buildPackProvenanceRecord.'engram:historyEvents':
+    kind: note
+    why: "Explains why a pack record states zero history events: the history log does not travel with a pack."
+  packages/core/src/provenance.ts#chosenLicence:
+    kind: guarantee
+    rule: A record never presents a licence nobody chose as a recorded decision.
+    tests:
+      - packages/core/test/provenance.test.ts::does not present an unchosen licence as a recorded fact
+  packages/core/src/provenance.ts#escapeIri:
+    kind: guarantee
+    rule: Invisible and direction-changing characters are never left raw inside a record identifier.
+    tests:
+      - packages/core/test/provenance-i18n.test.ts::does not leave invisible characters raw inside an identifier
+  packages/core/src/provenance.ts#eventAgents:
+    kind: guarantee
+    rule: >-
+      An event is attributed to whoever caused it, so a memory retired by one person is not attributed to the person who
+      stated it.
+    none: no test checks attribution of an event whose actor differs from the asserter
+  packages/core/src/provenance.ts#fields.may_leave_this_machine:
+    kind: guarantee
+    rule: When a record does not answer whether a memory may leave this machine, the summary answers no.
+    lean:
+      - PlurSpec/R2CoreA.lean:summary_agrees_with_record
+      - PlurSpec/R2CoreA.lean:summary_fallback_sound
+    tests:
+      - >-
+        packages/core/test/formal-r2-corea-provenance.test.ts::a record with no engram node does not report
+        may_leave_this_machine: true
+      - >-
+        packages/core/test/formal-r2-corea-provenance.test.ts::a record with no scope, no visibility and no share answer
+        does not report it may leave
+  packages/core/src/provenance.ts#fields.may_reuse_commercially:
+    kind: guarantee
+    rule: When nothing establishes that commercial reuse is allowed, the summary answers no.
+    tests:
+      - >-
+        packages/core/test/provenance.test.ts::fails closed on the schema default, as it already did on an unknown
+        licence
+      - packages/core/test/provenance.test.ts::never reports a proprietary memory as reusable
+  packages/core/src/provenance.ts#isWithheld:
+    kind: guarantee
+    rule: >-
+      A memory counts as not cleared to leave this machine when it is private, or when its scope stays on the machine
+      and it is not explicitly public; a missing scope counts as staying.
+    lean:
+      - PlurSpec/R2CoreA.lean:private_always_withheld
+      - PlurSpec/R2CoreA.lean:onmachine_nonpublic_withheld
+      - PlurSpec/R2CoreA.lean:missing_scope_withheld
+    tests:
+      - packages/core/test/formal-r2-corea-provenance.test.ts::private is withheld wherever it lives
+      - >-
+        packages/core/test/formal-r2-corea-provenance.test.ts::withholds personal-family scopes (user:*, agent:*) that
+        no remote store backs
+  packages/core/src/provenance.ts#licencePolicy:
+    kind: guarantee
+    rule: The licence policy of a memory not cleared to leave never reads as permission to pass it on.
+    tests:
+      - packages/core/test/provenance.test.ts::does not let the licence read as permission to share a private memory
+  packages/core/src/provenance.ts#recordedSource:
+    kind: guarantee
+    rule: >-
+      A record that does not say where its licence came from is treated as not chosen, so the permission answers fail
+      closed.
+    lean:
+      - PlurSpec/R2CoreA.lean:peek_absent_sound
+    tests:
+      - packages/core/test/formal-r2-corea-provenance.test.ts::a missing licenseSource is not read as a chosen licence
+  packages/core/src/provenance.ts#softwareId:
+    kind: guarantee
+    rule: A tool given alone is never recorded as the runtime or typed as an AI agent.
+    none: no test checks how a tool without a runtime is recorded
+  packages/core/src/provenance.ts#summariseProvenance:
+    kind: guarantee
+    rule: >-
+      Reuse permissions fail closed when the licence is unrecognised or nobody chose it, and a licence never answers
+      whether the memory may be shared.
+    tests:
+      - >-
+        packages/core/test/provenance.test.ts::fails closed on the schema default, as it already did on an unknown
+        licence
+      - packages/core/test/provenance.test.ts::does not let the licence read as permission to share a private memory
+  packages/core/src/provenance.ts#summariseProvenance.complete:
+    kind: guarantee
+    rule: A memory that was retired or replaced is never reported as complete.
+    tests:
+      - packages/core/test/provenance-supersession.test.ts::never reports a replaced memory as complete
+  packages/core/src/query-expansion.ts#parseVariants:
+    kind: guarantee
+    rule: Query expansion always searches with the original query as well as any variants.
+    none: no test checks that the original query is kept among the variants
+  packages/core/src/receipt-io.ts#events:
+    kind: guarantee
+    rule: Even for a windowed receipt the whole history is read, so the all-time earliest retrieval is reported.
+    none: no test checks that a windowed receipt read from disk reports the all-time floor
+  packages/core/src/receipt-io.ts#gatherReceipt:
+    kind: guarantee
+    rule: >-
+      Receipt counts use only local stores, never the remote cache, and a missing history folder means no data rather
+      than an error.
+    none: no test checks gatherReceipt against a warm remote cache or a missing history folder
+  packages/core/src/receipt.ts#KNOWN_SOURCES:
+    kind: guarantee
+    rule: An unrecognised injection source is counted as unknown and can never become an arbitrary key in the tally.
+    tests:
+      - packages/core/test/receipt.test.ts::coerces an unrecognized source to unknown so it can not become a hostile key
+  packages/core/src/receipt.ts#Receipt:
+    kind: guarantee
+    rule: >-
+      The receipt reports the earliest date any retrieval was logged, so windowed numbers are not read as lifetime
+      totals.
+    tests:
+      - >-
+        packages/core/test/receipt.test.ts::sets coverage.complete_from to the earliest all-time event, not the windowed
+        one
+  packages/core/src/receipt.ts#ReceiptInput:
+    kind: guarantee
+    rule: >-
+      A retrieved team-store memory is counted as external, never as deleted, and team statements are never added as
+      snippets.
+    tests:
+      - packages/core/test/receipt.test.ts::classifies a retrieved team-store id as external, not retired
+      - packages/core/test/receipt.test.ts::excludes external ids from the most-reused list
+  packages/core/src/receipt.ts#sanitizeSnippet:
+    kind: guarantee
+    rule: A receipt snippet is one line with no control characters and is never cut in the middle of a character.
+    tests:
+      - >-
+        packages/core/test/receipt.test.ts::strips control chars from a pack-authored statement (terminal-injection
+        defense)
+      - packages/core/test/receipt.test.ts::truncates on code points so an emoji at the boundary is never split
+  packages/core/src/receipt.ts#skippedFuture:
+    kind: guarantee
+    rule: >-
+      A malformed or future timestamp is dropped, so it cannot put control characters into rendered dates or stretch the
+      window.
+    tests:
+      - packages/core/test/receipt.test.ts::drops a control-char timestamp so it cannot render into window dates
+      - packages/core/test/receipt.test.ts::drops events timestamped in the future rather than stretching the window
+  packages/core/src/receipt.ts#snippet:
+    kind: guarantee
+    rule: The reported maximum reuse is always at least the count of any live entry in the most-reused list.
+    tests:
+      - packages/core/test/receipt.test.ts::reuse.max never contradicts a larger entry in reuse.top (both live-only)
+  packages/core/src/remote-only.ts#(module):
+    kind: guarantee
+    rule: In a remote-only folder, any write that would stay on this machine is refused with nothing written or sent.
+    tests:
+      - >-
+        packages/core/test/folder-remote-only.test.ts::personal and local-only scopes are refused, naming the folder and
+        how to change it; nothing is written or sent
+  packages/core/src/remote-only.ts#RemoteOnlyBinding:
+    kind: guarantee
+    rule: When the folder map cannot be read, the instance reads and writes nothing and never falls back to memory being on.
+    tests:
+      - >-
+        packages/core/test/folder-remote-only-guard.test.ts::S-1: an unreadable folders.yaml refuses even an explicit
+        team-scope save
+      - packages/core/test/folder-remote-only-guard.test.ts::a bound instance reads and writes nothing
+    promises:
+      - OFF-3
+  packages/core/src/remote-only.ts#name:
+    kind: guarantee
+    rule: Folder and scope names in a refusal are printed escaped, so they can never act as instructions or commands.
+    tests:
+      - >-
+        packages/core/test/folder-remote-only-review.test.ts::no raw line break, bidi control or shell syntax, and no
+        command for that folder
+  packages/core/src/remote-recall.ts#(module):
+    kind: guarantee
+    rule: >-
+      Remote memories are never cached on disk, and when a team server cannot be reached recall answers from local
+      memory and says it was degraded.
+    tests:
+      - packages/core/test/remote-recall.test.ts::host down → local results still served, degradation recorded
+    promises:
+      - TEAM-1
+      - TEAM-2
+  packages/core/src/remote-recall.ts#BudgetExpiry:
+    kind: guarantee
+    rule: A timeout caused by this process's own blocked event loop is not counted against the server's breaker.
+    tests:
+      - >-
+        packages/core/test/recall-deadline-1586-audit.test.ts::after CLIENT_SLOW_STREAK_LIMIT in a row, further ones
+        count as host timeouts and open the breaker
+  packages/core/src/remote-recall.ts#CLIENT_SLOW_STREAK_LIMIT:
+    kind: guarantee
+    rule: >-
+      After a fixed number of slow-client timeouts in a row, further ones count against the server, and any answer from
+      the server resets the run.
+    tests:
+      - >-
+        packages/core/test/recall-deadline-1586-audit.test.ts::after CLIENT_SLOW_STREAK_LIMIT in a row, further ones
+        count as host timeouts and open the breaker
+      - packages/core/test/recall-deadline-1586-audit.test.ts::an answer from the host resets the streak
+  packages/core/src/remote-recall.ts#HOOK_HEADER_REPEAT_MS:
+    kind: guarantee
+    rule: The same server state is printed into a prompt header again at most once per repeat window.
+    tests:
+      - >-
+        packages/core/test/remote-recall.test.ts::prints on first sight, suppresses the same state, prints again on
+        state change
+      - packages/core/test/remote-recall.test.ts::re-prints the same state after the 4h window
+  packages/core/src/remote-recall.ts#HostRecallOutcome:
+    kind: guarantee
+    rule: A recall outcome's diagnostic detail is bounded text chosen by PLUR, never free text from the server.
+    none: no test checks that server text cannot reach the outcome detail
+  packages/core/src/remote-recall.ts#MAX_STARVATION_CREDIT_MS:
+    kind: guarantee
+    rule: Extra time credited for a blocked event loop is capped, so a starved request still ends.
+    tests:
+      - >-
+        packages/core/test/remote-recall.test.ts::honors the absolute credit ceiling — a starved process still
+        terminates
+  packages/core/src/remote-recall.ts#PRINT_FIELDS:
+    kind: guarantee
+    rule: A recall never overwrites the record of which degradation header was last printed.
+    tests:
+      - packages/core/test/remote-recall.test.ts::a remoteRecall persist does not erase a concurrent hook-header claim
+  packages/core/src/remote-recall.ts#PROBE_CLEARABLE_STATES:
+    kind: guarantee
+    rule: >-
+      A successful identity probe clears only network failures, never an unsupported, rate-limited or authorization
+      state.
+    tests:
+      - packages/core/test/remote-recall.test.ts::a successful /me probe clears a cached network-class failure
+      - packages/core/test/remote-recall.test.ts::a successful probe does NOT clear an endpoint-support failure
+  packages/core/src/remote-recall.ts#RATE_LIMIT_MAX_COOLDOWN_MS:
+    kind: guarantee
+    rule: A server's Retry-After is honoured for at most one hour.
+    none: no test sends an oversized Retry-After
+  packages/core/src/remote-recall.ts#RECALL_BOOKKEEPING_LOCK_WAIT_MS:
+    kind: guarantee
+    rule: A recall does not wait behind a writer for its usage bookkeeping; past a short wait it skips the bookkeeping.
+    none: no test holds the store lock during a recall and checks the bookkeeping is skipped
+  packages/core/src/remote-recall.ts#RemoteStoreStatusEntry:
+    kind: note
+    why: Instructs renderers not to present an old observation as the server's current state.
+  packages/core/src/remote-recall.ts#TokenHealth:
+    kind: guarantee
+    rule: >-
+      Each token's health is tracked on its own, so one token's events never reset or rate-limit another, and the token
+      itself is never the key.
+    lean:
+      - PlurSpec/R2CoreB.lean:noninterference
+      - PlurSpec/R2CoreB.lean:other_tokens_irrelevant
+    tests:
+      - >-
+        packages/core/test/formal-r2-coreb-health.test.ts::a healthy token interleaved with a revoked one does not reset
+        the revoked token
+      - packages/core/test/formal-r2-coreb-health.test.ts::never persists a token in the health file
+  packages/core/src/remote-recall.ts#UNSUPPORTED_TTL_MS:
+    kind: guarantee
+    rule: A 404 marks a server unsupported for a bounded time, not for the life of the process.
+    tests:
+      - packages/core/test/remote-recall.test.ts::404 → unsupported for a TTL, not process lifetime
+  packages/core/src/remote-recall.ts#cancelOverall:
+    kind: note
+    why: Explains why the request timer accounts for event-loop starvation.
+  packages/core/src/remote-recall.ts#claim:
+    kind: guarantee
+    rule: When a server recovers, the printed marker is reset so the next degradation prints again.
+    tests:
+      - packages/core/test/remote-recall.test.ts::recovery to ok resets the marker so a recurrence prints again
+  packages/core/src/remote-recall.ts#claimHalfOpenTrial:
+    kind: guarantee
+    rule: Only one process dials a server's trial request after a cooldown, and if the lock cannot be taken none does.
+    tests:
+      - >-
+        packages/core/test/recall-deadline-1586-audit.test.ts::the loser does not erase half_open_trial_at, and a third
+        process does not dial a second trial
+      - >-
+        packages/core/test/recall-deadline-1586-audit.test.ts::with the health-file lock held by a live process, a due
+        trial is not dialed
+  packages/core/src/remote-recall.ts#claimHookDegradationLines:
+    kind: guarantee
+    rule: >-
+      Degradation headers print on a state change and then at most once per window; cooldown and unsupported states
+      never print.
+    tests:
+      - >-
+        packages/core/test/remote-recall.test.ts::prints on first sight, suppresses the same state, prints again on
+        state change
+      - packages/core/test/remote-recall.test.ts::skipped_cooldown and unsupported never print
+  packages/core/src/remote-recall.ts#dialHost:
+    kind: guarantee
+    rule: A single 403 is never read as a revoked token; it takes two in a row.
+    tests:
+      - packages/core/test/remote-recall.test.ts::403 requires 2 CONSECUTIVE before reading as revocation (forbidden)
+  packages/core/src/remote-recall.ts#hookRemoteHeaderLine:
+    kind: guarantee
+    rule: Cooldown and unsupported states never print a line into a prompt header.
+    tests:
+      - packages/core/test/remote-recall.test.ts::skipped_cooldown and unsupported never print
+  packages/core/src/remote-recall.ts#isHostInCooldown:
+    kind: guarantee
+    rule: Unreadable server health state never blocks a write.
+    tests:
+      - >-
+        packages/core/test/outbox-circuit-breaker.test.ts::never throws on unreadable health state — it is an
+        optimisation, not a gate
+  packages/core/src/remote-recall.ts#persistHostChanges:
+    kind: guarantee
+    rule: >-
+      Saving server health writes only the fields this call changed, against the current file under the lock, so
+      concurrent updates are not lost.
+    tests:
+      - packages/core/test/remote-recall.test.ts::a writer with a stale entry snapshot does not erase another writer
+      - "packages/core/test/recall-deadline-1586-audit.test.ts::a dial writes only the fields it changed: another token"
+  packages/core/src/remote-recall.ts#printKey:
+    kind: guarantee
+    rule: A plain healthy answer never prints a header; a healthy answer that narrowed scopes prints once like a state.
+    tests:
+      - packages/core/test/remote-recall.test.ts::ok with dropped_scopes prints the scope-narrowing line once
+  packages/core/src/remote-recall.ts#processHostRows:
+    kind: guarantee
+    rule: A server row without tags cannot make scoring throw.
+    none: no test sends a remote row without tags
+  packages/core/src/remote-recall.ts#readApplyWrite:
+    kind: guarantee
+    rule: A server's health record time never moves backwards.
+    none: no test checks the record time under concurrent updates
+  packages/core/src/remote-recall.ts#recordWriteOutcome:
+    kind: guarantee
+    rule: Write failures open the same per-server breaker that recall uses, and a write success clears it.
+    tests:
+      - packages/core/test/outbox-circuit-breaker.test.ts::opens the breaker after the threshold of write failures
+      - >-
+        packages/core/test/outbox-circuit-breaker.test.ts::a write SUCCESS clears the count, so both legs see a
+        recovered host
+  packages/core/src/remote-recall.ts#remoteRecall:
+    kind: guarantee
+    rule: Remote recall never throws and never runs past its budget or deadline.
+    tests:
+      - packages/core/test/remote-recall.test.ts::slow server → timeout within the budget
+      - >-
+        packages/core/test/recall-deadline-1586-audit.test.ts::a never-answering server: returns within the deadline,
+        remote.state timeout, results_complete false
+    promises:
+      - TEAM-1
+  packages/core/src/remote-recall.ts#settleBy:
+    kind: guarantee
+    rule: Waiting for a deadline never rejects; a failure comes back as a result.
+    none: no test checks settleBy directly
+  packages/core/src/remote-recall.ts#stampStoreRow:
+    kind: guarantee
+    rule: >-
+      Loader markers on a remote row are set by the loader; any the row ships itself are dropped, so a server row cannot
+      pose as another origin.
+    lean:
+      - PlurSpec/R2CoreB.lean:remote_origin_is_store
+    tests:
+      - >-
+        packages/core/test/formal-r2-coreb-ingestion.test.ts::narrows global to the store scope and stamps only loader
+        markers
+      - >-
+        packages/core/test/formal-r2-coreb-ingestion.test.ts::is idempotent on an id that already carries the store
+        prefix
+  packages/core/src/remote-recall.ts#tokenHealthKey:
+    kind: guarantee
+    rule: The health file never holds a credential; tokens are stored only as a truncated hash.
+    tests:
+      - packages/core/test/formal-r2-coreb-health.test.ts::never persists a token in the health file
+  packages/core/src/remote-recall.ts#update:
+    kind: guarantee
+    rule: A write outcome is applied to the server's current health entry under the lock, never to an earlier snapshot.
+    none: no test races two write outcomes against the health file
+  packages/core/src/remote-recall.ts#withRemoteHealthLock:
+    kind: guarantee
+    rule: If the health-file lock cannot be taken, the work runs unlocked rather than failing recall or dropping a header.
+    none: no test makes the lock unavailable and checks recall still runs
+  packages/core/src/remote-recall.ts#writeRemoteHealth:
+    kind: guarantee
+    rule: Health state is written atomically under a unique temporary name, and a failed write never breaks recall.
+    none: no test checks concurrent or failing health-file writes

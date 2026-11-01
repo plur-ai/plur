@@ -1,0 +1,34 @@
+anchors:
+  packages/core/src/migrations/20260813-006-recompute-content-hashes.ts#migration:
+    kind: guarantee
+    rule: 'The hash migration follows the same rules as repairContentHashes: it skips statement-less and unhashable rows and
+      rewrites only a hash that changes.'
+    tests:
+    - packages/core/test/migration-006-recompute-hashes.test.ts::agrees with repairContentHashes on every rule
+    - packages/core/test/migration-006-recompute-hashes.test.ts::SKIPS an unhashable statement
+  packages/core/src/migrations/runner.ts#commitMigration:
+    kind: guarantee
+    rule: A failed migration writes nothing, and the backup is never copied back over the live store.
+    lean:
+    - PlurSpec/Persistence.lean:fixed_failed_run_keeps_live
+    - PlurSpec/Persistence.lean:fixed_keeps_backup
+    tests:
+    - 'packages/core/test/formal-persistence-migrations.test.ts::run: a throwing up() after a rollback does not restore the
+      stale .bak.0'
+    promises:
+    - DUR-5
+  packages/core/src/migrations/runner.ts#rollbackMigrations:
+    kind: guarantee
+    rule: A deliberate rollback is never vetoed by the shrink guard.
+    none: no test rolls back a migration that removes records
+  packages/core/src/migrations/runner.ts#runMigrations:
+    kind: guarantee
+    rule: Migration and rollback run wholly under the corpus lock, so the stored schema version always matches the contents.
+    lean:
+    - PlurSpec/R2Persist.lean:fixed_consistent
+    tests:
+    - packages/core/test/formal-r2-persist-schema-stamp.test.ts::a failed run leaves corpus and version as they were
+  packages/core/src/migrations/runner.ts#setSchemaVersion:
+    kind: guarantee
+    rule: The schema version is written to config atomically and fsynced.
+    none: no test interrupts the schema version write
