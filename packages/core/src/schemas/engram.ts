@@ -79,14 +79,14 @@ export const AttributionSchema = z.object({
     prompt_id: z.string().optional(),
     prompt_version: z.string().optional(),
     prompt_sha256: z.string().optional(),
-  }).optional().describe('The model behind a decision, and which prompt it ran. Prompt TEXT is never stored, only a hash (#962).'),
+  }).optional().describe('The model behind a decision, and which prompt it ran. Prompt TEXT is never stored, only a hash.'),
   tool: z.object({
     name: z.string(),
     version: z.string().optional(),
   }).optional().describe('An extractor or importer, with its version.'),
   on_behalf_of: z.string().optional()
     .describe('The party the runtime acted for. Becomes prov:actedOnBehalfOf.'),
-}).describe('Who is answerable for this engram (#961). All fields optional; omit rather than guess.')
+}).describe('Who is answerable for this engram. All fields optional; omit rather than guess.')
 
 /**
  * What kind of claim an engram is.
@@ -105,7 +105,7 @@ export const ClaimClassSchema = z.enum([
   'asserted',    // stated outright by a person or agent
   'inferred',    // worked out by a model from other engrams
   'revised',     // a rewrite of an earlier version
-]).describe('What kind of claim this is (#963). Omitted when it genuinely cannot be determined.')
+]).describe('What kind of claim this is. Omitted when it genuinely cannot be determined.')
 
 export const FeedbackSignalsSchema = z.object({
   positive: z.number().int().default(0),
@@ -250,9 +250,9 @@ export const ExtractionProvenanceSchema = z.object({
   source_commit: z.string().optional()
     .describe('Git SHA of the source repository at extraction time (reproducibility).'),
   extractor_version: z.string().optional()
-    .describe('Version of the extracting CLI/tool (schema-migration handle). Complementary to the pack-level capsule producer field (#61).'),
+    .describe('Version of the extracting CLI/tool (schema-migration handle). Complementary to the pack-level capsule producer field.'),
 }).passthrough()
-  .describe('ETL extraction provenance convention carried in structured_data.extraction (#463). Not wired into EngramSchema.')
+  .describe('ETL extraction provenance convention carried in structured_data.extraction. Not wired into EngramSchema.')
 
 export type ExtractionProvenance = z.infer<typeof ExtractionProvenanceSchema>
 
@@ -293,7 +293,7 @@ export const MeasuredUnderSchema = z.object({
   /** ISO date (YYYY-MM-DD) the measurement was taken. */
   date: z.string().optional(),
 }).passthrough()
-  .describe('Context under which a numeric or benchmark-derived measurement was taken (#869). All fields optional — absent means unknown.')
+  .describe('Context under which a numeric or benchmark-derived measurement was taken. All fields optional — absent means unknown.')
 
 export type MeasuredUnder = z.infer<typeof MeasuredUnderSchema>
 
@@ -413,7 +413,7 @@ export const EngramSchema = z.object({
   // === Memory intelligence fields ===
   content_hash: z.string().optional().describe('Hash of normalized statement content, used for dedup.'),
   commitment: z.enum(['exploring', 'leaning', 'decided', 'locked', 'draft']).optional()
-    .describe("Commitment level of the asserted knowledge. `draft` marks an engram as pending human approval: core stores and RECALLS it like any other value but NEVER injects it (#1141), so an unapproved rule cannot shape an agent's behaviour before someone has agreed to it. Retrieval stays open because reviewing something requires reading it. A positive feedback signal does not advance it (see feedback.ts:nextCommitment) — relevance is not approval."),
+    .describe("Commitment level of the asserted knowledge. `draft` marks an engram as pending human approval: core stores and RECALLS it like any other value but NEVER injects it, so an unapproved rule cannot shape an agent's behaviour before someone has agreed to it. Retrieval stays open because reviewing something requires reading it. A positive feedback signal does not advance it (see feedback.ts:nextCommitment) — relevance is not approval."),
   locked_at: z.string().optional().describe("Timestamp when commitment reached 'locked'."),
   locked_reason: z.string().optional().describe('Why this engram was locked.'),
 
@@ -423,14 +423,14 @@ export const EngramSchema = z.object({
    * Engram physically retires only when this reaches 0.
    * Formerly `reference_count`; a backfill runs on first parse of old stores. */
   write_count: z.number().int().min(0).default(1)
-    .describe('Number of learn() write attempts that resolved to this engram (same-scope re-learns). Engram retires only when this reaches 0. Renamed from reference_count (#866).'),
+    .describe('Number of learn() write attempts that resolved to this engram (same-scope re-learns). Engram retires only when this reaches 0. Renamed from reference_count.'),
 
   /** Number of times this engram was selected into a session's injection context.
    * Distinct from activation.frequency (which counts recall() retrieval events, not
    * inject() selections). High injection_count + low feedback_signals.positive
    * signals low efficacy. Incremented in the inject path. */
   injection_count: z.number().int().min(0).default(0)
-    .describe('Number of times this engram was injected into session context. Distinct from activation.frequency (recall events). Use with feedback_signals for efficacy auditing (#866).'),
+    .describe('Number of times this engram was injected into session context. Distinct from activation.frequency (recall events). Use with feedback_signals for efficacy auditing.'),
   /** Provenance of each write attempt. One entry per write (including the
    * first). Migrated old engrams without this field start with []. */
   sources: z.array(z.object({
@@ -438,9 +438,9 @@ export const EngramSchema = z.object({
     session_id: z.string().nullable().default(null),
     stored_at: z.string().describe('ISO 8601 timestamp of this write.'),
     validated_by: z.string().optional()
-      .describe('Set when this entry records a shared-scope save of the same text: the team scope that validated this engram (#1268). The team save itself is written separately.'),
+      .describe('Set when this entry records a shared-scope save of the same text: the team scope that validated this engram. The team save itself is written separately.'),
     promoted_from: z.string().optional()
-      .describe('Set on the first source of a global copy the recurrence ladder made of a team-store engram (#1268): the team scope it was promoted from. The team engram itself is left in its store; `derived_from` names it.'),
+      .describe('Set on the first source of a global copy the recurrence ladder made of a team-store engram: the team scope it was promoted from. The team engram itself is left in its store; `derived_from` names it.'),
   })).default([]).describe('Provenance of each write attempt; one entry per write.'),
 
   // === Cross-scope recurrence ===

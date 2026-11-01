@@ -96,7 +96,7 @@ export function markRemoteHostDown(url: string, at: number = Date.now()): void {
   const key = hostKey(url)
   if (!downHosts.has(key)) {
     logger.warning(
-      `[plur:remote-store] ${key} failed at the network level — fast-failing every store on this host for ${HOST_DOWN_COOLDOWN_MS / 1000}s (#1069)`,
+      `[plur:remote-store] ${key} failed at the network level — fast-failing every store on this host for ${HOST_DOWN_COOLDOWN_MS / 1000}s`,
     )
   }
   downHosts.set(key, at)
@@ -282,7 +282,7 @@ export function salvageRemoteRow(
       logger.warning(
         `[plur:remote-store] ${safeOrigin(logContext.url)} serves engrams with drifted field(s) [${salvagedFields.join(',')}] this client ` +
         `cannot validate (first seen id="${safeId}") — keeping the engrams WITHOUT those fields. ` +
-        `The server and client schemas need reconciling (#1071); recall is degraded, not blind.`,
+        `The server and client schemas need reconciling; recall is degraded, not blind.`,
       )
     }
   }
@@ -675,7 +675,7 @@ export class RemoteStore {
       : undefined
     if (rawKeyExpiry !== undefined && key_expires_at === undefined) dropped.push('key_expires_at: invalid')
     if (dropped.length) {
-      logger.warning(`[plur:remote-store] ${safeOrigin(this.url)} sent /me fields that do not conform (${dropped.join('; ')}) — DROPPED (#426).`)
+      logger.warning(`[plur:remote-store] ${safeOrigin(this.url)} sent /me fields that do not conform (${dropped.join('; ')}) — DROPPED.`)
     }
 
     return {
@@ -721,7 +721,7 @@ export class RemoteStore {
               logger.warning(
                 `[plur:remote-store] ${safeOrigin(this.url)} sent scope metadata for "${safeScope}" that does not conform ` +
                 `(${why}) — DROPPED. That scope cannot participate in covers-based auto-routing until the ` +
-                `server sends a conforming shape, so unscoped writes may fall back to the personal default (#843).`,
+                `server sends a conforming shape, so unscoped writes may fall back to the personal default.`,
               )
               return []
             }

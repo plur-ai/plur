@@ -580,7 +580,7 @@ export class Plur {
             engram_id: r.to,
             timestamp: new Date().toISOString(),
             data: { from: r.from, to: r.to, store: this._primaryStore.kind, cause: 'store-save' },
-            reason: 'duplicate id: a later, different engram in a save batch was given a fresh id (P1)',
+            reason: 'duplicate id: a later, different engram in a save batch was given a fresh id',
           })
         }
       })

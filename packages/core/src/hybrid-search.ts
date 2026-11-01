@@ -300,7 +300,7 @@ function logRerankerFailure(reranker: RerankerAdapter, message: string): void {
     return
   }
   const hint = rec.kind === 'corrupt-cache'
-    ? ` Model cache looks corrupt (truncated download, see #340) — delete ~/.cache/huggingface/hub/${hfCacheDirName(reranker.modelId)}/ to force a clean re-download.`
+    ? ` Model cache looks corrupt (truncated download) — delete ~/.cache/huggingface/hub/${hfCacheDirName(reranker.modelId)}/ to force a clean re-download.`
     : ''
   logger.warning(`${base}${hint} Run plur_doctor for diagnosis. Repeats of this failure log at debug level.`)
 }

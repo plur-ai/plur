@@ -16,7 +16,7 @@ function usage(): never {
     '  plur reindex-hashes            Report engrams whose content_hash is stale or missing',
     '  plur reindex-hashes --apply    Rewrite them',
     '',
-    'A stale content_hash makes an engram absorb unrelated writes (#852).',
+    'A stale content_hash makes an engram absorb unrelated writes.',
     'Runs read-only by default: nothing is written without --apply.',
   ].join('\n'))
 }
@@ -52,9 +52,9 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
 
   const lines = [
     `Scanned ${scanned} engrams.`,
-    `  stale      ${String(stale.length).padStart(5)}  hash does not match the statement — these absorb unrelated writes (#852)`,
+    `  stale      ${String(stale.length).padStart(5)}  hash does not match the statement — these absorb unrelated writes`,
     `  missing    ${String(missing.length).padStart(5)}  no hash at all — inert until something matches on them`,
-    `  unhashable ${String(unhashable.length).padStart(5)}  statement normalizes to nothing — SKIPPED, a shared hash is worse than none (#896)`,
+    `  unhashable ${String(unhashable.length).padStart(5)}  statement normalizes to nothing — SKIPPED, a shared hash is worse than none`,
   ]
   if (stale.length > 0) {
     lines.push('', 'Stale:')

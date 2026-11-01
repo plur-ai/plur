@@ -86,7 +86,7 @@ const MAX_COVERS = 32
 // excluded. Ordinary printable text (incl. unicode punctuation and emoji)
 // passes untouched.
 const NO_CONTROL_CHARS = /^[^\u0000-\u001F\u007F-\u009F\u2028\u2029]*$/
-const NO_CONTROL_MSG = 'must not contain control characters or newlines (directive-surface hardening, #345)'
+const NO_CONTROL_MSG = 'must not contain control characters or newlines (directive-surface hardening)'
 
 export const ScopeMetadataSchema = z.object({
   scope: z.string()
@@ -101,9 +101,9 @@ export const ScopeMetadataSchema = z.object({
     v => (v === null ? '' : v),
     z.string().max(MAX_DESCRIPTION_LEN).regex(NO_CONTROL_CHARS, NO_CONTROL_MSG),
   )
-    .describe('Human-readable explanation of what this scope is for. Surfaced VERBATIM in scope/store discovery — bounded in length and free of control chars/newlines so a hostile remote cannot inject instructions (#345). An explicit null reads as empty, so a server serialising an unset column does not fail the row; the key itself is still required (#843).'),
+    .describe('Human-readable explanation of what this scope is for. Surfaced VERBATIM in scope/store discovery — bounded in length and free of control chars/newlines so a hostile remote cannot inject instructions. An explicit null reads as empty, so a server serialising an unset column does not fail the row; the key itself is still required.'),
   covers: z.array(z.string().max(MAX_COVER_LEN).regex(NO_CONTROL_CHARS, NO_CONTROL_MSG)).max(MAX_COVERS).default([])
-    .describe('Topics, domains, or areas this scope is the home for. Advisory; helps an agent pick the right scope and is surfaced in discovery. Each entry is length-bounded and control-char-free, and the list is capped, for the same directive-surface reason as `description` (#345).'),
+    .describe('Topics, domains, or areas this scope is the home for. Advisory; helps an agent pick the right scope and is surfaced in discovery. Each entry is length-bounded and control-char-free, and the list is capped, for the same directive-surface reason as `description`.'),
   // null -> undefined at the trust boundary: Zod's .optional() REJECTS null,
   // and an unset nullable column is exactly what a server sends as null.
   sensitivity: z.preprocess(v => (v === null ? undefined : v), ScopeSensitivitySchema.optional())

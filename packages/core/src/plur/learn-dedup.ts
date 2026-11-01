@@ -400,7 +400,7 @@ export const learnDedupMethods: LearnDedupMethods & ThisType<Plur> = {
           // by `recurrence.max_commitment` — team validations included.
           e.commitment = this._stepCommitment(e.commitment, lockBlockedByTension)
           if (lockBlockedByTension && e.commitment === 'decided') {
-            logger.info(`[plur:tensions] lock escalation blocked for ${e.id} — unresolved tension (#181)`)
+            logger.info(`[plur:tensions] lock escalation blocked for ${e.id} — unresolved tension`)
           }
           if (e.commitment === 'locked' && !e.locked_at) {
             e.locked_at = lockedAt

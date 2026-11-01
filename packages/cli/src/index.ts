@@ -41,10 +41,10 @@ Commands:
   recall <query>          Search engrams
   inject <task>           Get relevant engrams for a task
   list                    List all engrams
-  forget <id>             Retire an engram [--scope <scope>] (target one store, #831)
-  restore [--list|--yes]  Inspect or restore a daily store snapshot (#799)
+  forget <id>             Retire an engram [--scope <scope>] (target one store)
+  restore [--list|--yes]  Inspect or restore a daily store snapshot
   ingest <content>        Extract and save engrams from content
-  import                  Import memories from another system (issue #441)
+  import                  Import memories from another system
                           --from <generic|gp-engram|mem0> --path <input-file>
                           [--dry-run] [--scope <s>] [--mapping <f>] [--store <dir>]
                           (for import, --path is the INPUT file; --store overrides storage)
@@ -64,7 +64,7 @@ Commands:
   packs migrate-integrity Re-baseline installed packs to sha256:v2: (dry run; --yes applies)
   similarity-search <q>   Search by cosine similarity with scores
   promote <id>            Promote an engram to active
-  rescope <id...> --to <scope>  Move engram(s) to another scope (#676)
+  rescope <id...> --to <scope>  Move engram(s) to another scope
                           [--keep-local] [--dry-run]; also: promote <id> --to <scope>
   upload                  Preview local memories for authorized team scopes
                           --yes sends; --only <id,…> limits the selection
@@ -72,34 +72,34 @@ Commands:
   stores list             List configured stores
   stores add <path>       Add a knowledge store
   stores add --url <u>    Add a remote store (verified; --scope, --token-env)
-  stores prune            Remove config.yaml store entries that name the primary store file (#1356)
-  remote                  Show this folder's team-store connection and check it (#1413)
+  stores prune            Remove config.yaml store entries that name the primary store file
+  remote                  Show this folder's team-store connection and check it
   remote --url <u> --token <t> --scope <s>
                           Connect this folder to a team store (verified; [--scopes a,b])
-  folders list            Your per-folder decisions (~/.plur/folders.yaml, #1347)
-  folders repair [--yes]  Fix a broken folders.yaml: shows the change, asks, keeps a backup (#1526)
+  folders list            Your per-folder decisions (~/.plur/folders.yaml)
+  folders repair [--yes]  Fix a broken folders.yaml: shows the change, asks, keeps a backup
   folders set <folder>    --scope <s> | --on | --off | --ask  [--trusted|--no-trusted] [--nonce <n>]
   folders rm <folder>     Remove a folder's entry
-  scopes                  List authorized-but-unregistered shared scopes (#647)
+  scopes                  List authorized-but-unregistered shared scopes
   scopes register <scope> Register one; scopes dismiss <scope>; scopes --reoffer
   outbox                  Show team-scoped writes queued for an unreachable store
-                          [--flush] to retry them now (#667)
-  checkpoint              Emit a checkpoint event — SHA-256 of the store + chain linkage (#1052)
-  verify                  Verify the history chain — exit 0 ok / 1 broken / 2 cannot verify (#1053)
-  verify --manifest <f|ref> Check a session memory manifest, from a file or Swarm (#1657)
-  manifest --session <id> Which engrams a session had in context, with hashes; --anchor stores it on Swarm (#1657)
-  keys init [--identity]  Generate Ed25519 key pair for signing checkpoints (#1055)
-  keys list               List registered public keys for this store (#1055)
+                          [--flush] to retry them now
+  checkpoint              Emit a checkpoint event — SHA-256 of the store + chain linkage
+  verify                  Verify the history chain — exit 0 ok / 1 broken / 2 cannot verify
+  verify --manifest <f|ref> Check a session memory manifest, from a file or Swarm
+  manifest --session <id> Which engrams a session had in context, with hashes; --anchor stores it on Swarm
+  keys init [--identity]  Generate Ed25519 key pair for signing checkpoints
+  keys list               List registered public keys for this store
   reindex-tokens          Re-derive BM25 tokens after a tokenizer change (Postgres only)
-  reindex-hashes          Repair engrams whose content_hash is stale or missing (#852)
+  reindex-hashes          Repair engrams whose content_hash is stale or missing
   init                    Wire PLUR into detected harnesses (Claude Code, Cursor, Codex, Antigravity)
   login <host>            Sign this device in to a PLUR server and save it (device flow)
-  login --status          Enterprise token validity per host (probe + expiry) (#587)
+  login --status          Enterprise token validity per host (probe + expiry)
   init --keep-opencode-plugin  Keep an intentionally older OpenCode plugin pin
   init --keep-codex-mcp    Keep an intentionally older Codex MCP launch entry
   doctor --codex          Check Codex MCP version and token forwarding in this environment
   doctor                  Diagnose Claude Code / Claude Desktop / Cursor / Codex / Antigravity / opencode integration
-  rerank-eval             Per-store reranker self-eval gate (advisory, #451)
+  rerank-eval             Per-store reranker self-eval gate (advisory)
                           [--reranker <name>] [--sample N] [--seed N] [--force]
   tensions [--scan]       List or scan for engram contradictions
   audit [--source X]      Audit working memory (claude-code|claw|hermes) for conflicts vs engrams

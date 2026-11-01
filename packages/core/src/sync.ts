@@ -68,7 +68,7 @@ embeddings/
 store.pglite/
 exchange/
 
-# PLUR — local backups (#799). Machine-local by design: a snapshot is a
+# PLUR — local backups. Machine-local by design: a snapshot is a
 # whole-corpus copy INCLUDING scope:local engrams, so pushing one would leak
 # exactly the engrams the scope strip exists to hold back.
 backups/
@@ -880,7 +880,7 @@ function pullRebaseClean(root: string, remoteType: SyncRemoteType, mergeRenames:
 }
 
 const SYNC_MERGE_RENAME_REASON =
-  'sync: both devices saved a different engram under the same id while offline; the one not yet pushed was given a fresh id (P1b)'
+  'sync: both devices saved a different engram under the same id while offline; the one not yet pushed was given a fresh id'
 
 const UNMERGEABLE = 'Sync conflict: YAML files have merge conflicts that require manual resolution. Your local changes are preserved.'
 

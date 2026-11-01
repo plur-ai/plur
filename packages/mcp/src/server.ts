@@ -463,7 +463,7 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
           try {
             void Promise.resolve(server.sendLoggingMessage({
               level: 'warning',
-              data: `Payload drop (#772) on ${request.params.name}: arguments ` +
+              data: `Payload drop on ${request.params.name}: arguments ` +
                 `${rawArguments === undefined ? 'key absent from frame' : `arrived with fields [${validated.errorPayload.received_fields.join(', ')}]`}. ` +
                 `Recorded in ${payloadDropLogPath(instance.storageRoot)}.`,
             })).catch(() => { /* logging must not break the error response */ })
@@ -719,7 +719,7 @@ export async function runStdio(): Promise<void> {
     }
     logCount++
     const detail = err instanceof Error ? (err.stack ?? err.message) : String(err)
-    process.stderr.write(`[plur:mcp] ${kind} (#1070): ${detail}\n`)
+    process.stderr.write(`[plur:mcp] ${kind}: ${detail}\n`)
   }
   process.on('unhandledRejection', (err) => logFault('unhandled rejection — server stays up', err))
   process.on('uncaughtException', (err) => {
@@ -735,11 +735,11 @@ export async function runStdio(): Promise<void> {
   // (code 1, visible to the harness). Inert unless the env vars are set.
   const induceMs = Number(process.env.PLUR_TEST_INDUCE_UNHANDLED_REJECTION_MS ?? '')
   if (Number.isFinite(induceMs) && induceMs > 0) {
-    setTimeout(() => { void Promise.reject(new Error('induced test rejection (#1070)')) }, induceMs)
+    setTimeout(() => { void Promise.reject(new Error('induced test rejection')) }, induceMs)
   }
   const induceThrowMs = Number(process.env.PLUR_TEST_INDUCE_UNCAUGHT_EXCEPTION_MS ?? '')
   if (Number.isFinite(induceThrowMs) && induceThrowMs > 0) {
-    setTimeout(() => { throw new Error('induced test exception (#1070)') }, induceThrowMs)
+    setTimeout(() => { throw new Error('induced test exception') }, induceThrowMs)
   }
 
   // Shared with describeToolSurface so the surface plur_doctor reports

@@ -568,7 +568,7 @@ export const forgetRescopeMethods: ForgetRescopeMethods & ThisType<Plur> = {
         `Cannot rescope to "${target}": no configured store matches that scope. `
         + `Valid targets: local, global, project:*`
         + (configured.length ? `, or a configured store scope (${configured.join(', ')})` : '')
-        + `. Check for typos — an unmatched shared scope would never reach a team store (#676).`,
+        + `. Check for typos — an unmatched shared scope would never reach a team store.`,
       )
     }
 
@@ -788,7 +788,7 @@ export const forgetRescopeMethods: ForgetRescopeMethods & ThisType<Plur> = {
       logger.warning(
         `[plur] rescope of ${id} cancelled a pending delivery to ${safeOrigin(cancelledOutbox.target_url)} ` +
         `(scope "${cancelledOutbox.target_scope}"). That queued write would have re-delivered the engram to the ` +
-        `store it was moved away from once the host recovered (#848).`,
+        `store it was moved away from once the host recovered.`,
       )
     }
     return {

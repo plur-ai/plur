@@ -56,7 +56,7 @@ export function assertScopeNamesATarget(
     `Cannot ${verb} "${scope}": no configured store matches that scope. `
     + `Valid targets: primary, local, global, project:*`
     + (configured.length ? `, or a configured store scope (${configured.join(', ')})` : '')
-    + `. Check for typos — an unmatched scope would silently ${consequence} instead (#831).`,
+    + `. Check for typos — an unmatched scope would silently ${consequence} instead.`,
   )
 }
 

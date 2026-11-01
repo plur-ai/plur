@@ -16,7 +16,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const subcommand = args[0]
 
   if (!subcommand || subcommand === '--help' || subcommand === 'help') {
-    outputText('plur keys — manage per-actor Ed25519 signing keys (#1055)')
+    outputText('plur keys — manage per-actor Ed25519 signing keys')
     outputText('')
     outputText('Subcommands:')
     outputText('  init                   Generate a key pair for the configured identity')

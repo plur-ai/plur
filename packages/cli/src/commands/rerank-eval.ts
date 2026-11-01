@@ -53,7 +53,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   } else {
     const sign = result.delta_mrr >= 0 ? '+' : ''
     // Banner → suppressed by --quiet; the eval report below is primary.
-    outputInfo(`plur rerank-eval — per-store reranker self-eval (#451)${cached ? ' [cached]' : ''}`, flags)
+    outputInfo(`plur rerank-eval — per-store reranker self-eval${cached ? ' [cached]' : ''}`, flags)
     outputInfo('', flags)
     outputText(`  Reranker:   ${result.reranker} (${result.model_id})`)
     outputText(`  Evaluated:  ${result.evaluated_at}`)

@@ -741,7 +741,7 @@ export const feedbackPinMethods: FeedbackPinMethods & ThisType<Plur> = {
         delete sd._outbox
         logger.warning(
           `[plur] update of ${stored.id} moved it to "${newScope}" and cancelled its pending delivery to `
-          + `${pending.target_url ?? '?'} (scope "${pending.target_scope ?? stored.scope}") — like rescope (#848).`,
+          + `${pending.target_url ?? '?'} (scope "${pending.target_scope ?? stored.scope}") — like rescope.`,
         )
       } else if (writable) {
         sd._outbox = { ...pending, target_url: writable.url, target_scope: newScope, attempt_count: 0, last_error: '' }

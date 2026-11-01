@@ -1568,7 +1568,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     if (bareCmd.startsWith('/') || /^[A-Za-z]:[\\/]/.test(bareCmd)) {
       outputInfo('  Committing .cursor/mcp.json / .cursor/hooks.json? Their command is this machine\'s local', flags)
       outputInfo(`  path (${cursorCmd}) — it won't exist on a teammate's machine or a fresh Background Agent VM.`, flags)
-      outputInfo('  Run `plur init --cursor` there too (it pins the right version — avoid @latest, #1069).', flags)
+      outputInfo('  Run `plur init --cursor` there too (it pins the right version — avoid @latest).', flags)
     }
   }
   outputInfo(`CLAUDE.md:        ${claudeMdStatus}`, flags)

@@ -567,7 +567,7 @@ export function loadEngrams(filePath: string): Engram[] {
   // Recorded by the next write, not here: a load is a read.
   const pending: PendingRename[] = [
     ...heldRenames.map(r => ({ ...r, reason: SYNC_HELD_RENAME_REASON, data: { store: filePath, cause: 'sync-recovery' } })),
-    ...renames.map(r => ({ ...r, reason: 'duplicate id: a later, different copy was given a fresh id (P1)', data: { store: filePath } })),
+    ...renames.map(r => ({ ...r, reason: 'duplicate id: a later, different copy was given a fresh id', data: { store: filePath } })),
   ]
   if (pending.length > 0) pendingRenamesByPath.set(key, pending)
   else pendingRenamesByPath.delete(key)
@@ -576,7 +576,7 @@ export function loadEngrams(filePath: string): Engram[] {
 
 /** History reason for a held (never-pushed) record re-id'd against a pulled one. */
 export const SYNC_HELD_RENAME_REASON =
-  'sync: a pulled engram arrived with the id of a local engram that was never pushed; the local one was given a fresh id (P1b)'
+  'sync: a pulled engram arrived with the id of a local engram that was never pushed; the local one was given a fresh id'
 
 /**
  * After a write of `filePath` lands: record the renames its last load made and
@@ -663,7 +663,7 @@ export class EngramStoreShrinkError extends Error {
       `[plur] refusing to write ${filePath}: it holds ${before} engram(s) and this write would leave ${after}.\n` +
       (baseline > before
         ? `Undeclared writes by this process already took it from ${baseline} to ${before}; the 10% tolerance is ` +
-          `cumulative since the last write that did not shrink it (owner decision P2), and this one would exceed it.\n`
+          `cumulative since the last write that did not shrink it, and this one would exceed it.\n`
         : '') +
       `A write path replaces the whole file, so an unexpected shrink is how a corpus gets destroyed — ` +
       `most often because the file was read as empty or partially unreadable first.\n` +
