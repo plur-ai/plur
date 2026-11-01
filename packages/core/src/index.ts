@@ -127,6 +127,7 @@ export { PLUR_MEMORY_INSTRUCTIONS, renderMemoryBlock } from './memory-block.js'
 export { EngramStoreShrinkError, EngramStoreUnreadableError } from './engrams.js'
 export { computeIdf, engramSearchText, termMatches, type CorpusStats } from './fts.js'
 export { extractLearnings, extractSelfReportedLearnings, isCorrection, type LearnableMessage, type LearnCandidate } from './learner.js'
+export { detectCorrectionPrompt, type DetectionResult } from './correction.js'
 export { DomainCoverageSchema, EvidenceEntrySchema, FalsificationSchema, HierarchyPositionSchema, MetaConfidenceSchema, MetaFieldSchema, StructuralTemplateSchema } from './schemas/meta-engram.js'
 export type { DomainCoverage, EvidenceEntry, Falsification, HierarchyPosition, MetaConfidence, MetaField, StructuralTemplate } from './schemas/meta-engram.js'
 // Exported for store-repair tooling, which must read the RAW store rows.
