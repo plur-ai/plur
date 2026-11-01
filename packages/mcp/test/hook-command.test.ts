@@ -80,9 +80,10 @@ describe('isPlurHookCommand: the unquoted spaced shim of this home', () => {
 
 const cliPath = fileURLToPath(new URL('../../cli/src/lib/hook-command.ts', import.meta.url))
 
-describe.skipIf(!existsSync(cliPath))('the cli uses the same matcher', () => {
-  it('re-exports the gateway function rather than keeping a copy', async () => {
+describe.skipIf(!existsSync(cliPath))('isPlurHookCommand parity with @plur-ai/cli', () => {
+  it('agrees with the cli copy on every case', async () => {
     const cli = (await import(/* @vite-ignore */ cliPath)) as { isPlurHookCommand: (c: string) => boolean }
+    // The cli re-exports the shared matcher, so this is the same function.
     expect(cli.isPlurHookCommand).toBe(isPlurHookCommand)
     for (const [command] of CASES) {
       expect(cli.isPlurHookCommand(command), command).toBe(isPlurHookCommand(command))

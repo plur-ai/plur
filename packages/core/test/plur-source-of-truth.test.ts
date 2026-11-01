@@ -87,6 +87,12 @@ describe('Plur is source-of-truth agnostic', () => {
 })
 
 describe('Plur does not reach past its PrimaryStore', () => {
+  it('index.ts contains no direct loadEngrams/saveEngrams calls', () => {
+    const source = readFileSync(join(here, '..', 'src', 'index.ts'), 'utf8')
+    const calls = source.match(/(?<![\w.])(loadEngrams|saveEngrams)\s*\(/g) ?? []
+    expect(calls).toEqual([])
+  })
+
   it('the Plur class (index.ts and src/plur/*.ts) contains no direct loadEngrams/saveEngrams calls', () => {
     // A structural guard, not a style rule: every such call is a place that
     // assumes YAML-on-disk and would silently bypass an injected store.

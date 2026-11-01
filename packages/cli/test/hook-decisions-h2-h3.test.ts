@@ -484,16 +484,23 @@ describe('#1270 review: the unquoted spaced shim path is claimed only as this ho
   })
 })
 
-describe('H2: the cli and the mcp package use one matcher', () => {
-  it('the cli re-exports the shared matcher instead of keeping its own', () => {
+describe('H2: the mcp package keeps an identical copy of the matcher', () => {
+  it('the two source regions are byte-identical', () => {
+    // There is one region now: both packages import the matcher from
+    // @plur-ai/gateway/harness, so the two cannot differ.
+    expect(existsSync(join(__dirname, '..', '..', 'gateway', 'src', 'hook-command.ts'))).toBe(true)
+    expect(existsSync(join(__dirname, '..', '..', 'mcp', 'src', 'hook-command.ts'))).toBe(false)
     expect(isPlurHookCommand).toBe(mcpIsPlurHookCommand)
     expect(matchesPlurHookLauncher).toBe(mcpMatchesPlurHookLauncher)
-  })
-
-  it('the mcp package has no copy of the matcher', () => {
-    expect(existsSync(join(__dirname, '..', '..', 'mcp', 'src', 'hook-command.ts'))).toBe(false)
     const mcpIndex = readFileSync(join(__dirname, '..', '..', 'mcp', 'src', 'index.ts'), 'utf8')
     expect(mcpIndex).toMatch(/import \{[^}]*\bisPlurHookSpec\b[^}]*\} from '@plur-ai\/gateway(?:\/harness)?'/)
+  })
+
+  it.each([
+    [`${SHIM_POSIX} hook-auto-rate`], [`"${SHIM_WIN}" hook-inject`], ['npx @plur-ai/cli hook-x'],
+    ['/usr/local/bin/mytool hook-foo'], [`${SHIM_POSIX} status`],
+  ])('both copies agree on %s', (cmd) => {
+    expect(mcpIsPlurHookCommand(cmd)).toBe(isPlurHookCommand(cmd))
   })
 })
 
