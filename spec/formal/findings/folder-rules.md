@@ -35,6 +35,7 @@ runs in a folder whose policy is ask (`home_undecided_runs`). Pinned on purpose 
 `folder-ask.test.ts::without roots, a client started in the home folder is not asked: memory as today`.
 Options: (a) keep, and narrow OFF-4's text to exclude home/root; (b) return an off answer
 ("open a project folder") instead of running.
+Decided 2026-11-02: (a). OFF-4's text in `evals/promises.yaml` now excludes home and root; the behaviour is unchanged.
 
 ## Lead 2: answer nonces
 
