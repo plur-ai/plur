@@ -183,10 +183,14 @@ describe('Codex and Cursor hooks in a remote-only folder', () => {
 describe('owner decisions on #1521', () => {
   it('decision 2: folders set --scope on a remote-only folder keeps it remote-only', () => {
     mapRemoteOnly()
+    const before = readFileSync(join(plurHome, 'folders.yaml'), 'utf8')
+    // A nonce answers the question of an undecided folder; this one is
+    // decided (remote-only), so the nonce-redeemed write is refused.
     const r = cli(['folders', 'set', repo, '--scope', TEAM, '--json',
       '--nonce', issueFolderNonce(plurHome, 's-scope', repo, { scope: TEAM })])
-    expect(r.status, r.stderr).toBe(0)
-    expect(json(r).entry).toEqual({ path: repo, plur: 'remote-only', scope: TEAM })
+    expect(r.status).not.toBe(0)
+    expect(json(r).code).toBe('nonce-stale')
+    expect(readFileSync(join(plurHome, 'folders.yaml'), 'utf8')).toBe(before)
   }, 60_000)
 
   it('decision 4: plur capture in a remote-only folder is refused and writes no episode', () => {

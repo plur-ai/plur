@@ -47,13 +47,22 @@ Options: (a) keep, and narrow OFF-4's text to exclude home/root; (b) return an o
 - `unbound_record_authorises_nothing`.
 - `same_key_same_write`: answers with the same key make the same write in a folder that is not remote-only.
 
-**CONFIRMED+NEEDS-OWNER (residual).** `answerKey` makes `--scope X` equal to `--scope X --on`. In an
+**CONFIRMED, DECIDED: option (c) "refuse".** `answerKey` makes `--scope X` equal to `--scope X --on`. In an
 undecided folder they write the same thing. If a parent becomes remote-only after the question was
 shown, `--scope X` keeps remote-only but `--scope X --on` leaves it (`same_key_differs_on_remote_only`).
 Replay (temp store): nonce for `{scope}` on F, parent set remote-only, then `set F --scope X --on --nonce`:
 `BEFORE remote-only` / `AFTER on`. The user did answer "yes" to memory, so this may be acceptable.
 Options: (a) keep; (b) bind the nonce to the exact flags offered (`--scope X` only);
 (c) refuse a nonce-redeemed write when the folder's policy is no longer ask.
+
+Decision: (c). `refuseIfDecided` (folders.ts) refuses a nonce-redeemed `set` or `rm` with
+`FolderMapError('nonce-stale')` when the folder's policy at redemption is not `ask` (the git default
+scopes are passed by `Plur.setFolder`/`removeFolder`, so the policy is the one the question saw). The
+nonce is checked first, so a wrong nonce keeps its own refusal; the refusal writes nothing and consumes
+nothing, as `failed_write_keeps_nonce`. "Not now" writes nothing and is not checked. Model: `redeemFlow`
+with `decided_meanwhile_keeps_nonce`, `redeemed_only_when_undecided`, `remote_only_answer_refused`,
+`same_key_same_redeemed_write`, `not_now_ignores_policy`, `redeem_undecided_works`. Tests:
+`packages/core/test/folder-nonce-decided-meanwhile.test.ts` (7).
 
 **Process-id reuse: PROVED with a stated residual.** `no_start_no_match` (no start time, no match),
 `match_same_pid_close`, `reused_pid_far_start`. Within the 3 s tolerance a reused id is

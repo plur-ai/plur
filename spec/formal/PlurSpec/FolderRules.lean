@@ -13,7 +13,8 @@ Models, branch for branch:
 * `suggestMode` (packages/core/src/folder-map-check.ts), with edit distance as
   an arbitrary oracle.
 * Nonces (folders.ts): `answerKey`, `verifyFolderNonce`, the set flow that
-  consumes only after the save, and `hostFolderNonces`' host match.
+  consumes only after the save, the refusal of a nonce-redeemed set or rm once
+  the folder is decided (`refuseIfDecided`), and `hostFolderNonces`' host match.
 -/
 namespace PlurSpec.FolderRules
 
@@ -286,8 +287,9 @@ theorem same_key_same_write (m₁ m₂ : Option Mode) (s₁ s₂ : Option Nat) (
   refine ⟨?_, rfl, rfl⟩
   cases m₁ <;> cases m₂ <;> cases s₁ <;> simp_all [effMode, Option.orElse]
 
-/-- Residual, documented: on a folder that became remote-only after the question,
-`--scope X` keeps remote-only while `--scope X --on` (same key) leaves it. -/
+/-- On a folder that became remote-only after the question, `--scope X` would keep
+remote-only while `--scope X --on` (same key) would leave it. The redeem flow
+below never reaches this write: `remote_only_answer_refused`. -/
 theorem same_key_differs_on_remote_only :
     answerKey (.set none (some 1) none) = answerKey (.set (some .on) (some 1) none) ∧
     effMode none (some 1) (some .remoteOnly) ≠ effMode (some .on) (some 1) (some .remoteOnly) := by
@@ -421,6 +423,64 @@ theorem issued_works_once (st : Store) (f : Nat) (a : Answer) (k : Key) (hk : an
   intro r hr
   simp [consume] at hr
   exact hr.2
+
+/-! ## Redeeming a nonce on a folder decided meanwhile (refuseIfDecided) -/
+
+/-- Answers that write the map (set, rm) need the folder still undecided;
+"not now" writes nothing. -/
+def needsUndecided : Answer → Bool
+  | .notNow => false
+  | _ => true
+
+/-- The redeem flow: `policy` is the folder's mode in effect at redemption. A set
+or rm on a folder no longer `ask` is a refusal before the save. -/
+def redeemFlow (st : Store) (n f : Nat) (a : Answer) (policy : Mode) (fail : Bool) : Option Store :=
+  setFlow st n f a (fail || (needsUndecided a && policy != .ask))
+
+/-- Decided meanwhile: the write is refused and the nonce stays (nothing consumed). -/
+theorem decided_meanwhile_keeps_nonce (st : Store) (n f : Nat) (a : Answer) (p : Mode) (fail : Bool)
+    (ha : needsUndecided a = true) (hp : p ≠ .ask) :
+    redeemFlow st n f a p fail = none := by
+  have : (fail || (needsUndecided a && p != .ask)) = true := by simp [ha, hp]
+  unfold redeemFlow; rw [this]; exact failed_write_keeps_nonce st n f a
+
+/-- A redeemed set or rm happened on an undecided folder. -/
+theorem redeemed_only_when_undecided (st st' : Store) (n f : Nat) (a : Answer) (p : Mode)
+    (ha : needsUndecided a = true) (h : redeemFlow st n f a p false = some st') : p = .ask := by
+  by_cases hp : p = .ask
+  · exact hp
+  · rw [decided_meanwhile_keeps_nonce st n f a p false ha hp] at h
+    cases h
+
+/-- "Not now" ignores the folder's policy. -/
+theorem not_now_ignores_policy (st : Store) (n f : Nat) (p : Mode) (fail : Bool) :
+    redeemFlow st n f .notNow p fail = setFlow st n f .notNow fail := by
+  simp [redeemFlow, needsUndecided]
+
+/-- The remote-only case of `same_key_differs_on_remote_only` is refused. -/
+theorem remote_only_answer_refused (st : Store) (n f : Nat) :
+    redeemFlow st n f (.set (some .on) (some 1) none) .remoteOnly false = none ∧
+    redeemFlow st n f (.set none (some 1) none) .remoteOnly false = none :=
+  ⟨decided_meanwhile_keeps_nonce _ _ _ _ _ _ rfl (by decide),
+   decided_meanwhile_keeps_nonce _ _ _ _ _ _ rfl (by decide)⟩
+
+/-- Same key, same write, for every redeemed answer: a redeemed write sees an
+undecided folder, and the merged mode of an undecided folder is not remote-only
+(`hcur`: a remote-only entry or parent would make the policy remote-only). -/
+theorem same_key_same_redeemed_write (st st' : Store) (n f : Nat)
+    (m₁ m₂ : Option Mode) (s₁ s₂ : Option Nat) (t₁ t₂ : Option Bool) (p : Mode) (cur : Option Mode)
+    (hcur : p = .ask → cur ≠ some .remoteOnly)
+    (hr : redeemFlow st n f (.set m₁ s₁ t₁) p false = some st')
+    (h : answerKey (.set m₁ s₁ t₁) = answerKey (.set m₂ s₂ t₂)) :
+    effMode m₁ s₁ cur = effMode m₂ s₂ cur ∧ s₁ = s₂ ∧ t₁ = t₂ :=
+  same_key_same_write m₁ m₂ s₁ s₂ t₁ t₂ cur
+    (hcur (redeemed_only_when_undecided st st' n f _ p rfl hr)) h
+
+/-- Non-vacuity: on an undecided folder the issued nonce redeems once. -/
+theorem redeem_undecided_works (st : Store) (f : Nat) (a : Answer) (k : Key) (hk : answerKey a = some k) :
+    ∃ st', redeemFlow (issue st f a) (fresh st) f a .ask false = some st' := by
+  obtain ⟨st', h, _⟩ := issued_works_once st f a k hk
+  exact ⟨st', by simpa [redeemFlow] using h⟩
 
 /-! ## Host match (hostFolderNonces) -/
 

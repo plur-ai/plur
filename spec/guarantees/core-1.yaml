@@ -1258,6 +1258,24 @@ anchors:
       - >-
         packages/core/test/folder-map-repair-safety.test.ts::a file that is not valid UTF-8 is not repaired (nothing
         written, no backup)
+  packages/core/src/folders.ts#refuseIfDecided:
+    kind: guarantee
+    rule: >-
+      A nonce-redeemed set or rm is refused once the folder is no longer undecided (decided by hand or by a parent
+      entry after the question was shown); nothing is written and the nonce is not consumed. "Not now" is not checked.
+    tests:
+      - >-
+        packages/core/test/folder-nonce-decided-meanwhile.test.ts::--scope X --on is refused once a parent became
+        remote-only, and the folder stays remote-only
+      - packages/core/test/folder-nonce-decided-meanwhile.test.ts::removal with a nonce is refused after the entry was decided by hand
+      - packages/core/test/folder-nonce-decided-meanwhile.test.ts::the kept nonce works again once the folder is undecided again
+      - >-
+        packages/core/test/folder-nonce-decided-meanwhile.test.ts::"not now" writes nothing, so it is still accepted
+        on a decided folder
+    lean:
+      - PlurSpec/FolderRules.lean:decided_meanwhile_keeps_nonce
+      - PlurSpec/FolderRules.lean:remote_only_answer_refused
+      - PlurSpec/FolderRules.lean:same_key_same_redeemed_write
   packages/core/src/folders.ts#removeFolderEntryUnlocked:
     kind: guarantee
     rule: Removing a trusted folder entry also removes its legacy trust line for every removed entry, and never adds one.

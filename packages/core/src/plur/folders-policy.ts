@@ -435,11 +435,11 @@ export const foldersPolicyMethods: FoldersPolicyMethods & ThisType<Plur> = {
     // The stores reach the check so a project scope is judged like write
     // routing judges it: one a server serves needs it configured, one
     // a company server withholds is refused naming the server.
-    return _setFolderEntry(this.paths.root, folder, change, { configuredScopes, remoteScopes, stores, ...options })
+    return _setFolderEntry(this.paths.root, folder, change, { configuredScopes, remoteScopes, stores, gitScopes: loadGitScopeSources(this.paths.root), ...options })
   },
 
   removeFolder(folder: string, options?: { nonce?: string; session?: string }): boolean {
-    return _removeFolderEntry(this.paths.root, folder, undefined, options)
+    return _removeFolderEntry(this.paths.root, folder, undefined, { ...options, gitScopes: loadGitScopeSources(this.paths.root) })
   },
 
   issueFolderNonce(sessionId: string, folder: string, answer: FolderAnswer, options?: { home?: string; literal?: boolean; bindSession?: boolean }): string {
