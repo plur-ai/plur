@@ -1,9 +1,8 @@
 /**
- * `plur restore` — list, inspect and restore validity-gated store snapshots
- * (audit #794, issue #799).
+ * `plur restore` — list, inspect and restore validity-gated store snapshots.
  *
  * Restoring is itself a whole-corpus overwrite, which is the exact operation
- * the #794 guards exist to constrain. So the default is to SHOW the plan, not
+ * the store's write guards exist to constrain. So the default is to SHOW the plan, not
  * to perform it: `plur restore` prints what would happen, and only
  * `--yes` actually writes.
  */
@@ -46,9 +45,9 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     else usage()
   }
 
-  // A remote-only folder never uses the personal store (gate review of #1663):
-  // restoring it from there is refused, as compact and sync are. A folder map
-  // that cannot be read leaves this command as on development (decision 1).
+  // A remote-only folder never uses the personal store: restoring it from
+  // there is refused, as compact and sync are. A folder map that cannot be
+  // read does not block this command.
   if (confirm) {
     let policy: ReturnType<typeof resolveFolderPolicy> | null = null
     try { policy = resolveFolderPolicy(process.cwd(), { root, readOnly: true }) } catch { policy = null }

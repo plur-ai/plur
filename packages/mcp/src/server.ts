@@ -89,8 +89,8 @@ REMOTE-ONLY FOLDERS: a folder the user set to remote-only keeps its memory on th
 Setup: If this is a fresh install, suggest the user run: npx @plur-ai/mcp init
 This installs hooks for automatic injection + session management. One-time global setup.`
 
-// Exported for the #776 description-honesty test (the guide once claimed
-// "fully local, zero API calls" while the recall path dials enterprise hosts).
+// Exported so a test can check the guide's claims stay accurate (e.g. that
+// it does not call recall "fully local" when it can dial enterprise hosts).
 export const GUIDE_RESOURCE = `# PLUR — Agent Guide
 
 ## What is PLUR?
@@ -185,8 +185,7 @@ const _endFolderQuestion = new WeakMap<object, () => void>()
 /**
  * Close a session: end its folder question at once (its nonces are deleted;
  * no request can issue new ones once the session is closing), then close
- * `server` once the tool calls already running have answered (audits R1 and
- * R3 of #1529). With `timeoutMs`, wait at most that long; without it, wait
+ * `server` once the tool calls already running have answered. With `timeoutMs`, wait at most that long; without it, wait
  * as long as they run, so a call that is still writing is never cut off from
  * its answer.
  */
@@ -208,26 +207,26 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
   const profile = options?.profile ?? 'lean'
   // The folder this server serves (the editor starts it there): its folder-map
   // decision is re-read before every tool call, so a `remote-only` folder
-  // (owner decisions 2026-10-01) binds the instance — writes go only to the
+  // binds the instance — writes go only to the
   // team scope, recall reads only it and installed packs — and a change to
   // folders.yaml applies from the next call.
   const folder = options?.folder ?? process.cwd()
-  // A company server's scopes are discovered in the background (#1631): the
+  // A company server's scopes are discovered in the background: the
   // editor's startup window must never wait on /me. Started, not awaited;
   // tools use the cached scopes until it settles. `discovery: false` turns it
   // off for this instance (plur_session_start then starts none either).
   setBackgroundDiscovery(instance, options?.discovery !== false)
   startBackgroundDiscovery(instance)
-  // #761: record what we actually exposed, so plur_doctor reports THIS surface
+  // Record what we actually exposed, so plur_doctor reports THIS surface
   // rather than re-deriving one from the environment — which is not the
   // authority here, since the profile arrives as an option.
   setActiveToolProfile(profile)
   const tools = getToolDefinitions(profile)
 
   // Non-blocking version check — fire and forget at startup, then re-checked
-  // periodically (#760) so a long-lived server learns about releases published
+  // periodically so a long-lived server learns about releases published
   // after it started. The timer is unref'd so it never keeps the process alive.
-  // TEAM-5: this start check is the one network attempt PLUR makes with no
+  // This start check is the one network attempt PLUR makes with no
   // internet. When it cannot connect the process is offline, and the timer,
   // refresh-on-read and plur_status check_updates make no further request
   // (version-check.ts).
@@ -258,8 +257,8 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
   )
 
   // --- Requests in flight, so a closing session can answer them first ---
-  // (audit R1 of #1529): closing the transport under a running tools/call
-  // dropped its response while the write behind it still happened.
+  // Closing the transport under a running tools/call would drop its response
+  // while the write behind it still happened.
   let inFlight = 0
   let idleWaiters: Array<() => void> = []
   const trackInFlight = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -282,11 +281,11 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
   }))
 
   // --- The editor's workspace, for the folder map (folder-gate.ts) ---
-  // One helper (#1519's createWorkspaceDirs): one roots cache, one
-  // list_changed handler, fail closed on a roots failure. Its folder is the
-  // one this server serves (`folder`, default cwd; #1521).
+  // One helper (createWorkspaceDirs): one roots cache, one list_changed
+  // handler, fail closed on a roots failure. Its folder is the one this
+  // server serves (`folder`, default cwd).
   const workspace = createWorkspaceDirs(server, { cwd: () => folder })
-  // The folder map's off / ask for this MCP session (#1525). The session's
+  // The folder map's off / ask for this MCP session. The session's
   // unanswered folder-question nonces die with the connection.
   const folderGate = createFolderGate(instance)
   _endFolderQuestion.set(server, () => folderGate.end())
@@ -297,7 +296,7 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
   }
 
   // PLUR_LOG_CLIENT_INFO=1: log one line to stderr on initialize so a human
-  // can record which capabilities each editor actually sends (#1635).
+  // can record which capabilities each editor actually sends.
   const priorOnInitialized = server.oninitialized
   server.oninitialized = () => {
     priorOnInitialized?.()
@@ -316,7 +315,7 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
 
   // Bind the instance to the workspace's folder decision (remote-only), or
   // block it (off, unknown workspace, unreadable map), for this call.
-  // Precedence: off > remote-only > on (#1521 with #1519).
+  // Precedence: off > remote-only > on.
   let boundStatusPolicy: { dir: string; policy: FolderPolicy } | undefined
   const bindWorkspace = (dirs: string[], defaultDirs: string[] = dirs): void => {
     boundStatusPolicy = undefined
@@ -351,7 +350,7 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
 
   // Tool calls run one at a time: the folder gate and the binding live on the
   // one shared Plur instance, so a concurrent call must not change them under
-  // a running one. The gate runs inside the same serialized step (#1521).
+  // a running one. The gate runs inside the same serialized step.
   let callTail: Promise<void> = Promise.resolve()
   const acquireCall = async (): Promise<() => void> => {
     let release!: () => void
@@ -379,11 +378,10 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
    try {
     const tool = tools.find(t => t.name === request.params.name)
     if (!tool) {
-      // #625 audit: under a gated profile, a REAL tool that is merely hidden
-      // must return an ACTIONABLE error, not a dead-end "Unknown tool" —
-      // agents carrying pre-lean instructions (docs, engrams, templates) call
-      // hidden tools by their old names and need a machine-readable recovery
-      // path in the error itself, at the moment recovery matters.
+      // Under a gated profile, a REAL tool that is merely hidden must return
+      // an ACTIONABLE error, not a dead-end "Unknown tool" — agents following
+      // docs, engrams or templates call hidden tools by name and need a
+      // machine-readable recovery path in the error itself.
       const hidden = getToolDefinitions('full').find(t => t.name === request.params.name)
       if (hidden) {
         return {
@@ -402,12 +400,12 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
     }
     // The folder map (folder-gate.ts): a memory tool, called directly or
     // through plur_admin, touches no store in an `off` folder and says so, and
-    // in an undecided (`ask`) folder answers with the folder question (#1525).
+    // in an undecided (`ask`) folder answers with the folder question.
     // Before the canary tick: a refused call is not a turn of memory use.
     const gated = tool.name === 'plur_admin'
       ? (request.params.arguments as Record<string, unknown> | undefined)?.action
       : tool.name
-    // The workspace the gate admitted this call in (#1566): a read's default
+    // The workspace the gate admitted this call in: a read's default
     // scope comes from it, so a read costs no second roots request and is
     // answered in the workspace it was admitted in.
     let admittedWs: Awaited<ReturnType<typeof workspace.workspace>> = null
@@ -417,33 +415,33 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
       if (decision.plur !== 'on') return { content: [{ type: 'text', text: JSON.stringify(decision, null, 2) }] }
       admittedWs = ws
       // The instance follows the admitted workspace's folder decision
-      // (remote-only, #1521): bound on every call, in this serialized step.
+      // (remote-only): bound on every call, in this serialized step.
       bindWorkspace([...new Set([...ws!.roots, ws!.cwd])], ws!.roots.length ? ws!.roots : [ws!.cwd])
     } else {
       // Not a gated tool: bound to the workspace too, unless memory is off
-      // there or the workspace is unknown, where it runs unbound, as #1519
-      // defines (no engram text in its answers).
+      // there or the workspace is unknown, where it runs unbound (no engram
+      // text in its answers).
       const dirs = await workspace.dirs()
       const off = dirs === null ? workspaceUnknownAnswer() : folderOffAnswer(instance, dirs)
       if (off) instance.bindFolderPolicy(folder, { mode: 'ask', remoteAllowed: false, source: 'default' })
       else bindWorkspace(dirs!)
     }
-    // #192: one tick per tool call = one "turn" for capability health.
+    // One tick per tool call = one "turn" for capability health.
     // plur_session_start resets the canary, giving a per-session window:
     // `threshold` turns without an expected signal flags the capability.
     mcpCanary.tick()
     try {
-      // #772: capture whether the frame carried `arguments` at all BEFORE the
+      // Capture whether the frame carried `arguments` at all BEFORE the
       // `?? {}` default erases the distinction. "Key absent" vs "arrived as {}"
-      // is the one wire-level fact only this boundary can observe, and it is
-      // the first thing the upstream client report needs.
+      // is a wire-level fact only this boundary can observe, and the first
+      // thing a client bug report needs.
       const rawArguments = request.params.arguments
       let args = rawArguments ?? {}
       const validated = validateToolArgs(tool, args)
       if (!validated.ok) {
         const drop = validated.errorPayload.drop
         if (drop) {
-          // Forensic record of the dropped frame (#772) — bounded, field NAMES
+          // Forensic record of the dropped frame — bounded, field NAMES
           // only, never values. Written only at this top-level wire boundary:
           // plur_admin's inner `args` travel INSIDE a delivered payload, so an
           // inner-validation failure there is not a wire drop.
@@ -477,8 +475,7 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
         }
       }
       args = validated.data
-      // The workspace's default write scope (#1525, #1563 review round 2),
-      // resolved when a tool asks for it — at the moment a write is
+      // The workspace's default write scope, resolved when a tool asks for it — at the moment a write is
       // admitted — from the CURRENT roots, by the one resolver. Under a
       // Symbol key no client can set.
       const scopeContext = (ws: NonNullable<typeof admittedWs>) => {
@@ -517,8 +514,8 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
       args = { ...args, [FOLDER_SCOPE]: folderContext }
       const result = await tool.handler(args, instance)
 
-      // Generic _isError propagation (audit fix): a tool handler — currently
-      // only plur_admin's, when the ACTION it dispatched to fails its own
+      // Generic _isError propagation: a tool handler — currently only
+      // plur_admin's, when the ACTION it dispatched to fails its own
       // inner validateToolArgs check — can flag its return value with a
       // private `_isError: true` marker to get the same protocol-level
       // `isError: true` a top-level validation failure gets above. Strip the
@@ -538,7 +535,7 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
     } catch (err: any) {
       // First line only: a store that does not parse throws a YAML error whose
       // later lines are a code frame of the file (engram statements), and an
-      // admin tool still answers in a folder where PLUR is off (#1519).
+      // admin tool still answers in a folder where PLUR is off.
       const message = String(err?.message ?? err).split('\n', 1)[0]
       server.sendLoggingMessage({ level: 'error', data: `Tool ${request.params.name} failed: ${message}` })
       return {
@@ -574,26 +571,19 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
     const uri = request.params.uri
 
     if (uri === 'plur://guide') {
-      // Audit fix (evaluator review, 2026-07-08): GUIDE_RESOURCE names ~30
-      // tools (plur_capture, plur_packs_install, plur_ingest, plur_sync,
-      // ...) as if every one is directly callable. Under the `cursor`
-      // profile most of them aren't — they only exist behind plur_admin's
-      // dispatch — and this guide is the exact resource init.ts's Cursor
-      // rule file points agents at ("Full reference: read the plur://guide
-      // MCP resource"), so a Cursor agent following it verbatim would try
-      // to call tools that return "Unknown tool". Append the redirect only
-      // for the profile where it's actually needed.
-      // Built FROM CURSOR_CORE_TOOL_NAMES (audit fix — evaluator review,
-      // iteration 2, 2026-07-09), not a second hardcoded copy of it — a
-      // second copy drifts the moment the core set changes and nothing
-      // catches it, silently making this exact text wrong.
+      // GUIDE_RESOURCE names ~30 tools as if every one is directly
+      // callable. Under the `cursor` profile most of them only exist behind
+      // plur_admin's dispatch, and init.ts's Cursor rule file points agents
+      // at this guide, so append the redirect for that profile.
+      // Built FROM CURSOR_CORE_TOOL_NAMES, not a second hardcoded copy that
+      // would drift when the core set changes.
       const cursorNote = (options?.profile === 'cursor' || options?.profile === 'lean' || options?.profile == null)
         ? '\n\n## Lean tool profile (default)\n\nMost tools above are NOT directly callable in this session — only ' +
           `${[...CURSOR_CORE_TOOL_NAMES].join(', ')} are top-level tools here. ` +
           'Everything else in this guide is reachable through **plur_admin**: call it with ' +
           '`{ action: "<tool name above>", args: {...} }`. ' +
-          // Count computed, not hardcoded (#625 audit) — a literal "40" goes
-          // silently stale the moment a tool is added or removed.
+          // Count computed, not hardcoded — a literal goes stale the moment a
+          // tool is added or removed.
           `Set \`PLUR_TOOL_PROFILE=full\` to expose all ${getToolDefinitions('full').length} tools directly.`
         : ''
       return {
@@ -701,33 +691,13 @@ Please:
 }
 
 export async function runStdio(): Promise<void> {
-  // #1070: a long-lived memory server must not die from a background fault.
-  // Node's default turns ANY unhandled rejection — an un-awaited retry, a
-  // fire-and-forget probe, a timer callback's fetch — into process death.
-  // Claude Code never restarts an MCP server that dies mid-session, so that
-  // default converts one transient background hiccup into the entire session
-  // running memoryless, discovered only when the NEXT tool call reports
-  // "Connection closed" after 0s (the observed 2026-08-28 signature: the
-  // server was already dead; plur_doctor merely found the corpse).
-  //
-  // The two fault kinds get DIFFERENT treatment (0.19.1 audits, all three):
-  //
-  //   - unhandledRejection: survive and log. This was the production killer,
-  //     it comes from detached async work, and continuing is safe.
-  //   - uncaughtException: log loudly, then EXIT. Resuming after one is
-  //     formally unsafe (Node's own docs), a mid-write throw can leave a
-  //     half-serialized transport frame that desyncs every later response,
-  //     and — the data-loss audit's sharpest point — a process that survives
-  //     while holding the store lock is a LIVE lock holder: the cross-process
-  //     stale-lock recovery deliberately never steals from a live pid, so a
-  //     wedged-but-alive server blocks every other writer indefinitely.
-  //     Crash-fast keeps that recovery path working; for a memory server,
-  //     answering WRONGLY is worse than being visibly dead.
-  //
-  // The rejection log is rate-limited: a pathological store can reject in a
-  // tight loop, and the harness captures our stderr to disk.
-  // Registered here, not in createServer, so the test suite's in-process
-  // servers don't swallow the test runner's own failures.
+  // A long-lived memory server must not die from a background fault (Claude Code never
+  // restarts a dead MCP server, so the session would silently run memoryless).
+  //   - unhandledRejection: survive and log (rate-limited; stderr goes to disk).
+  //   - uncaughtException: log loudly, then EXIT. Resuming is unsafe, and a live wedged
+  //     process holding the store lock is never stolen from by stale-lock recovery.
+  // Registered here, not in createServer, so in-process test servers don't swallow
+  // the test runner's own failures.
   const LOG_WINDOW_MS = 60_000
   const LOG_MAX_PER_WINDOW = 20
   let logWindowStart = 0
@@ -772,13 +742,13 @@ export async function runStdio(): Promise<void> {
     setTimeout(() => { throw new Error('induced test exception (#1070)') }, induceThrowMs)
   }
 
-  // Shared with describeToolSurface (#761) so the surface plur_doctor reports
+  // Shared with describeToolSurface so the surface plur_doctor reports
   // is resolved from the same rule the server exposes tools with — two copies
   // of this ternary is how doctor comes to describe a profile nobody is running.
   const profile: ToolProfile = resolveToolProfile()
   const server = await createServer(undefined, { profile })
   // A long-lived process: when a recall finds the embedding model missing, it
-  // may load (and download) it in the background, once (#1586 round 4).
+  // may load (and download) it in the background, once.
   // Short-lived CLI and hook processes never do.
   allowBackgroundModelLoad(true)
   // Opt-in, content-free telemetry: ship any pending daily counter snapshot on
@@ -802,10 +772,9 @@ export async function runStdio(): Promise<void> {
   await server.connect(transport)
 
   // The SDK's stdio transport never reports that stdin ended, so close the
-  // server ourselves (audit F1 of #1529): on stdin end and on SIGTERM /
-  // SIGINT. Closing fires onclose, which deletes this session's folder-question
-  // nonces at once. The tool calls already running answer first (audits R1,
-  // R3): on stdin end, however long they take, and the process then exits by
+  // server ourselves: on stdin end and on SIGTERM / SIGINT. Closing fires
+  // onclose, which deletes this session's folder-question nonces at once.
+  // The tool calls already running answer first: on stdin end, however long they take, and the process then exits by
   // itself once its output is written; a signal waits at most 2 s for them,
   // then exits (the handler replaces
   // Node's default exit). On Windows a SIGTERM from another process cannot be
@@ -815,7 +784,7 @@ export async function runStdio(): Promise<void> {
     if (!closing) closing = closeWhenIdle(server, timeoutMs)
     return closing
   }
-  // No cap after stdin ends (audit R3): no new request can arrive, the
+  // No cap after stdin ends: no new request can arrive, the
   // nonces are already gone, and a call still running (a store lock, a slow
   // remote) keeps the process alive anyway, so waiting costs nothing and its
   // answer is never dropped.

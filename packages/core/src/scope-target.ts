@@ -2,21 +2,10 @@
  * What an explicit `scope:` argument means as a ROUTING TARGET.
  *
  * `forget(id, reason, { scope })` and `feedback(id, signal, scope)` both take a
- * scope to disambiguate an id that could name engrams in several stores. #855
- * asked for the rule to live in one place when both landed; it did not, and the
- * two copies immediately diverged. The 2026-08-13 evaluator panel measured the
- * consequence:
- *
- *     scope="global"      threw=null  remote DELETEs=1   ← wrong-target retire, reported success
- *     scope="local"       threw=null  remote DELETEs=1
- *     scope="project:foo" threw=null  remote DELETEs=1
- *     scope="primary"     threw       remote DELETEs=0   (control)
- *
- * Three of the four targets `forget`'s own error message advertises as valid
- * routed to a remote DELETE when the id was absent locally — the caller said
- * "the local one", and the engine destroyed a remote one and reported success.
- * That is #831 verbatim, reached from the direction #855 documented itself as
- * closing. The drift IS the bug, so the rule is a module, not a convention.
+ * scope to disambiguate an id that could name engrams in several stores. The
+ * rule lives here, in one module, so the two cannot diverge: a divergent copy
+ * can route a "local" target to a remote DELETE when the id is absent locally,
+ * destroying a remote engram and reporting success.
  */
 
 import type { StoreEntry } from './schemas/config.js'
@@ -26,37 +15,14 @@ import { resolveScopeTarget } from './store-resolver.js'
 const LOCAL_FAMILY = new Set(['primary', 'local', 'global'])
 
 /**
- * True when `scope` names something local, so a routed operation must NEVER
- * fall through to a remote store.
- *
- * `primary` is the explicit "the local primary store, and only it" target.
- * `local`, `global` and `project:*` are the scopes an engram carries when it
- * lives on this machine; naming one of them is equally a statement about
- * WHERE, not just about which namespace. Both readings agree that a remote
- * DELETE is not what the caller asked for.
- *
- * Decision E5 (2026-09-26): case-folded, like `isSharedScope` — `GLOBAL` and
- * `Project:x` are the same family as `global` and `project:x`. Only the
- * comparison folds; no scope value is rewritten.
- *
- * Decision E4, amended 2026-10-18 by owner decision O5 (#1633): `project:*`
- * is local-only exactly when write routing keeps it local, i.e. when
- * {@link resolveScopeTarget} (store-resolver.ts) answers `local` for it. It is
- * NOT local-only when a url store claims exactly this scope (`remote`), two
- * servers do (`conflict`, the write path refuses it), or it is under a company
- * server's org without a grant (`unauthorized`). The 2026-09-26 reading was
- * containment (`isScopeWithin`): a url store at `project:plur` made
- * `project:plur/sub` non-local although routing, which matches exactly, never
- * sends `project:plur/sub` there — forget and feedback dialled a server that
- * a write to the same scope would never reach. Matching is exact, like the
- * resolver: no containment, no case fold. Pass the configured `stores`;
- * omitting them keeps the config-free family (every `project:*` local), which
- * is what `assertScopeNamesATarget` wants — a project scope always names a
- * target. `primary` / `local` / `global` never depend on stores.
- *
- * Note the asymmetry with lookup: a local-only scope still permits the
- * secondary-store walk, because `stores:` entries without a `url` are files on
- * this disk. It is the network leg that is refused.
+ * True when `scope` names something local, so a routed operation must NEVER fall
+ * through to a remote store.
+ * - `primary`, `local`, `global` are always local-only; comparison is case-folded
+ *   (no value is rewritten).
+ * - `project:*` is local-only exactly when {@link resolveScopeTarget} answers `local`
+ *   (not `remote`/`conflict`/`unauthorized`), matched exactly. Without `stores`, every
+ *   `project:*` is local (what `assertScopeNamesATarget` wants).
+ * - Path-backed secondary stores are still walked; only the network leg is refused.
  */
 export function isLocalOnlyScope(
   scope: string,
@@ -71,13 +37,8 @@ export function isLocalOnlyScope(
 
 /**
  * Throw unless `scope` names a target that exists — a local-family scope or a
- * configured store.
- *
- * Typo protection, and load-bearing rather than cosmetic: because a mistyped
- * scope is still TRUTHY, it skipped the `if (!scope)` ambiguity guard
- * downstream and silently restored first-match-wins on exactly the id the
- * guard exists to refuse. `group:tset` for `group:test` retired the local
- * engram, issued no remote DELETE, and reported success.
+ * configured store. Load-bearing: a mistyped scope is truthy, skips the downstream
+ * ambiguity guard, and would silently act on the wrong engram.
  *
  * @param verb  what the caller is doing, for the message: `retire from`, `rate in`
  * @param consequence  what silently happens if this is not caught
@@ -100,19 +61,11 @@ export function assertScopeNamesATarget(
 }
 
 /**
- * The ONE configured store a personal `user:` scope selects, or null (#1515).
- *
- * Candidates are first the entries whose scope equals `scope` exactly, and
- * only when there are none, the entries equal to it case-folded (folding as
- * in {@link isLocalOnlyScope}, Decision E5 — only the comparison folds; a
- * Unicode fold such as the Kelvin sign counts too). Within the candidates the
- * preference is fail-safe: a LOCAL path-backed store, then a writable url
- * store, then a readonly url store; config order breaks ties. So an exact or
- * ambiguous match never selects a remote store when a local one matches.
- *
- * The selected entry is used for the read dial, the write target and the
- * "own remote namespace" check alike, so the three can never disagree.
- * Non-`user:` scopes never match.
+ * The ONE configured store a personal `user:` scope selects, or null (non-`user:`
+ * scopes never match). Candidates: exact scope matches, else case-folded ones (incl.
+ * Unicode folds). Preference is fail-safe — local path store, then writable url,
+ * then readonly url; config order breaks ties — so a remote is never chosen over a
+ * matching local. Used for read, write and own-namespace checks so they agree.
  */
 export function personalStoreEntry<T extends { scope: string; url?: string; readonly?: boolean }>(
   scope: string | null | undefined,

@@ -1,14 +1,7 @@
 /**
- * The memory viewer, reachable from inside DeepSeek Harness.
- *
- * DeepSeek Harness renders its own UI as a React client assembled from
- * `@deepseek-ai/dsh-client-ui-*` plugins over a typed slot registry. Adding a
- * native tab there means shipping a browser bundle bound to that registry's
- * pre-1.0 internals. This takes the other road: the same viewer `plur ui`
- * serves, started on demand and handed back as a URL.
- *
- * The server is `@plur-ai/ui/server`, shared with the CLI — one viewer, one
- * implementation, so a fix in either reaches both.
+ * The memory viewer, reachable from inside DeepSeek Harness: rather than a native tab bound
+ * to the pre-1.0 client-UI slot registry, the same `@plur-ai/ui/server` viewer `plur ui`
+ * serves is started on demand and returned as a URL.
  *
  * @module
  */

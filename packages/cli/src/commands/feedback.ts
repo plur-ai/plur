@@ -2,8 +2,8 @@ import { createPlur, type GlobalFlags } from '../plur.js'
 import { shouldOutputJson, outputJson, outputInfo, outputText, outputError, exit } from '../output.js'
 
 /**
- * Flags this command accepts (#986): anything else is refused rather than
- * silently dropped. `--scope` names the store holding the engram (0.21.1).
+ * Flags this command accepts: anything else is refused rather than silently
+ * dropped. `--scope` names the store holding the engram.
  */
 export const FLAGS_WITH_VALUES = ['--scope', '--batch']
 
@@ -20,9 +20,8 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
 
   // Batch mode: plur feedback --batch '[{"id":"ENG-1","signal":"positive"},...]' [--scope <scope>]
   //
-  // `--scope` applies to every item that does not carry its own `scope`
-  // (#1532 review F4). It used to be dropped without a word, so a batch could
-  // not rate a local engram whose id also exists on a team store.
+  // `--scope` applies to every item that does not carry its own `scope`, so a
+  // batch can rate a local engram whose id also exists on a team store.
   const batchIdx = args.indexOf('--batch')
   if (batchIdx >= 0 && batchIdx + 1 < args.length) {
     const batchJson = args[batchIdx + 1]
@@ -63,9 +62,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     }
 
     // Exit 0 iff every requested feedback was recorded — the rule
-    // `plur rescope` already follows (success = no item errored), in both
-    // output modes. A batch whose items ALL failed used to exit 0 (formal
-    // Adapters #5, cli#5).
+    // `plur rescope` follows (success = no item errored), in both output modes.
     const failed = results.filter(r => !r.success)
     if (shouldOutputJson(flags)) {
       outputJson({ mode: 'batch', success: failed.length === 0, results, summary })
@@ -79,11 +76,10 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
 
   // Single mode: plur feedback <id> <signal> [--scope <scope>]
   //
-  // `--scope` (0.21.1): ids are minted per store, so a bare id can name a local
-  // engram and an unrelated remote one, and an ambiguous id is refused. Without
-  // the flag a colliding LOCAL engram could not be rated from the CLI at all.
-  // `primary` = the local engram; a remote store's scope = that store's.
-  // An extra argument used to be dropped without a word; it is now refused.
+  // `--scope`: ids are minted per store, so a bare id can name a local engram
+  // and an unrelated remote one, and an ambiguous id is refused; the flag picks
+  // one. `primary` = the local engram; a remote store's scope = that store's.
+  // An extra argument is refused.
   let id = ''
   let signal = ''
   let scope: string | undefined

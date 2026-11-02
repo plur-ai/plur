@@ -1,17 +1,18 @@
 import { execFileSync } from 'child_process'
-import { isRemoteOnlyQueued } from './remote-only-rows.js'
-import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, unlinkSync, statSync, readdirSync, openSync, closeSync, fsyncSync, chmodSync } from 'fs'
-import { join, dirname, relative, basename } from 'path'
+import { existsSync, readdirSync, readFileSync } from 'fs'
 import * as yaml from 'js-yaml'
-import { isSharedScope } from './scope-util.js'
-import { engramStoreEntries, sameEngramContent, freshDuplicateId, recordIdRenames, mergeHeldRecords, readHeldRecovery, writeHeldRecovery, readHeldMergeRenames, renameEngramIdRefs, ENGRAM_ID_TOKEN, heldRecoveryPath, SYNC_HELD_RENAME_REASON, type IdRename, type HeldFile } from './engrams.js'
+import { join, relative } from 'path'
+import { atomicWrite } from './atomic-write.js'
 import { recordLastWritten } from './backup.js'
-import { storeRecordMap, recordStoreSync } from './history.js'
-import { _ownerOnlyHost, checkOwnerOnly, currentWindowsAccount, protectOwnerOnly, type OwnerOnlyExec } from './owner-only.js'
+import { ENGRAM_ID_TOKEN, engramStoreEntries, freshDuplicateId, heldRecoveryPath, mergeHeldRecords, readHeldMergeRenames, readHeldRecovery, recordIdRenames, renameEngramIdRefs, sameEngramContent, SYNC_HELD_RENAME_REASON, writeHeldRecovery, type HeldFile, type IdRename } from './engrams.js'
+import { recordStoreSync, storeRecordMap } from './history.js'
+import { isRemoteOnlyQueued } from './remote-only-rows.js'
+import { isSharedScope } from './scope-util.js'
 import {
-  DEFAULT_STALE_THRESHOLD, holderIsAlive, makeToken, startHeartbeat, heartbeatHeldLocks, GIT_COMMAND_TIMEOUT_MS,
-  publishLockFileSync, takeOverSync, abandonedByAge,
+    GIT_COMMAND_TIMEOUT_MS,
+    heartbeatHeldLocks
 } from './store/async-lock.js'
+
 
 export interface SyncStatus {
   initialized: boolean
@@ -23,7 +24,7 @@ export interface SyncStatus {
 }
 
 /**
- * What the sync remote is for (#640). `personal` (default): the user's own
+ * What the sync remote is for. `personal` (default): the user's own
  * backup/mirror across their machines — every non-`scope:local` engram is
  * pushed, private included. `shared`: a team-visible remote —
  * ONLY shared-family-scope, non-private engrams are pushed; personal-family and
@@ -37,7 +38,7 @@ export interface SyncResult {
   message: string
   remote: string | null
   files_changed: number
-  /** Present when syncing to a remote — describes what the push set includes/excludes (#640). */
+  /** Present when syncing to a remote — describes what the push set includes/excludes. */
   warning?: string
   /**
    * Set when the commit succeeded but `git push` did NOT. The local repo is
@@ -78,17 +79,16 @@ backups/
  * Files that constitute the syncable engram store. ONLY these are ever staged by
  * plur sync — an explicit allowlist, so secrets (config.yaml) and machine-local
  * derived files (engrams.db, store.pglite/, exchange/) can NEVER ride along into a
- * synced repo, regardless of how the user's gitignore is (mis)configured. (#380, #384)
+ * synced repo, regardless of how the user's gitignore is (mis)configured.
  */
 const SYNC_PATHS = ['engrams.yaml', 'episodes.yaml', 'candidates.yaml', 'tensions.yaml', 'packs', '.gitignore'] as const
 
 /**
  * Secret-bearing files that must never be tracked. Untracked on every sync, so a
- * repo created by a vulnerable pre-0.10.0 client that already committed one stops
- * carrying it forward. Includes `agent-keystore.json` (an encrypted agent key —
- * exposed the same way as config.yaml in the 2026-06 incident; #392). (Rotating
- * an exposed token/key and purging git history remain manual, operational steps —
- * code can only stop the bleeding.)
+ * repo where an older client already committed one stops carrying it forward.
+ * Includes `agent-keystore.json` (an encrypted agent key). (Rotating an exposed
+ * token/key and purging git history remain manual, operational steps — code
+ * can only stop the bleeding.)
  */
 const SECRET_PATHS = ['config.yaml', 'secrets.yaml', 'agent-keystore.json'] as const
 
@@ -98,7 +98,7 @@ const SECRET_PATHS = ['config.yaml', 'secrets.yaml', 'agent-keystore.json'] as c
  * from external/untrusted sources, so a denylist of secret filenames is the wrong
  * shape: it only blocks the names it enumerates, and anything it misses
  * (`.env`, `*.pem`, `id_rsa`, `credentials.yml`, `.npmrc`, …) rides into the synced
- * repo (#428). An allowlist inverts that — ONLY the files PLUR's own `exportPack`
+ * repo. An allowlist inverts that — ONLY the files PLUR's own `exportPack`
  * writes are staged; any other file in a pack dir (a secret, a stray asset) is
  * never staged, by construction. (`**` matches the standard `packs/<name>/…` layout
  * and any deeper nesting.)
@@ -108,7 +108,7 @@ const PACK_ALLOW_NAMES = ['SKILL.md', 'engrams.yaml', 'INTEGRITY', 'metadata.jso
 function git(args: string[], cwd: string): string {
   // A git command blocks the event loop for up to its 30 s timeout, so a lock
   // held around sync (Plur.sync holds the store lock) cannot heartbeat from a
-  // timer. Touch it here, before each command (decision P1).
+  // timer. Touch it here, before each command.
   heartbeatHeldLocks()
   return execFileSync('git', args, { cwd, encoding: 'utf8', timeout: GIT_COMMAND_TIMEOUT_MS }).trim()
 }
@@ -173,10 +173,9 @@ export function getSyncStatus(root: string): SyncStatus {
  * Stage exactly the engram-store files for commit. First untracks any secret a
  * previous client may have committed, then force-adds the allowlisted store files.
  * The `-f` overrides any user gitignore/excludes that would otherwise drop a real
- * engram file — the data-staging guarantee that #329 needed — but now WITHOUT
- * neutralizing the user's global excludes for everything else (closes #384, and
- * replaces the #366 `neutraliseGlobalExcludes` helper), and config.yaml/secrets
- * are never in the pathspec so they can never be staged (#380).
+ * engram file, WITHOUT neutralizing the user's global excludes for everything
+ * else, and config.yaml/secrets are never in the pathspec so they can never be
+ * staged.
  * Returns the number of files staged (added/modified/deleted).
  */
 function stageStoreFiles(root: string): number {
@@ -185,7 +184,7 @@ function stageStoreFiles(root: string): number {
     gitSafe(['rm', '--cached', '--ignore-unmatch', '--quiet', '--', secret], root)
   }
   // Root store files (allowlist), EXCEPT `packs` which is staged by its own
-  // file-level allowlist below — never as a whole force-added directory (#428).
+  // file-level allowlist below — never as a whole force-added directory.
   const present = SYNC_PATHS.filter((p) => p !== 'packs' && existsSync(join(root, p)))
   const pathspecs: string[] = [...present, ...packStorePaths(root)]
   if (pathspecs.length > 0) {
@@ -198,18 +197,8 @@ function stageStoreFiles(root: string): number {
 }
 
 /**
- * Refuse to stage while any store file is in an unmerged (conflicted) state.
- *
- * `git add -A -f` on an unmerged path does not resolve the conflict — it marks
- * it resolved and stages the bytes as they are, conflict markers included
- * (audit #794, F5; probe P06b measured the resulting blob being committed AND
- * pushed). Since staging is the step that turns a conflicted working tree into
- * a commit, this is the right place to stop.
- *
- * `--diff-filter=U` is checked against the store allowlist only: an unrelated
- * conflicted file elsewhere in the repo is not sync's business, which is the
- * over-broad behaviour `hasConflictMarkers` (a `git grep` across ALL tracked
- * files) still has.
+ * Refuse to stage while any store file is unmerged: `git add -A -f` would mark it resolved and commit and push
+ * the conflict markers. Checks only the store allowlist; unrelated conflicted files are not sync's business.
  */
 function assertNoUnmergedStoreFiles(root: string): void {
   const unmerged = gitSafe(['diff', '--name-only', '--diff-filter=U'], root)
@@ -230,9 +219,9 @@ function assertNoUnmergedStoreFiles(root: string): void {
 }
 
 /**
- * The EXACT allowlisted files inside `packs/` to stage (#428). Returns concrete
- * paths, not globs, so a `git add` pathspec can never zero-match (which is fatal)
- * — the bug a "packs/<glob>/metadata.json" pathspec hit when no pack had one.
+ * The EXACT allowlisted files inside `packs/` to stage. Returns concrete
+ * paths, not globs, so a `git add` pathspec can never zero-match (which is
+ * fatal, e.g. "packs/<glob>/metadata.json" when no pack has one).
  * Unions on-disk files (adds/modifies) with currently-tracked ones (so a deletion
  * still stages via `-A`). Only SKILL.md / engrams.yaml / INTEGRITY / metadata.json
  * are eligible — any other file in a pack dir (a secret, a stray asset) is excluded
@@ -266,28 +255,21 @@ const YAML_DUMP_OPTS = { lineWidth: 120, noRefs: true, quotingType: '"' as const
 
 /**
  * Sibling store files that ride along with engrams.yaml in SYNC_PATHS and can
- * embed engram-DERIVED text (#686): `episodes.yaml` (session summaries, e.g. the
+ * embed engram-DERIVED text: `episodes.yaml` (session summaries, e.g. the
  * `plur_report_failure` episode quotes an engram's failure context),
  * `candidates.yaml` (pending contradiction pairs — legacy, no in-core writer,
  * but synced when present), and `tensions.yaml` (statement_a/statement_b are
- * verbatim snapshots of the two engrams' statements). #678 stripped only
- * engrams.yaml, so a `shared` remote could still receive private-derived text
+ * verbatim snapshots of the two engrams' statements). Stripping only
+ * engrams.yaml would let a `shared` remote receive private-derived text
  * through these files even though the engrams themselves were withheld.
  */
 const SIBLING_STRIP_FILES = ['episodes.yaml', 'candidates.yaml', 'tensions.yaml'] as const
 
 /**
- * Canonical engram id token, matched anywhere inside a serialized record
- * (schema: `/^(ENG|ABS|META)-[A-Za-z0-9-]+$/` in schemas/engram.ts). Greedy
- * over the id charset, so a longer unknown token ("ENG-0011" around "ENG-001")
- * extracts as itself and simply fails push-set membership — conservative.
- */
-
-/**
  * Dump options matching the sibling-file writers (episodes.ts / tension-store.ts
  * both use `{ lineWidth: 120, noRefs: true }`), so a stripped sibling blob is
  * byte-identical to what the file would contain if it only ever held the kept
- * records — the same determinism that keeps the #396 no-infinite-dirty property.
+ * records — the same determinism that prevents an infinite-dirty loop.
  */
 const SIBLING_DUMP_OPTS = { lineWidth: 120, noRefs: true }
 
@@ -296,10 +278,10 @@ interface EngramRecord { id?: string; scope?: string; visibility?: string; [k: s
 /**
  * Error thrown when sync finds an engrams.yaml it cannot parse.
  *
- * Sync MUST fail loudly here rather than continue (audit #794, F5). The strip
- * that keeps `scope:local` engrams off the remote is driven by parsing this
- * file; a parse failure used to disable the strip silently, and the verbatim
- * blob — conflict markers, private engrams and all — was committed and pushed.
+ * Sync MUST fail loudly here rather than continue. The strip that keeps
+ * `scope:local` engrams off the remote is driven by parsing this file; if a
+ * parse failure disabled the strip, the verbatim blob — conflict markers,
+ * private engrams and all — would be committed and pushed.
  */
 export class SyncStoreUnreadableError extends Error {
   constructor(readonly filePath: string) {
@@ -320,18 +302,18 @@ export class SyncStoreUnreadableError extends Error {
 /**
  * Read engrams.yaml as a record list for the strip filters.
  *
- * `null` means ABSENT — there is nothing to strip and nothing to protect. It no
- * longer doubles as "unparseable": conflating the two is what let F5 push a
- * corrupt, unstripped store. Unparseable throws.
+ * `null` means ABSENT — there is nothing to strip and nothing to protect. It
+ * never doubles as "unparseable": conflating the two would push a corrupt,
+ * unstripped store. Unparseable throws.
  */
 function readEngramList(root: string): { raw: unknown; list: EngramRecord[] } | null {
   const path = join(root, 'engrams.yaml')
   if (!existsSync(path)) return null
   const content = readFileSync(path, 'utf8')
-  // The loader's shape rule, not a looser local copy (formal round 2,
-  // core-persistence#11): this used to accept a bare top-level array that
-  // `parseEngramFile` refuses, so sync would strip, commit and push a file PLUR
-  // itself cannot load. Anything the loader refuses, sync refuses.
+  // The loader's shape rule, not a looser local copy (e.g. a bare top-level
+  // array, which `parseEngramFile` refuses): sync must never strip, commit and
+  // push a file PLUR itself cannot load. Anything the loader refuses, sync
+  // refuses.
   let list: unknown[]
   try {
     list = engramStoreEntries(path, content, Buffer.byteLength(content))
@@ -342,18 +324,18 @@ function readEngramList(root: string): { raw: unknown; list: EngramRecord[] } | 
 }
 
 /**
- * Push-set predicate per remote type (#640). `personal`: everything except
+ * Push-set predicate per remote type. `personal`: everything except
  * `scope:local` (private engrams follow the user across their own machines —
  * it is their backup). `shared`: ONLY shared-family scopes (`isSharedScope`)
  * with a non-private visibility — personal-family (`local`/`global`/`user:*`/
  * `agent:*`) and private-visibility engrams are excluded by construction.
- * NOTE the default visibility is 'private' (#401), so a shared remote receives
+ * NOTE the default visibility is 'private', so a shared remote receives
  * only engrams whose visibility was set deliberately — conservative on purpose,
- * consistent with the "private stays local" write-path semantics (#90).
+ * consistent with the "private stays local" write-path semantics.
  */
 function pushKeep(remoteType: SyncRemoteType): (e: EngramRecord) => boolean {
-  // A queued remote-only save is never committed or pushed, whatever the remote
-  // (gate review of #1663): history would keep it after delivery.
+  // A queued remote-only save is never committed or pushed, whatever the remote:
+  // history would keep it after delivery.
   if (remoteType === 'shared') {
     return e => !isRemoteOnlyQueued(e) && isSharedScope(e?.scope ?? '') && (e?.visibility ?? 'private') !== 'private'
   }
@@ -362,7 +344,7 @@ function pushKeep(remoteType: SyncRemoteType): (e: EngramRecord) => boolean {
 
 /**
  * Ids of the engrams this remote type actually receives — the membership set
- * the sibling-file keep-predicate checks references against (#686). Empty when
+ * the sibling-file keep-predicate checks references against. Empty when
  * engrams.yaml is absent/unparseable: with no provable push set, every
  * id-referencing sibling record is conservatively outside it.
  */
@@ -377,22 +359,16 @@ function pushIds(root: string, remoteType: SyncRemoteType): Set<string> {
 
 /**
  * Read a sibling store file as a record array (the shape episodes.ts /
- * tension-store.ts write). Returns null when absent, unparseable, or not an
- * array — in which case the staged blob is left as-is, the same posture
- * stageStrippedEngrams takes for an unrecognized engrams.yaml (#678).
+ * tension-store.ts write). Returns null when absent; throws
+ * {@link SyncStoreUnreadableError} when unparseable or not an array.
  */
 function readSiblingList(root: string, file: string): unknown[] | null {
   const path = join(root, file)
   // ABSENT is the only "nothing to strip" answer. Unparseable and wrongly
-  // shaped are refusals, matching what readEngramList does.
-  //
-  // These used to collapse into the same `null`, and `stageStrippedSiblings`
-  // responded by skipping the filter and leaving the already force-staged blob
-  // untouched — so a malformed episodes.yaml carrying text DERIVED from private
-  // engrams was pushed verbatim to a shared remote. That is the F5 leak in the
-  // sibling artifacts (#811 audit, finding 9). The old comment here claimed it
-  // matched the engrams posture; that stopped being true when unreadable
-  // engrams began aborting the sync, and nothing updated the siblings to match.
+  // shaped are refusals, matching what readEngramList does: skipping the
+  // filter would leave the already force-staged blob untouched, and a
+  // malformed episodes.yaml carrying text DERIVED from private engrams would
+  // be pushed verbatim to a shared remote.
   if (!existsSync(path)) return null
   let raw: unknown
   try {
@@ -407,16 +383,9 @@ function readSiblingList(root: string, file: string): unknown[] | null {
 }
 
 /**
- * Keep-predicate for sibling-file records (#686): a record is pushed only when
- * EVERY engram id referenced anywhere in it resolves to the remote's push set.
- * Shape-agnostic by design — the id scan runs over the whole serialized
- * record, so it covers structured fields (`engram_a`/`engram_b`/`resolved_by`)
- * and ids embedded in free text (episode summaries) alike, and
- * candidates.yaml needs no schema of its own. A referenced id that is personal/
- * private (stripped from the push) OR unknown (deleted, foreign) fails the test
- * — strip-on-doubt, because a false keep is a leak and a false drop is not.
- * Records with no engram references are kept: they are not derived from any
- * engram the filter withheld.
+ * Keep-predicate for sibling-file records: push a record only when EVERY engram id anywhere in its serialization
+ * is in the push set (shape-agnostic, covers free text). Personal/private or unknown ids fail — strip-on-doubt,
+ * since a false keep is a leak. Records with no engram references are kept.
  */
 function siblingKeep(pushedIds: Set<string>): (record: unknown) => boolean {
   return (record: unknown) => {
@@ -441,7 +410,7 @@ function droppedSiblingCount(root: string, remoteType: SyncRemoteType): number {
 
 /**
  * Warning shown when a remote is involved: states what the push set actually
- * includes/excludes for this remote type (#640, #686). Returns undefined when
+ * includes/excludes for this remote type. Returns undefined when
  * there is nothing noteworthy to say.
  */
 function stripWarning(root: string, remoteType: SyncRemoteType): string | undefined {
@@ -456,14 +425,11 @@ function stripWarning(root: string, remoteType: SyncRemoteType): string | undefi
     return `Shared remote: pushed only shared-scope, non-private engrams — ${parts.join(' and ')} stayed local.`
   }
   if (!parsed) return undefined
-  // Audit #794, F7: this used to say the remote "receives all engrams". It does
-  // not — `pushKeep('personal')` strips every scope:local engram, and the
-  // sensitivity guard auto-demotes engrams to local, so the excluded set grows
-  // silently over time. Measured: 5 engrams on disk, a fresh clone of the remote
-  // saw 3, while the warning called it a complete backup.
-  //
-  // A backup warning that overstates coverage is worse than none: it is read
-  // exactly once, when deciding whether other backups are needed.
+  // The personal remote does not receive all engrams: `pushKeep('personal')`
+  // strips every scope:local engram, and the sensitivity guard auto-demotes
+  // engrams to local, so the excluded set grows silently over time. A backup
+  // warning that overstates coverage is worse than none: it is read exactly
+  // once, when deciding whether other backups are needed.
   const privateCount = parsed.list.filter(
     e => e?.scope !== 'local' && (e?.visibility ?? 'private') === 'private',
   ).length
@@ -501,8 +467,8 @@ function stageBlob(root: string, relPath: string, content: string): void {
 
 /**
  * Strip every staged store file down to this remote type's push set: the
- * engrams.yaml scope/visibility filter (#640) plus the sibling-file
- * derived-record filter (#686). Called on every commit path (init, commit,
+ * engrams.yaml scope/visibility filter plus the sibling-file
+ * derived-record filter. Called on every commit path (init, commit,
  * conflict resolution) so no path can stage verbatim content.
  */
 function stageStripped(root: string, remoteType: SyncRemoteType): void {
@@ -512,12 +478,12 @@ function stageStripped(root: string, remoteType: SyncRemoteType): void {
 
 /**
  * Replace the *staged* engrams.yaml blob with one that keeps only the push set
- * for this remote type (#640; generalizes the scope:local strip of #380/#396).
+ * for this remote type.
  *
  * Re-serializes with the same YAML options PLUR uses everywhere, so the
  * stripped blob is deterministic across runs — this is what prevents an
- * infinite-dirty-state loop (issue #396): a sync whose only change is to a
- * stripped engram produces the identical stripped blob and therefore no new commit.
+ * infinite-dirty-state loop: a sync whose only change is to a stripped engram
+ * produces the identical stripped blob and therefore no new commit.
  */
 function stageStrippedEngrams(root: string, remoteType: SyncRemoteType): void {
   const parsed = readEngramList(root)
@@ -532,9 +498,9 @@ function stageStrippedEngrams(root: string, remoteType: SyncRemoteType): void {
 
 /**
  * Replace the *staged* episodes/candidates/tensions blobs with ones that keep
- * only records derived from this remote's push set (#686 — completes the #640
- * guarantee: an engram withheld from the remote must also be withheld in its
- * derived text in the sibling store files). Applies to `personal` remotes too:
+ * only records derived from this remote's push set: an engram withheld from
+ * the remote must also be withheld in its derived text in the sibling store
+ * files. Applies to `personal` remotes too:
  * a scope:local engram never leaves the machine, so a side record naming one
  * does not either.
  */
@@ -584,25 +550,12 @@ function hasConflictMarkers(root: string): boolean {
 type WithheldFile = HeldFile
 
 /**
- * Formal-verification finding (spec/formal/findings/persistence.md, candidate 1).
- *
- * HEAD holds strip(W) by design, so whenever the working tree W holds a record
- * the push set withholds, W differs from HEAD in a tracked file — permanently.
- * `git pull` refuses to touch a dirty tracked file, so every remote change to
- * engrams.yaml was refused for as long as one scope:local engram existed, and
- * every later push failed non-fast-forward.
- *
- * Hold the withheld records aside instead: reset each such file to its staged
- * (= committed, stripped) blob so the tree is clean, pull, then put the held
- * records back. Nothing withheld reaches a commit.
- *
- * CRASH SAFETY (audit of #1228, finding 1): the held records are written to
- * `.git/plur-held.json` (fsynced; inside `.git`, so never staged) BEFORE any
- * file is reset, and that file is deleted only after every record is back. They
- * used to be in memory only, and a signal during the (up to 30 s) pull —
- * `finally` does not run on SIGINT/SIGTERM/SIGKILL — deleted every scope:local
- * engram. While the file exists every reader counts its records as part of the
- * store (`loadEngrams`), and the next sync or store write restores them.
+ * Hold withheld records aside across a pull. HEAD holds the stripped store, so a working tree with withheld records
+ * is permanently dirty and `git pull` would refuse; reset each such file to its staged blob, pull, then restore.
+ * Nothing withheld reaches a commit.
+ * CRASH SAFETY: held records are written to fsynced `.git/plur-held.json` BEFORE any reset and deleted only after
+ * every record is back (`finally` does not run on signals). While it exists, readers count its records as part of
+ * the store and the next sync or write restores them.
  */
 function holdWithheld(root: string, remoteType: SyncRemoteType): WithheldFile[] {
   const files: WithheldFile[] = []
@@ -649,31 +602,18 @@ function missingSiblingRecords(current: readonly unknown[], held: readonly unkno
 }
 
 /**
- * Put held records back after a pull (successful, failed, or interrupted and
- * now being recovered). Safe to run again on its own output.
- *
- * - The file is as it was before the hold (the process died before resetting
- *   it) → nothing to do.
- * - The pull did not change the file → write the saved bytes back verbatim.
- * - The pull changed it → the new file plus every held record not already in
- *   it. A same-id record from another machine (both minted the same day) is a
- *   DIFFERENT engram: owner decision P1b (2026-09-27) — the held LOCAL record is
- *   re-id'd ({@link mergeHeldRecords}), since it was never pushed and nothing
- *   outside this machine refers to it; the pulled record keeps the id; the
- *   rename is recorded in history, and held sibling records that name the old
- *   id follow it.
- * - The file is unreadable now (the remote pushed a file the loader refuses):
- *   if HEAD carries that pulled version, it is KEPT and the file is returned as
- *   `unresolved` — its held records stay in the recovery file until the file is
- *   readable again. Writing the pre-pull bytes back here (the old behaviour)
- *   put a revert of the remote's change in the working tree, which the next
- *   sync committed and pushed. Only when HEAD still holds the pre-pull blob
- *   (nothing was integrated) do the saved bytes go back.
+ * Put held records back after a pull (successful, failed, or being recovered). Idempotent.
+ * - File unchanged since before the hold → nothing; unchanged by the pull → saved bytes back verbatim.
+ * - Changed by the pull → new file plus held records not in it; a same-id clash re-ids the held LOCAL record
+ *   (never pushed, so nothing outside this machine refers to it; {@link mergeHeldRecords}), records the rename and makes held sibling references follow.
+ * - Unreadable now: if HEAD carries the pulled version it is KEPT and returned `unresolved` (held records stay in
+ *   the recovery file); writing pre-pull bytes would commit a revert. Only when HEAD still holds the pre-pull blob
+ *   do the saved bytes go back.
  */
 function restoreWithheld(root: string, files: WithheldFile[], merged: readonly IdRename[] = []): { renames: IdRename[]; rewrote: string[]; unresolved: WithheldFile[] } {
-  // engrams.yaml first: its renames (P1b) are applied to held sibling records.
+  // engrams.yaml first: its renames are applied to held sibling records.
   let ordered = [...files].sort((a, b) => Number(b.file === 'engrams.yaml') - Number(a.file === 'engrams.yaml'))
-  // Renames the record merge made to COMMITTED engrams during this pull (F2):
+  // Renames the record merge made to COMMITTED engrams during this pull:
   // held records were written on this machine, so a reference in them to the
   // old id meant this machine's engram, which now has the new id. Every held
   // record follows, held engrams included (their relations), before anything
@@ -770,7 +710,7 @@ function heldPendingNote(root: string, unresolved: readonly WithheldFile[]): str
 function recoverHeld(root: string): WithheldFile[] {
   const files = readHeldRecovery(root)
   if (!files) return []
-  // Audit 6, N1. Killed between the record merge and the merge commit: the
+  // Killed between the record merge and the merge commit: the
   // merge is half-done (merged files in the tree, MERGE_HEAD set) and its
   // renames are not in the store yet. Abort it — the tree goes back to HEAD,
   // which is what the held records were set aside from — and let this sync
@@ -794,7 +734,7 @@ function recoverHeld(root: string): WithheldFile[] {
 
 /**
  * Sibling records as they were in the working tree BEFORE the pull, per file.
- * After a P1b rename these are exactly the records whose references to the old
+ * After a clash rename these are exactly the records whose references to the old
  * id meant the local engram: the pulled engram with that id did not exist here
  * yet. Unreadable or absent files are skipped (nothing to rewrite from).
  */
@@ -810,16 +750,9 @@ function readSiblingsBeforePull(root: string): Map<string, unknown[]> {
 }
 
 /**
- * Follow-up to P1b (owner principle "keep both, rename one — nothing lost or
- * hidden", 2026-09-27). On a PERSONAL remote sibling files are committed, not
- * held, so the held-record rewrite in {@link restoreWithheld} never sees them:
- * an episode or tension this machine wrote about its local engram kept naming
- * the old id, which after the pull belongs to the other machine's engram — the
- * reference silently changed meaning. Rewrite the references in every sibling
- * record that was already here before the pull; records the pull brought are
- * left alone (their references mean the pulled engram). Returns the files
- * rewritten; the caller commits them, so the correction reaches the user's
- * own remote.
+ * On a PERSONAL remote sibling files are committed, not held, so rewrite references to renamed local engrams in
+ * sibling records that predate the pull (records the pull brought are left alone); otherwise a reference would
+ * silently point at the other machine's engram. Returns the files rewritten for the caller to commit.
  */
 function rewriteLocalSiblingRefs(root: string, renamed: ReadonlyMap<string, string>, before: Map<string, unknown[]>): string[] {
   const rewrote: string[] = []
@@ -844,11 +777,11 @@ function rewriteLocalSiblingRefs(root: string, renamed: ReadonlyMap<string, stri
   return rewrote
 }
 
-/** @returns whether the pull integrated, the sibling files rewritten after a P1b rename (to commit), and held files still waiting. */
+/** @returns whether the pull integrated, the sibling files rewritten after a clash rename (to commit), and held files still waiting. */
 function pullRebase(root: string, remoteType: SyncRemoteType): { ok: boolean; rewroteSiblings: string[]; unresolved: WithheldFile[] } {
   const before = readSiblingsBeforePull(root)
   // What the store held before the pull, so the memories it changes are named
-  // in history (recordStoreSync, code review of 0.23 finding 1).
+  // in history (recordStoreSync).
   const recordsBefore = storeRecordMap(join(root, 'engrams.yaml'))
   const held = holdWithheld(root, remoteType)
   let ok = false
@@ -876,7 +809,7 @@ function pullRebase(root: string, remoteType: SyncRemoteType): { ok: boolean; re
 
 /**
  * @param mergeRenames receives the engram renames the record merge made, so the
- *   caller can carry them into the records held aside for privacy (F2).
+ *   caller can carry them into the records held aside for privacy.
  */
 function pullRebaseClean(root: string, remoteType: SyncRemoteType, mergeRenames: IdRename[] = []): boolean {
   const branch = gitSafe(['rev-parse', '--abbrev-ref', 'HEAD'], root) || 'main'
@@ -885,11 +818,11 @@ function pullRebaseClean(root: string, remoteType: SyncRemoteType, mergeRenames:
   // Rebase conflict — abort and try merge
   gitSafe(['rebase', '--abort'], root)
   // `--no-rebase` is explicit: git 2.27+ refuses a pull of divergent branches
-  // unless a reconcile mode is configured, so the bare form failed in exactly
-  // the case this fallback exists for and sync reported "NOT pulled".
+  // unless a reconcile mode is configured, so the bare form would fail in
+  // exactly the case this fallback exists for.
   //
   // `--no-commit`: the merge stops before committing, clean or conflicted, so
-  // the store files can be merged as records (SYN-5) before anything is
+  // the store files can be merged as records before anything is
   // committed. Git merges YAML line by line, so two devices that each saved a
   // memory offline both append to the end of engrams.yaml and always conflict;
   // and a "clean" line merge can still put two different engrams under one id.
@@ -906,7 +839,7 @@ function pullRebaseClean(root: string, remoteType: SyncRemoteType, mergeRenames:
       gitSafe(['merge', '--abort'], root)
       throw new Error('Sync conflict: YAML files have merge conflicts that require manual resolution. Your local changes are preserved.')
     }
-    // Audit 6, N1: the renames are saved with the held records BEFORE the
+    // The renames are saved with the held records BEFORE the
     // commit, so a process killed the moment the commit exists still has them
     // on restart (`recoverHeld`). They take effect only once MERGE_HEAD is gone.
     const heldNow = renames.length > 0 ? readHeldRecovery(root) : null
@@ -933,19 +866,15 @@ function pullRebaseClean(root: string, remoteType: SyncRemoteType, mergeRenames:
     throw new Error('Sync conflict: YAML files have merge conflicts that require manual resolution. Your local changes are preserved.')
   }
   stageStoreFiles(root)
-  // #640: the conflict-resolution commit previously staged the working-tree
-  // engrams.yaml VERBATIM — scope:local engrams rode into the remote on this
-  // path. Strip the staged blob exactly like every other commit path.
+  // Strip the staged blob exactly like every other commit path, so
+  // scope:local engrams never ride into the remote on the conflict-resolution
+  // commit.
   stageStripped(root, remoteType)
   const committed = gitSafe(['commit', '-m', 'plur sync: merge conflict resolved (kept both)'], root)
-  // Audit #794, F6: this used to `return true` unconditionally. When the rebase
-  // refused (dirty tree), the merge fallback aborted, and there were no conflict
-  // markers to catch, sync reported `{action:'synced', message:'pulled 1 remote
-  // commit(s)'}` while HEAD..origin/main was still 1. The remote changes were
-  // never integrated and the user was told they were.
-  //
-  // The honest test is the ledger, not the exit code of the last command: if we
-  // are still behind the upstream, the pull did not happen.
+  // When the rebase refused (dirty tree), the merge fallback aborted, and
+  // there were no conflict markers to catch, the remote changes were never
+  // integrated. The honest test is the ledger, not the exit code of the last
+  // command: if we are still behind the upstream, the pull did not happen.
   if (committed === null) return false
   return countDiff(root, 'behind') === 0
 }
@@ -1043,7 +972,7 @@ function mergeRecordLists(
  * Engrams both sides added under one id with different content (each device
  * mints `max(same-day suffix)+1`). The local one was never pushed — the merge
  * base predates it — so it takes a fresh id, and every reference to it on
- * this side follows (owner decision P1b: keep both, rename one).
+ * this side follows (keep both, rename one).
  */
 function renameLocalClashes(base: unknown[], ours: unknown[], theirs: unknown[]): { ours: unknown[]; renames: IdRename[] } {
   const idOf = (r: unknown) => (r as { id?: unknown } | null)?.id
@@ -1068,17 +997,10 @@ function renameLocalClashes(base: unknown[], ours: unknown[], theirs: unknown[])
 }
 
 /**
- * Sibling records (reviews, episodes, candidates) both sides added under one id
- * with different content. Review ids are a per-day sequence (`T-YYYY-MMDD-NNN`),
- * so two offline devices mint the same next id for two DIFFERENT reviews; the
- * field merge in {@link mergeRecordLists} used to blend them into one record and
- * the other review was gone. Same rule as engrams (P1b, keep both, rename one):
- * this side's record was never pushed, so it takes a fresh id. Nothing in the
- * store refers to a sibling record's id, so no reference has to follow.
- *
- * A review of the SAME engram pair is one review detected on both devices
- * (`recordTensions` keeps one record per pair), not a clash: it is merged by
- * {@link mergeReview}, keeping the furthest lifecycle state.
+ * Sibling records (reviews, episodes, candidates) both sides added under one id with different content. Review ids
+ * are a per-day sequence, so offline devices mint the same id for different reviews; a field merge would lose one.
+ * Same rule as engrams: keep both, rename one (nothing refers to sibling ids). A review of the SAME engram pair is
+ * one review, merged by {@link mergeReview} keeping the furthest lifecycle state.
  */
 function renameSiblingClashes(file: string, base: unknown[], ours: unknown[], theirs: unknown[]): unknown[] {
   const idOf = (r: unknown) => (r as { id?: unknown } | null)?.id
@@ -1116,7 +1038,7 @@ const lifecycleOf = (r: unknown) => {
 }
 
 /**
- * Of two records of one review, the one whose lifecycle state stands (audit 6,
+ * Of two records of one review, the one whose lifecycle state stands:
  * N3): the furthest along, so a resolution (with its winner and time) or a
  * dismissal is never reopened by the other device's detected/confirmed copy.
  * Two different resolutions: the earlier one, then the smaller winner id — the
@@ -1139,7 +1061,7 @@ function mergeReview(base: unknown, ours: unknown, theirs: unknown): unknown {
 }
 
 /**
- * One record per unordered memory pair (audit 6, N3; `recordTensions` keeps one
+ * One record per unordered memory pair (`recordTensions` keeps one
  * locally). Two devices that detected the same pair under different daily ids
  * hold one review twice. The merged list keeps one: the id already in the base,
  * else the remote's (already published), else the first; its fields are that
@@ -1167,7 +1089,7 @@ function onePerReviewPair(list: unknown[], base: unknown[], theirs: unknown[]): 
 }
 
 /**
- * Merge the store files of an in-progress `git merge` as records (SYN-5), so
+ * Merge the store files of an in-progress `git merge` as records, so
  * both devices' offline saves, corrections and forgets survive. Writes and
  * stages each merged file. Throws when a conflicted file cannot be merged this
  * way (not a store file, or not a shape PLUR writes); the caller aborts the
@@ -1247,10 +1169,10 @@ function mergeStoreRecords(root: string): IdRename[] {
 
 /**
  * A pull that rewrote engrams.yaml is a PLUR write too: record the count that
- * landed for the daily backup's shrink gate (owner decision P2; formal round 2,
- * findings/r2-persist.md item 7). Without it a legitimate pulled shrink of more
- * than 10% — another machine forgot or compacted — was refused as "shrunk" by
- * the next day's backup, until PLUR's next local write recorded the new count.
+ * landed for the daily backup's shrink gate. Without it a legitimate pulled
+ * shrink of more than 10% (another machine forgot or compacted) would be
+ * refused as "shrunk" by the next day's backup, until PLUR's next local write
+ * recorded the new count.
  * Only a file that passes the loader's shape rule is counted; anything else is
  * left for the gate to refuse.
  */
@@ -1271,8 +1193,7 @@ export function sync(root: string, remote?: string, options?: { remoteType?: Syn
   if (!hasGitCli()) {
     throw new Error('git is not installed. Install git to enable sync.')
   }
-  // Default `personal` preserves the historical mirror-everything behavior for
-  // every existing install (#640) — `shared` is an explicit opt-in.
+  // Default `personal` mirrors everything; `shared` is an explicit opt-in.
   const remoteType: SyncRemoteType = options?.remoteType ?? 'personal'
 
   // State 1: No git repo — initialize
@@ -1294,7 +1215,7 @@ export function sync(root: string, remote?: string, options?: { remoteType?: Syn
   }
 
   // Held records of a sync that never finished go back before anything else
-  // reads or commits the store (audit of #1228, finding 1).
+  // reads or commits the store.
   let heldPending = recoverHeld(root)
 
   // Add remote if provided and not yet set
@@ -1324,10 +1245,9 @@ export function sync(root: string, remote?: string, options?: { remoteType?: Syn
   const behind = countDiff(root, 'behind')
   const aheadBefore = countDiff(root, 'ahead')
 
-  // Audit #794, F6: the return value used to be discarded here, so a pull that
-  // silently failed still reported `synced`. Capture it, and re-measure rather
-  // than trusting it — `behind` below is the count BEFORE pulling, i.e. what we
-  // meant to pull, not what we actually got.
+  // Capture the pull result so a pull that silently failed is not reported as
+  // `synced`, and re-measure rather than trust it — `behind` below is the
+  // count BEFORE pulling, i.e. what we meant to pull, not what we actually got.
   let pullFailed = false
   if (behind > 0) {
     const storePath = join(root, 'engrams.yaml')
@@ -1336,7 +1256,7 @@ export function sync(root: string, remote?: string, options?: { remoteType?: Syn
     pullFailed = !pulledResult.ok
     if (pulledResult.unresolved.length > 0) heldPending = readHeldRecovery(root) ?? pulledResult.unresolved
     recordPulledCount(storePath, before)
-    // Committed sibling records rewritten after a P1b rename: commit them now so
+    // Committed sibling records rewritten after a rename: commit them now so
     // this sync pushes the correction (it is the user's own remote).
     if (pulledResult.ok && pulledResult.rewroteSiblings.length > 0) commitChanges(root, remoteType)
   }
@@ -1345,11 +1265,10 @@ export function sync(root: string, remote?: string, options?: { remoteType?: Syn
 
   // Push if we have local commits.
   //
-  // NOT via `gitSafe`: it swallows the error and returns null, and the return
-  // was discarded anyway, so a rejected push (expired credentials, no network,
-  // non-fast-forward) produced a result byte-identical to a successful one.
-  // For an agent caller that is the worst shape — it reports the sync worked
-  // and the engrams sit unpushed indefinitely with nobody looking.
+  // NOT via `gitSafe`: it swallows the error and returns null, so a rejected
+  // push (expired credentials, no network, non-fast-forward) would look
+  // identical to a successful one, and an agent caller would report the sync
+  // worked while the engrams sit unpushed.
   let pushError: string | null = null
   const aheadAfter = countDiff(root, 'ahead')
   if (aheadAfter > 0) {
@@ -1374,17 +1293,15 @@ export function sync(root: string, remote?: string, options?: { remoteType?: Syn
 
   const parts: string[] = []
   if (filesChanged > 0) parts.push(`${filesChanged} file(s) committed`)
-  // Report what was actually integrated, and say so plainly when it was not.
-  // Claiming a pull that did not happen is how a user ends up believing two
-  // machines agree when they do not.
+  // Report what was actually integrated, and say so plainly when it was not:
+  // claiming a pull that did not happen makes a user believe two machines
+  // agree when they do not.
   if (pulled > 0) parts.push(`pulled ${pulled} remote commit(s)`)
   if (pullFailed || behindAfter > 0) {
     parts.push(`NOT pulled — still ${behindAfter} commit(s) behind the remote; resolve locally and retry`)
   }
-  // Formal-verification finding (persistence.md, candidate 1): this used to test
-  // `aheadAfter === 0 && aheadBefore > 0`, but `aheadAfter` is measured BEFORE
-  // the push, so a successful push never said so and the line only fired when
-  // there was nothing to push.
+  // `aheadAfter` is measured BEFORE the push, so it counts the commits this
+  // sync pushed.
   if (aheadAfter > 0 && !pushError) parts.push('pushed')
   // Say it in the message too — a caller reading only the text still sees it.
   if (pushError) parts.push('NOT pushed — the commit is local only')
@@ -1397,433 +1314,5 @@ export function sync(root: string, remote?: string, options?: { remoteType?: Syn
     files_changed: filesChanged,
     warning: warn(),
     ...(pushError ? { push_error: pushError } : {}),
-  }
-}
-
-export interface LockOptions {
-  maxRetries?: number
-  baseDelay?: number
-  staleThreshold?: number
-}
-
-/**
- * File-based exclusive lock using O_EXCL. Retries with exponential backoff.
- *
- * ## Why this one keeps a short retry budget (audit #794, F9 vs F10)
- *
- * The async lock raised BOTH its stale threshold and its acquire deadline, so a
- * waiter never abandons a holder the protocol still considers alive. Only half
- * of that is safe to copy here.
- *
- * The stale threshold is raised, for the same reason: stealing a lock from a
- * process that is still writing corrupts the store, and 10 s was too close to a
- * legitimate hold.
- *
- * The retry budget is deliberately NOT raised, because this implementation
- * busy-waits on `Date.now()` — it blocks the event loop for the whole delay
- * (F10). Waiting longer here would make a long-lived MCP server less responsive,
- * not more correct. Callers that need to wait out a slow holder belong on
- * `withAsyncLock`; this variant exists for the remaining synchronous callers
- * (tensions, config, episode capture), whose holds are short.
- */
-export function withLock<T>(
-  filePath: string,
-  fn: () => T,
-  options?: LockOptions,
-): T {
-  const lockPath = filePath + '.lock'
-  const maxRetries = options?.maxRetries ?? 5
-  const baseDelay = options?.baseDelay ?? 100
-  const staleThreshold = options?.staleThreshold ?? DEFAULT_STALE_THRESHOLD
-
-  const token = makeToken()
-
-  // Whether we actually took the lock.
-  //
-  // Without this the loop can simply RUN OUT: both `continue` branches below —
-  // a stale lock stolen, and a stat that fails because the holder released
-  // between the EEXIST and the check — skip the give-up throw. If either lands
-  // on the FINAL attempt the loop ends normally, `fn()` runs holding nothing,
-  // and the `finally` deletes a lock belonging to whoever does hold it. The
-  // async implementation has carried this guard (and a regression test) since
-  // the F9 work; porting the liveness check here without it left the sync twin
-  // exposed. Reachable through public options — `maxRetries: 0` makes the first
-  // attempt the final one.
-  let acquired = false
-
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    try {
-      // Published complete, never as an empty file (#1354) — see
-      // `publishLockFile` in store/async-lock.ts.
-      publishLockFileSync(lockPath, token)
-      acquired = true
-      break
-    } catch (err: any) {
-      if (err.code !== 'EEXIST') throw err
-      try {
-        const stat = statSync(lockPath)
-        // Liveness is what pays for the raised stale threshold, and it has to
-        // be here as well as on the async lock. Raising the threshold to 60s
-        // without it would take crash recovery on THESE paths (episodes,
-        // tensions, config) from 10s to 60s.
-        const holder = readFileSync(lockPath, 'utf8').trim()
-        // Our own unique token, put back by a takeover on the no-hard-link
-        // fallback: the lock is ours (see withFileLock in store/async-lock.ts).
-        if (holder === token) { acquired = true; break }
-        const alive = holderIsAlive(holder)
-        // Age is consulted ONLY when liveness is unknown — another host, or the
-        // bare pid an older client wrote. A confirmed-live holder is never
-        // stolen from for being slow: that corrupts the artifact it is midway
-        // through writing, whereas waiting on a wedged holder surfaces as a
-        // loud failure the operator can act on. An EMPTY lock is judged on a
-        // short grace period instead of the full threshold (#1354).
-        const steal = alive === false
-          || (alive === undefined && abandonedByAge(holder, Date.now() - stat.mtimeMs, staleThreshold))
-        // A hint only: the takeover re-inspects under a guard shared with the
-        // async lock, and claims by single-winner rename (see `takeOver` in
-        // store/async-lock.ts; audit 2026-08-03 finding 1, #1354). When another
-        // process holds the guard, fall through to the normal backoff.
-        if (steal && takeOverSync(lockPath, staleThreshold)) continue
-      } catch {
-        continue
-      }
-      if (attempt === maxRetries) {
-        throw new Error(`Failed to acquire lock on ${filePath} after ${maxRetries} retries`)
-      }
-      const delay = baseDelay * Math.pow(2, attempt)
-      const end = Date.now() + delay
-      while (Date.now() < end) { /* busy wait — sync context */ }
-    }
-  }
-
-  if (!acquired) {
-    throw new Error(
-      `Failed to acquire lock on ${filePath} after ${maxRetries} retries (contended throughout)`,
-    )
-  }
-
-  // Heartbeat while held (decision P1). `fn` is synchronous, so the timer only
-  // fires if it yields; the synchronous touch points (heartbeatHeldLocks, called
-  // before every git command) cover long blocking work. Stopped on return or throw.
-  const stopHeartbeat = startHeartbeat(lockPath, token, staleThreshold)
-  try {
-    return fn()
-  } finally {
-    stopHeartbeat()
-    // Only ours to remove. Without the token comparison, a holder whose lock
-    // was stolen deletes the THIEF's lock on its way out and a third writer
-    // walks in mid-write — the cascade fixed on the async lock (audit #794 F9).
-    try {
-      if (readFileSync(lockPath, 'utf8').trim() === token) unlinkSync(lockPath)
-    } catch { /* already gone */ }
-  }
-}
-
-/**
- * Mode for files that carry credentials — `config.yaml` holds remote bearer
- * tokens and Postgres DSNs (audit 2026-08-03, finding 7). Owner-only.
- */
-export const CONFIG_FILE_MODE = 0o600
-
-/** Options for {@link atomicWrite}. */
-export interface AtomicWriteOptions {
-  /**
-   * Mode for a file this write CREATES. Ignored when the destination already
-   * exists — an existing file's mode is preserved instead, which is the more
-   * important half (audit 2026-08-03, finding 7).
-   *
-   * Pass `0o600` for anything credential-bearing. Without it a new
-   * `config.yaml` — bearer tokens, Postgres DSNs — is born world-readable under
-   * the default umask, and the preservation path then faithfully keeps it that
-   * way forever.
-   */
-  mode?: number
-  /**
-   * fsync the file and its parent directory before returning. Default `true`.
-   *
-   * Pass `false` ONLY for derived, rebuildable state (embedding cache,
-   * reranker-eval cache, telemetry counters). Never for a store file: see the
-   * durability note on {@link atomicWrite}.
-   */
-  durable?: boolean
-  /**
-   * The content may carry a credential (config.yaml, an editor config holding
-   * another server's token). On Windows the temp file is made owner-only — and
-   * verified — before the first byte, whether the destination is new, already
-   * owner-only, or readable by other accounts; the write is refused (nothing
-   * written, the destination untouched) when that cannot be done, or when an
-   * existing destination's access list cannot be inspected at all (icacls
-   * failed, account unknown). Owner decisions 38 and 42 (#1631). An owner-only
-   * `mode` alone gets the protection only over a provably owner-only
-   * destination, and no refusal. No effect elsewhere: on POSIX the
-   * destination's mode already governs the temp file from creation.
-   */
-  secret?: boolean
-  /**
-   * With {@link ALLOW_UNPROTECTED_ENV} set, called (instead of the default
-   * stderr line) with the reason when the write goes out without owner-only
-   * protection — so a caller that reports on its own (writeConfigFile) prints
-   * one line, not two.
-   */
-  onUnprotected?: (cause: string) => void
-}
-
-/** Counter making each tmp name unique within a process (pid makes it unique across them). */
-let tmpCounter = 0
-
-/** One external command run for the Windows access-list path ({@link _atomicWriteAcl}). */
-export type AclExec = OwnerOnlyExec
-
-/**
- * Platform, environment and command runner for atomicWrite's Windows
- * owner-only path. Internal — not exported from the package; tests swap the
- * fields to drive the Windows branch on any OS.
- *
- * It is the SAME object as the shared owner-only helper's host
- * (`owner-only.ts`, #1631), so a simulated host drives both the temp-file
- * protection here and the re-check `writeConfigFile` (config-file.ts) runs
- * after the rename. One rule, one implementation: remove inherited access, grant only
- * the current account, read the list back, accept only entries naming that
- * account.
- */
-export const _atomicWriteAcl = _ownerOnlyHost
-
-/**
- * What an access-list inspection established (Codex round 3, finding 1).
- * `unknown` — icacls failed, or its output names no account — is NOT the same
- * as `shared`: a credential write must refuse on it rather than go ahead
- * unprotected.
- */
-type AclInspection = 'owner-only' | 'shared' | 'unknown'
-
-/** Inspect `path`: does every access entry name `account` only? */
-function inspectAcl(path: string, account: string): AclInspection {
-  const r = checkOwnerOnly(path, { platform: 'win32', account })
-  return r.ok === true ? 'owner-only' : r.ok === false ? 'shared' : 'unknown'
-}
-
-/**
- * The owner's way out on a drive that cannot keep access lists (FAT/exFAT,
- * some network shares — icacls fails there, so every credential write would
- * be refused and PLUR could not save its config at all). Set to `1` (or
- * `true` / `yes`), a credential write whose owner-only protection cannot be
- * established is written WITHOUT it, with one stderr line saying so, instead
- * of being refused. Unset (the default), it is refused (#1631).
- */
-export const ALLOW_UNPROTECTED_ENV = 'PLUR_ALLOW_UNPROTECTED_CONFIG'
-
-/** How a refused credential write's error starts. The rest names the cause and the opt-out, never content. */
-export const REFUSED_CREDENTIAL_WRITE = 'atomicWrite: refusing a credential write: '
-
-function allowUnprotected(env: NodeJS.ProcessEnv): boolean {
-  const v = env[ALLOW_UNPROTECTED_ENV]?.trim().toLowerCase()
-  return v === '1' || v === 'true' || v === 'yes'
-}
-
-/**
- * A Windows credential write whose protection cannot be established: refused
- * (throws; the message names the cause and the opt-out), or — with
- * {@link ALLOW_UNPROTECTED_ENV} set — reported on stderr and written without
- * the protection (returns).
- */
-function refuseUnprotected(filePath: string, cause: string, onUnprotected?: (cause: string) => void): void {
-  if (allowUnprotected(_atomicWriteAcl.env)) {
-    if (onUnprotected) onUnprotected(cause)
-    else console.error(`[plur:config] writing ${basename(filePath)} WITHOUT owner-only protection (${ALLOW_UNPROTECTED_ENV} is set): ${cause}`)
-    return
-  }
-  throw new Error(`${REFUSED_CREDENTIAL_WRITE}${cause}. Nothing was written. ` +
-    `If this drive cannot keep access lists (FAT/exFAT, some network shares), set ${ALLOW_UNPROTECTED_ENV}=1 to write it without that protection.`)
-}
-
-/** Make `path` owner-only and verify it; returns why it could not, or null. */
-function protectWindowsOwnerOnly(path: string, account: string | null): string | null {
-  if (!account) return 'cannot make the temporary file owner-only: the Windows account is not known (USERNAME is not set)'
-  const r = protectOwnerOnly(path, { platform: 'win32', account })
-  if (r.ok) return null
-  return r.detail.startsWith('icacls failed')
-    ? `cannot make the temporary file owner-only: ${r.detail}`
-    : `cannot make the temporary file owner-only: its access list still names another account or cannot be read back (${r.detail})`
-}
-
-/**
- * Atomic write: write to a temp file, flush it, then rename over the target.
- *
- * ## Why the fsync (audit #794, F4)
- *
- * write + rename alone is atomic with respect to a dying *process* — the page
- * cache outlives it, so a reader either sees the old file or the new one. It is
- * NOT atomic with respect to a dying *kernel*. On power loss the rename can
- * reach disk before the data does, and the canonical artifact is a zero-length
- * or truncated file.
- *
- * That artifact is precisely the input to the corrupt-read wipe (#795): a
- * zero-length engrams.yaml used to read as an empty corpus, and the next write
- * persisted it. The two compose into total corpus loss, which is why this is
- * fsync-by-default rather than fsync-on-request.
- *
- * The parent directory is flushed too, because the rename itself is directory
- * metadata — without that flush the durable file can still be reachable only
- * under its temp name after a crash.
- *
- * ## Why the tmp name is unique
- *
- * It used to be a fixed `<path>.tmp`, which let two concurrent writers clobber
- * each other's partial file and rename it into place — measured in probe P02 as
- * a hard `ENOENT: rename '…/episodes.yaml.tmp'` crash when the loser's tmp had
- * already been renamed away. Unique names make concurrent writers independent;
- * the last rename wins cleanly instead of publishing a half-written blend.
- *
- * ## Why the tmp is protected before the first byte (Codex round 2, finding 3)
- *
- * The tmp used to be opened at the default mode (0644 under umask 022), filled,
- * fsynced, and only then chmodded to the destination's 0600 — so a credential
- * sat in a world-readable file for that window, and a descriptor another
- * account opened in it stayed readable afterwards. The tmp is now created
- * exclusively (`wx`: never through a link or file planted at its name) at 0600
- * whenever a mode is known, and given its exact final mode just before the
- * rename. On Windows, a `secret` write gets a verified owner-only list on the
- * EMPTY tmp — new destination, owner-only destination or shared destination
- * alike (owner decisions 38 and 42, #1631) — and an owner-only `mode` write
- * gets it over a destination whose list names only the current account; when
- * that cannot be established, nothing is written and the destination is left
- * as it was. A `secret` write over an existing destination whose access list
- * cannot be inspected (icacls failed, output names no account, account
- * unknown) is refused the same way — "could not inspect" is never treated as
- * "not protected" (Codex round 3). A write that only passes an owner-only
- * `mode` is not refused on that result.
- */
-export function atomicWrite(filePath: string, content: string | Buffer, opts: AtomicWriteOptions = {}): void {
-  const durable = opts.durable !== false
-  const dir = dirname(filePath)
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
-  // Preserve the destination's permissions (audit 2026-08-03, finding 7).
-  //
-  // A replace-by-rename creates a NEW inode, so the result carries the tmp
-  // file's mode — `0666 & ~umask`, i.e. 0644 under the common umask 022 — not
-  // the mode the file had. `config.yaml` holds remote bearer tokens and
-  // Postgres DSNs and is expected to be 0600; every config writer now routes
-  // through here, so store registration, scope persistence and migrations were
-  // each quietly widening it to world-readable on POSIX.
-  //
-  // Read the mode BEFORE writing, and apply it to the tmp file BEFORE the
-  // rename, so the file is never briefly visible at the wrong mode at its final
-  // path. A missing destination means there is nothing to preserve — a first
-  // write keeps the platform default, which is what created it today.
-  let destMode: number | undefined = opts.mode
-  const destExists = existsSync(filePath)
-  try {
-    // An EXISTING file's own mode wins over opts.mode: the operator may have
-    // tightened it further, and a write must never loosen what it found.
-    if (destExists) destMode = statSync(filePath).mode & 0o7777
-  } catch { /* unreadable stat — fall through and keep opts.mode/default */ }
-
-  // Windows keeps access in an ACL, not the mode bits, and a tmp file inherits
-  // the folder's list — so the rename would publish the content in a file the
-  // folder's other accounts can read. Ordinary writes never run icacls.
-  //
-  // - A `secret` write (owner decisions 38 and 42, #1631: config.yaml through
-  //   writeConfigFile, the enterprise cleanup's editor configs) ALWAYS gets an
-  //   owner-only, verified list on the EMPTY tmp — for a new file and over a
-  //   destination other accounts can read too — and is refused, with nothing
-  //   written, when that cannot be established. "Could not inspect" an
-  //   existing destination is never read as "not protected" either: it is
-  //   refused before any temp file exists (Codex round 3, finding 1).
-  // - A write that only asks for an owner-only `mode` (the folder map, engram
-  //   files) keeps the round-3 rule: the tmp is protected when the existing
-  //   destination is provably owner-only, and an unknown result is not refused.
-  let winAccount: string | null = null
-  let winProtect = false
-  if (_atomicWriteAcl.platform === 'win32') {
-    const secret = opts.secret === true
-    const credential = secret || (opts.mode !== undefined && (opts.mode & 0o077) === 0)
-    if (credential) winAccount = currentWindowsAccount(_atomicWriteAcl.env)
-    if (credential && destExists) {
-      const inspection: AclInspection = winAccount === null ? 'unknown' : inspectAcl(filePath, winAccount)
-      if (inspection === 'unknown' && secret) {
-        // Refused (throws) unless the owner opted out. Opted out, the temp file
-        // is still protected when it can be; only a failure there (or no known
-        // account to protect it for) writes it unprotected, reported.
-        if (winAccount === null || !allowUnprotected(_atomicWriteAcl.env)) {
-          refuseUnprotected(filePath, winAccount === null
-            ? 'cannot tell whether the destination is owner-only (the Windows account is not known: USERNAME is not set)'
-            : 'cannot inspect the destination\'s access list (icacls failed or named no account)', opts.onUnprotected)
-        }
-        winProtect = winAccount !== null
-      } else {
-        winProtect = inspection === 'owner-only' || secret
-      }
-    } else if (secret) {
-      if (winAccount === null) {
-        refuseUnprotected(filePath, 'cannot make the new file owner-only (the Windows account is not known: USERNAME is not set)', opts.onUnprotected)
-      } else {
-        winProtect = true
-      }
-    }
-  }
-
-  // Create the tmp exclusively, owner-only whenever a mode is known. With no
-  // mode to keep the result is the platform default anyway, so the default is
-  // used for the tmp too and nothing changes for ordinary files.
-  const createMode = destMode === undefined ? 0o666 : 0o600
-  let tmp = ''
-  let fd: number | undefined
-  for (let attempt = 0; fd === undefined; attempt++) {
-    tmp = `${filePath}.${process.pid}.${tmpCounter++}.tmp`
-    try {
-      fd = openSync(tmp, 'wx', createMode)
-    } catch (err) {
-      // A stale tmp (or anything planted) at this name: never reuse it, take the next name.
-      if ((err as NodeJS.ErrnoException).code === 'EEXIST' && attempt < 1000) continue
-      throw err
-    }
-  }
-  try {
-    try {
-      if (winProtect) {
-        const failed = protectWindowsOwnerOnly(tmp, winAccount)
-        if (failed !== null) refuseUnprotected(filePath, failed, opts.onUnprotected)
-      }
-      writeFileSync(fd, content)
-      if (durable) fsyncSync(fd)
-    } finally {
-      closeSync(fd)
-    }
-    if (destMode !== undefined) {
-      // Best-effort: a filesystem without POSIX modes (some Windows/network
-      // mounts) must not fail an otherwise good write over cosmetics. If it
-      // fails the tmp stays at its 0600 creation mode — stricter, never wider.
-      try { chmodSync(tmp, destMode) } catch { /* not a mode-bearing filesystem */ }
-    }
-    renameSync(tmp, filePath)
-    if (durable) fsyncDir(dir)
-  } catch (err) {
-    // Never leave the tmp behind on a failed write — it would accumulate, and
-    // with a unique name nothing would ever clean it up. Only a tmp this call
-    // created reaches here (an EEXIST name is skipped above, never unlinked).
-    try { unlinkSync(tmp) } catch { /* already gone */ }
-    throw err
-  }
-}
-
-/**
- * fsync a directory so a rename into it is durable.
- *
- * Best-effort by design: directory fds cannot be opened for sync on Windows,
- * and some filesystems reject the fsync outright. A failure here means the
- * rename may not survive power loss — it does NOT mean the write failed, and
- * throwing would turn a working write into a spurious error.
- */
-export function fsyncDir(dir: string): void {
-  let fd: number | undefined
-  try {
-    fd = openSync(dir, 'r')
-    fsyncSync(fd)
-  } catch {
-    /* platform does not support it — the file's own fsync still happened */
-  } finally {
-    if (fd !== undefined) {
-      try { closeSync(fd) } catch { /* ignore */ }
-    }
   }
 }

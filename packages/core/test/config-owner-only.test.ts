@@ -39,7 +39,7 @@ vi.mock('fs', async importOriginal => {
 const { Plur, protectOwnerOnly, checkOwnerOnly, writeConfigFile, currentWindowsAccount } = await import('../src/index.js')
 const { currentWindowsSid, _systemTool } = await import('../src/owner-only.js')
 const { windowsSystemRoot, windowsSystemTool } = await import('../src/index.js')
-const { _atomicWriteAcl, atomicWrite } = await import('../src/sync.js')
+const { _atomicWriteAcl, atomicWrite } = await import('../src/atomic-write.js')
 const { setSchemaVersion } = await import('../src/migrations/runner.js')
 const { removePrimaryStoreEntries } = await import('../src/store-duplicates.js')
 const { SELF, fakeAclExec, icaclsCalls } = await import('./helpers/fake-acl.js')
@@ -558,6 +558,15 @@ describe('no config writer bypasses it', () => {
     expect(read('index.ts')).not.toMatch(/atomicWrite\(this\.paths\.config/)
     // registerEnterpriseServer's own POSIX chmod is replaced by writeConfigFile's (one rule).
     expect(read('index.ts')).not.toMatch(/chmodSync\(this\.paths\.config/)
+  })
+  it('the Plur class (index.ts and src/plur/*.ts) has no atomicWrite(this.paths.config call left, and no owner-only step of its own', () => {
+    const plurFiles = ['index.ts', ...realFs.readdirSync(join(SRC, 'plur')).filter((f: string) => f.endsWith('.ts')).map((f: string) => join('plur', f))]
+    expect(plurFiles.length).toBeGreaterThan(10)
+    for (const f of plurFiles) {
+      expect(read(f), f).not.toMatch(/atomicWrite\(this\.paths\.config/)
+      // registerEnterpriseServer's own POSIX chmod is replaced by writeConfigFile's (one rule).
+      expect(read(f), f).not.toMatch(/chmodSync\(this\.paths\.config/)
+    }
   })
   /** Every `atomicWrite(...)` call (TypeScript parser) whose arguments name CONFIG_FILE_MODE. */
   const callsWithConfigMode = (src: string): string[] => {

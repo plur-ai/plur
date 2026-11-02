@@ -32,12 +32,12 @@ export interface LearnContext {
   commitment?: 'exploring' | 'leaning' | 'decided' | 'locked' | 'draft'
   /** Reason for locking (required when commitment='locked'). */
   locked_reason?: string
-  /** Explicit memory_class override (SP2 Idea 3). Auto-set from type if not provided. */
+  /** Explicit memory_class override. Auto-set from type if not provided. */
   memory_class?: 'semantic' | 'episodic' | 'procedural' | 'metacognitive'
-  /** Current session episode ID for episodic anchoring (SP2 Idea 24). */
+  /** Current session episode ID for episodic anchoring. */
   session_episode_id?: string
   /**
-   * Who is answerable for this engram (#961). Every field optional. A caller
+   * Who is answerable for this engram. Every field optional. A caller
    * that does not know a value omits it rather than guessing — a record with no
    * agent is valid, a record with a guessed agent is worse than one with none.
    */
@@ -49,23 +49,22 @@ export interface LearnContext {
     on_behalf_of?: string
   }
   /**
-   * What kind of claim this is (#963): observed, documented, structural,
+   * What kind of claim this is: observed, documented, structural,
    * asserted, inferred or revised. Omitted when it cannot be determined.
    */
   claim_class?: 'observed' | 'documented' | 'structural' | 'asserted' | 'inferred' | 'revised'
   /**
-   * Which licence governs reuse of this engram's content (#970).
+   * Which licence governs reuse of this engram's content.
    *
    * Omit it and the schema default applies. That default is not a decision
    * anybody made, and a provenance record says so rather than presenting it
-   * beside recorded facts — so a caller who cares about reuse terms has to
-   * say which ones. Before this existed there was no way to say, which made
-   * a complete provenance record unreachable through the public API.
+   * beside recorded facts, so a caller who cares about reuse terms has to
+   * say which ones.
    */
   license?: string
   /**
-   * The session that produced this write, recorded in `sources[].session_id`
-   * (#1048). Provenance only: it never selects a scope. `session` below picks
+   * The session that produced this write, recorded in `sources[].session_id`.
+   * Provenance only: it never selects a scope. `session` below picks
    * the per-session default scope and may hold an internal registry key or
    * `NO_SESSION`, neither of which is a session anybody could look up, so the
    * two stay separate fields.
@@ -87,12 +86,12 @@ export interface LearnContext {
    */
   pinned_priority?: number
   /**
-   * Start of the knowledge's validity window (ISO YYYY-MM-DD, #347). Stored in
+   * Start of the knowledge's validity window (ISO YYYY-MM-DD). Stored in
    * `temporal.valid_from`; inject/recall skip the engram before this date.
    */
   valid_from?: string
   /**
-   * Expiry of the knowledge (ISO YYYY-MM-DD, #347). Stored in
+   * Expiry of the knowledge (ISO YYYY-MM-DD). Stored in
    * `temporal.valid_until`; inject/recall skip the engram after this date.
    * When omitted, an explicit expiry phrase in the statement ("valid until
    * 31 May 2026", "expires 2026-12-01") is auto-extracted — the parsed date
@@ -100,7 +99,7 @@ export interface LearnContext {
    */
   valid_until?: string
   /**
-   * IDs of engrams this one intentionally replaces (#240). Writes
+   * IDs of engrams this one intentionally replaces. Writes
    * `relations.supersedes` on the new engram and the reverse
    * `relations.superseded_by` edge on each target found in the local
    * primary store (best-effort -- remote-store targets are not patched).
@@ -109,7 +108,7 @@ export interface LearnContext {
    */
   supersedes?: string[]
   /**
-   * Internal (the duplicate checker's supersede, LRN-8/LRN-9): drop any
+   * Internal (used by the duplicate checker's supersede): drop any
    * `supersedes` target that is locked at write time, checked under the
    * store lock. A locked memory is never superseded automatically; the
    * caller reads `relations.supersedes` on the returned engram to see
@@ -120,18 +119,18 @@ export interface LearnContext {
    * IDs of engrams this one is related to. Written to `relations.related` on
    * the new engram only; the targets are not modified. Batch learning uses it
    * to link an item to the memory the duplicate checker said it resembles,
-   * because batch learning never overwrites an existing memory (2026-10-18).
+   * because batch learning never overwrites an existing memory.
    */
   related?: string[]
   /**
-   * Measurement context for numeric or benchmark-derived claims (#869).
+   * Measurement context for numeric or benchmark-derived claims.
    * Records model, source_type, hardware, dataset, and/or date under which
    * the asserted value was measured. When omitted, the field is absent from
    * the stored engram (not null). See MeasuredUnderSchema for field details.
    */
   measured_under?: MeasuredUnder
   /**
-   * Session key this write belongs to (convergence Phase 2).
+   * Session key this write belongs to.
    *
    * Resolves the session default scope from the per-session registry instead of
    * the process-wide slot. Supply it whenever one `Plur` instance serves more
@@ -165,19 +164,18 @@ export interface LearnAsyncResult {
   tensions?: string[]
   /**
    * Set when an UPDATE onto a locked memory saved the new statement as a draft
-   * but its review item could not be opened (audit 5 F3). The draft is never
+   * but its review item could not be opened. The draft is never
    * injected, and without the review nobody is asked about it, so this is
    * reported rather than only logged.
    */
   review_error?: string
   /**
-   * Present when the duplicate checker answered MERGE (owner decision
-   * 2026-10-18: learning never overwrites; single and batch saves alike since
-   * LRN-7): instead of rewriting the existing memory, the item was saved as
-   * its own memory (decision 'ADD') and linked to the existing one through
+   * Present when the duplicate checker answered MERGE. Learning never
+   * overwrites (single and batch saves alike): the item was saved as its own
+   * memory (decision 'ADD') and linked to the existing one through
    * `relations.related`. `checker_decision` is what the checker suggested;
    * nothing was changed on the existing memory. (An UPDATE answer supersedes
-   * instead and is reported as decision 'UPDATE', LRN-8.)
+   * instead and is reported as decision 'UPDATE'.)
    */
   likely_duplicate_of?: {
     id: string
@@ -185,13 +183,9 @@ export interface LearnAsyncResult {
     note: string
   }
   /**
-   * What the dedup pass was actually able to do, and what it saw (#854).
-   *
-   * Before this existed, a write on an install with no LLM configured took the
-   * `decision = 'ADD'` default and reported success identically to a write that
-   * had been semantically checked. The two are not the same claim, and the
-   * difference was invisible: 131 near-duplicates accumulated across five months
-   * before anyone ran a similarity scan.
+   * What the dedup pass was actually able to do, and what it saw, so a write
+   * that was only hash-checked is not reported like one that was semantically
+   * checked.
    *
    *  - 'llm'       — an LLM judged it
    *  - 'cosine'    — local embeddings judged it, no API call
@@ -203,18 +197,15 @@ export interface LearnAsyncResult {
     /**
      * Closest candidates and their scores — present whenever similarity ran.
      *
-     * `statement` carries a preview of the neighbour's own text (2026-09-07).
-     * Reporting id+score alone made "read the neighbour before you write"
-     * cost an extra round-trip, so it was skipped: four near-identical
-     * engrams were written in one session, each reporting a 0.86-0.87
-     * neighbour that was never read. Cosine still never gates a write — the
-     * fix is to make the correct behaviour free, not to block the write.
+     * `statement` carries a preview of the neighbour's own text, so reading
+     * the neighbour before writing costs no extra round-trip. Cosine never
+     * gates a write.
      */
     near_duplicates?: Array<{ id: string; score: number; statement?: string }>
   }
   /**
-   * Position of this result's statement in the original learnBatch input array
-   * (#281). `results` is compacted (failed statements are absent), so callers
+   * Position of this result's statement in the original learnBatch input
+   * array. `results` is compacted (failed statements are absent), so callers
    * must NOT assume `results[i]` corresponds to `inputs[i]` — read `input_index`
    * to map a result back to its input. Undefined for a single (non-batch)
    * learnAsync call, where there is no input array to index into.
@@ -247,7 +238,7 @@ export interface LearnBatchResult {
  */
 export type LlmFunction = (prompt: string) => Promise<string>
 
-/** Budget constraints for bounded sub-agent expansion (Idea 16). */
+/** Budget constraints for bounded sub-agent expansion. */
 export interface RecallBudget {
   max_tokens?: number
   max_results?: number
@@ -255,7 +246,7 @@ export interface RecallBudget {
 }
 
 /**
- * Project-level remote endpoint from `.plur.yaml` (#776). Its presence IS the
+ * Project-level remote endpoint from `.plur.yaml`. Its presence IS the
  * org context for dialing on the hook path: the project explicitly names this
  * host as part of the current work, so it is dialed even when the org-affinity
  * heuristic alone would not implicate it. Project config wins over
@@ -274,17 +265,10 @@ export interface RecallOptions {
   context_scopes?: string[]
   /**
    * Permitted-scope allow-list — an AUTHORIZATION filter, distinct from the
-   * `scope` visibility filter above (see `ScopeRestriction` in
-   * storage-adapter.ts for the full contract).
-   *
-   * Absent = unrestricted. `[]` = matches NOTHING (a principal with no
-   * permitted scopes must see nothing — never widened to "no filter").
-   * Non-empty = EXACT membership: no hierarchy expansion, no personal-family
-   * pass-through, because the caller has already resolved identity to a
-   * complete set of permitted scopes.
-   *
-   * Pushed into the query on the indexed paths so `limit` counts permitted
-   * results rather than being spent on rows the caller may not see.
+   * `scope` visibility filter (contract: `ScopeRestriction` in storage-adapter.ts).
+   * Absent = unrestricted; `[]` = matches NOTHING (never widened); non-empty =
+   * EXACT membership, no hierarchy expansion or personal-family pass-through.
+   * Pushed into the query so `limit` counts permitted results.
    */
   scopes?: string[]
   domain?: string
@@ -297,53 +281,48 @@ export interface RecallOptions {
   budget?: RecallBudget
   caller_session_id?: string
   /**
-   * Force a query intent for routing (#224) instead of letting the classifier
+   * Force a query intent for routing instead of letting the classifier
    * decide. 'general' is the neutral baseline (no re-ranking perturbation).
    */
   intentOverride?: 'entity' | 'temporal' | 'event' | 'general'
   /**
-   * Cross-encoder rerank stage (#220), applies to hybrid/semantic recall:
+   * Cross-encoder rerank stage, applies to hybrid/semantic recall:
    *   - `true`  → opt in for this call (loads the configured reranker, or
    *     bge-reranker-v2-m3 if PLUR_RERANKER is unset/off).
    *   - `false` → skip the rerank stage even if PLUR_RERANKER is set.
    *   - omitted → respect PLUR_RERANKER (default off → zero cost).
    *
-   * Two reranker tiers exist (#451): `ms-marco-minilm-l6` (tiny, ~ms-scale
+   * Two reranker tiers exist: `ms-marco-minilm-l6` (tiny, ~ms-scale
    * on CPU — hot-path candidate) and `bge-reranker-v2-m3` (quality,
    * seconds-scale on CPU — offline/batch). Select via PLUR_RERANKER.
    */
   rerank?: boolean
   /**
-   * Server-authoritative remote recall leg (#776). Default true: recall dials
-   * every configured remote host implicated by the current project/work (see
-   * the strict scope-relevance dialing rule in remote-recall.ts) in parallel
-   * with the local pipeline and RRF-merges the results.
-   *
-   * INTERNAL CALLERS MUST PASS false: learn-dedup, forget-by-search and
-   * self-eval probes derive queries from statements/prompts — without the
-   * opt-out every plur_learn fires prompt-derived POSTs to all hosts, and a
-   * namespaced remote row can silently suppress a local write as a "dedup
-   * match".
+   * Server-authoritative remote recall leg. Default true: dials every remote
+   * host implicated by the current work (see remote-recall.ts) in parallel and
+   * RRF-merges. INTERNAL CALLERS MUST PASS false (learn-dedup, forget-by-search,
+   * self-eval): otherwise every learn fires prompt-derived POSTs to all hosts
+   * and a remote row can silently suppress a local write as a "dedup match".
    */
   remote?: boolean
   /** Per-call remote budget in ms (env PLUR_REMOTE_RECALL_TIMEOUT_MS wins).
    *  Hook path passes 1500; MCP recall defaults to 2000; session_start warm
    *  passes 5000. */
   remote_timeout_ms?: number
-  /** End-to-end deadline for this recall in ms (#1586). The call returns
+  /** End-to-end deadline for this recall in ms. The call returns
    *  within it with whatever is ready and reports what is missing. Default
    *  10 s; env PLUR_RECALL_DEADLINE_MS wins. */
   deadline_ms?: number
   /** The same deadline as an absolute time (epoch ms), for a caller that
    *  started its clock before calling — e.g. the MCP handler, whose own
-   *  awaits (workspace resolution) count against the reply (#1586 audit L1).
+   *  awaits (workspace resolution) count against the reply.
    *  Wins over `deadline_ms`. */
   deadline_at?: number
   /** `.plur.yaml` remote endpoint — establishes the org context for dialing
-   *  on the hook path (#776). See {@link RemoteProjectConfig}. */
+   *  on the hook path. See {@link RemoteProjectConfig}. */
   remote_project?: RemoteProjectConfig
   /**
-   * Session key this recall belongs to (#243). Used ONLY to resolve the
+   * Session key this recall belongs to. Used ONLY to resolve the
    * session default scope as the dialing context for the remote leg when no
    * explicit `scope` is passed: a session whose default scope names org X
    * dials org-X hosts (see `_remoteRecallHosts`). An explicit `scope` always
@@ -355,7 +334,7 @@ export interface RecallOptions {
 
 /**
  * Why a hybrid recall or injection answered without (part of) its semantic
- * leg (#1586 rounds 3-4): the model is not on disk (run `plur doctor`), the
+ * leg: the model is not on disk (run `plur doctor`), the
  * semantic leg missed the recall deadline, or only the reranker did.
  */
 export type DegradedReason = 'embedding_model_missing' | 'semantic_deadline' | 'reranker_deadline'
@@ -368,43 +347,39 @@ export interface InjectOptions {
    * {@link RecallOptions.scopes}: absent = unrestricted, `[]` = matches
    * NOTHING, non-empty = exact membership with no hierarchy expansion.
    *
-   * `RecallOptions` gained this in Phase 3 and `InjectOptions` did not, which
-   * left `inject()` — the surface a session actually calls on every prompt —
-   * with no way to be authorization-scoped at all. Its only scope input was
-   * `scope` above, a VISIBILITY filter that deliberately passes the entire
-   * personal family through (`local`, `global`, `user:*`, `agent:*`). For a
-   * multi-tenant caller that means every principal's personal engrams land in
-   * every other principal's context: the visibility filter is doing what it is
-   * designed to do, and there was simply no authorization filter above it.
+   * `scope` above is a VISIBILITY filter that deliberately passes the entire
+   * personal family through (`local`, `global`, `user:*`, `agent:*`); a
+   * multi-tenant caller needs this filter so one principal's personal engrams
+   * do not land in another principal's context.
    */
   scopes?: string[]
   boost_recent?: boolean
-  /** Force a query intent for routing (#224); omitted → classifier decides. */
+  /** Force a query intent for routing; omitted → classifier decides. */
   intentOverride?: 'entity' | 'temporal' | 'event' | 'general'
-  /** Cross-encoder rerank stage (#220): true=opt in, false=skip, omitted=respect PLUR_RERANKER. */
+  /** Cross-encoder rerank stage: true=opt in, false=skip, omitted=respect PLUR_RERANKER. */
   rerank?: boolean
-  /** Session ID (from plur_session_start) recorded on the co_injection provenance event (#452). */
+  /** Session ID (from plur_session_start) recorded on the co_injection provenance event. */
   session_id?: string
   /**
    * The session whose default scope sets the remote dialing context, when it
-   * is not `session_id` (#1566). The MCP server passes the workspace's own
+   * is not `session_id`. The MCP server passes the workspace's own
    * registry key here for a read with no session default of its own, so the
    * folder's team store is dialed while `session_id` — what is recorded on
    * the co_injection event — stays the caller's real session (or none).
-   * Omitted: `session_id` sets the dialing context, as before.
+   * Omitted: `session_id` sets the dialing context.
    */
   dial_session?: string
   /** Which surface asked for this injection. Recorded on the co_injection event. */
   source?: InjectionSource
   /**
-   * Server-authoritative remote recall leg for `injectHybrid` (#776).
+   * Server-authoritative remote recall leg for `injectHybrid`.
    * Default true. Same contract as {@link RecallOptions.remote}; BM25-only
    * `inject()` NEVER dials regardless of this flag.
    */
   remote?: boolean
   /** Per-call remote budget in ms — see {@link RecallOptions.remote_timeout_ms}. */
   remote_timeout_ms?: number
-  /** End-to-end deadline for `injectHybrid` — see {@link RecallOptions.deadline_ms} (#1586 audit L6). */
+  /** End-to-end deadline for `injectHybrid` — see {@link RecallOptions.deadline_ms}. */
   deadline_ms?: number
   /** Absolute form — see {@link RecallOptions.deadline_at}. */
   deadline_at?: number
@@ -427,13 +402,13 @@ export interface InjectionResult {
    */
   injected_packs?: Record<string, number>
   /**
-   * Persisted-tension warnings (#181): present when an injected engram
+   * Persisted-tension warnings: present when an injected engram
    * participates in an unresolved tension (confirmed → either side injected;
    * detected → both sides injected together). Surface, don't adjudicate.
    */
   warnings?: string[]
   /**
-   * Set by `injectHybrid` (formal round 2, core-retrieval#12): which retrieval
+   * Set by `injectHybrid`: which retrieval
    * legs contributed, as in `HybridSearchResult.mode`. `hybrid-degraded` = the
    * embedder was meant to run and failed, so the injection used keyword
    * matching only (`embedder_error` says why); `bm25-only` = embeddings are
@@ -441,9 +416,9 @@ export interface InjectionResult {
    */
   mode?: 'hybrid' | 'hybrid-degraded' | 'bm25-only'
   embedder_error?: string
-  /** Set by `injectHybrid` when it ran without its semantic leg: why (#1586 round 4). */
+  /** Set by `injectHybrid` when it ran without its semantic leg: why. */
   degraded_reason?: DegradedReason
-  /** Set by `injectHybrid` (#1586 audit L6): what the remote (server) leg
+  /** Set by `injectHybrid`: what the remote (server) leg
    *  did on THIS call, as on recall. */
   remote?: RecallRemoteReport
   /** Set by `injectHybrid`: false when a leg that should have contributed did
@@ -451,22 +426,17 @@ export interface InjectionResult {
    *  deadline. */
   results_complete?: boolean
   /**
-   * Present only when the instance is bound to a remote-only folder (owner
-   * decisions 2026-10-01): whether the folder's team server served this
+   * Present only when the instance is bound to a remote-only folder: whether the folder's team server served this
    * injection. `served: false` means no memory this time — the personal store
    * is never used instead — and an adapter says so once per session.
    */
   remote_only?: RemoteOnlyStatus
   /**
    * Pinned engrams that did NOT make this injection, with what each would have
-   * cost and which cap it lost to (#1142).
+   * cost and which cap it lost to.
    *
-   * `pinned: true` reads as a promise of always-load; it is really
-   * priority-subject-to-capacity. Measured on a real store, dropping the
-   * injection budget silently omitted 36 of 46 pinned engrams — safety rules
-   * among them — with nothing in the output saying so. Whether pinning should
-   * GUARANTEE inclusion is an open contract question; until it is answered, a
-   * caller must at least be able to see what it did not get.
+   * `pinned: true` means priority subject to capacity, not guaranteed
+   * inclusion, so a caller must be able to see what it did not get.
    *
    * Absent when nothing was omitted.
    */

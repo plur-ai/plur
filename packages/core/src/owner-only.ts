@@ -5,33 +5,14 @@ import { tmpdir } from 'os'
 import { join, sep } from 'path'
 
 /**
- * Owner-only protection for files (and folders) that hold a secret (#1631,
- * plan B Task 1b; audit finding 2). One rule for every caller — core's
- * config.yaml writes, atomicWrite's temporary files, the enterprise
- * installer's backups and key file:
- *
- * - Unix: `chmod 0600` (a folder `0700`), then read the mode back.
- * - Windows: `icacls <path> /inheritance:r /grant:r *<SID>:F` (a folder
- *   `(OI)(CI)F`, so what is created inside it is owner-only too), then the
- *   access list is read back; explicit entries for other principals that
- *   survive the inheritance removal are removed (`/remove *<SID>`) and the list
- *   is read again. Accepted only when every access entry is the current
- *   account's.
- *
- * Windows works on security identifiers (SIDs), never on account names:
- * icacls prints names and paths in the OEM code page (measured on a Windows
- * runner: `ü` came out as byte 0x81, `Č` as `C`), so a name or path that is
- * not ASCII cannot be matched in its text output — every write for such a
- * user would be refused. The current account's SID comes from
- * `whoami /user /fo csv /nh` (the SID column is ASCII); the access list is
- * read with `icacls <path> /save <file>`, which writes it as SDDL in UTF-16
- * (SIDs, or SDDL abbreviations such as `SY`, `BA`), whatever the system
- * language.
- *
- * Commands run through execFile with an argument array, never a shell, so a
- * path with spaces or shell characters is one argument; on Windows they run
- * from `%SystemRoot%\System32` by full path, so a planted `icacls.exe` or
- * `whoami.exe` in the working folder is never run.
+ * Owner-only protection for secret-holding files and folders, one rule for all callers.
+ * - Unix: `chmod 0600` (folder `0700`), then read the mode back.
+ * - Windows: `icacls <path> /inheritance:r /grant:r *<SID>:F` (folder
+ *   `(OI)(CI)F`), `/remove *<SID>` for other principals, accept only if every
+ *   entry is the current account's. SIDs, never names (OEM code page output):
+ *   `whoami /user /fo csv /nh`, ACL read via `icacls <path> /save` (UTF-16 SDDL).
+ * - execFile with an argument array, never a shell; on Windows by full path
+ *   from `%SystemRoot%\System32`, so planted executables never run.
  */
 
 export type OwnerOnlyExec = (cmd: string, args: string[]) => { status: number | null; stdout: string }
@@ -174,7 +155,7 @@ function isSelf(trustee: string, sid: string): boolean {
   const t = trustee.toUpperCase()
   if (t === sid.toUpperCase()) return true
   // SDDL writes the local machine's built-in Administrator (RID 500) and Guest
-  // (RID 501) accounts as `LA` / `LG` — a GitHub runner's account is `LA`.
+  // (RID 501) accounts as `LA` / `LG` — e.g. a CI runner's account is `LA`.
   if (t === 'LA') return /-500$/.test(sid)
   if (t === 'LG') return /-501$/.test(sid)
   return false
@@ -284,10 +265,9 @@ export function protectOwnerOnly(path: string, opts: OwnerOnlyOptions = {}): Own
     let r = readAcl(path, exec, sid)
     if (r.kind === 'shared') {
       // `/inheritance:r` drops only INHERITED entries. A file or folder can also
-      // carry explicit entries for other principals — measured on a GitHub
-      // Windows runner (#1631): NT AUTHORITY\SYSTEM and BUILTIN\Administrators
-      // stayed on a new file after the grant. Remove every other principal by
-      // its SID (grants and denies), then read the list back again.
+      // carry explicit entries for other principals (e.g. NT AUTHORITY\SYSTEM
+      // and BUILTIN\Administrators on a new file). Remove every other principal
+      // by its SID (grants and denies), then read the list back again.
       const targets: string[] = []
       for (const t of r.others) {
         const s = SID.test(t) ? t : WELL_KNOWN[t]

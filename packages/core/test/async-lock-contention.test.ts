@@ -15,7 +15,7 @@ import { readFile, writeFile } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { withAsyncLock, activeLockCount } from '../src/store/async-lock.js'
-import { withLock } from '../src/sync.js'
+import { withLock } from '../src/file-lock.js'
 
 describe('withAsyncLock — in-process contention', () => {
   let dir: string

@@ -1,16 +1,10 @@
 /**
- * `plur manifest` — the session memory manifest (#1657): which engrams were in
- * one session's context, with hashes anyone can check later.
- *
- * Usage:
+ * `plur manifest` — which engrams were in one session's context, with checkable hashes.
  *   plur manifest --session <id>                 Print the manifest (canonical JSON)
  *   plur manifest --session <id> --out <file>    Write it to a file
  *   plur manifest --session <id> --anchor        Also store it on Swarm (needs receipts.store: swarm)
- *
- * The manifest holds ids and hashes only: never engram text, scope names, tags
- * or domains. Anchoring uploads exactly those bytes to a public network
- * through the provenance gateway's free tier; it never happens unless the user
- * set `receipts.store: swarm` in config.yaml.
+ * Ids and hashes only — never text, scopes, tags or domains. Anchoring (public, via the
+ * gateway's free tier) never happens unless `receipts.store: swarm` is set.
  */
 import { writeFileSync } from 'fs'
 import { createPlur, type GlobalFlags } from '../plur.js'
@@ -51,14 +45,14 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   try {
     const rec = await anchorManifest(plur.storageRoot, manifest, receipts)
     if (shouldOutputJson(flags)) {
-      // The same notary claim the text and session end report (third review).
+      // The same notary claim the text output and session end report.
       const claim = rec.signer ? notaryClaim(receipts.gateway_url, rec.signer) : null
       outputJson({ ...rec, ...(claim ? { notary_expected: claim.expected } : {}), manifest, experimental: EXPERIMENTAL_NOTE })
     } else {
       outputText(`Stored on Swarm: ${rec.reference}`)
       outputText(`  manifest sha256: ${rec.content_hash}`)
       if (rec.signer) {
-        // An address comparison, not a verification (code review of 0.23, R5).
+        // An address comparison, not a verification.
         const claim = notaryClaim(receipts.gateway_url, rec.signer)
         if (claim.expected === true) outputText(`  signed by the gateway notary ${rec.signer} at ${rec.timestamp}`)
         else if (claim.expected === false) outputText(`  WARNING: signed by ${rec.signer}, which is NOT the expected notary for this gateway`)

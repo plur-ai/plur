@@ -38,19 +38,12 @@ import { commandSpawn } from '../lib/command-spawn.js'
 
 /**
  * plur doctor — diagnose a Claude Code / Claude Desktop / Cursor installation.
- *
  * Checks:
- *   1. Hooks installed in any settings.json (UserPromptSubmit etc.) or, for
- *      Cursor, its separate flat-shaped `.cursor/hooks.json`.
- *   2. `plur` MCP server registered in any of the known config files
- *   3. Whether `datacore` MCP server is also present (collision warning)
- *   4. Live MCP handshake — spawns the configured server command and
- *      sends an `initialize` JSON-RPC request to verify it actually starts,
- *      then a `tools/list` request to report the live tool count. Probed
- *      twice — once with the default env, once forcing
- *      `PLUR_TOOL_PROFILE=cursor` — so a Cursor user can see whether their
- *      setup is actually using the reduced tool profile.
- *
+ *   1. Hooks in any settings.json, or Cursor's flat `.cursor/hooks.json`.
+ *   2. `plur` MCP server registered in a known config file.
+ *   3. A `datacore` MCP server alongside it (collision warning).
+ *   4. Live MCP handshake (`initialize`, then `tools/list` for the tool count),
+ *      run with the default env and with `PLUR_TOOL_PROFILE=cursor`.
  * Exits 0 if everything is healthy, 1 if any check fails.
  */
 
@@ -70,11 +63,11 @@ interface HookShimReport {
 }
 
 /**
- * Where Claude Code itself would find the `plur` MCP server (#1561): user scope
+ * Where Claude Code itself would find the `plur` MCP server: user scope
  * (`mcpServers` in ~/.claude.json), local scope for this folder
  * (`projects[<folder>].mcpServers` there), or a project `.mcp.json`. Never
- * ~/.claude/settings.json — Claude Code does not read MCP servers from it,
- * and an entry there (`legacySettingsEntry`) is what earlier inits wrote.
+ * ~/.claude/settings.json — Claude Code does not read MCP servers from it;
+ * an entry there is reported as `legacySettingsEntry`.
  */
 export interface ClaudeCodeMcpReport {
   registered: boolean
@@ -90,7 +83,7 @@ interface DoctorReport {
   hookTrust?: Array<{ tool: HookTool; label: string; ok: boolean; detail: string; fix?: string }>
   configs: ConfigFileReport[]
   hooksInstalled: boolean
-  /** A plur MCP server is registered somewhere a harness reads it (settings.json never counts, #1561). */
+  /** A plur MCP server is registered somewhere a harness reads it (settings.json never counts). */
   mcpRegistered: boolean
   claudeCodeMcp: ClaudeCodeMcpReport
   datacoreCollision: boolean
@@ -98,7 +91,7 @@ interface DoctorReport {
   staleNpxMcp: boolean
   /**
    * Config files whose `plur` entry is PLUR's own Windows node form
-   * (`{ command: <node.exe>, args: [<@plur-ai/mcp js entry>] }`, #1267) and
+   * (`{ command: <node.exe>, args: [<@plur-ai/mcp js entry>] }`) and
    * names a path that no longer exists — typically the version-specific
    * node binary after a Node upgrade. Checked statically, so it is reported
    * under `--no-handshake` too, and it fails `overall`.
@@ -125,46 +118,32 @@ interface DoctorReport {
   /**
    * Whether the current directory looks like a Cursor project (a `.cursor/`
    * dir exists) and, if so, whether Cursor's OWN config files — not any
-   * Claude Code config elsewhere — actually have PLUR wired in. Audit fix
-   * (Codex adversarial review, 2026-07-08): `overall` used to be
-   * `hooksInstalled && mcpRegistered && handshake.ok`, where both booleans
-   * are `configs.some(...)` across ALL known config files. A machine with
-   * working Claude Code wiring but a missing or broken `.cursor/hooks.json`
-   * (or a `.cursor/mcp.json` without the cursor tool profile) still reported
-   * `overall: 'ok'` — a false green for the exact integration this field
-   * exists to check. `cursorWired` is only false when a `.cursor/` project
-   * IS detected and its own config is incomplete; it's true (irrelevant) for
+   * Claude Code config elsewhere — actually have PLUR wired in. Working
+   * Claude Code wiring says nothing about a missing or broken
+   * `.cursor/hooks.json` (or a `.cursor/mcp.json` without the cursor tool
+   * profile). `cursorWired` is only false when a `.cursor/` project IS
+   * detected and its own config is incomplete; it's true (irrelevant) for
    * non-Cursor projects so `overall` isn't affected there.
    */
   cursorProjectDetected: boolean
   cursorWired: boolean
   /**
-   * Whether Codex is installed on this machine (`~/.codex/` exists, honouring
-   * `CODEX_HOME`) and, if so, whether Codex's OWN two config files have PLUR
-   * wired in — `hooks.json` carrying our hooks, `config.toml` carrying the
-   * `[mcp_servers.plur]` table. Same rationale as `cursorWired`: a healthy
-   * Claude Code setup elsewhere says nothing about this harness.
-   *
-   * Reported as its own line and deliberately NOT folded into `overall` —
-   * see the comment at the `overall` computation for why a machine-level
-   * detection must not fail a project-level health check.
-   *
-   * NOTE: `codexWired: true` does NOT mean the hooks will actually run. Codex
-   * fingerprints every non-managed hook and skips it until reviewed via
-   * `/hooks`, with no warning and exit 0 when it doesn't — a state nothing on
-   * disk distinguishes from a trusted one. `printText` says so explicitly
-   * rather than letting a green tick imply more than it knows.
+   * Whether Codex is installed (`~/.codex/`, honouring `CODEX_HOME`) and whether
+   * its own `hooks.json` and `config.toml` (`[mcp_servers.plur]`) wire PLUR in.
+   * Not folded into `overall` (machine-level detection; see `overall`).
+   * `codexWired: true` does NOT mean the hooks run: Codex silently skips
+   * unreviewed hooks until trusted via `/hooks`, so `printText` says so.
    */
   codexDetected: boolean
   codexWired: boolean
   /**
-   * Codex's config.toml registers the `plur-mcp.cmd` shim an older
-   * `plur init` wrote on Windows, which current Node cannot spawn
-   * (`spawn EINVAL`, #1267). `plur init --codex` replaces it.
+   * Codex's config.toml registers a legacy Windows `plur-mcp.cmd` shim,
+   * which current Node cannot spawn (`spawn EINVAL`). `plur init --codex`
+   * replaces it.
    */
   codexCmdShimMcp: boolean
   /**
-   * Windows only (decision H3): the editors whose PLUR hook path still
+   * Windows only: the editors whose PLUR hook path still
    * contains whitespace because no 8.3 short path was available — `plur
    * init` wrote PowerShell's `& "<path>"` (Codex, Cursor) or the plain path
    * (Antigravity, where no quoted form runs). Those hooks may not run.
@@ -179,42 +158,34 @@ interface DoctorReport {
   agyDetected: boolean
   agyWired: boolean
   /**
-   * PGLite backend running the opt-in embedding-gemma embedder (#581). #483
-   * corrected embedding-gemma's role prefixes and bumped the JSON embedding
-   * cache name so the SQLite/flat-file path auto-rebuilds — but the PGLite
-   * backend keys its `engram_embeddings` table on vector DIMENSION only (768d,
-   * unchanged by #483), so it silently keeps serving vectors computed under the
-   * old prefix. Advisory only: it recommends a one-time `plur sync --reembed
-   * --full` and never fails the overall check.
+   * PGLite backend running the opt-in embedding-gemma embedder. The PGLite
+   * backend keys its `engram_embeddings` table on vector DIMENSION only, so
+   * it can keep serving vectors computed under embedding-gemma's earlier role
+   * prefixes, where the JSON embedding cache rebuilds by itself. Advisory
+   * only: it recommends a one-time `plur sync --reembed --full` and never
+   * fails the overall check.
    */
   pgliteGemmaReembedNeeded: boolean
   /**
-   * Number of engrams whose `content_hash` does not match
-   * `computeContentHash(statement)`. These act as dedup attractors — a
-   * re-learn of an unrelated statement that happens to hash to the same old
-   * value is absorbed into the wrong engram (#852, #896).
-   *
-   * Non-zero after upgrading from a version where `normalizeStatement` used
-   * ASCII `\w` — any statement containing non-ASCII letters hashed to a
-   * different value under the old normalizer. Pure-ASCII stores are unaffected.
-   *
-   * Advisory only: does not fail the overall check. Fix: run
-   * `plur reindex-hashes --apply`.
+   * Engrams whose `content_hash` does not match `computeContentHash(statement)`;
+   * they attract dedup of unrelated re-learns. Usually from non-ASCII text hashed
+   * by an ASCII-only normalizer. Advisory only (does not fail the overall
+   * check); fix with `plur reindex-hashes --apply`.
    */
   staleContentHashes: number
   /**
-   * A `store.pglite` directory the resolved backend tier no longer uses
-   * (#1046) — orphaned disk the user may delete, ideally after `plur migrate`
-   * ports its vectors. `null` when there is no such directory or when PGLite
-   * IS the selected tier (by env or config.yaml — resolved through
-   * resolveBackendTier, #1061). In the report struct, not just the text
-   * renderer, so `--json` consumers see the advisory too (#1065). Advisory
-   * only: does not fail the overall check.
+   * A `store.pglite` directory the resolved backend tier no longer uses —
+   * orphaned disk the user may delete, ideally after `plur migrate` ports its
+   * vectors. `null` when there is no such directory or when PGLite IS the
+   * selected tier (by env or config.yaml — resolved through
+   * resolveBackendTier). In the report struct, not just the text renderer,
+   * so `--json` consumers see the advisory too. Advisory only: does not fail
+   * the overall check.
    */
   pgliteOrphan: { path: string } | null
   /**
-   * Local store entries in config.yaml that are ignored at load (#1319,
-   * #1356): the entry names the primary engrams file (`primary: true`,
+   * Local store entries in config.yaml that are ignored at load: the entry
+   * names the primary engrams file (`primary: true`,
    * removable with `plur stores prune`), or repeats an earlier entry's file
    * and scope. The same list `Plur.ignoredDuplicateStores()` returns, computed
    * from config.yaml without opening the stores. Advisory only: does not fail
@@ -223,45 +194,35 @@ interface DoctorReport {
   ignoredDuplicateStores: Array<{ path: string; scope: string; duplicateOf: string; primary: boolean }>
   /**
    * Project stores (`.plur/engrams.yaml`) found from this folder but not
-   * added, because their folder has no decision of its own (#1588, #1589
-   * audit L3). Advisory only: does not fail the overall check.
+   * added, because their folder has no decision of its own. Advisory only:
+   * does not fail the overall check.
    */
   skippedProjectStores: Array<{ path: string; folder: string }>
   /**
    * Remote stores whose token comes from an environment variable
-   * (`token_env`, #1561) that is unset or empty where doctor runs (#1572).
-   * Saves to such a store wait in the outbox and recalls skip it. Names the
-   * variable, never a value. It fails the overall check, as the MCP
-   * `plur_doctor` does, with the same `detail` and `fix` (#1572 review M1/M2).
+   * (`token_env`) that is unset or empty where doctor runs. Saves to such a
+   * store wait in the outbox and recalls skip it. Names the variable, never a
+   * value. It fails the overall check, as the MCP `plur_doctor` does, with the
+   * same `detail` and `fix`.
    */
   tokenEnvUnset: Array<{ scope: string; url: string; variable: string; detail: string; fix: string }>
   /**
-   * The `token_env` stores whose variable IS set, and where (#1572 re-review
-   * M3): this shell (`inShell`), and/or the `env` of a PLUR MCP entry an
+   * The `token_env` stores whose variable IS set, and where: this shell
+   * (`inShell`), and/or the `env` of a PLUR MCP entry an
    * editor launches the server with (`sources`). A variable set only in an
    * entry works for that editor's server, so it is not a failure; `plur`
    * commands run from this shell still lack it. Never holds a value.
    */
   tokenEnvFound: Array<{ scope: string; url: string; variable: string; inShell: boolean; sources: string[] }>
   /**
-   * opencode leg. Owner-approved pre-publish requirement (2026-09-16): until
-   * `@plur-ai/opencode` is published, opencode's `plugin: ["@plur-ai/opencode"]`
-   * resolves a bare name from the npm registry at startup and fails with NO
-   * error anywhere on a miss — the config looks correct, opencode starts
-   * normally, and the plugin simply never loads (verified against opencode
-   * 1.18.30). This is the compensating control: the only channel that can
-   * tell a user their memory silently isn't working.
-   *
-   * `null` when opencode isn't in use on this machine at all — mirrors
-   * `codexDetected`/`agyDetected`'s "not applicable" treatment (a global,
-   * machine-level config directory absent entirely is not a failure to warn
-   * about). Like Codex/Antigravity, and unlike Cursor, this is deliberately
-   * NOT folded into `overall`: `~/.config/opencode` existing says the user
-   * has opencode installed somewhere, not that this project depends on it.
+   * opencode leg: a bare `plugin` name that fails to resolve at startup fails
+   * with no error anywhere, so this is the only place a user can learn their
+   * memory silently isn't loading. `null` when opencode isn't used on this
+   * machine. Not folded into `overall`: like Codex, it is machine-level.
    */
   opencode: OpencodeReport | null
   /**
-   * Queued team writes (#1299). `ok` is false when any entry is
+   * Queued team writes. `ok` is false when any entry is
    * `needs_action` — refused in a way retrying cannot fix (401/403/404/422, a
    * write refusal, no writable store) — and that FAILS `overall`: those
    * writes will never leave this machine as things stand, which is the
@@ -274,13 +235,13 @@ interface DoctorReport {
     retrying: number
     needs_action: number
     scopes: Array<{ scope: string; count: number; reason: string; next_step: string }>
-    /** Entries held on this machine for a stated reason (#1581 audit L1). */
+    /** Entries held on this machine for a stated reason. */
     held?: Array<{ count: number; reason: string; next_step: string }>
-    /** With writes queued: why the push-claims folder cannot be written (#1581 audit L1). */
+    /** With writes queued: why the push-claims folder cannot be written. */
     claims_problem?: string
   } | null
   /**
-   * The folder map (`folders.yaml`) when it exists but cannot be used (#1526):
+   * The folder map (`folders.yaml`) when it exists but cannot be used:
    * where, what in plain words, and whether `plur folders repair` fixes it.
    * While it is broken every memory surface pauses (fail safe), so this FAILS
    * `overall`. `null` when the map is fine or absent.
@@ -329,26 +290,18 @@ interface OpencodeReport {
   mcpPlurDisabled?: boolean
   /**
    * Paths PLUR's own win32 node-form `mcp.plur` entry names that no longer
-   * exist — the version-specific node binary after a Node upgrade (#1339).
+   * exist — the version-specific node binary after a Node upgrade.
    * `plur init` rewrites such an entry. Empty when healthy.
    */
   mcpPlurMissingPaths: string[]
   /**
-   * Whether the declared plugin will actually resolve when opencode starts.
-   * This is the load-bearing check — a `pluginDeclared: true` entry that
-   * cannot resolve is worthless and, worse, invisible to the user.
-   *
+   * Whether the declared plugin will resolve when opencode starts (the
+   * load-bearing check):
    *  - 'not-declared': `pluginDeclared` is false — nothing to check.
-   *  - 'yes': confirmed resolvable, either via a local install
-   *    (`resolvedVia: 'local install'`) or because the npm registry
-   *    currently serves the package (`resolvedVia: 'npm registry'`).
-   *  - 'no': confirmed NOT resolvable — no local install found, and the npm
-   *    registry has no such package (a definitive 404). opencode's bare-name
-   *    resolution has nothing to fetch; the plugin will not load.
-   *  - 'unknown': could not be determined either way (offline, DNS failure,
-   *    timeout, or a registry response that is neither a clean hit nor a
-   *    clean miss) — deliberately never coerced to 'yes' or 'no'. Also the
-   *    result when the network check is skipped (`--no-handshake`).
+   *  - 'yes': local install or the npm registry serves it (see `resolvedVia`).
+   *  - 'no': no local install and a definitive registry 404; it will not load.
+   *  - 'unknown': undetermined (offline, timeout, ambiguous response, or
+   *    `--no-handshake`); never coerced to 'yes' or 'no'.
    */
   pluginResolvable: 'not-declared' | 'yes' | 'no' | 'unknown'
   /** Where a 'yes' verdict came from. `null` for every other `pluginResolvable` value. */
@@ -361,7 +314,7 @@ function hasAnyPlurHook(config: Record<string, unknown>): boolean {
     for (const entry of entries) {
       for (const h of entry.hooks ?? []) {
         // The same matcher init uses: PLUR's launcher (shim, npx, or the
-        // Windows exec form) plus any hook-* (decisions H2, H3).
+        // Windows exec form) plus any hook-*.
         if (isPlurHookSpec(h)) return true
       }
     }
@@ -369,7 +322,7 @@ function hasAnyPlurHook(config: Record<string, unknown>): boolean {
   return false
 }
 
-/** Test seam (formal apply S4.2). */
+/** Test seam. */
 export const _hasAnyPlurHook = hasAnyPlurHook
 
 /** Every string under a `command` key, anywhere in a parsed hooks file. */
@@ -387,7 +340,7 @@ function collectHookCommands(value: unknown, out: string[] = []): string[] {
 /**
  * The string-hook editors (Cursor, Codex, Antigravity) whose PLUR hook
  * launcher path still contains whitespace — the fallback `plur init` writes
- * on Windows when no 8.3 short path exists (decision H3). Such a hook relies
+ * on Windows when no 8.3 short path exists. Such a hook relies
  * on PowerShell's `& "<path>"` (Codex, Cursor) or cannot run at all
  * (Antigravity, whose `cmd /C` escapes quotes).
  */
@@ -426,7 +379,7 @@ function hasStaleNpxHooks(config: Record<string, unknown>): boolean {
 }
 
 /**
- * Detect stale npx-based MCP server registration (#234). Returns true if
+ * Detect stale npx-based MCP server registration. Returns true if
  * the plur MCP entry uses npx instead of the local shim.
  *
  * The args[] check catches both layouts we ship: `cmd.exe /c npx ...` on
@@ -441,7 +394,7 @@ function hasStaleNpxMcp(config: Record<string, unknown>): boolean {
   return argsBlob.includes('npx') && argsBlob.includes('@plur-ai/mcp')
 }
 
-/** Mirror of validateHookShim() for the MCP shim (#234). */
+/** Mirror of validateHookShim() for the MCP shim. */
 function validateMcpShim(): HookShimReport {
   const name = platform() === 'win32' ? 'plur-mcp.cmd' : 'plur-mcp'
   const path = join(homedir(), '.plur', 'bin', name)
@@ -486,10 +439,9 @@ function validateHookShim(): HookShimReport {
 
 /**
  * Is `path` a regular file that's actually executable? Used to validate a
- * committed `.cursor/mcp.json`'s absolute-path command (audit fix —
- * evaluator review, iteration 3, 2026-07-09): existsSync alone can't tell a
- * runnable shim apart from a directory, a 0-byte file, or a file stripped
- * of its execute bit — all of which would still spawn-fail.
+   * committed `.cursor/mcp.json`'s absolute-path command: existsSync alone
+   * can't tell a runnable shim apart from a directory, a 0-byte file, or a
+   * file stripped of its execute bit — all of which would still spawn-fail.
  */
 function commandIsExecutableFile(path: string): boolean {
   try {
@@ -503,7 +455,7 @@ function commandIsExecutableFile(path: string): boolean {
 
 /**
  * Count engrams whose `content_hash` does not match the current
- * `computeContentHash(statement)` result (#911). Pure read — no writes, no
+ * `computeContentHash(statement)` result. Pure read — no writes, no
  * lock. Errors (missing store, unreadable file) return 0 so a fresh install
  * with no engrams file does not surface a spurious advisory.
  */
@@ -523,15 +475,15 @@ function countStaleContentHashes(flags: GlobalFlags): number {
   }
 }
 
-/** #1299: classify the outbox. Local read only; never throws. */
+/** Classify the outbox. Local read only; never throws. */
 async function checkOutbox(flags: GlobalFlags): Promise<DoctorReport['outbox']> {
   try {
-    // Discovery off (#1589 audit round 2): doctor only looks, so its
+    // Discovery off: doctor only looks, so its
     // constructor must not register a project store or import trust.yaml.
     const plur = createPlur(flags, { readonly: true, autoDiscover: false })
     const summary = await plur.outboxSummary()
-    // A push claim that cannot be recorded holds every queued write here
-    // (#1581 audit L1). Checked only when something is queued.
+    // A push claim that cannot be recorded holds every queued write here.
+    // Checked only when something is queued.
     const claims_problem = summary.pending > 0 ? plur.outboxClaimsProblem() : undefined
     return { ok: summary.needs_action === 0 && !claims_problem, ...summary, ...(claims_problem ? { claims_problem } : {}) }
   } catch {
@@ -550,7 +502,7 @@ async function checkServers(flags: GlobalFlags): Promise<ServerStoreCheck[]> {
 }
 
 /**
- * #1356: the config.yaml store entries a Plur instance would ignore at load.
+ * The config.yaml store entries a Plur instance would ignore at load.
  * Reads config.yaml only — no store is opened and no directory is created.
  */
 function findIgnoredDuplicateStores(flags: GlobalFlags): DoctorReport['ignoredDuplicateStores'] {
@@ -567,7 +519,7 @@ function findIgnoredDuplicateStores(flags: GlobalFlags): DoctorReport['ignoredDu
 
 /**
  * Project stores found from the working folder but not added for lack of
- * their folder's own decision (#1589 audit L3). Read-only: discovery is off
+ * their folder's own decision. Read-only: discovery is off
  * for this instance, so nothing is registered by looking.
  */
 function findSkippedProjectStores(flags: GlobalFlags): DoctorReport['skippedProjectStores'] {
@@ -579,7 +531,7 @@ function findSkippedProjectStores(flags: GlobalFlags): DoctorReport['skippedProj
 }
 
 /**
- * The `env` of every PLUR MCP entry an editor launches (#1572 re-review M3):
+ * The `env` of every PLUR MCP entry an editor launches:
  * Claude Code's (~/.claude.json, or this folder's local / project scope),
  * then the other harnesses' files. A settings.json entry, which nothing
  * launches, is left out. The same files the handshake probes.
@@ -600,10 +552,10 @@ function declaredPlurMcpEnvs(): Array<{ source: string; env: Record<string, stri
 }
 
 /**
- * #1572: the remote stores in config.yaml that take their token from an
+ * The remote stores in config.yaml that take their token from an
  * environment variable, split by whether the PLUR MCP server will see it —
  * set in this shell, or in the `env` of an MCP entry an editor launches it
- * with (re-review M3: the MCP plur_doctor runs with that env and says ok).
+ * with (the MCP plur_doctor runs with that env).
  * Reads config files only; no store is opened, no value is kept.
  */
 function findTokenEnv(flags: GlobalFlags): { unset: DoctorReport['tokenEnvUnset']; found: DoctorReport['tokenEnvFound'] } {
@@ -717,38 +669,14 @@ function inspectConfigs(): ConfigFileReport[] {
 }
 
 /**
- * Spawn the configured plur MCP server, send an `initialize` JSON-RPC
- * request, then — once that succeeds — a `tools/list` request to count the
- * live tool surface. Resolves with the server's name, version, and tool
- * count on success, or an error on timeout / crash / invalid response.
- *
- * `envOverride` lets the caller force env vars (e.g. `PLUR_TOOL_PROFILE:
- * 'cursor'`) onto the spawned process without touching `process.env` itself —
- * used to probe the cursor tool profile alongside the default one, since
- * parsing each config file's configured env to guess which profile is
- * "active" would be fragile (a hand-edited config could have anything).
- *
- * Times out after 20 seconds — first-run npx fetches the @plur-ai/mcp package
- * (and its native deps), which can take 10-15s. Subsequent runs respond in ~1s.
- */
-/**
- * The MCP entry doctor should actually launch.
- *
- * Prefers whatever a config file declares, in `knownConfigFiles()` order, so
- * the probe exercises the server the user runs. Falls back to the synthesised
- * recommendation only when nothing declares one — an install that has not been
- * wired yet, where "would the recommended entry work" is the useful question.
- *
- * This distinction is the whole point of #764. Probing the synthesised entry on
- * a configured install fails BOTH ways: a working local build reported a 20s
- * timeout because the cold `npx` fallback takes longer than that, and — worse —
- * a configured server that crashes on startup reports healthy, because npx
- * fetched a good copy of a package the user is not running. The crash that
- * motivated this (a stale dist importing a dependency removed in the SDK v2
- * migration) is invisible to the old probe by construction.
+ * The MCP entry doctor should launch: the first one declared in
+ * `knownConfigFiles()` order, so the probe exercises the server the user runs.
+ * Falls back to the synthesised recommendation only when nothing is declared;
+ * probing it on a configured install could hide a crashing server behind a
+ * good npx copy, or time out a working local build.
  */
 function resolveProbeTarget(): { entry: McpServerEntry; source: string } {
-  // Probe what Claude Code launches first (#1561): ~/.claude.json (user, then
+  // Probe what Claude Code launches first: ~/.claude.json (user, then
   // this folder's local scope), then the other harnesses' files; a
   // settings.json entry, which nothing launches, only as a last resort.
   const files = knownConfigFiles().filter(cf => cf.exists && cf.kind !== 'cursor-hooks')
@@ -766,6 +694,13 @@ function resolveProbeTarget(): { entry: McpServerEntry; source: string } {
   return { entry: buildMcpServerEntry(), source: 'recommended default (no config declares a plur server)' }
 }
 
+/**
+ * Spawn the configured plur MCP server, send `initialize` then `tools/list`;
+ * resolves with name, version and tool count, or an error on timeout, crash
+ * or invalid response. `envOverride` forces env vars (e.g. `PLUR_TOOL_PROFILE:
+ * 'cursor'`) on the child without touching `process.env`.
+ * 20-second timeout: a first-run npx fetch can take 10-15s.
+ */
 async function mcpHandshake(
   timeoutMs = 20000,
   envOverride?: Record<string, string>,
@@ -795,7 +730,7 @@ async function mcpHandshake(
     let proc: ReturnType<typeof spawn>
     try {
       // On Windows a configured `npx` or `.cmd` cannot be spawned directly
-      // (ENOENT / EINVAL); resolve it the way init runs Codex (#1603).
+      // (ENOENT / EINVAL); resolve it the way init runs Codex.
       const spec = target ? { file: entry.command, args: entry.args, windowsVerbatimArguments: false } : commandSpawn(entry.command, entry.args)
       proc = spawn(spec.file, spec.args, {
         stdio: ['pipe', 'pipe', 'pipe'],
@@ -908,37 +843,30 @@ function resolveCliJsEntry(): string | null {
   return resolved
 }
 
-/**
- * Probe the embedder in an isolated subprocess (issue #197).
- *
- * Why subprocess: onnxruntime-node has a known SIGABRT crash on macOS during
- * thread pool cleanup on process exit. Running the probe in-process makes
- * `plur doctor` itself exit with code 134 even when everything is healthy.
- * Subprocess isolation contains the crash — if the probe dies, parent reports
- * embedder as degraded and continues with the rest of the doctor checks.
- *
- * Timeout: 60s default (#273). Cold model downloads (130MB for bge-small,
- * 325MB for embedding-gemma) need 60-300s on slow connections. Override via
- * PLUR_DOCTOR_TIMEOUT env var (in seconds) if 300s is still too short.
- */
-// 300s, not 60s (data-loss audit F6): on a FRESH install this probe is the
-// only sanctioned path that downloads the ~133MB embedding model — the hooks
-// race an 8s deadline and force-exit, so they can never complete it, and
-// there is no resume. 60s required >2.2MB/s; a slower connection made hybrid
-// permanently unavailable with nothing ever able to finish the fetch.
+// 300s: on a FRESH install this probe is the only sanctioned path that
+// downloads the ~133MB embedding model — the hooks race an 8s deadline and
+// force-exit, so they can never complete it, and there is no resume. A short
+// timeout on a slow connection would leave hybrid permanently unavailable.
 const DEFAULT_PROBE_TIMEOUT_MS = 300_000
 
 /**
  * Resolve the probe timeout from PLUR_DOCTOR_TIMEOUT (seconds). Invalid values
- * (garbage, empty string, zero, negative) fall back to the 60s default — a NaN
- * delay would make setTimeout fire after 1ms, instantly failing the probe with
- * the very "probe timeout" symptom #273 fixes. Exported for tests.
+ * (garbage, empty string, zero, negative) fall back to the default — a NaN
+ * delay would make setTimeout fire after 1ms, instantly failing the probe
+ * with a spurious "probe timeout". Exported for tests.
  */
 export function resolveProbeTimeoutMs(envValue = process.env.PLUR_DOCTOR_TIMEOUT): number {
   const parsed = Number.parseInt(envValue ?? '', 10)
   return Number.isFinite(parsed) && parsed > 0 ? parsed * 1000 : DEFAULT_PROBE_TIMEOUT_MS
 }
 
+/**
+ * Probe the embedder in a subprocess: onnxruntime-node can SIGABRT on macOS
+ * at exit, which in-process would make doctor exit 134; a dead probe is
+ * reported as degraded instead.
+ * Timeout: DEFAULT_PROBE_TIMEOUT_MS (cold model downloads can take minutes);
+ * override with PLUR_DOCTOR_TIMEOUT (seconds).
+ */
 async function checkEmbedder(_flags: GlobalFlags, timeoutMs = resolveProbeTimeoutMs()): Promise<{ available: boolean; loaded: boolean; lastError: string | null; modelLoaded: boolean; disabled: boolean; disabledReason: string | null }> {
   return new Promise((resolve) => {
     const fallback = (lastError: string) => ({
@@ -1023,28 +951,12 @@ async function checkEmbedder(_flags: GlobalFlags, timeoutMs = resolveProbeTimeou
 }
 
 /**
- * Best-effort check for whether `pkg` is resolvable via Node's own module
- * resolution, without spawning opencode or Bun. Tries a handful of plausible
- * install roots — opencode's own config directory and the user's home
- * directory — the way a `require()` from either of those locations would
- * resolve it.
- *
- * `process.cwd()` is deliberately NOT one of these roots (D8, 2026-09
- * audit): `plur doctor` inherits whatever directory the OPERATOR happens to
- * be running it from, which has no relationship to where the user's actual
- * `opencode` process resolves its plugins from. Including it produced a
- * false "resolves (local install)" for anyone who ran `plur doctor` inside
- * this very monorepo (or any repo that happens to carry
- * `node_modules/@plur-ai/opencode` as a transitive dependency) — a confident
- * answer about a directory opencode itself never looks in.
- *
- * Deliberately narrow otherwise: it does NOT see a Bun-only global install
- * (`bun add -g`) or Bun's own internal package cache — that layout is
- * opaque, undocumented, and version-dependent, and hard-coding it risks
- * reporting confidently wrong answers as Bun's internals shift. A `false`
- * here is not proof the plugin can't resolve; it just means this particular
- * check didn't find it, and the registry check below carries the actual
- * verdict. A `true` here IS confident — Node found a real, loadable package.
+ * Best-effort check that Node module resolution finds `pkg` from opencode's
+ * config directory or the home directory.
+ * - Not `process.cwd()`: the operator's directory is unrelated to where
+ *   opencode resolves plugins and would give false "local install" answers.
+ * - Does not see Bun-only global installs or Bun's cache (undocumented layout).
+ * `true` is confident; `false` is not proof — the registry check decides.
  */
 function opencodePluginLocallyResolvable(pkg: string): boolean {
   const req = createRequire(import.meta.url)
@@ -1061,28 +973,11 @@ function opencodePluginLocallyResolvable(pkg: string): boolean {
 }
 
 /**
- * Bounded npm-registry lookup for whether `pkg` is published at all. This is
- * the load-bearing question for the opencode leg: opencode resolves a bare
- * `plugin` name by having Bun fetch it from the npm registry at startup,
- * with zero error output on a miss (see `OpencodeReport.pluginResolvable`'s
- * doc comment). A 200 here does not *guarantee* the runtime fetch succeeds
- * (this machine could be offline, or behind a different registry) — but a
- * 404 DOES guarantee it fails: the registry has never heard of the package,
- * so there is nothing for Bun to fetch. Every other outcome (timeout, DNS
- * failure, 5xx, abort) is folded into 'unknown' rather than asserted either
- * way — see the file's "report the uncertainty" requirement.
- *
- * Same technique (fetch + AbortController timeout against
- * `registry.npmjs.org/<pkg>/latest`) as `@plur-ai/core`'s
- * `checkForUpdate` — not reused directly because that function's return
- * shape collapses "confirmed absent" (404) and "couldn't tell" (network
- * error) into the same `latest: null`, which is exactly the distinction this
- * check exists to preserve.
- *
- * 3s timeout: long enough for a live network, short enough that `plur
- * doctor` never visibly hangs on a dead connection (doctor is a diagnostic —
- * see the file's "keep it fast and side-effect free" requirement). Exported
- * for tests.
+ * Bounded npm-registry lookup (`registry.npmjs.org/<pkg>/latest`) for whether
+ * `pkg` is published. A 404 guarantees opencode's bare-name fetch fails; a 200
+ * does not guarantee success. Timeouts, DNS, 5xx and aborts map to 'unknown'.
+ * Not reusing core's `checkForUpdate`: it conflates 404 with network errors.
+ * 3s timeout so doctor never visibly hangs. Exported for tests.
  */
 export async function checkOpencodePluginPublished(
   pkg: string = PLUR_OPENCODE_PLUGIN,
@@ -1110,8 +1005,8 @@ export async function checkOpencodePluginPublished(
 
 /**
  * Build the opencode leg of the report. Returns `null` when opencode isn't
- * in use on this machine at all (item 1 of the spec: don't warn a non-user
- * about a tool they don't have) — neither its global config directory nor
+ * in use on this machine at all (don't warn a non-user about a tool they
+ * don't have) — neither its global config directory nor
  * its config file exists.
  *
  * `skipNetworkCheck` (wired to `--no-handshake`, the flag that already means
@@ -1166,10 +1061,9 @@ async function buildOpencodeReport(skipNetworkCheck: boolean): Promise<OpencodeR
 
 /**
  * Which harnesses actually carry PLUR hooks, named by the config file's label
- * ("Claude Code (global)" → "Claude Code"). Formal r2, cli#10: the healthy
- * verdict said "ready to use in Claude Code" whenever ANY harness had hooks —
- * `hooksInstalled` is a `.some()` over the Cursor, Codex and Antigravity
- * files too — so a Codex-only machine was told Claude Code was ready.
+ * ("Claude Code (global)" → "Claude Code"). `hooksInstalled` alone is a
+ * `.some()` over the Cursor, Codex and Antigravity files too, so it cannot
+ * say which harness is ready.
  */
 export function hookHarnesses(configs: Array<{ label: string; hasPlurHooks: boolean }>): string[] {
   const names = configs.filter(c => c.hasPlurHooks).map(c => c.label.replace(/\s*\(.*$/, ''))
@@ -1180,8 +1074,7 @@ export function hookHarnesses(configs: Array<{ label: string; hasPlurHooks: bool
  * The healthy verdict, naming only harnesses whose hooks are installed.
  * `unwired` names editors installed on this machine that PLUR is not wired
  * into (today: Codex). They stay advisory — the exit code does not change —
- * but the closing line names them instead of reading as plain "Healthy"
- * (#1603: a Codex user was told plur was ready while Codex had no PLUR tools).
+ * but the closing line names them instead of reading as plain "Healthy".
  */
 export function readyLine(harnesses: string[], unwired: string[] = []): string {
   if (!unwired.length) {
@@ -1196,8 +1089,8 @@ export function readyLine(harnesses: string[], unwired: string[] = []): string {
 }
 
 /**
- * Proxy advice for an embedding-model download that failed on the network
- * (#1603). transformers.js downloads with Node's built-in fetch (undici),
+ * Proxy advice for an embedding-model download that failed on the network.
+ * transformers.js downloads with Node's built-in fetch (undici),
  * which ignores HTTPS_PROXY unless NODE_USE_ENV_PROXY=1 is set — supported
  * from Node 24.0.0 and 22.21.0 (Node's cli.md). Empty for any other error.
  */
@@ -1233,7 +1126,7 @@ export function embeddingNetworkHint(
   return lines
 }
 
-/** Config files Claude Code reads hooks and settings from, but never MCP servers (#1561). */
+/** Config files Claude Code reads hooks and settings from, but never MCP servers. */
 function isClaudeSettingsFile(path: string): boolean {
   return path === claudeCodeGlobalSettingsPath() || path === join(process.cwd(), '.claude', 'settings.json')
 }
@@ -1253,8 +1146,8 @@ function claudeProjectRoot(dir: string): string {
 function localScopePlur(config: Record<string, unknown>, cwd: string): Record<string, unknown> | null {
   const projects = config.projects
   if (!projects || typeof projects !== 'object') return null
-  // Claude Code keys local scope by the git root, not the folder it runs in
-  // (#1564 review M1); either spelling of the path may be the key.
+  // Claude Code keys local scope by the git root, not the folder it runs in;
+  // either spelling of the path may be the key.
   const keys = new Set<string>([claudeProjectRoot(cwd), cwd])
   try {
     const real = realpathSync(cwd)
@@ -1271,7 +1164,7 @@ function localScopePlur(config: Record<string, unknown>, cwd: string): Record<st
   return null
 }
 
-/** The nearest `.mcp.json` with a plur entry, walking up from `cwd` as Claude Code does (#1564 review M1). */
+/** The nearest `.mcp.json` with a plur entry, walking up from `cwd` as Claude Code does. */
 function projectMcpJson(cwd: string): string | null {
   let cur = cwd
   for (;;) {
@@ -1285,8 +1178,8 @@ function projectMcpJson(cwd: string): string | null {
 
 /**
  * The plur entry Claude Code would launch from `cwd`, in its own precedence
- * order — local scope, then project `.mcp.json`, then user scope
- * (#1564 review L3) — with where it came from.
+ * order — local scope, then project `.mcp.json`, then user scope — with
+ * where it came from.
  */
 function claudeCodePlurEntry(cwd: string): { scope: 'local' | 'project' | 'user'; path: string; config: Record<string, unknown> } | null {
   const userPath = claudeCodeUserConfigPath()
@@ -1316,29 +1209,29 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
   const configs = inspectConfigs()
   const hooksInstalled = configs.some((c) => c.hasPlurHooks)
   const claudeCodeMcp = inspectClaudeCodeMcp()
-  // A settings.json entry is not a registration: no harness launches it (#1561).
+  // A settings.json entry is not a registration: no harness launches it.
   const mcpRegistered = claudeCodeMcp.registered || configs.some((c) => c.hasPlurMcp && !isClaudeSettingsFile(c.path))
-  // Claude Code's hooks without its MCP server is the broken half-install
-  // #1561 left on every fresh machine: hooks ran, the plur_* tools never appeared.
+  // Claude Code's hooks without its MCP server is a broken half-install:
+  // hooks run, but the plur_* tools never appear.
   const claudeCodeHooks = hookHarnesses(configs).includes('Claude Code')
   const datacoreCollision = configs.some((c) => c.hasDatacoreMcp)
 
-  // Check for stale npx hooks across all existing configs (#178)
+  // Check for stale npx hooks across all existing configs
   const staleNpxHooks = configs.some((c) => {
     if (!c.exists) return false
     const config = readConfig(c.path)
     return hasStaleNpxHooks(config)
   })
 
-  // Check for stale npx-based MCP server registration (#234)
+  // Check for stale npx-based MCP server registration
   const staleNpxMcp = configs.some((c) => {
     if (!c.exists) return false
     const config = readConfig(c.path)
     return hasStaleNpxMcp(config)
   })
 
-  // PLUR's Windows node-form entry pins a version-specific node binary
-  // (#1267): a Node upgrade leaves it pointing at nothing.
+  // PLUR's Windows node-form entry pins a version-specific node binary:
+  // a Node upgrade leaves it pointing at nothing.
   const brokenNodeMcp: DoctorReport['brokenNodeMcp'] = []
   const seenConfigs = new Set<string>()
   for (const c of configs) {
@@ -1359,27 +1252,17 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
   // Cursor-specific health, computed from Cursor's OWN two config files only
   // — not folded into hooksInstalled/mcpRegistered's cross-config `.some()`,
   // which a working Claude Code setup elsewhere would satisfy regardless of
-  // whether THIS project's `.cursor/` wiring is present at all (audit fix —
-  // Codex adversarial review, 2026-07-08).
+  // whether THIS project's `.cursor/` wiring is present at all.
   const cursorMcpConfig = configs.find((c) => c.label === 'Cursor (.cursor/mcp.json)')
   const cursorHooksConfigReport = configs.find((c) => c.label === 'Cursor (.cursor/hooks.json)')
   const cursorProjectDetected = existsSync(join(process.cwd(), '.cursor'))
 
-  // Two further checks beyond bare "entry exists" (audit fix — evaluator
-  // review, 2026-07-08):
-  //   1. The entry's env actually carries PLUR_TOOL_PROFILE=cursor — an
-  //      entry that exists but is missing/wrong here silently gets the full
-  //      39-tool surface, not the ~11-tool one, which is exactly what this
-  //      wiring exists to prevent.
-  //   2. If the command is an absolute path (the local shim `plur init`
-  //      installs — see mcp-config.ts's buildMcpServerEntry), it must
-  //      actually exist ON THIS MACHINE. `.cursor/mcp.json` is meant to be
-  //      committed so teammates/background agents inherit it, but the shim
-  //      path it bakes in is machine-local — a config that's healthy on the
-  //      machine that ran `plur init --cursor` can point at a path that was
-  //      never installed on another machine or a fresh cloud-agent VM. This
-  //      is a cheap existsSync check, not a second live handshake spawn —
-  //      doctor already spawns the server twice (see cursorHandshake below).
+  // Beyond "entry exists":
+  //   1. Its env must set PLUR_TOOL_PROFILE=cursor, or Cursor silently gets the
+  //      full tool surface instead of the reduced one.
+  //   2. An absolute command (the local shim, see buildMcpServerEntry) must
+  //      exist on THIS machine: `.cursor/mcp.json` is committed but the shim
+  //      path is machine-local. A cheap existsSync, not another handshake.
   let cursorEntryEnvCorrect = false
   let cursorEntryCommandExists = true
   if (cursorMcpConfig?.exists) {
@@ -1388,13 +1271,11 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
     const plurEntry = servers.plur
     cursorEntryEnvCorrect = plurEntry?.env?.PLUR_TOOL_PROFILE === 'cursor'
     if (plurEntry?.command && (plurEntry.command.startsWith('/') || /^[A-Za-z]:\\/.test(plurEntry.command))) {
-      // Audit fix (evaluator review, iteration 3, 2026-07-09): existsSync
-      // alone reports true for a directory, a 0-byte file, or a file
-      // stripped of its execute bit (an interrupted `plur init --cursor`,
-      // a botched reinstall, an AV quarantine placeholder) — the exact
+      // existsSync alone reports true for a directory, a 0-byte file, or a
+      // file stripped of its execute bit (an interrupted `plur init
+      // --cursor`, a botched reinstall, an AV quarantine placeholder) — the
       // "config looks healthy but the server can't actually start" failure
-      // this check exists to catch, just via a different corruption path.
-      // Also check it's a regular, executable file.
+      // this check exists to catch. Also check it's a regular, executable file.
       cursorEntryCommandExists = commandIsExecutableFile(plurEntry.command)
     }
   }
@@ -1405,14 +1286,14 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
 
   // Codex health, from Codex's OWN two files only.
   // A Codex home, a codex on PATH, or the Codex app's bundled binary — the
-  // same places `plur init --codex` looks (#1603).
+  // same places `plur init --codex` looks.
   const codexDetected = codexInstalled()
   const codexHooksReport = configs.find((c) => c.label === 'Codex (~/.codex/hooks.json)')
   const codexTomlReport = configs.find((c) => c.label === 'Codex (~/.codex/config.toml)')
-  // The `plur-mcp.cmd` entry an older init wrote on Windows is registered but
-  // cannot start (spawn EINVAL, #1267). Only PLUR's own shim command is
-  // matched, whatever else the entry carries (env, other keys, args): it
-  // fails either way, even when init will not heal it automatically (#1366).
+  // A legacy Windows `plur-mcp.cmd` entry is registered but cannot start
+  // (spawn EINVAL). Only PLUR's own shim command is matched, whatever else
+  // the entry carries (env, other keys, args): it fails either way, even
+  // when init will not heal it automatically.
   let codexCmdShimMcp = false
   if (codexTomlReport?.exists && codexTomlReport.hasPlurMcp) {
     try {
@@ -1425,7 +1306,7 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
     codexTomlReport?.exists && codexTomlReport.hasPlurMcp && !codexCmdShimMcp,
   )
 
-  // Decision H3: on Windows a string-editor hook must be a single unquoted
+  // On Windows a string-editor hook must be a single unquoted
   // path. When init had to fall back (the path has whitespace and no 8.3
   // short name exists), name the editor: its hooks may not run.
   const windowsHookFallback = platform() === 'win32' ? windowsHookFallbackEditors(configs) : []
@@ -1449,10 +1330,9 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
     // file's env is actually wired to (see mcpHandshake's doc comment).
     // Only worth a second spawn if the default handshake actually came up —
     // no point probing a profile variant of a server that doesn't start —
-    // AND only if this is actually a Cursor project (audit fix — evaluator
-    // review, 2026-07-08: this used to spawn unconditionally, doubling
-    // handshake cost — up to +20s on a cold npx fetch — for the common
-    // Claude-Code-only case with no `.cursor/` at all).
+    // AND only if this is actually a Cursor project, so the common
+    // Claude-Code-only case does not pay for a second spawn (up to +20s on a
+    // cold npx fetch).
     const cursorHandshake = (handshake.ok && cursorProjectDetected)
       ? await mcpHandshake(20000, { PLUR_TOOL_PROFILE: 'cursor' })
       : null
@@ -1473,13 +1353,13 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
     ] as const) {
       if (!wired) continue
       const installed = Date.parse(installs[tool] ?? ''), ran = Date.parse(runs[tool] ?? '')
-      // No install record: hooks installed before records existed (0.21.5 and
-      // earlier), so any real run since counts (release audit 0.22.0).
+      // No install record (hooks installed before install records were
+      // kept): any real run counts.
       const ok = Number.isFinite(ran) && ran <= Date.now() && (!Number.isFinite(installed) || ran > installed)
       hookTrust.push({ tool, label, ok, detail: ok ? `hooks ran ${runs[tool]}` : 'hooks have not run yet after installation',
         ...(!ok ? { fix: tool === 'codex' ? 'run /hooks and trust PLUR, then start a new session in Codex' : `start a new session in ${label}` } : {}) })
     }
-    // #1526: a broken folders.yaml pauses memory everywhere — a real failure.
+    // A broken folders.yaml pauses memory everywhere — a real failure.
     let folderMap: NonNullable<DoctorReport['folderMap']> | null = null
     try {
       const p = folderMapProblem(plurRoot(flags))
@@ -1505,30 +1385,18 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
       (!claudeCodeHooks || claudeCodeMcp.registered) &&
       brokenNodeMcp.length === 0 &&
       (!cursorProjectDetected || cursorWired) &&
-      // #1299: a queued write no retry will deliver is a real failure.
+      // A queued write no retry will deliver is a real failure.
       (outbox?.ok ?? true) &&
-      // #1572: a team store with no token cannot work; MCP plur_doctor says not ok too.
+      // A team store with no token cannot work; MCP plur_doctor says not ok too.
       tokenEnvUnset.length === 0
     const overall: DoctorReport['overall'] =
       !staticChecksPass ? 'fail' : skipHandshake ? 'unverified' : handshake.ok ? 'ok' : 'fail'
-    // NOTE: codexWired is deliberately NOT in `overall`, unlike cursorWired.
-    // The two detections are not the same kind of signal. A `.cursor/`
-    // directory sits IN THIS PROJECT and says "the user works on this
-    // project in Cursor", so an unwired Cursor there is a genuine failure.
-    // `~/.codex/` is machine-level: it says the user has Codex installed
-    // somewhere, not that they use it here. Folding it into `overall` would
-    // turn doctor red for every Claude-Code-only user who once tried Codex —
-    // a false alarm on a check whose whole value is that a red result means
-    // something. It is reported as its own line instead.
-    // #581: PGLite + embedding-gemma both opt-in via env (PLUR_BACKEND=pglite,
-    // PLUR_EMBEDDER=embedding-gemma) — the documented activation for each. When
-    // both are set, #483's prefix fix did not auto-rebuild the PGLite vectors
-    // (dimension-keyed cache), so flag a one-time re-embed.
-    // Backend half through the real resolver (#1061 class — the orphan
-    // advisory 20 lines down was fixed for exactly this and this raw env
-    // test survived beside it): `backend: pglite` in config.yaml and
-    // case/whitespace variants of PLUR_BACKEND all select the tier. The
-    // embedder half stays env-only — resolveEmbedderName has no config route.
+    // codexWired is NOT in `overall`, unlike cursorWired: `.cursor/` is in this
+    // project, while `~/.codex/` is machine-level and would turn doctor red for
+    // users who merely installed Codex once. It gets its own line.
+    // PGLite + embedding-gemma: the vector cache is keyed on dimension only, so
+    // the role-prefix change needs a one-time re-embed. The backend half uses
+    // the real resolver (config or PLUR_BACKEND); the embedder half is env-only.
     const gemmaRoot = process.env.PLUR_PATH || join(homedir(), '.plur')
     const pgliteGemmaReembedNeeded =
       resolveBackendTier({
@@ -1538,17 +1406,15 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
         postgresConfigured: false,
       }).tier === 'pglite' && process.env.PLUR_EMBEDDER === 'embedding-gemma'
 
-    // #911: count engrams whose content_hash is out of step with their
-    // statement under the current normalizer. Non-zero after upgrading from a
-    // version where normalizeStatement used ASCII \w — any statement with
-    // non-ASCII letters hashed differently under the old normalizer, leaving
-    // those engrams as dedup attractors. Advisory: does not fail overall.
+    // Count engrams whose content_hash is out of step with their statement
+    // under the current normalizer; such engrams are dedup attractors.
+    // Advisory: does not fail overall.
     const staleContentHashes = countStaleContentHashes(flags)
 
-    // #1046 orphan advisory — computed HERE, not in the text renderer, so
-    // `--json` consumers see it too (#1065). "Selected" goes through the real
+    // Orphaned-PGLite advisory — computed HERE, not in the text renderer, so
+    // `--json` consumers see it too. "Selected" goes through the real
     // resolver: `backend: pglite` in config.yaml counts exactly as
-    // PLUR_BACKEND=pglite does (#1061).
+    // PLUR_BACKEND=pglite does.
     const orphanRoot = process.env.PLUR_PATH || join(homedir(), '.plur')
     const orphanPglitePath = join(orphanRoot, 'store.pglite')
     const pgliteSelected = resolveBackendTier({
@@ -1574,11 +1440,11 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
 }
 
 /**
- * Render the report. Exported for tests (#730): text mode cannot be exercised
+ * Render the report. Exported for tests: text mode cannot be exercised
  * through a spawned CLI (piped stdout auto-selects JSON), and calling run()
  * in-process would spawn the embedder probe against the test runner's argv.
  *
- * --quiet (#730): only the title banner is suppressed — everything else in
+ * --quiet: only the title banner is suppressed — everything else in
  * this report IS the diagnosis the user asked for, including the ✓ lines
  * (absence of a ✓ would read as "not checked", not "healthy").
  */
@@ -1602,7 +1468,7 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
   }
 
   outputText('')
-  // #1526: first, because while it is broken no memory runs anywhere.
+  // The folder map first, because while it is broken no memory runs anywhere.
   if (report.folderMap) {
     const m = report.folderMap
     outputText(`✗ Folder map: ${m.file} ${m.problem}`)
@@ -1618,7 +1484,7 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
   for (const server of report.serverStores ?? []) for (const c of server.checks) {
     outputText(`${tick(c.result === 'ok')} ${server.url} — ${c.name}: ${c.result === 'could-not-check' ? 'could not check: ' : ''}${c.detail}`)
   }
-  // #1299
+  // Queued team writes.
   if (report.outbox && report.outbox.pending > 0) {
     const o = report.outbox
     const heldLines = describeHeld({ ...o })
@@ -1651,11 +1517,11 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
     }
   }
 
-  // #1046 migration signal: PGLite is no longer size-selected, so a store
-  // that auto-built one now runs SQLite and the old directory is orphaned
-  // disk (60–500MB observed). This advisory is the only signal the affected
-  // cohort gets — the runtime opt-in log line deliberately fires only for
-  // explicit selections. Computed in buildReport (#1065) so --json sees it.
+  // PGLite is never size-selected, so a store directory built for it while
+  // another tier is selected is orphaned disk (often hundreds of MB). This
+  // advisory is the only signal those users get — the runtime opt-in log
+  // line fires only for explicit selections. Computed in buildReport so
+  // --json sees it.
   if (report.pgliteOrphan) {
     outputText('')
     outputText(`ℹ  ${report.pgliteOrphan.path} exists but PGLite is no longer selected by store size (v0.19).`)
@@ -1748,7 +1614,7 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
     outputText('   If your agent confuses them, this is the cause.')
   }
 
-  // Hook shim status (#178)
+  // Hook shim status
   outputText('')
   if (report.hookShim.valid) {
     outputText(`✓ Hook shim: ${report.hookShim.shimPath}`)
@@ -1762,7 +1628,7 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
     outputText('   Fix: run `plur init` to migrate to the local hook binary (<5ms per hook).')
   }
 
-  // MCP shim status (#234) — same problem on MCP launch, same fix pattern
+  // MCP shim status — same problem on MCP launch, same fix pattern
   if (report.mcpShim.valid) {
     outputText(`✓ MCP shim:  ${report.mcpShim.shimPath}`)
   } else {
@@ -1838,7 +1704,7 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
 
   if (report.tokenEnvUnset.length > 0) {
     outputText('')
-    // The same detail and fix plur_doctor gives over MCP (#1572 review M2).
+    // The same detail and fix plur_doctor gives over MCP.
     for (const t of report.tokenEnvUnset) {
       outputText(`✗ remote store: ${t.url} — ${t.detail}`)
       outputText(`   Fix: ${t.fix}`)
@@ -1878,11 +1744,9 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
   if (report.cursorHandshake?.ok && report.cursorHandshake.toolCount !== undefined) {
     outputText(`MCP tools exposed (PLUR_TOOL_PROFILE=cursor): ${report.cursorHandshake.toolCount}`)
   }
-  // Gated on cursorProjectDetected (audit fix — evaluator review,
-  // 2026-07-08): this used to fire for every user whose default handshake
-  // reports >15 tools, i.e. nearly every Claude-Code-only install — a
-  // Cursor-specific warning printed unconditionally in a report that mostly
-  // isn't about Cursor at all.
+  // Gated on cursorProjectDetected: a Cursor-specific warning must not fire
+  // for every Claude-Code-only install whose default handshake reports >15
+  // tools.
   if (report.cursorProjectDetected && report.handshake.ok && report.handshake.toolCount !== undefined && report.handshake.toolCount > 15) {
     outputText(
       `  Cursor caps a workspace at ~40 MCP tools total across every server. If .cursor/mcp.json's ` +

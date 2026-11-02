@@ -13,14 +13,14 @@ keeps its cause and the opt-out in the method's error; nothing else in the metho
 
 Models of `packages/core/src/store-expand.ts` (expandServerEntry, collapseExpandedStores,
 serverEntryIdentities), `packages/core/src/sensitivity-writeback.ts`
-(mergeSensitivityForWriteback) and the store parts of `packages/core/src/index.ts`
-(persistStores, addStore's server-entry rotation). Findings, verdicts and replays:
+(mergeSensitivityForWriteback) and the store parts of the Plur class (`packages/core/src/plur/config-stores.ts`:
+persistStores, addStore's server-entry rotation). Findings, verdicts and replays:
 `spec/formal/findings/store-entry.md`. Checked against branch formal/epic-1797 (5a0dedc3)
 plus the fix in this round (legacy top-level metadata is shape-checked), and owner decision 17
 (2026-10-18, §3 `findIdFixed`: no write for an identity base two entries share).
 §6 (2026-10-18, #1631 plan B Task 5): registration and the fold of per-scope entries
 (`registerServerEntry`, `foldStoresIntoServerEntry` in server-discovery.ts,
-`Plur.registerEnterpriseServer` in index.ts).
+`Plur.registerEnterpriseServer` in plur/config-stores.ts).
 
 What is abstracted: metadata values are an arbitrary type `V` with a parse oracle `norm`
 (`none` = the schema drops the value); the per-key writeback merge is an oracle `wb`. The
@@ -620,7 +620,7 @@ theorem old_settings_redirects :
 /-! ## 6. Registration and fold (#1631, plan B Task 5; 2026-10-18)
 
 `registerServerEntry` / `foldStoresIntoServerEntry` (server-discovery.ts), called by
-`Plur.registerEnterpriseServer` (index.ts) inside `_updateRawStores` (config lock, atomic
+`Plur.registerEnterpriseServer` (plur/config-stores.ts) inside `_updateRawStores` (config lock, atomic
 write). Urls are their canonical endpoint identity (`normalizeEndpointUrl`, the url part of
 §3's identity base), so `u` is a number. `c` is the stored credential (`token_env`, then
 `token`, as on disk); `ro` is `readonly`. Metadata of a per-scope entry is `md k`, the

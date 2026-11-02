@@ -2,7 +2,7 @@
 # PlurSpec.R2CoreB — remote-row ingestion and remote host health (round 2)
 
 Models of `packages/core/src/{remote-recall.ts, store/remote-store.ts, tensions.ts}`
-plus the ingestion loop `_loadSecondaryAndPacks` in `index.ts` (read-only here).
+plus the ingestion loop `_loadSecondaryAndPacks` in `plur/store-io.ts` (read-only here).
 Findings, verdicts and replays: `spec/formal/findings/r2-coreb.md`.
 
 Payloads are abstract: a row's content is a type parameter, the measured-under
@@ -95,9 +95,9 @@ def strip (r : Row σ) : Row σ := { r with pack := none, store := none }
 def remoteLoadOld (s : String) (r : Row σ) : Row σ := { r with store := some s }
 /-- Remote ingestion after the fix: `salvageRemoteRow` strips, then the loader stamps. -/
 def remoteLoad (s : String) (r : Row σ) : Row σ := { strip r with store := some s }
-/-- File-backed store loader (index.ts, unchanged — NEEDS-FILE). -/
+/-- File-backed store loader (plur/store-io.ts, unchanged — NEEDS-FILE). -/
 def fileStoreLoad (s : String) (r : Row σ) : Row σ := { r with store := some s }
-/-- Pack loader (index.ts, unchanged — NEEDS-FILE). -/
+/-- Pack loader (plur/store-io.ts, unchanged — NEEDS-FILE). -/
 def packLoad (p : String) (r : Row σ) : Row σ := { r with pack := some p }
 
 /-- `measuredUnderGateApplies` before the fix. `M` = statements carry measurements
@@ -230,7 +230,7 @@ end Activation
 
 /-! ## 3. Namespacing drift between the two legs (core-policy#7b)
 
-An id is a list of store prefixes over a body. The load leg (index.ts) always
+An id is a list of store prefixes over a body. The load leg (plur/store-io.ts) always
 prepends; the recall leg (`namespaceEngramId`, via `stampStoreRow`) prepends
 only when the id does not already carry that prefix. -/
 namespace Namespace

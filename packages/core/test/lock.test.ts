@@ -3,7 +3,7 @@ import { writeFileSync, existsSync, unlinkSync, utimesSync, mkdtempSync, rmSync,
 import { join } from 'path'
 import { tmpdir, hostname } from 'os'
 import { execSync } from 'child_process'
-import { withLock } from '../src/sync.js'
+import { withLock } from '../src/file-lock.js'
 import { DEFAULT_STALE_THRESHOLD } from '../src/store/async-lock.js'
 
 describe('withLock', () => {

@@ -1,25 +1,9 @@
 /**
- * Reranker adapter interface — Sprint 0 cross-encoder reranker stage (#220).
- *
- * A reranker scores a `(query, document)` pair jointly in a single
- * transformer pass. Distinct from the bi-encoder embedders we ship:
- *   - Embedder: independently encodes query and document, cosine after.
- *     Can be pre-computed. Order: ~1ms/score after indexing.
- *   - Reranker: reads the pair together, emits a single relevance score.
- *     Cannot be pre-computed — runs on the top-K candidates only.
- *     Order: ~5-50ms per pair. Much more accurate.
- *
- * Wired in after BM25 + embedding RRF fusion in `hybridSearch`, reshuffles
- * the top K (default 50) by joint relevance before truncating to `limit`.
- *
- * Adapters are responsible for:
- *   - lazy model load on first score call
- *   - returning a numeric relevance score, higher = more relevant.
- *     Absolute scale is model-specific; only the ordering matters.
- *   - batching N pairs in scoreBatch where the model supports it
- *
- * Adapters must be stateless w.r.t. caller — repeated score(q, d) calls
- * produce identical output once the model is loaded.
+ * Reranker adapter interface: a cross-encoder scores a `(query, document)` pair jointly
+ * (unlike bi-encoder embedders, it cannot be pre-computed — ~5-50ms per pair, more accurate).
+ * Applied after RRF fusion in `hybridSearch` to the top K (default 50) before `limit`.
+ * Adapters: load the model lazily, return higher = more relevant (only order matters),
+ * batch in scoreBatch where supported, and be deterministic once loaded.
  */
 export interface RerankerAdapter {
   /** Short name used by getReranker() and PLUR_RERANKER. */

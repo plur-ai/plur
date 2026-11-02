@@ -1,5 +1,5 @@
 /-!
-# R2CoreA — round 2, core index / provenance (packages/core/src/index.ts, provenance.ts)
+# R2CoreA — round 2, core index / provenance (packages/core/src/index.ts, packages/core/src/plur/, provenance.ts)
 
 Checked against #1631 (config.yaml owner-only, 2026-10-18): still holds. index.ts's only
 change swaps the config.yaml writes for `writeConfigFile` (same content, same lock) and adds

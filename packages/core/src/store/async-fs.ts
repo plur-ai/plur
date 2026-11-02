@@ -22,11 +22,10 @@ let tmpCounter = 0
 /**
  * Atomic write: write to a temp file, flush it, then rename over the target.
  *
- * Mirrors `atomicWrite` in sync.ts — see the durability and unique-tmp
- * rationale there (audit #794, F4). Kept as a separate implementation rather
- * than a wrapper because this one must not block the event loop: the store
- * layer calls it from async write paths that a long-lived MCP server is
- * servicing concurrently.
+ * Mirrors `atomicWrite` in sync.ts (see the durability and unique-tmp
+ * rationale there). Kept as a separate implementation rather than a wrapper
+ * because it must not block the event loop: the store layer calls it from
+ * async write paths that a long-lived MCP server services concurrently.
  */
 export async function asyncAtomicWrite(
   filePath: string,

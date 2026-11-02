@@ -1,6 +1,6 @@
 ---
 name: plur-create-engrams
-version: 0.22.1
+version: 0.23.0
 description: Create or improve PLUR engrams from conversations, documents, decisions, observations, and explicit preferences. Use for memory extraction, engram authoring, or reviewing proposed memories, including global, scoped, pinned, retrieved, and provisional knowledge. Ordinary use of existing memories does not require this skill.
 ---
 

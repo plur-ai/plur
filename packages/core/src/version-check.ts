@@ -1,26 +1,11 @@
 /**
- * Non-blocking version check against the npm registry. Never throws or
- * blocks startup.
- *
- * TEAM-5 (owner decision 2026-10-19): with no internet at all PLUR tries the
- * network at most once, with this check, and when that cannot connect it
- * assumes it is offline. So the first attempt that fails to connect (a
- * network error or a timeout) marks the process offline, and from then on the
- * update checker makes no request of any kind: not on the periodic re-check,
- * not on a refresh-on-read, not on an explicit check. Those answer from the
- * cache (or with nothing). A registry that answers with an error is reachable,
- * so that is not offline. The offline switches (offline.ts) stop even the
- * first attempt.
- *
- * Results are cached in memory with a TTL (#760): a successful registry
- * answer is reused for VERSION_CHECK_SUCCESS_TTL_MS, a non-OK answer only for
- * VERSION_CHECK_FAILURE_TTL_MS. Without the TTL a long-lived MCP server
- * process that started while current cached "no update" forever and never
- * learned about releases published after startup (the #760 report).
- *
- * Reads stay synchronous and zero-cost: an expired entry is returned as-is
- * while a background refresh is kicked off (unless offline), so no caller
- * ever waits on the network.
+ * Non-blocking npm-registry version check; never throws or blocks.
+ * - The first attempt that cannot connect marks the process offline; then no
+ *   request is made at all (an error response counts as reachable). offline.ts
+ *   switches stop even the first attempt.
+ * - TTL cache: VERSION_CHECK_SUCCESS_TTL_MS for OK answers,
+ *   VERSION_CHECK_FAILURE_TTL_MS otherwise. Reads are synchronous: an expired
+ *   entry is returned while a background refresh runs (unless offline).
  */
 
 import { updateCheckDisabledByEnv, markOffline, offlineInferred, _resetInferredOffline } from './offline.js'
@@ -49,12 +34,12 @@ interface CacheEntry {
 /** Module-level cache: package name → entry */
 const cache = new Map<string, CacheEntry>()
 
-// When a check could not connect (TEAM-5) the network is down for this
+// When a check could not connect the network is down for this
 // process: the shared offline state (offline.ts) is set, the update checker
 // makes no further attempt for any package, and the model loader downloads
 // nothing.
 
-/** True once this process inferred it is offline (TEAM-5). */
+/** True once this process inferred it is offline. */
 export function updateCheckOffline(): boolean {
   return offlineInferred()
 }
@@ -73,18 +58,10 @@ function isExpired(entry: CacheEntry, now: number): boolean {
 /**
  * Wait for every in-flight check to finish writing to the cache.
  *
- * `checkForUpdate` may be started without being awaited, so its write
- * to the module-level cache lands at an arbitrary later point — including after
- * the caller that started it has gone away. In a process that only ever starts
- * one server that is harmless. In a test file that starts one per test it is
- * not: a check started by test N resolves during test N+1 and overwrites the
- * cache that test N+1 had just set up, so an assertion about staleness
- * intermittently sees the real registry's answer instead of its own fixture.
- *
- * The failure is invisible in isolation and only appears under load, which is
- * the worst shape a test failure can have — it reads as flake and gets retried
- * away. This gives callers a way to say "let the background work land first"
- * instead of hoping.
+ * `checkForUpdate` may be started without being awaited, so its write to the
+ * module-level cache lands at an arbitrary later point, possibly after the
+ * caller has gone away. Tests that start one check per test call this so a
+ * check from one test cannot overwrite the cache fixture of the next.
  */
 export async function settleVersionChecks(): Promise<void> {
   while (inflight.size > 0) await Promise.allSettled([...inflight])
@@ -111,8 +88,7 @@ export function checkForUpdate(
   if (!running) inflightByPackage.set(packageName, p)
   inflight.add(p)
   // `runCheck` swallows its own errors, so neither arm can reject here; both are
-  // supplied anyway so a future change cannot turn this into an unhandled
-  // rejection.
+  // supplied anyway so this can never become an unhandled rejection.
   const done = () => {
     inflight.delete(p)
     if (inflightByPackage.get(packageName) === p) inflightByPackage.delete(packageName)
@@ -127,16 +103,15 @@ async function runCheck(
   onResult?: (result: VersionCheckResult) => void,
 ): Promise<VersionCheckResult> {
   // Offline, or the check turned off (offline.ts): no request of any kind,
-  // and nothing cached, so a later read cannot start a refresh either (TEAM-5).
+  // and nothing cached, so a later read cannot start a refresh either.
   if (updateCheckDisabledByEnv()) {
     const skipped: VersionCheckResult = { current: currentVersion, latest: null, updateAvailable: false, checkedAt: null }
     if (onResult) onResult(skipped)
     return skipped
   }
 
-  // Return cached result while fresh (#760: expired entries are re-fetched,
-  // not returned forever). Offline (TEAM-5): never fetch again; answer from
-  // the cache, or with nothing.
+  // Return the cached result while fresh; expired entries are re-fetched.
+  // Offline: never fetch again; answer from the cache, or with nothing.
   const entry = cache.get(packageName)
   if (offlineInferred()) {
     const result = entry?.result ?? { current: currentVersion, latest: null, updateAvailable: false, checkedAt: null }
@@ -169,7 +144,7 @@ async function runCheck(
     }
   } catch {
     // Network error or timeout: the check could not connect, so this process
-    // is offline and makes no further update-check request (TEAM-5).
+    // is offline and makes no further update-check request.
     markOffline()
   }
   cache.set(packageName, { result, fetchedAt: Date.now(), ok })
@@ -182,9 +157,9 @@ async function runCheck(
  * completed yet. This is the zero-cost read path for assemblers and tools.
  *
  * When the cached entry has outlived its TTL a background refresh is started
- * (#760) so the NEXT read sees fresh data; the current read still returns
- * synchronously with the stale value and never waits on the network. Offline
- * (TEAM-5), no refresh is started.
+ * so the NEXT read sees fresh data; the current read still returns
+ * synchronously with the stale value and never waits on the network. Offline,
+ * no refresh is started.
  */
 export function getCachedUpdateCheck(packageName: string): VersionCheckResult | null {
   const entry = cache.get(packageName)

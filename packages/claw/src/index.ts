@@ -3,13 +3,12 @@ import { ensureSystemPrompt, PLUR_SYSTEM_SECTION } from './system-prompt.js'
 import { checkForUpdate, CapabilityCanary, recordEvent, flushIfNeeded, registerFlushOnExit, shortPackIntegrity } from '@plur-ai/core'
 import { CLAW_VERSION } from './version.js'
 
-// Telemetry is core's module, not a copy (2026-09 audit): the claw copy had
-// drifted to a heartbeat endpoint that no longer resolves, so claw heartbeats
-// were silently lost. `packageVersion` keeps the payload reporting the claw
-// version rather than core's.
+// Telemetry is core's module, not a copy, so the heartbeat endpoint cannot
+// drift. `packageVersion` keeps the payload reporting the claw version rather
+// than core's.
 const TELEMETRY = { packageVersion: CLAW_VERSION }
 
-// #128: when recordEvent rolls the day, ship yesterday's pending snapshot
+// When recordEvent rolls the day, ship yesterday's pending snapshot
 // immediately. Without this, a long-lived plugin process would only flush on
 // `beforeExit`, which can be days away.
 function maybeFlushAfter(rolledOver: boolean): void {
@@ -32,18 +31,11 @@ function getEngine(path: string): PlurContextEngine {
 }
 
 /**
- * PLUR OpenClaw Plugin — default export.
- *
- * When installed via `openclaw plugins install @plur-ai/claw`, OpenClaw
- * loads this as the plugin entry point. Registers:
- * - ContextEngine (memory injection, episode capture, learning extraction)
- * - Event hooks (before_prompt_build for recall, agent_end for capture)
- * - SYSTEM.md auto-setup with memory instructions
- * - Service lifecycle
- *
- * Tools and slash commands are registered separately via the .mjs plugin
- * wrapper (which imports TypeBox from OpenClaw's runtime). This default
- * export provides the core memory functionality that works without TypeBox.
+ * PLUR OpenClaw Plugin — default export, the entry point loaded after
+ * `openclaw plugins install @plur-ai/claw`. Registers the ContextEngine, event
+ * hooks (before_prompt_build recall, agent_end capture), SYSTEM.md setup and
+ * the service lifecycle. Tools and slash commands come from the .mjs wrapper
+ * (it needs OpenClaw's TypeBox); this export works without TypeBox.
  */
 const plugin = {
   id: 'plur-claw',
@@ -234,18 +226,11 @@ const plugin = {
     //    mcp.servers.plur into the OpenClaw config (see setup.ts, "Configure MCP
     //    server for agent-callable tools").
     //
-    //    There used to be an `api.registerMcpServer('plur', ...)` call here,
-    //    guarded by a `typeof === 'function'` check. It was removed because
-    //    `registerMcpServer` is not part of the OpenClaw plugin API — it is
-    //    absent from 2026.7.1 — so the guard never passed and the block was
-    //    dead code. Worse, it was not harmless: the ClawHub Plugin Inspector
-    //    scans the built bundle for registration names statically, cannot see
-    //    that the call is guarded, and refused to publish with
-    //    `unknown-registration-name: claw: fixture calls a registrar missing
-    //    from target OpenClaw`. That gate blocked the plugin's release.
-    //
-    //    setup.ts writes the identical descriptor (npx -y @plur-ai/mcp with
-    //    PLUR_PATH), so removing this changes nothing at runtime.
+    //    Do not call `api.registerMcpServer` here, even behind a `typeof`
+    //    guard: it is not part of the OpenClaw plugin API, and the ClawHub
+    //    Plugin Inspector scans the built bundle for registration names
+    //    statically and refuses to publish a plugin that calls an unknown
+    //    registrar (`unknown-registration-name`).
 
     // 7. CLI commands
     if (typeof api.registerCli === 'function') {
@@ -286,7 +271,7 @@ const plugin = {
     api.logger.info(`PLUR registered: context engine + hooks + slash commands + CLI`)
 
     // Non-blocking version check, once at register. When it cannot connect the
-    // process is offline and no further update check is attempted (TEAM-5).
+    // process is offline and no further update check is attempted.
     checkForUpdate('@plur-ai/claw', plugin.version, (r) => {
       if (r.updateAvailable) {
         api.logger.warn(`PLUR update available: ${r.current} → ${r.latest}. Run: npm update @plur-ai/claw`)

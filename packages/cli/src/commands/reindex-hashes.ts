@@ -1,46 +1,11 @@
 /**
- * `plur reindex-hashes` — repair engrams whose `content_hash` no longer
- * describes their statement (#852).
- *
- * ## Why this needs a command rather than a background fix
- *
- * `content_hash` is what `_hashDedup` matches on. An engram whose hash points at
- * text it no longer contains becomes an ATTRACTOR: a later write matching that
- * old text hash-matches it and is absorbed into an engram that now says
- * something else. Each absorption raises its `write_count`, making it a stronger
- * attractor still.
- *
- * The source of the drift is fixed — procedure evolution now recomputes the
- * hash, as the UPDATE and MERGE paths always did — so no NEW stale hashes
- * appear. But the ones already on disk stay until something rewrites them, and
- * they keep absorbing writes in the meantime.
- *
- * ## Why not silently, on read
- *
- * Recomputing during `loadEngrams` would fix it invisibly and is exactly the
- * wrong shape: it mutates the YAML source of truth as a side effect of reading,
- * which is the class of behaviour #766 and #794 exist because of. It would also
- * hide the count, and the count is the interesting part — 38 stale hashes in one
- * store is a finding, not a chore.
- *
- * ## Why not under `plur doctor`
- *
- * `doctor` diagnoses INTEGRATION (Claude Code / Desktop wiring, MCP entries,
- * embedder health) and has no repair mode at all. This rewrites stored engrams.
- * Putting a store rewrite behind the command people run casually to check their
- * setup is the wrong affordance. `doctor` reports; this repairs — the same split
- * `reindex-tokens` already established.
- *
- * ## Why this file is thin
- *
- * The scan and the write live in `Plur.repairContentHashes()`, not here. This
- * command's first cut did `loadEngrams` → mutate → `saveEngrams` inline, which
- * is an UNLOCKED whole-corpus read-modify-write: the 2026-08-13 data-loss audit
- * reproduced it destroying a concurrent writer's engram 6/6 on a real-sized
- * store. Going through the engine gets the store lock, the #799 daily backup,
- * and a targeted UPDATE on stores that support one — and it means the repair
- * also reaches an injected non-YAML primary store, which reading
- * `paths.engrams` directly never could.
+ * `plur reindex-hashes` — repair engrams whose `content_hash` no longer describes
+ * their statement. A stale hash makes the engram an attractor for `_hashDedup`,
+ * absorbing later writes of the old text.
+ * - Not done during `loadEngrams` (reading must not mutate the YAML source of truth).
+ * - Not under `plur doctor`, which diagnoses and never repairs (as with `reindex-tokens`).
+ * - The work lives in `Plur.repairContentHashes()` for the store lock, daily backup,
+ *   targeted updates and non-YAML stores; never an inline unlocked read-modify-write.
  */
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { shouldOutputJson, outputJson, outputText, exit } from '../output.js'

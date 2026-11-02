@@ -17,43 +17,18 @@ import {
 } from '../enterprise/sign-in-shared.js'
 
 // Shared with enterprise/legacy-login.ts through sign-in-shared.ts (no import
-// cycle); re-exported here, where callers and tests have always found them.
+// cycle); re-exported here for callers and tests.
 export { normaliseHost, fetchMe, personalScopeOf, takeoverMessage, type MeAnswer }
 
 /**
- * plur login — enterprise token status (#587) and device sign-in (#1638).
- *
- * `plur login --status` reports each configured enterprise credential's
- * validity instead of dumping raw config: one row per DISTINCT (url, token)
- * group in `~/.plur/config.yaml` stores (core's `remoteEndpointTokenGroups`,
- * the #776 grouping), each with the JWT's display-only subject/org + expiry,
- * a live `/api/v1/me` probe (via core's `checkRemoteHealth` — the same probe
- * `plur_doctor` uses), and the locally mounted scopes. Token values are never
- * printed. Exit 0 when every credential is valid; 1 when any is EXPIRED or
- * INVALID (script-friendly).
- *
- * `plur login <host>` signs this device in with the OAuth device flow
- * (RFC 8628, contract C3), shared with `plur-enterprise init`:
- *   1. POST /api/v1/auth/device { client_id: 'plur-cli', device_name }
- *   2. Print the sign-in page and the code; open the page in a browser unless
- *      this is a headless session (SSH, no display) or --no-open
- *   3. Poll POST /api/v1/auth/token at the server's interval (slow_down adds
- *      5 s for the rest of the run; a 429 waits Retry-After) until the key, a
- *      refusal, or the code's expiry
- *   4. GET /api/v1/me with the key: the personal scope user:<org>:<username>
- *   5. Write the one server entry to ~/.plur/config.yaml through core's
- *      registration (`Plur.registerEnterpriseServer`, the config write path),
- *      then fetch its scopes (`Plur.refreshServerScopes`)
- * The key is never printed or logged and is written only in step 5, only
- * after an `ok` token answer. Nothing is written before then, so ctrl-C
- * leaves config.yaml as it was. `~/.plur/config.json` is no longer written;
- * a remaining one is moved into config.yaml once (enterprise/legacy-login.ts).
- *
- * Usage:
- *   plur login https://plur.example.com
- *   plur login https://plur.example.com --no-open        # do not open a browser
- *   plur login https://plur.example.com --timeout 300    # stop waiting after 5 min
- *   plur login https://plur.example.com --remove-stale   # remove an entry holding your personal scope
+ * plur login — enterprise token status and device sign-in.
+ * `--status`: one row per distinct (url, token) group with display-only JWT subject/org/expiry,
+ * a live `/api/v1/me` probe (`checkRemoteHealth`) and mounted scopes; tokens are never
+ * printed. Exit 1 if any is EXPIRED or INVALID.
+ * `plur login <host>`: OAuth device flow (RFC 8628): request a code, show/open the sign-in
+ * page, poll for the token (honouring slow_down and Retry-After), read the personal scope
+ * from `/me`, then register the server and refresh its scopes. The key is never printed and
+ * is written only after an `ok` answer, so ctrl-C leaves config.yaml unchanged.
  */
 
 const HELP = `plur login — sign this device in to a PLUR server, or check the tokens you have
@@ -100,7 +75,7 @@ export interface DeviceCodeResponse {
   interval: number
 }
 
-/** The C3 `200` answer of `/api/v1/auth/token`, delivered once. */
+/** The `200` answer of `/api/v1/auth/token`, delivered once. */
 export interface TokenResponse {
   access_token: string
   token_type: string
@@ -127,7 +102,7 @@ interface PlurConfig {
 
 // ── Legacy config.json (read only) ───────────────────────────────────────────
 
-/** `~/.plur/config.json`, written by `plur login` before #1638; read only now. */
+/** `~/.plur/config.json`, written by older `plur login` versions; read only. */
 export function plurConfigPath(baseDir?: string): string {
   return join(baseDir ?? homedir(), '.plur', 'config.json')
 }
@@ -165,12 +140,12 @@ export function signalReload(baseDir?: string): string {
     : 'no running server detected (no PID file) — token saved, will be picked up on next start'
 }
 
-// ── OAuth device flow (RFC 8628, contract C3) ────────────────────────────────
+// ── OAuth device flow (RFC 8628) ─────────────────────────────────────────────
 
-/** The client id the server knows this CLI by (C3). */
+/** The client id the server knows this CLI by. */
 export const DEVICE_CLIENT_ID = 'plur-cli'
 const DEVICE_GRANT = 'urn:ietf:params:oauth:grant-type:device_code'
-/** C3 user codes: two groups of four consonants (no vowels, no digits). */
+/** User codes: two groups of four consonants (no vowels, no digits). */
 const USER_CODE_RE = /^[BCDFGHJKLMNPQRSTVWXZ]{4}-[BCDFGHJKLMNPQRSTVWXZ]{4}$/
 /** A PLUR device key: `plur_sk_` and at least 16 base64url characters. */
 export const DEVICE_KEY_RE = /^plur_sk_[A-Za-z0-9_-]{16,}$/
@@ -225,7 +200,7 @@ async function postJson(f: FetchFn, url: string, body: unknown, timeoutMs: numbe
 }
 
 /**
- * POST /api/v1/auth/device — request device & user codes (C3). A `429` is
+ * POST /api/v1/auth/device — request device & user codes. A `429` is
  * retried once, after Retry-After (else 5 s); a second one is refused with a
  * plain message.
  */
@@ -372,9 +347,9 @@ export interface DeviceSignInResult {
 /**
  * The device sign-in, shared by `plur login <host>` and `plur-enterprise
  * init`: request a code, print the page and code (a page off the server's own
- * origin, or a code outside the C3 alphabet, is refused before anything is
+ * origin, or a code outside the user-code alphabet, is refused before anything is
  * printed), open the page unless headless, poll for the key, and check the
- * `200` answer (token_type Bearer, a PLUR device key, the C3 fields). Writes
+ * `200` answer (token_type Bearer, a PLUR device key, the required fields). Writes
  * nothing; the key is returned, never printed.
  */
 export async function deviceSignIn(opts: DeviceSignInOptions): Promise<DeviceSignInResult> {
@@ -437,7 +412,7 @@ async function openBrowser(url: string): Promise<boolean> {
   })
 }
 
-// ── Token status (#587) ───────────────────────────────────────────────────────
+// ── Token status ──────────────────────────────────────────────────────────────
 
 /** Live `/me` probe budget for --status — short: a status readout must not hang. */
 export const STATUS_PROBE_TIMEOUT_MS = 3000
@@ -506,10 +481,10 @@ export function formatRelativeExpiry(days: number | null | undefined): string {
 }
 
 /**
- * Remediation per label — REUSES the A4′ doctor strings (remote-recall.ts) so
+ * Remediation per label — REUSES the doctor strings (remote-recall.ts) so
  * every surface gives the same instruction: sign in at <host>/auth and re-add
  * via plur_stores_add. Never suggests running `plur login` — enterprise
- * servers have no device-flow endpoints (the A4′ strings say so explicitly).
+ * servers have no device-flow endpoints (the doctor strings say so).
  */
 function remediationFor(label: TokenStatusLabel, url: string, expiresInDays?: number | null): string | undefined {
   const host = normalizeEndpointUrl(url)
@@ -542,7 +517,7 @@ export function buildStatusReport(
           : h.status === 'auth_expired'
             ? { probed: true, reachable: true, ...(h.reason ? { reason: h.reason } : {}) }
             : { probed: true, reachable: false, ...(h.reason ? { reason: h.reason } : {}) }
-    // #1564 review M2: an unset token_env variable is fixed by setting it, not by re-authenticating.
+    // An unset token_env variable is fixed by setting it, not by re-authenticating.
     const remediation = h.tokenEnvUnset
       ? `Set the environment variable ${h.tokenEnvUnset} where PLUR runs — it holds the token for ${normalizeEndpointUrl(h.url)}.`
       : remediationFor(status, h.url, h.tokenExpiresInDays)
@@ -613,7 +588,7 @@ export function formatStatusLines(report: LoginStatusReport): string[] {
 
 /** `plur login --status` — build, print, and exit (0 all valid / 1 otherwise). */
 async function runStatus(flags: GlobalFlags): Promise<never> {
-  // A status readout writes nothing: no project-store discovery (#1665 gate).
+  // A status readout writes nothing: no project-store discovery.
   const plur = createPlur(flags, { autoDiscover: false })
   let health: RemoteHealth[] = []
   try {
@@ -638,7 +613,7 @@ async function runStatus(flags: GlobalFlags): Promise<never> {
   if (shouldOutputJson(flags)) {
     outputJson(report)
   } else {
-    // Primary output of --status — never suppressed by --quiet (#784 policy).
+    // Primary output of --status — never suppressed by --quiet.
     for (const line of formatStatusLines(report)) outputText(line)
   }
   process.exit(report.ok ? 0 : 1)
@@ -823,10 +798,10 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     return
   }
 
-  // O15: a remaining ~/.plur/config.json is moved into config.yaml once.
+  // A remaining ~/.plur/config.json is moved into config.yaml once.
   await migrateLegacyLogin({ home: homedir(), plur: () => createPlur(flags, { autoDiscover: false }), print: outputError })
 
-  // --status: token validity per configured (url, token) credential (#587)
+  // --status: token validity per configured (url, token) credential
   if (parsed.status) {
     await runStatus(flags)
   }

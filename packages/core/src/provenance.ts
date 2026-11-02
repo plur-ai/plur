@@ -1,27 +1,12 @@
 /**
- * Build a provenance record for an engram (#964).
- *
- * A record answers, for one engram: what produced it, what it came from, who is
- * answerable, when, and under what terms it may be reused. It is written as
- * JSON-LD using the W3C PROV vocabulary, so software that has never heard of us
- * can read it.
- *
- * Specification: `spec/ENGRAM-PROVENANCE-PROFILE.md`.
- * Worked examples, checked against two outside tools: `spec/examples/`.
- *
- * Three rules this file exists to enforce.
- *
- * **It is a view, not a store.** The record is built from the engram plus the
- * history log, on demand. Nothing new becomes a source of truth. If the record
- * and the stores disagree, the stores win. See ADR-0002.
- *
- * **A record you send must stand on its own.** Whoever receives an engram has
- * none of our files, so a portable record carries everything it depends on and
- * refers to nothing outside itself.
- *
- * **Never invent an agent.** Where the actor is unknown, the relationship is
- * omitted. A record with no agent is valid and honest. A record with a guessed
- * agent is worse than one with none, because it looks like evidence.
+ * Build a provenance record for an engram: what produced it, what it came from,
+ * who is answerable, when, and under what reuse terms — as JSON-LD in the W3C
+ * PROV vocabulary. Spec: `spec/ENGRAM-PROVENANCE-PROFILE.md`; examples:
+ * `spec/examples/`.
+ * - **A view, not a store:** built on demand from the engram plus the history
+ *   log; if record and stores disagree, the stores win (ADR-0002).
+ * - **A record you send stands on its own:** it refers to nothing outside itself.
+ * - **Never invent an agent:** an unknown actor means the relationship is omitted.
  */
 import type { Engram } from './schemas/engram.js'
 import type { HistoryEvent } from './history.js'
@@ -42,9 +27,8 @@ const CONTEXT: Record<string, string> = {
 /**
  * Which history event becomes which kind of activity.
  *
- * This vocabulary was not invented. It was already there, in the list of event
- * types the code writes. Events absent from this map produce no activity —
- * including the four that are declared but never emitted.
+ * Drawn from the event types the code writes. Events absent from this map
+ * produce no activity, including those declared but never emitted.
  */
 const ACTIVITY_OF: Record<string, string> = {
   engram_created: 'engram:Learn',
@@ -69,8 +53,8 @@ const ACTIVITY_OF: Record<string, string> = {
  * carries the canonical licence address.
  *
  * An unrecognised licence produces a policy granting NOTHING, with
- * `engram:licenseRecognised: false` — never a permissive default, and never no
- * policy at all. See `licencePolicy` for why the no-policy version was wrong.
+ * `engram:licenseRecognised: false`: never a permissive default, and never no
+ * policy at all (see `licencePolicy`).
  */
 const LICENCE_POLICY: Record<string, { uid?: string; permit: string[]; require: string[]; forbid: string[]; note?: string }> = {
   'cc-by-4.0': {
@@ -138,18 +122,13 @@ const LICENCE_POLICY: Record<string, { uid?: string; permit: string[]; require: 
     permit: ['use', 'reproduce', 'distribute', 'derive'],
     require: ['attribute', 'shareAlike'], forbid: ['commercialize'],
   },
-  // Not a licence, and that is the point: it is the recorded ABSENCE of a grant.
+  // Not a licence: the recorded ABSENCE of a grant.
   //
-  // It has to be here rather than in the unrecognised branch. "proprietary" is a
-  // deliberate statement by whoever wrote the engram, and reporting it as "not a
-  // licence this software knows" tells the reader we failed to look it up, when
-  // in fact we understood it perfectly and the answer is no. The two produce the
-  // same permissions and opposite impressions, and the reader acts on the
-  // impression.
+  // Listed here rather than left to the unrecognised branch: "proprietary" is a
+  // deliberate statement, and reporting it as an unknown licence would suggest
+  // we failed to look it up when the answer is understood and is no.
   //
-  // No `uid`: there is no canonical address to follow, which is itself the
-  // distinguishing feature — with any other licence a reader can go and read the
-  // terms, and here there are none to read. They have to ask a person.
+  // No `uid`: there are no terms to read; a reader has to ask a person.
   proprietary: {
     permit: [], require: [],
     forbid: ['use', 'reproduce', 'distribute', 'derive', 'commercialize'],
@@ -157,22 +136,12 @@ const LICENCE_POLICY: Record<string, { uid?: string; permit: string[]; require: 
       + 'recorded decision to withhold permission. Any reuse needs the holder\'s '
       + 'agreement, obtained directly. There is no licence text to consult.',
   },
-  // Same reasoning as `proprietary`, and it must be here for a sharper reason:
-  // `unlicense` sits eleven lines above and means the OPPOSITE.
-  //
-  // The Unlicense is a public-domain dedication that grants everything.
-  // "unlicensed" is the recorded absence of a grant, and it is the spelling four
-  // user-facing surfaces tell an operator to type when they want to grant
-  // nothing — packs.ts, the CLI, the MCP tool and the profile §5.4. With no
-  // entry here it fell through to the unrecognised branch, which reports
-  // `licenceRecognised: false` and advises the reader to go and read a licence
-  // text that does not exist. The permissions came out right by luck; the
-  // impression came out exactly backwards, and the reader acts on the
-  // impression.
-  //
-  // A dropped 'd' between these two keys is the difference between "I grant
-  // nothing" and "I dedicate this to the public domain". Keeping both spellings
-  // present and opposite is what makes that a typo the record can survive.
+  // Same reasoning as `proprietary`. Note that `unlicense` above means the
+  // OPPOSITE: the Unlicense is a public-domain dedication that grants
+  // everything, while "unlicensed" is the recorded absence of a grant, the
+  // spelling packs.ts, the CLI, the MCP tool and profile §5.4 tell an operator
+  // to use to grant nothing. Both spellings are present so neither falls
+  // through to the unrecognised branch.
   unlicensed: {
     permit: [], require: [],
     forbid: ['use', 'reproduce', 'distribute', 'derive', 'commercialize'],
@@ -184,15 +153,8 @@ const LICENCE_POLICY: Record<string, { uid?: string; permit: string[]; require: 
 }
 
 /**
- * Extra fields for a particular field of work (#973).
- *
- * Later we will record provenance for medical data, land registries, supply
- * chains. Each has facts worth recording that mean nothing to the others. The
- * standard already allows this, and so does our own: unknown fields survive a
- * round trip untouched.
- *
- * Four rules keep it safe, and `assertDomainFields` enforces the first two:
- *
+ * Extra fields for a particular field of work (medical, land registry, ...);
+ * unknown fields survive a round trip. Rules (`assertDomainFields` enforces 1–2):
  *   1. A domain adds fields under ITS OWN prefix, never `prov:` or `engram:`.
  *   2. A domain never redefines an existing term to mean something else.
  *   3. A reader keeps fields it does not recognise, and does not fail on them.
@@ -246,7 +208,7 @@ export function assertDomainFields(extension: DomainExtension): void {
 }
 
 export interface ProvenanceOptions {
-  /** Extra fields for a particular field of work (#973). */
+  /** Extra fields for a particular field of work. */
   domain?: DomainExtension
   /**
    * `portable` produces a record that stands on its own, for sharing. It names
@@ -304,7 +266,7 @@ export interface ProvenanceOptions {
    * (a `stores` entry with a `url` for exactly that scope), so the memory
    * already leaves this machine. Only `Plur` knows its stores; it supplies
    * this. Absent means NOT known to be remote-backed, which can only make the
-   * record MORE restrictive (Decision E6, fail closed).
+   * record MORE restrictive (fail closed).
    */
   remoteBacked?: boolean
 }
@@ -312,10 +274,8 @@ export interface ProvenanceOptions {
 /**
  * Where an engram's effective licence came from.
  *
- * This replaced a boolean, which could only say "default or not" and so
- * collapsed three genuinely different situations. The one that mattered: a
- * licence the user configured once, deliberately, was being reported the same
- * way as the schema's `cc-by-sa-4.0` that nobody has ever looked at.
+ * Four states rather than a boolean, so a licence the user deliberately
+ * configured is not reported like the schema's `cc-by-sa-4.0` default.
  */
 export type LicenseSource = 'chosen' | 'inheritedFromPack' | 'configuredDefault' | 'schemaDefault'
 
@@ -360,17 +320,10 @@ function bornAt(engram: Engram): string | undefined {
 }
 
 /**
- * Decision E6 (owner, 2026-09-26): has this memory NOT been cleared to leave
- * this machine?
- *
- * Withheld when its visibility is `private`, OR when its scope does not leave
- * the machine — not a shared scope (`isSharedScope`) and not backed by a
- * remote store (`remoteBacked`) — and its visibility is not explicitly
- * `public`. An explicit `public` is the share act: it clears a personal-family
- * engram (`global`, `local`, `user:*`, `agent:*`), which is what a pack is made
- * of. It used to test `scope === 'local'` only, so a `global` or `user:*`
- * memory nobody had marked public reported `maySharePlainly: true`.
- *
+ * Has this memory NOT been cleared to leave this machine? Withheld when its
+ * visibility is `private`, OR when its scope does not leave the machine (not
+ * `isSharedScope`, not `remoteBacked`) and visibility is not explicitly
+ * `public` — `public` is the share act that clears a personal-family engram.
  * A missing scope counts as one that does not leave (fail closed).
  * Model: spec/formal/PlurSpec/R2CoreA.lean §1 (`withheld_iff`).
  */
@@ -390,33 +343,18 @@ export function isWithheld(
  * `withheld` (see `isWithheld`) means the engram has not been cleared to
  * leave this machine. The licence still describes what a recipient could do
  * with the CONTENT, but nobody may pass the memory on, so the policy has to say
- * so outright.
- *
- * This existed as a sentence in the readable summary and was missing from the
- * record. A tester read the record — the format sold as the machine-readable
- * one — and found `odrl:distribute` permitted with no prohibition anywhere,
- * beside `engram:visibility: private`. Software reading only the policy would
- * have concluded that distributing a private memory was allowed. The two
- * outputs must not disagree, and where they do, the machine-readable one is the
- * dangerous one to leave wrong.
+ * so outright: software reading only the policy must not conclude that
+ * distributing a private memory is allowed. The policy and the readable
+ * summary must not disagree.
  */
 function licencePolicy(name: string | undefined, withheld = false): Node | undefined {
   if (!name) return undefined
   const spec = LICENCE_POLICY[name.trim().toLowerCase()]
   if (!spec) {
     // A licence we do not recognise gets a policy that GRANTS NOTHING, rather
-    // than no policy at all.
-    //
-    // Emitting nothing was the original design, on the reasoning that a guess
-    // is worse than silence. It is — but silence is not what a reader receives.
-    // A tester pointed out the consequence: software checking policies saw a
-    // prohibition on an MIT memory and none whatsoever on one marked
-    // `proprietary`, so the proprietary one looked the LESS restricted of the
-    // two. Absence was being read as permission, exactly backwards.
-    //
-    // So: no permissions, an explicit note, and the licence name to go and read.
-    // Still no guess — the difference is that the reader is now told there is
-    // nothing here to rely on, instead of inferring it from a missing key.
+    // than no policy at all: software checking policies reads a missing policy
+    // as permission. No permissions, an explicit note, and the licence name to
+    // go and read. No guess is made.
     return {
       '@type': 'odrl:Set',
       'odrl:permission': [],
@@ -462,20 +400,10 @@ function licencePolicy(name: string | undefined, withheld = false): Node | undef
 }
 
 /**
- * Turn a name for somebody into a valid identifier in the record.
- *
- * Two cases, and getting either wrong is a real defect a tester found.
- *
- * A value that is ALREADY a web-style address — a Decentralized Identifier
- * (`did:`), a web address, or a `urn:` — is one in its own right. Prefixing it
- * produced `engram:agent/did:example:alice`, which is a different, meaningless
- * identifier and loses the property that made a Decentralized Identifier worth
- * accepting.
- *
- * Anything else becomes a local name under our own prefix, with characters an
- * identifier may not contain escaped. `engram:agent/Platform Lead` carries a raw
- * space, which is not a legal identifier at all; a strict reader is entitled to
- * reject the whole document over it.
+ * Turn a name for somebody into a valid identifier in the record. A value that
+ * is already an address (`did:`, a web address, `urn:`) is kept as is; anything
+ * else becomes a local name under our prefix with illegal characters escaped
+ * (a raw space can make a strict reader reject the whole document).
  */
 function agentId(name: string): string {
   // Normalise first. The same name typed on two machines can arrive in two
@@ -510,9 +438,8 @@ function escapeIri(value: string): string {
  * Wrap a value so it cannot reorder the sentence around it.
  *
  * A line that begins with an interpolated value takes its direction from that
- * value. An Arabic licence name at the start of an English sentence flipped the
- * whole line: the full stop moved to the front and the indentation jumped to
- * the right edge. The reader sees a sentence that was never written.
+ * value: an Arabic licence name at the start of an English sentence flips the
+ * whole line, moving the full stop and the indentation.
  *
  * The isolate characters say "treat this run as its own direction" and are
  * invisible. They are added only when the value actually contains
@@ -554,9 +481,8 @@ function agentNodes(engram: Engram): {
   }
 
   // The runtime and the tool are DIFFERENT things and both are recorded when
-  // both are given. `runtime ?? tool` dropped the tool whenever a runtime was
-  // present, and when only a tool was given it was written into the runtime
-  // slot and typed as an AI agent — so an import script was recorded as one.
+  // both are given. A tool alone is never written into the runtime slot or
+  // typed as an AI agent.
   const softwareId = (name: string, version?: string) =>
     `engram:agent/software/${escapeIri(name)}${version ? `@${escapeIri(version)}` : ''}`
 
@@ -568,9 +494,8 @@ function agentNodes(engram: Engram): {
       'engram:runtimeName': a.runtime.name,
     }
     if (a.runtime.version) node['engram:runtimeVersion'] = a.runtime.version
-    // ONLY when somebody said so. This used to fall back to `asserted_by`,
-    // which invented a delegation nobody recorded and put it in a document
-    // whose footer promises that nothing is guessed.
+    // ONLY when somebody said so. Falling back to `asserted_by` would invent
+    // a delegation nobody recorded.
     if (a.on_behalf_of) node['prov:actedOnBehalfOf'] = { '@id': agentId(a.on_behalf_of) }
     nodes.push(node)
   }
@@ -586,10 +511,8 @@ function agentNodes(engram: Engram): {
     if (!associatedWith) associatedWith = id
   }
 
-  // Somebody can act on another's behalf without any software being named.
-  // This lived inside the runtime branch, so an attribution carrying only
-  // `on_behalf_of` recorded it nowhere — the value was in storage and appeared
-  // on no surface at all, the record included.
+  // Somebody can act on another's behalf without any software being named,
+  // so this is recorded outside the runtime branch.
   if (a.on_behalf_of && !a.runtime && !a.tool) {
     nodes.push({ '@id': agentId(a.on_behalf_of), '@type': 'prov:Agent' })
     onBehalfOf = agentId(a.on_behalf_of)
@@ -632,8 +555,7 @@ export function buildProvenanceRecord(
   //
   // A flat top-level "@graph" is deliberate. Putting "@id"/"@type" beside
   // "@graph" turns the contents into a NAMED graph, and an ordinary parse then
-  // sees only the wrapper. We hit exactly that while writing the worked
-  // examples: a document that looked correct produced 3 statements instead of 64.
+  // sees only the wrapper.
   const bundle: Node = {
     '@id': `engram:record/${id}`,
     '@type': ['prov:Bundle', 'prov:Entity'],
@@ -641,18 +563,10 @@ export function buildProvenanceRecord(
     'engram:describes': { '@id': `engram:${id}` },
     'engram:recordIsSelfContained': portable,
   }
-  // How much history this record covers, required by the profile's section 9.
-  //
-  // Without it a reader cannot tell a record built from a full log from one
-  // built from a log that had been rotated, truncated, or was simply not
-  // consulted — and those produce the same document. "No retirement recorded"
-  // then reads as "not retired", when it may only mean "we did not look that
-  // far back". The value is the month of the newest event the record was built
-  // from, matching the `history/YYYY-MM.jsonl` files it comes out of.
-  //
-  // Omitted, not faked, when no events were supplied: `engram:historyEvents: 0`
-  // says the record describes the engram alone, which is a different claim from
-  // covering a period and finding nothing in it.
+  // How much history this record covers (profile section 9): the month of the
+  // newest event, matching `history/YYYY-MM.jsonl`, so "no retirement recorded"
+  // is not misread as "not retired" for a truncated log. Omitted, not faked,
+  // when no events were supplied (`engram:historyEvents: 0`).
   const stamps = events.map(e => e.timestamp).filter(t => typeof t === 'string').sort()
   bundle['engram:historyEvents'] = events.length
   if (stamps.length) bundle['engram:historyThrough'] = stamps[stamps.length - 1].slice(0, 7)
@@ -695,7 +609,7 @@ export function buildProvenanceRecord(
     : options.configuredLicense ? 'configuredDefault'
     : 'schemaDefault'
   const licence = chosenLicence ?? options.packLicense ?? options.configuredLicense ?? 'cc-by-sa-4.0'
-  // Not cleared to leave this machine (Decision E6, `isWithheld`): the policy
+  // Not cleared to leave this machine (`isWithheld`): the policy
   // must forbid passing it on regardless of what the licence allows.
   const withheld = isWithheld(engram as any, options.remoteBacked === true)
   const policy = licencePolicy(licence, withheld)
@@ -739,18 +653,15 @@ export function buildProvenanceRecord(
   if (policy) thing['odrl:hasPolicy'] = policy
 
   if (agents.attributedTo) thing['prov:wasAttributedTo'] = { '@id': agents.attributedTo }
-  // Point at the model, so the node is reachable. It was being written into the
-  // graph with nothing linking to it, so no reader could connect a memory to
-  // the model that produced it — in a record whose whole purpose includes
-  // saying whether a model worked something out.
+  // Point at the model, so the node is reachable and a reader can connect a
+  // memory to the model that produced it.
   if (agents.usedModel) thing['engram:usedModel'] = { '@id': agents.usedModel }
 
   // References to OTHER engrams. In a portable record built for a pack, only
   // the ones the recipient can resolve — the pack's members — are kept; the
   // rest would be identifiers only our store can look up, which is exactly
   // what a record that stands on its own may not contain. `exportPack` strips
-  // the same edges from engrams.yaml for the same reason, and the record used
-  // to reintroduce them.
+  // the same edges from engrams.yaml for the same reason.
   const resolvable = (id: string) => !portable || !options.members || options.members.has(id)
   let dropped = 0
   const keep = (ids: string[]) => {
@@ -767,9 +678,8 @@ export function buildProvenanceRecord(
 
   // And the engram that replaced THIS one. PROV has no reverse of a revision,
   // so this is our own term — but it has to be recorded, because it is the
-  // question a reader of the old memory is actually asking. Without it, asking
-  // about a memory that was corrected five minutes ago returns a confident
-  // answer with no hint that anybody has since disagreed.
+  // question a reader of the old memory is actually asking: has it since been
+  // corrected?
   const supersededBy = keep(((engram as any).relations?.superseded_by as string[] | undefined) ?? [])
   if (supersededBy.length) {
     thing['engram:supersededBy'] = supersededBy.map(s => ({ '@id': `engram:${s}` }))
@@ -782,11 +692,10 @@ export function buildProvenanceRecord(
   // sees "revised an earlier memory" and no identifier knows there is history
   // they were not given, which is more honest than silence.
   if (dropped > 0) thing['engram:unresolvableReferencesOmitted'] = dropped
-  // The self-contained flag is now COMPUTED, not asserted from the mode. A
+  // The self-contained flag is COMPUTED, not asserted from the mode. A
   // portable record built with no `members` keeps its references for a local
-  // reader — and then names identifiers only our store can resolve, which is
-  // the one thing §2.2 says a self-contained record may not do. Saying `true`
-  // on such a record was the defect: a claim the record itself contradicted.
+  // reader, and then names identifiers only our store can resolve, which §2.2
+  // says a self-contained record may not do.
   const kept = (derivedFrom && resolvable(derivedFrom) ? 1 : 0) + supersedes.length + supersededBy.length
   bundle['engram:recordIsSelfContained'] = portable && (options.members ? true : kept === 0)
   graph.push(thing)
@@ -818,8 +727,6 @@ export function buildProvenanceRecord(
       //
       // The log lists every engram injected together. Copying that list would
       // tell the recipient the identifiers of other memories the sender holds.
-      // Found while building the worked examples, where a record for one engram
-      // would have disclosed five others.
       const ids = (ev.data?.ids as string[] | undefined) ?? []
       act['prov:used'] = portable
         ? { '@id': `engram:${id}` }
@@ -834,16 +741,11 @@ export function buildProvenanceRecord(
 
     // Who caused THIS event, in preference to who asserted the engram.
     //
-    // These are different questions and the record was answering the wrong one.
-    // Every activity took the engram's attribution, so a memory asserted by one
-    // person and retired by another showed the retirement associated with the
-    // asserter — the correction attributed to the person it corrected. An
-    // outside reviewer warned about exactly this collapse on the epic: a
-    // correction needs both what it replaces and who made it, and merging them
-    // loses the ability to answer either.
+    // These are different questions: a memory asserted by one person and
+    // retired by another must not attribute the retirement to the asserter.
     //
     // Falls back to the engram's attribution only when the event carries no
-    // actor, which is every event written before this field was populated.
+    // actor (events written by older clients).
     const eventAgents = ev.actor ? agentNodes({ attribution: ev.actor } as unknown as Engram) : undefined
     const associated = eventAgents?.associatedWith ?? agents.associatedWith
     if (associated) act['prov:wasAssociatedWith'] = { '@id': associated }
@@ -861,7 +763,7 @@ export function buildProvenanceRecord(
     graph.push(act)
   }
 
-  // Domain fields go on the engram, under their own prefix (#973).
+  // Domain fields go on the engram, under their own prefix.
   if (domain) Object.assign(thing, domain.attributes)
 
   graph.push(...agents.nodes)
@@ -889,7 +791,7 @@ export interface PackProvenanceInput {
    * collection, and a collection is the thing that attracts rights in its own
    * right — the selection and arrangement, and in the European Union the sui
    * generis database right. So this is the licence a recipient of a pack most
-   * needs, and it was the one field the record did not carry.
+   * needs.
    */
   license?: string
   /** The pack's integrity hash, as written to its INTEGRITY file. */
@@ -899,25 +801,12 @@ export interface PackProvenanceInput {
 }
 
 /**
- * Build a provenance record for a whole pack (#972).
- *
- * A pack is how engrams leave one machine and reach another, so this is where
- * provenance stops being a nicety. The recipient has our engrams and none of our
- * history, so this record stands entirely on its own.
- *
- * It answers a question no single engram can: **is this pack worth anything?**
- *
- * Who assembled it, when, out of what — and, from the engrams inside it, how
- * many were stated by a person versus inferred by a model, what dates they span,
- * and whether every engram carries a licence. Two packs of the same size are not
- * equal if one is direct statements from a named expert and the other is machine
- * guesses from an unknown source.
- *
- * On integrity: the pack's own hash covers the manifest and `engrams.yaml` only,
- * per the standard. A provenance file added to the pack is therefore NOT covered
- * by it. So the dependency runs the other way — this record carries the pack's
- * hash, and commits to the pack rather than the pack committing to it. Change
- * the pack and the hash in this record no longer matches.
+ * Build a provenance record for a whole pack. The recipient has none of our
+ * history, so this record stands entirely on its own and answers whether the
+ * pack is worth anything: who assembled it, when, from what, how many engrams
+ * were stated vs inferred, what dates they span, whether every one is licensed.
+ * Integrity: the pack's hash covers only the manifest and `engrams.yaml`, so
+ * this record carries the pack's hash (it commits to the pack, not the reverse).
  */
 export function buildPackProvenanceRecord(
   pack: PackProvenanceInput,
@@ -972,12 +861,10 @@ export function buildPackProvenanceRecord(
     'engram:engramCount': engrams.length,
     // A quality signal, not a score. The reader weighs it themselves.
     'engram:claimClassCounts': byClaim,
-    // Two counts, not one, and named for what they mean. "licensedCount" was
-    // ambiguous and the ambiguity showed: it counted only engrams whose author
-    // PICKED a licence, while every per-engram record in the same pack carries
-    // a licence and a full grant — the default one. So a pack could report
-    // "4 of 5 licensed" beside five files that each grant reuse. A reader has
-    // to be able to tell how much of a pack somebody actually decided about.
+    // Two counts, named for what they mean: engrams whose author PICKED a
+    // licence, and engrams carrying the default. Every engram carries some
+    // licence, so a reader needs to tell how much of a pack somebody actually
+    // decided about.
     'engram:licenseChosenCount': licensed,
     'engram:licenseDefaultedCount': defaulted,
     // Chosen licences only. `engram:licenseDefaultedCount` above says how many
@@ -987,9 +874,7 @@ export function buildPackProvenanceRecord(
   }
 
   // The pack's OWN licence, which is a different question from the licences on
-  // its members and the one a recipient of a pack asks first. It was recorded
-  // nowhere: the record summarised what was inside and dropped the terms on the
-  // collection itself.
+  // its members and the one a recipient of a pack asks first.
   //
   // The two can disagree — an MIT-licensed pack of share-alike engrams is a
   // perfectly ordinary thing to build by accident. Neither overrides the other,
@@ -1069,13 +954,8 @@ export interface ProvenanceSummary {
     visibility?: string
     /**
      * May this memory LEAVE this machine at all? Derived from scope and
-     * visibility, and nothing to do with the licence.
-     *
-     * It was called `shareable`, and a compliance tester read that as the
-     * licence answer, which it is not: a private MIT memory reported
-     * `shareable: false` although MIT permits commercial reuse, and a public
-     * non-commercial one reported `true` although it forbids it. The name was
-     * doing the misleading, so the name changed.
+     * visibility, and nothing to do with the licence (a private MIT memory may
+     * not leave, though MIT permits reuse).
      */
     may_leave_this_machine: boolean
     /**
@@ -1083,9 +963,8 @@ export interface ProvenanceSummary {
      * sentence it has to parse.
      *
      * These FAIL CLOSED. An unrecognised licence yields `false`, not `null`:
-     * a tester observed that a consumer written as `if (x !== false)` reads
-     * `null` as permission, and for a field that gates reuse, not knowing has
-     * to mean no. `licence_recognised` carries the difference between "the
+     * a consumer written as `if (x !== false)` reads `null` as permission, and
+     * for a field that gates reuse, not knowing has to mean no. `licence_recognised` carries the difference between "the
      * licence says no" and "we could not tell", so nothing is lost.
      */
     may_reuse_commercially: boolean
@@ -1172,7 +1051,7 @@ export function summariseProvenance(record: Node): ProvenanceSummary {
   const missing: string[] = []
   const fields: ProvenanceSummary['fields'] = {
     // Default to NO, all of them. An unanswered permission question must never
-    // read as yes — including "may it leave this machine" (core-policy#9).
+    // read as yes, including "may it leave this machine".
     may_leave_this_machine: false,
     // Default to NO. An unanswered permission question must never read as yes.
     may_reuse_commercially: false,
@@ -1195,9 +1074,8 @@ export function summariseProvenance(record: Node): ProvenanceSummary {
   // May it leave? The record's own answer (`engram:maySharePlainly`, built by
   // `isWithheld` with this install's store knowledge) is authoritative. An older
   // record without it is judged by the same rule from scope and visibility, with
-  // remote backing unknown — which can only withhold more. No engram node at all
-  // answers no (core-policy#9: this defaulted to `true`, "may leave", for a
-  // record that said nothing).
+  // remote backing unknown, which can only withhold more. No engram node at all
+  // answers no.
   const shareAnswer = subject?.['engram:maySharePlainly']
   const isPrivate = !subject
     ? true
@@ -1214,14 +1092,12 @@ export function summariseProvenance(record: Node): ProvenanceSummary {
   if (who) {
     const name = idOf(who)
     // Undo the identifier escaping for display. An identifier may not contain a
-    // space; a person's name may, and two testers were shown "Marta%20Kovac"
-    // where their colleague's name should have been. The record keeps the legal
-    // identifier; what a human reads gets the name back.
+    // space; a person's name may. The record keeps the legal identifier; what a
+    // human reads gets the name back.
     const plain = bidiIsolate(readableAgent(name.replace(/^agent\//, '')))
     fields.asserted_by = plain
-    // Somebody WROTE a name here. Nothing checked it, and nothing can:
-    // packs are not signed. It was called `identity_known`, which a tester read
-    // as a verification claim — it reported true for a name they had invented.
+    // Somebody WROTE a name here. Nothing checked it, and nothing can: packs
+    // are not signed, so this is not a verification claim.
     fields.identity_stated = plain !== 'unidentified'
     lines.push(plain === 'unidentified'
       ? 'Asserted by   nobody identified — no identity was configured at the time'
@@ -1241,9 +1117,7 @@ export function summariseProvenance(record: Node): ProvenanceSummary {
     missing.push('who asserted it')
   }
 
-  // Written by: a runtime, or a tool, or both. This read `engram:runtimeName`
-  // only, so an engram attributed to a tool alone showed no "Written by" line
-  // at all while the record named the tool perfectly well.
+  // Written by: a runtime, or a tool, or both.
   const softwareAgents = graph.filter(n => {
     const t = n['@type']
     return Array.isArray(t) && t.includes('prov:SoftwareAgent') && !t.includes('pa:AIModel')
@@ -1258,9 +1132,7 @@ export function summariseProvenance(record: Node): ProvenanceSummary {
     lines.push(`Written by    ${fields.written_by}`)
   }
 
-  // Which model. The record has named it since models were supported; the
-  // summary said only "worked out by a model" and never which one — in a
-  // feature whose point includes answering exactly that.
+  // Which model.
   const modelNode = graph.find(n => {
     const t = n['@type']
     return Array.isArray(t) && t.includes('pa:AIModel')
@@ -1271,7 +1143,7 @@ export function summariseProvenance(record: Node): ProvenanceSummary {
     lines.push(`Model         ${fields.model}${promptVersion ? ` (prompt version ${promptVersion})` : ''}`)
   }
 
-  // Who it was done for. Recorded, and previously shown nowhere.
+  // Who it was done for.
   const behalf = graph.find(n => n['prov:actedOnBehalfOf'])?.['prov:actedOnBehalfOf']
   if (behalf) {
     fields.on_behalf_of = readableAgent(idOf(behalf).replace(/^agent\//, ''))
@@ -1297,10 +1169,7 @@ export function summariseProvenance(record: Node): ProvenanceSummary {
 
   // What from. Three ways an origin can be recorded, and all three have to be
   // read: an external address, a free-text note, and a link to the engram this
-  // one was derived from. Missing the third meant `--derived-from` recorded
-  // `prov:wasDerivedFrom` in the record while the summary reported "what it
-  // came from" as not recorded — directly contradicting the footer beneath it,
-  // which promises nothing was left blank that somebody had recorded.
+  // one was derived from (`prov:wasDerivedFrom`).
   const source = subject?.['prov:hadPrimarySource']
   const note = subject?.['engram:sourceNote']
   const derived = subject?.['prov:wasDerivedFrom']
@@ -1323,8 +1192,8 @@ export function summariseProvenance(record: Node): ProvenanceSummary {
   // May I use it
   const licence = subject?.['engram:license'] as string | undefined
   // A record that does not say where its licence came from has not said it was
-  // chosen (core-policy#9: a missing value used to read as 'chosen', skipping
-  // the fail-closed branch below). Every record this code builds carries it, so
+  // chosen, so it takes the fail-closed branch below. Every record this code
+  // builds carries it, so
   // absence means an older or hand-made record: answer "not known to be chosen"
   // — the booleans fail closed, the licence name is still shown.
   const recordedSource = subject?.['engram:licenseSource'] as LicenseSource | undefined
@@ -1336,30 +1205,24 @@ export function summariseProvenance(record: Node): ProvenanceSummary {
     fields.licence = { name: licence, chosen: !defaulted, meaning, ...(sourceKnown ? { source: licenceSource } : {}) }
 
     // Answer the two questions a machine actually asks, from the policy rather
-    // than from the prose. A consumer was left matching on a free-text meaning
-    // string — and for a licence we do not recognise that string is absent, so
-    // `meaning.includes('NOT for commercial')` waved through everything
-    // proprietary. Undetermined is `null`, never `false`, and never `true`.
+    // than from the prose, so no consumer has to match on a free-text meaning
+    // string (absent for an unrecognised licence).
     const policy = subject?.['odrl:hasPolicy'] as Node | undefined
     const recognised = policy?.['engram:licenseRecognised'] !== false && policy !== undefined
     fields.licence_recognised = recognised
-    // Machine-readable too. The prose warned that nobody chose the licence
-    // while the JSON granted commercial reuse with no hedge at all, so a
-    // consumer reading only the booleans could not see the difference.
+    // Machine-readable too, so a consumer reading only the booleans sees that
+    // nobody chose the licence.
     fields.licence_chosen = !defaulted
     if (!recognised) {
-      // FAIL CLOSED. These were `null` for "undetermined", which is the honest
-      // word but the dangerous value: a tester pointed out that any consumer
-      // written as `if (x !== false)` reads null as permission. For a field
-      // that gates reuse, not knowing has to mean no. `licence_recognised`
-      // carries the distinction between "no" and "we could not tell".
+      // FAIL CLOSED: a consumer written as `if (x !== false)` reads null as
+      // permission, and for a field that gates reuse, not knowing has to mean
+      // no. `licence_recognised` carries the distinction between "no" and "we
+      // could not tell".
       fields.may_reuse_commercially = false
       fields.may_redistribute = false
     }
-    // A policy-level note, whichever branch produced it. This used to print
-    // only for an unrecognised licence, so `proprietary` — the one licence
-    // whose whole content is "you may not" — carried its explanation in the
-    // record and showed nothing to the person reading the summary.
+    // A policy-level note, whichever branch produced it (e.g. `proprietary`
+    // explains itself here too).
     const policyNote = policy?.['engram:note']
     if (policyNote) lines.push(`              ${String(policyNote).split('. ')[0]}.`)
     if (recognised && policy) {
@@ -1373,22 +1236,11 @@ export function summariseProvenance(record: Node): ProvenanceSummary {
         && !forbidden.includes('odrl:distribute')
     }
 
-    // A grant NOBODY MADE does not answer a permission question.
-    //
-    // The record still reports `cc-by-sa-4.0`, because §2.3 of the standard
-    // makes a schema default part of the data model: a consumer must read an
-    // absent field as holding its default, and the JSON-LD has no business
-    // contradicting that.
-    //
-    // But these two booleans are not a description, they are an answer to "may
-    // I?" — and answering yes on the strength of a default nobody chose is the
-    // same failure we already fixed one branch up, where a missing policy was
-    // being read as permission. We were failing closed on a licence we could
-    // not RECOGNISE and failing open on one nobody had SELECTED, which is
-    // backwards: at least the unrecognised one was chosen by somebody.
-    //
-    // `configuredDefault` and `inheritedFromPack` still answer, because a
-    // person decided in both cases — once in advance, or once for the pack.
+    // A grant NOBODY MADE does not answer a permission question. The record
+    // still reports the schema default licence (§2.3: an absent field reads as
+    // its default), but "may I?" must not be answered yes by a default nobody
+    // chose. `configuredDefault` and `inheritedFromPack` still answer: a person
+    // decided in both cases.
     if (licenceSource === 'schemaDefault') {
       fields.may_reuse_commercially = false
       fields.may_redistribute = false
@@ -1398,9 +1250,8 @@ export function summariseProvenance(record: Node): ProvenanceSummary {
     // A licence nobody chose is a schema default, not a decision. It still
     // applies, so print it \u2014 but never beside recorded facts unmarked.
     if (defaulted) {
-      // Say WHICH kind of unchosen. "Inherited from the pack" and "the schema
-      // default nobody has ever looked at" were reported with one sentence, and
-      // they are different facts about who, if anybody, granted anything.
+      // Say WHICH kind of unchosen: "inherited from the pack" and "the schema
+      // default" are different facts about who, if anybody, granted anything.
       lines.push(!sourceKnown
         ? '              The record does not say whether anybody chose this licence.'
         : licenceSource === 'inheritedFromPack'
@@ -1413,8 +1264,7 @@ export function summariseProvenance(record: Node): ProvenanceSummary {
         : 'a licence was never chosen; the default above applies')
     }
     // The licence answers "may I reuse the content", never "may I share this
-    // memory". A tester read "reuse allowed" as permission to pass on a private
-    // local secret. Say which question was answered, next to the answer.
+    // memory". Say which question was answered, next to the answer.
     if (isPrivate) {
       lines.push(visibility === 'private'
         ? '              Not permission to share: this memory is marked private.'
@@ -1431,7 +1281,7 @@ export function summariseProvenance(record: Node): ProvenanceSummary {
   })
   if (activities.length) {
     fields.recorded_steps = activities.length
-    // Name the steps. A bare count told a tester nothing.
+    // Name the steps; a bare count says little.
     const names = activities.map(a => {
       const t = (a['@type'] as string[]).find(x => x.startsWith('engram:')) ?? ''
       return t.replace('engram:', '').toLowerCase()
@@ -1446,9 +1296,7 @@ export function summariseProvenance(record: Node): ProvenanceSummary {
   }
 
   // A memory that has been REPLACED is the single most decision-relevant fact
-  // there is, and the summary was reporting `complete: true` over it. An agent
-  // tester put it plainly: "I would have told my human that memory was
-  // reliable and current. It had been corrected five minutes earlier."
+  // there is, so it is shown first and makes the summary incomplete.
   const replacedBy = subject?.['engram:supersededBy']
   if (replacedBy) {
     const ids = (Array.isArray(replacedBy) ? replacedBy : [replacedBy]).map(idOf).filter(Boolean)
@@ -1457,9 +1305,8 @@ export function summariseProvenance(record: Node): ProvenanceSummary {
       // First line after the heading. A reader deciding whether to rely on
       // this needs it before anything else, not below the licence.
       lines.splice(0, 0, `SUPERSEDED    replaced by ${ids.join(', ')} — prefer that one`)
-      // NOT added to `missing`. It is recorded — that is the whole point — and
-      // listing it under "not recorded" put a flat contradiction in one object.
-      // `complete` is driven false below instead: complete means "nothing more
+      // NOT added to `missing`, because it is recorded. `complete` is driven
+      // false below instead: complete means "nothing more
       // to know", and a memory that has been replaced always has more.
     }
   }

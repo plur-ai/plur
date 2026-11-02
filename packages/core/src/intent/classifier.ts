@@ -1,15 +1,9 @@
 /**
- * Deterministic intent classifier for query rewriting.
- *
- * Inspired by gbrain's `src/core/search/intent.ts`. Pure regex / keyword
- * matching; no LLM call, no async, no I/O. Wrong classification routes
- * through the default profile (general) — graceful degradation.
- *
- * Intents:
- *   - entity   ("who works at X?", "Karl's email")
- *   - temporal ("yesterday", "last week", "2026-04-15")
- *   - event    ("Acme Series A", "the deploy crashed")
- *   - general  (everything else — current behavior, no ranking change)
+ * Deterministic intent classifier for query rewriting (after gbrain's
+ * `src/core/search/intent.ts`): pure regex/keyword matching, no LLM or I/O.
+ * Intents: entity ("who works at X?"), temporal ("last week"), event ("the
+ * deploy crashed"), general (default, no ranking change — also the fallback
+ * for misclassification).
  */
 
 export type QueryIntent = 'entity' | 'temporal' | 'event' | 'general'

@@ -16,12 +16,13 @@
  * agreeing with itself.
  */
 import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'fs'
+import { readFileSync, readdirSync } from 'fs'
 import { execFileSync } from 'child_process'
 import { join } from 'path'
 import { NEWLY_ASYNC } from '../src/scan.js'
 
 const CORE_INDEX = join(__dirname, '..', '..', 'core', 'src', 'index.ts')
+const CORE_PLUR_DIR = join(__dirname, '..', '..', 'core', 'src', 'plur')
 
 /**
  * Async on `Plur` BEFORE 0.16 and NOT reported by the tool.
@@ -119,14 +120,25 @@ const ALWAYS_ASYNC = new Set([
   'serverSessionLines',
 ])
 
-/** Public methods of `Plur`, mapped to whether they are declared `async`. */
+/**
+ * Public methods of `Plur`, mapped to whether they are declared `async`.
+ * The class body in index.ts holds the constructor and a few infrastructure
+ * methods; the rest are implemented in the `…Methods` objects of src/plur/*.ts.
+ */
 function plurMethods(): Map<string, boolean> {
-  const src = readFileSync(CORE_INDEX, 'utf8')
   const out = new Map<string, boolean>()
-  for (const m of src.matchAll(/^ {2}(async )?([a-zA-Z_][\w]*)\(/gm)) {
-    const name = m[2]
-    if (name.startsWith('_') || name === 'constructor') continue
-    if (!out.has(name)) out.set(name, Boolean(m[1]))
+  const collect = (src: string, re: RegExp) => {
+    for (const m of src.matchAll(re)) {
+      const name = m[2]
+      if (name.startsWith('_') || name === 'constructor') continue
+      if (!out.has(name)) out.set(name, Boolean(m[1]))
+    }
+  }
+  collect(readFileSync(CORE_INDEX, 'utf8'), /^ {2}(async )?([a-zA-Z_][\w]*)\(/gm)
+  for (const f of readdirSync(CORE_PLUR_DIR).filter(f => f.endsWith('.ts'))) {
+    const src = readFileSync(join(CORE_PLUR_DIR, f), 'utf8')
+    const impl = src.search(/^export const \w+Methods\b/m)
+    if (impl >= 0) collect(src.slice(impl), /^ {0,2}(async )?([a-zA-Z_][\w]*)\(/gm)
   }
   return out
 }

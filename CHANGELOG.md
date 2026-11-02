@@ -2,14 +2,14 @@
 
 ## 0.23.0
 
-Memory you can prove. (#1790)
+Memory you can prove. (#1790, #1799)
 
 **Experimental.** Provenance in 0.23 (the hash-chained history, checkpoints,
 session manifests) and storing manifests on Swarm are a test release. They
 work and are tested end to end, but the manifest format, the provenance
 gateway and its notary may still change, and Swarm storage runs through a
 gateway that is itself moving networks. Every manifest upload and check says
-so. Nothing leaves the machine unless you turn Swarm storage on.
+so. Nothing leaves the machine unless you turn Swarm storage on. (#1803)
 
 ### Provable history
 
@@ -44,7 +44,7 @@ so. Nothing leaves the machine unless you turn Swarm storage on.
   from the pinned notary (`--notary`) or, for the default gateway, its known
   notary — never the address a gateway reports about itself, unless you pass
   `--trust-gateway-notary`. Memories saved from session-end suggestions are
-  on that session's list. (#1657)
+  on that session's list. (#1657, #1802)
 
 ### Swarm storage (opt-in, experimental)
 

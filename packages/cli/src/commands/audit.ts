@@ -7,24 +7,13 @@ import { homedir } from 'os'
 import { scanForInversions } from '@plur-ai/core'
 
 /**
- * plur audit — content-layer health check.
- *
- * Sibling to `plur doctor` (infra layer). Walks a runtime's working memory,
- * recalls related engrams for each entry, and flags conflicts, duplicates,
- * orphan claims, and stale snapshots.
- *
- * Usage:
+ * plur audit — content-layer health check (sibling to `plur doctor`): flags
+ * conflicts, duplicates, orphan claims and stale snapshots in working memory.
  *   plur audit                          # claude-code (default)
  *   plur audit --source claude-code     # ~/.claude/projects/<...>/memory/
- *   plur audit --source claw            # stub — OpenClaw working-memory schema not stable yet
- *   plur audit --source hermes          # stub — see packages/hermes/plur_hermes/audit_adapter.py
- *   plur audit --source engrams         # scan the ENGRAM STORE itself for negation-inversion
- *                                        # truncation fragments (E2, 2026-09) — a different axis
- *                                        # than the other sources, which compare auto-memory
- *                                        # FILES against engrams. Heuristic, read-only, never
- *                                        # rewrites anything: see scanForInversions' docstring.
- *   plur audit --json
- *   plur audit --limit 5                # recall depth per entry
+ *   plur audit --source claw|hermes     # stubs (see packages/hermes/plur_hermes/audit_adapter.py)
+ *   plur audit --source engrams         # read-only scan of the store for negation-inversion fragments
+ *   plur audit --json | --limit 5       # JSON output; recall depth per entry
  */
 
 interface MemoryEntry {
@@ -94,18 +83,15 @@ function loadClaudeCodeMemory(): MemoryEntry[] {
   return entries
 }
 
-/** Adapter: OpenClaw runtime (stub).
- *  Working-memory shape TBD — likely session state in ~/.openclaw/state/
- *  or context cache in claw/dist/cache/. Implement once schema stabilizes.
+/** Adapter: OpenClaw runtime (stub). Returns nothing until the OpenClaw
+ *  working-memory schema is stable.
  */
 function loadClawMemory(): MemoryEntry[] {
   return []
 }
 
-/** Adapter: Hermes runtime (stub).
- *  Hermes is Python (packages/hermes/plur_hermes/). Working memory likely
- *  in plur_hermes session store. Adapter best implemented in Python and
- *  exposed via subprocess from this CLI, OR rewrite Hermes adapter in TS.
+/** Adapter: Hermes runtime (stub). Hermes is Python; its adapter
+ *  (packages/hermes/plur_hermes/audit_adapter.py) feeds this command via --from-json.
  */
 function loadHermesMemory(): MemoryEntry[] {
   return []
@@ -125,9 +111,9 @@ function classify(
   const topStrength = top?.activation.retrieval_strength ?? 0
   const memText = `${entry.description} ${entry.body}`
 
-  // Snapshot detection runs first — applies regardless of engram match.
-  // Volatile facts (PR status, version numbers, test counts) belong in the
-  // dynamic source (git/gh/package.json), not in memory.
+  // Snapshot detection runs first, regardless of engram match: volatile facts
+  // (PR status, version numbers, test counts) belong in their live source
+  // (git/gh/package.json), not in memory.
   if (/\b(PR #\d|v?\d+\.\d+\.\d+|\d+ tests? (?:across|passing|files)|currently (?:\d+|open|merged|closed)|status:\s*(?:open|merged|in-progress))\b/i.test(entry.body)) {
     return {
       entry,
@@ -156,8 +142,8 @@ function classify(
     }
   }
 
-  // Duplicate detection: high similarity + meaningful term overlap, but no
-  // entity-conflict (we already returned above if there was one).
+  // Duplicate: high similarity plus meaningful term overlap. Conflicts have
+  // already returned above.
   if (top && topStrength > 0.75) {
     const sharedTokens = sharedKeyTerms(memText, top.statement)
     if (sharedTokens >= 4) {
@@ -170,7 +156,6 @@ function classify(
     }
   }
 
-  // Orphan: aged with no engram coverage.
   if (entry.ageDays > 60 && matched.length === 0) {
     return {
       entry,
@@ -191,20 +176,17 @@ function classify(
 }
 
 /** Extract entity-like tokens: capitalized multi-word phrases, identifiers
- *  with mixed case or underscores, IPs, dotted paths, URLs, version-prefixed
- *  IDs. These are the high-information atoms that drive conflict detection.
- *  Exported for tests (#771 id-format tolerance). */
+ *  with mixed case or underscores, IPs, dotted paths, URLs, engram ids.
+ *  These are the high-information atoms that drive conflict detection.
+ *  Exported for tests. */
 export function extractEntities(s: string): Set<string> {
   const out = new Set<string>()
-  // Capitalized words and CamelCase/snake_case identifiers
-  // Engram ids: canonical ENG-YYYY-MM-DD-NNN and legacy compact
-  // ENG-YYYY-MMDD-NNN both match (#771 — the `-?` makes the day separator
-  // optional).
+  // Engram ids match in both the canonical ENG-YYYY-MM-DD-NNN form and the
+  // legacy compact ENG-YYYY-MMDD-NNN form (the `-?` before the day).
   const re = /\b(?:[A-Z][a-zA-Z0-9]+(?:[-_/.][A-Za-z0-9]+)*|[a-z0-9]+(?:_[a-z0-9]+)+|ENG-\d{4}-\d{2}-?\d{2}-\d+|\d+\.\d+\.\d+\.\d+|[a-z0-9-]+\.(?:org|com|local|io|ai|md|py|ts|js|json|yaml))\b/g
   let m
   while ((m = re.exec(s)) !== null) {
     const tok = m[0]
-    // Drop very short, all-lowercase common words
     if (tok.length >= 4) out.add(tok)
   }
   return out
@@ -222,9 +204,8 @@ function sharedEntityNames(a: string, b: string): string[] {
  *  Negation must be (a) within ~60 chars of the entity, AND (b) a verb-
  *  phrase form like "is no longer", "was replaced by", "has been retired".
  *  Bare "not"/"never" are excluded — they fire on harmless contrastive
- *  language like "Chief of Staff, not the generic AI". v0.3 (2026-05-12). */
+ *  language like "Chief of Staff, not the generic AI". */
 function detectEntityConflict(engram: string, entities: string[]): { entity: string; phrase: string } | null {
-  // Verb-phrase negation: must include a state verb or strong action
   const NEG = /(is\s+no\s+longer|was\s+no\s+longer|has\s+been\s+(?:removed|deprecated|retired|replaced|decommissioned|repurposed|migrated|relocated|abandoned|archived)|(?:was|is|are|were)\s+replaced\s+(?:by|with)|(?:was|is)\s+(?:not\s+)?(?:running|installed|registered|loaded|reachable|available|active|enabled|present)|(?:has|have)\s+(?:moved|migrated)\s+(?:to|away\s+from)|(?:was|is)\s+(?:decommissioned|repurposed|deprecated|retired|abandoned|archived|outdated|stale)|no\s+longer\s+(?:runs|hosts|provides|works|valid|active|used)|deleted\s+(?:as\s+of|on)|retired\s+(?:as\s+of|on))/i
   for (const e of entities) {
     const idx = engram.indexOf(e)
@@ -249,8 +230,8 @@ function sharedKeyTerms(a: string, b: string): number {
 }
 
 function printText(report: AuditReport, flags?: GlobalFlags): void {
-  // --quiet (#730): banner and next-step hints are suppressed; the findings
-  // themselves are the primary output and always print.
+  // --quiet suppresses the banner and next-step hints; the findings are the
+  // primary output and always print.
   outputInfo(`plur audit — content-layer health for ${report.source}`, flags)
   outputInfo('', flags)
   outputText(`Scanned: ${report.scanned} entries`)
@@ -281,11 +262,9 @@ function printText(report: AuditReport, flags?: GlobalFlags): void {
 }
 
 /**
- * `plur audit --source engrams` (E2, 2026-09): unlike the other sources,
- * this one scans the LOCAL engram store's own statements, not an external
- * memory file cross-referenced against engrams — so it bypasses the
- * MemoryEntry/`classify()` pipeline entirely rather than bending that
- * data model to fit.
+ * `plur audit --source engrams`: scans the local engram store's own
+ * statements rather than an external memory file, so it bypasses the
+ * MemoryEntry/`classify()` pipeline entirely.
  */
 async function runEngramInversionScan(flags: GlobalFlags, scope?: string, domain?: string): Promise<void> {
   const plur = createPlur(flags, { readonly: true })
@@ -325,7 +304,7 @@ async function runEngramInversionScan(flags: GlobalFlags, scope?: string, domain
 
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   // An audit reads editor memory from every project and sends it as recall
-  // queries (Codex round 7 on #1663): not from a remote-only folder.
+  // queries, so it is refused in a remote-only folder.
   const refused = remoteOnlyCommandRefusal(flags, 'An audit reads other projects\' memory and sends it to the team server as queries')
   if (refused) exit(1, refused)
   let source = 'claude-code'
@@ -351,8 +330,8 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
 
   let entries: MemoryEntry[]
   if (fromJson) {
-    // Cross-language bridge: Python/Ruby/etc. adapters write their working
-    // memory as JSON, audit consumes it. See packages/hermes/plur_hermes/audit_adapter.py.
+    // Cross-language bridge: adapters in other languages write their working
+    // memory as JSON for audit to consume. See packages/hermes/plur_hermes/audit_adapter.py.
     try {
       const raw = readFileSync(fromJson, 'utf8')
       const parsed = JSON.parse(raw)

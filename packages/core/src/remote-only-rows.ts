@@ -1,10 +1,9 @@
 /**
- * The ONE predicate for "a save queued from a remote-only folder" (gate review
- * of #1663, structural change 1). Such a row is the only local copy of that
- * memory, kept only until it is delivered or forgotten, so no sink derives a
- * second local copy from it — whatever folder, if any, the instance is bound
- * to: not the local search index, not the embedder or its cache, not local
- * provenance, not history text.
+ * The single predicate for "a save queued from a remote-only folder". Such a
+ * row is the only local copy of that memory, kept only until it is delivered
+ * or forgotten, so no sink derives a second local copy from it, whatever folder
+ * the instance is bound to: not the local search index, not the embedder or its
+ * cache, not local provenance, not history text.
  */
 import type { Engram } from './schemas/engram.js'
 

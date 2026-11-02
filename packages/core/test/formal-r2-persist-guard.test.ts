@@ -40,7 +40,7 @@ vi.mock('fs/promises', async (importOriginal) => {
 })
 
 import * as lockMod from '../src/store/async-lock.js'
-import { withLock } from '../src/sync.js'
+import { withLock } from '../src/file-lock.js'
 const { withAsyncLock } = lockMod
 
 function deferred(): { promise: Promise<void>; resolve: () => void } {

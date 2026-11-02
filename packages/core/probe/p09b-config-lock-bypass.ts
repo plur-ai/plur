@@ -15,7 +15,7 @@
  * setSchemaVersion fails loudly rather than corrupting the config quietly.
  */
 import { setSchemaVersion } from '../src/migrations/runner.js'
-import { withLock } from '../src/sync.js'
+import { withLock } from '../src/file-lock.js'
 import * as fs from 'fs'
 import * as os from 'os'
 import * as yaml from 'js-yaml'

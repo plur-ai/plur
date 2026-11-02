@@ -1,5 +1,3 @@
-// packages/core/src/meta/sanitize.ts
-
 /** Sanitize a string for safe LLM prompt interpolation */
 export function sanitizeForPrompt(text: string): string {
   return text

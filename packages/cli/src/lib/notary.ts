@@ -1,5 +1,5 @@
 /**
- * Local check of the provenance gateway notary's signature (#1657).
+ * Local check of the provenance gateway notary's signature.
  *
  * The notary signs `{data_hash}|{timestamp}` with Ethereum personal_sign
  * (EIP-191). `checkNotarySignature` recomputes data_hash and recovers the

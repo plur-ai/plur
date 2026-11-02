@@ -5,21 +5,10 @@ import { type GlobalFlags } from '../plur.js'
 import { hookFolderPolicy, payloadDir, parsePayload } from '../lib/folder-gate.js'
 
 /**
- * plur hook-observe — capture tool calls for offline pattern extraction.
- *
- * Called by PreToolUse and PostToolUse hooks. Logs observations to
- * ~/.plur/observations/YYYY-MM-DD.jsonl for later analysis.
- *
- * This creates raw material for engram generation without relying on
- * the LLM calling plur_learn. Hook capture is 100% deterministic.
- *
- * Input: JSON on stdin (Claude Code hook format)
- * Output: passthrough (writes stdin to stdout unchanged)
- *
- * Usage:
- *   npx @plur-ai/cli hook-observe              # PreToolUse (default)
- *   npx @plur-ai/cli hook-observe --post        # PostToolUse
- *   npx @plur-ai/cli hook-observe --failure      # PostToolUseFailure
+ * plur hook-observe — log tool calls (Pre/PostToolUse) to ~/.plur/observations/YYYY-MM-DD.jsonl
+ * for offline pattern extraction, without relying on the LLM calling plur_learn.
+ * Input: hook JSON on stdin. Output: stdin passed through unchanged.
+ * Usage: `hook-observe` (PreToolUse), `--post` (PostToolUse), `--failure` (PostToolUseFailure).
  */
 
 // Tools that generate too much noise and little learning value
@@ -61,10 +50,9 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   // Always passthrough stdin to stdout (hook contract)
   process.stdout.write(raw)
 
-  // No capture unless the folder map says on (#1347; was #247's project gate).
-  // Not in a remote-only folder either: an observation keeps tool input
-  // (commands, edits) in this machine's store, which such a folder forbids
-  // (gate review of #1663).
+  // No capture unless the folder map says on. Not in a remote-only folder
+  // either: an observation keeps tool input (commands, edits) in this
+  // machine's store, which such a folder forbids.
   if (hookFolderPolicy(payloadDir(parsePayload(raw)), flags).mode !== 'on') return
 
   let data: Record<string, unknown>
@@ -77,12 +65,10 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const toolName = String(data.tool_name ?? data.name ?? '')
   if (!toolName || SKIP_TOOLS.has(toolName)) return
 
-  // Determine event type
   const isPost = args.includes('--post')
   const isFailure = args.includes('--failure')
   const event = isFailure ? 'PostToolUseFailure' : isPost ? 'PostToolUse' : 'PreToolUse'
 
-  // Build observation
   const obs: Record<string, unknown> = {
     ts: new Date().toISOString(),
     event,
@@ -113,7 +99,6 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     if (error) obs.error = String(error).slice(0, 500)
   }
 
-  // Write to observations JSONL
   const obsDir = join(
     process.env.PLUR_PATH ?? join(homedir(), '.plur'),
     'observations'

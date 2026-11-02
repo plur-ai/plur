@@ -1,7 +1,6 @@
 import { z } from 'zod'
 
-// .plur capsule v1 — binary envelope for engram packs.
-// Spec: plur-ai/plur#61 §1–§6 (sketch becomes floor at 2026-04-29 window close).
+// .plur capsule v1: binary envelope for engram packs.
 // Layout: MAGIC | FormatVersion | Flags | HeaderLen | Header(JSON) | Payload(tar.gz) | Sig?
 
 export const CAPSULE_MAGIC = Buffer.from([0x50, 0x4c, 0x55, 0x52])

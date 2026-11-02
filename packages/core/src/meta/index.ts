@@ -1,4 +1,3 @@
-// packages/core/src/meta/index.ts
 export { analyzeStructure } from './structural-analysis.js'
 export type { RelationalAnalysis, RelationalTriple, TypedRole } from './structural-analysis.js'
 export { clusterByStructure } from './clustering.js'

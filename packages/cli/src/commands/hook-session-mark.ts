@@ -42,7 +42,7 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   } catch {
     return
   }
-  // Silent unless the folder map says on (#1347; was #95's project gate).
+  // Silent unless the folder map says on.
   if (!hookFolderOn(payloadDir(data as Record<string, unknown>), flags)) return
 
   const sessionId = data.session_id ?? ''
@@ -52,9 +52,9 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   // which reads this same sentinel): a `../`-laden session_id would otherwise
   // escape $TMPDIR and write the sentinel wherever it points (path traversal).
   const sentinel = join(tmpdir(), `plur-session-${safeSessionKey(sessionId)}`)
-  // O_NOFOLLOW, 0600 (formal r2, cli#8): the sentinel sits directly in the
-  // shared tmpdir, and a plain writeFileSync followed a pre-planted
-  // `plur-session-<id>` symlink and TRUNCATED whatever it pointed at.
-  // Best-effort — a failed mark costs one extra nudge.
+  // O_NOFOLLOW, 0600: the sentinel sits directly in the shared tmpdir, where a
+  // pre-planted `plur-session-<id>` symlink would otherwise make the write
+  // truncate whatever it points at. Best-effort — a failed mark costs one
+  // extra nudge.
   writeFileNoFollow(sentinel, '')
 }

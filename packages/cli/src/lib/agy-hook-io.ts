@@ -5,38 +5,14 @@ import { createHash } from 'crypto'
 import { safeSessionKey } from './session-key.js'
 
 /**
- * Shared helpers for the hook-agy-* commands (Antigravity CLI, `agy`).
- *
- * Antigravity's hook contract is a THIRD shape — not Claude Code/Codex's and
- * not Gemini CLI's (all facts below verified live against agy 1.1.21,
- * 2026-08-27, or taken from the CLI's own bundled reference at
- * `~/.gemini/antigravity-cli/builtin/skills/agy-customizations/docs/hooks.md`,
- * which is the authoritative doc — the public web docs are thinner):
- *
- *   - stdin payloads are camelCase protojson: `conversationId`, `stepIdx`,
- *     `toolCall`, `transcriptPath` — not snake_case.
- *   - Injection is `{"injectSteps":[{"ephemeralMessage": "..."}]}` from
- *     PreInvocation — there is no additionalContext field anywhere.
- *   - PreToolUse verdicts are a FLAT `{decision, reason}` — no
- *     hookSpecificOutput envelope — and unlike Codex, `allow`/`ask`/
- *     `force_ask` are accepted alongside `deny`.
- *   - There are only five events and NO session-start event; PreInvocation
- *     fires before EVERY model invocation (several times per user turn), so
- *     injection has to dedupe per user turn itself — see
- *     `lastUserInput()` / the step marker in hook-agy-pre-invocation.
- *   - Timeouts are seconds (default 30). Exit codes: 0 = parse stdout, 2 =
- *     system block with stderr as reason, anything else = non-fatal warning.
- *   - No trust gate: hooks run on first invocation (verified), unlike Codex.
- *
- * Sentinels live in their own directory, separate from the Claude Code,
- * Cursor and Codex hook families: one project can be open in several
- * harnesses at once, and two guards disagreeing about whether a session
- * started is worse than each nudging once.
- *
- * Generic stdin/exit plumbing (readStdinJson, runCodexHook's exit-0
- * guarantee, injectWithFallback) is imported from codex-hook-io.ts rather
- * than duplicated — the #1034 HarnessAdapter refactor is where that file
- * stops being the accidental home of the shared pieces.
+ * Helpers for the hook-agy-* commands (Antigravity CLI); contract per its bundled
+ * `~/.gemini/antigravity-cli/builtin/skills/agy-customizations/docs/hooks.md`):
+ *   - stdin is camelCase protojson; injection is `{"injectSteps":[{"ephemeralMessage": ...}]}`.
+ *   - PreToolUse verdicts are a FLAT `{decision, reason}`; allow/ask/force_ask/deny.
+ *   - NO session-start event; PreInvocation fires before EVERY model call, so
+ *     injection dedupes per user turn itself (see `lastUserInput()`).
+ *   - Timeouts in seconds; exit 0 = parse stdout, 2 = block, else warning. No trust gate.
+ * Sentinels live in their own directory, separate from other harnesses' hooks.
  */
 
 export { readStdinJson, runCodexHook as runAgyHook, injectWithFallback, isPlurSessionStartTool } from './codex-hook-io.js'
@@ -46,10 +22,9 @@ const SESSION_DIR = join(tmpdir(), 'plur-agy-sessions')
 const STALE_SESSION_FILE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000 // 7 days
 
 /**
- * Create — and vet — the session directory (see ensureSessionDir, where the
- * vetting this adapter pioneered now lives so the Codex and Cursor families
- * get it too — #1060). The stakes are highest HERE because this directory
- * holds RECALLED ENGRAM TEXT (the turn cache), not just timestamps.
+ * Create — and vet — the session directory (see ensureSessionDir). The stakes
+ * are highest HERE because this directory holds RECALLED ENGRAM TEXT (the
+ * turn cache), not just timestamps.
  */
 function ensureDir(): boolean {
   return ensureSessionDir(SESSION_DIR)
@@ -61,8 +36,7 @@ export function agySessionDir(): string {
 }
 
 /**
- * Antigravity sends `conversationId` (camelCase) on every hook event —
- * verified in live PreInvocation and PreToolUse payloads.
+ * Antigravity sends `conversationId` (camelCase) on every hook event.
  */
 export function agyConversationId(input: Record<string, unknown>): string {
   const id = String(input.conversationId ?? '')
@@ -119,48 +93,47 @@ export function agyTextHash(text: string): string {
 }
 
 export interface AgyTurnCache {
-  /** The conversation this cache belongs to — REQUIRED on read (F9). */
+  /** The conversation this cache belongs to — REQUIRED on read. */
   conversationId: string
   step: number
   textHash: string
   message: string
   /**
-   * Byte offset of the turn's USER_INPUT line in the transcript (formal r2,
-   * cli#12). Optional: caches written before it existed simply lack it.
+   * Byte offset of the turn's USER_INPUT line in the transcript. Optional:
+   * older caches lack it.
    */
   offset?: number
   /**
-   * The folder mode the message was recalled under (gate review of #1663): a
+   * The folder mode the message was recalled under: a
    * message cached under another mode is never replayed in a remote-only
    * folder. Optional: older caches lack it.
    */
   mode?: string
-  /** The folder's scope when the message was cached (Codex round 7 on #1663). */
+  /** The folder's scope when the message was cached. */
   scope?: string
 }
 
 /**
  * Read this conversation's turn cache, or null.
  *
- * The conversationId check is load-bearing (data-loss audit F9):
+ * The conversationId check is load-bearing:
  * safeSessionKey maps every non-[A-Za-z0-9_-] byte to '_', so distinct ids
  * ("conv/42", "conv.42") can collide on the same PATH. The id stored INSIDE
  * the record is exact, so a collision reads as "no cache" instead of
  * injecting another conversation's recalled memory into this one.
  */
 export function readAgyTurnCache(conversationId: string): AgyTurnCache | null {
-  // Read-side vetting (formal r2, cli#8). This file's text is emitted to the
-  // model verbatim as "recalled memory", so a cache planted in a symlinked,
-  // foreign or group/other-writable directory is prompt injection, not a
-  // cache hit. The writer already refused such a directory; the reader
-  // believed it anyway.
+  // Read-side vetting. This file's text is emitted to the model verbatim as
+  // "recalled memory", so a cache planted in a symlinked, foreign or
+  // group/other-writable directory is prompt injection, not a cache hit.
+  // The writer refusing such a directory is not enough on its own.
   if (!sessionDirTrusted(SESSION_DIR)) return null
   try {
     const raw = JSON.parse(readFileSync(agyCounterPath(conversationId, 'turncache'), 'utf8')) as Partial<AgyTurnCache>
     if (raw.conversationId !== conversationId) return null
     // Number.isSafeInteger, not typeof: a poisoned step like 1e308 would pin
-    // every future step comparison false and freeze the cache on turn one
-    // (adversarial audit F4). The textHash tie-break already limits the
+    // every future step comparison false and freeze the cache on turn one.
+    // The textHash tie-break already limits the
     // damage, but a step no real transcript can produce is simply invalid.
     if (typeof raw.step !== 'number' || !Number.isSafeInteger(raw.step) || typeof raw.message !== 'string') return null
     return {
@@ -205,36 +178,19 @@ export interface AgyUserInput {
    * Absolute byte offset of this USER_INPUT line in the transcript. The
    * transcript is append-only JSONL, so a later user message always sits at a
    * larger offset — a turn identity that survives a missing `step_index`
-   * (which collapses to -1) and an identical re-sent text (same hash). Formal
-   * r2, cli#12: without it, "yes" … "yes" replayed the first turn's memory.
+   * (which collapses to -1) and an identical re-sent text (same hash), so
+   * "yes" … "yes" are two turns.
    */
   offset: number
   /**
    * True when the WHOLE transcript was read and this is its only user message
    * — i.e. the conversation's genuine first turn, known from the transcript
    * itself rather than from the absence of a cache (which an unusable cache
-   * dir makes permanent: every turn was "first").
+   * dir makes permanent: every turn would be "first").
    */
   firstInTranscript: boolean
 }
 
-/**
- * The most recent user message in an Antigravity conversation transcript.
- *
- * PreInvocation's stdin payload carries NO prompt text — only counters and
- * paths — so per-prompt recall has to come from the transcript file the
- * payload points at (`transcriptPath`). The file is JSONL; user turns look
- * like (captured live, 2026-08-27):
- *
- *   {"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT",
- *    "status": "DONE", "content": "<USER_REQUEST>\n...actual text...</USER_REQUEST>"}
- *
- * Returns the LAST such entry, with the <USER_REQUEST> wrapper stripped, or
- * null when the file is missing/unreadable/contains no user turn. Callers
- * treat null as "inject the generic session batch, or stay silent" — never
- * as an error: the transcript format is Antigravity's internal file and can
- * change under us, and a hook must degrade, not break.
- */
 /**
  * Never read more than this much transcript. A long agentic session's JSONL
  * grows without bound, and the entry we want is by definition near the END —
@@ -243,6 +199,14 @@ export interface AgyUserInput {
  */
 const TRANSCRIPT_READ_CAP = 4 * 1024 * 1024
 
+/**
+ * The most recent user message in an Antigravity transcript (`transcriptPath`,
+ * JSONL), since PreInvocation's payload carries no prompt text. User turns have
+ * `"type": "USER_INPUT"` with content wrapped in `<USER_REQUEST>…</USER_REQUEST>`.
+ * Returns the LAST one, unwrapped, or null when missing/unreadable/absent.
+ * Callers treat null as "generic batch or silence", never an error: the format
+ * is Antigravity-internal, and a hook must degrade, not break.
+ */
 export function lastUserInput(transcriptPath: string): AgyUserInput | null {
   let raw: Buffer
   let base = 0
