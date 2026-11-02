@@ -1,4 +1,18 @@
 anchors:
+  packages/cli/src/lib/agy-hook-io.ts#agyIncrementCounter:
+    kind: guarantee
+    rule: >-
+      Racing Antigravity hooks never lose a counter increment: each caller gets a distinct value, and an unpersistable
+      counter reports itself as exceeded.
+    tests:
+      - packages/cli/test/formal-hook-counters-agy.test.ts::two racing guard hooks get distinct counts, so exactly one denies
+      - >-
+        packages/cli/test/formal-hook-counters-agy.test.ts::a chain of racing increments loses none: five hooks, each racing the next,
+        count 1..5
+      - packages/cli/test/agy-hook-io.test.ts::reports an unwritable counter as exceeded so guards fail open
+    lean:
+      - PlurSpec/HookCounters.lean:ticket_distinct_any_schedule
+      - PlurSpec/HookCounters.lean:guard_denies_at_most_once
   packages/cli/src/lib/agy-hook-io.ts#AgyTurnCache:
     kind: guarantee
     rule: An Antigravity turn cached under another folder mode is never replayed in a remote-only folder.

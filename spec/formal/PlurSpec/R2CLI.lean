@@ -23,10 +23,9 @@ Checked against the merge of main into #1228 (2026-09-30: #1276, #1300, #1353,
   (`writerKey`). `closer_finds_writer` is re-proved for the new key.
 - §3 holds, with notes in the section: the marker key and the lock, which
   run() now takes and releases through `takeInjectLock`/`releaseInjectLock`.
-- §4 to §7 hold. The Cursor and Claude Code Stop counters, and the Codex
-  counter, use `ticketCounter`; the Antigravity counter (`agyIncrementCounter`)
-  is still read-then-write and can hand racers the same value
-  (HookCounters §1, `rmw_duplicate`). doctor's
+- §4 to §7 hold. The Cursor, Claude Code Stop, Codex and Antigravity
+  counters all use `ticketCounter` (HookCounters §1,
+  `ticket_distinct_any_schedule`). doctor's
   `hookHarnesses`/`readyLine` are unchanged, and #1270 changed only its hook
   classifier (Adapters §3).
 

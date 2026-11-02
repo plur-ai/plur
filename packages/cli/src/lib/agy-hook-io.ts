@@ -16,7 +16,7 @@ import { safeSessionKey } from './session-key.js'
  */
 
 export { readStdinJson, runCodexHook as runAgyHook, injectWithFallback, isPlurSessionStartTool } from './codex-hook-io.js'
-import { ensureSessionDir, sessionDirSafeToSweep, sessionDirTrusted } from './codex-hook-io.js'
+import { ensureSessionDir, sessionDirSafeToSweep, sessionDirTrusted, ticketCounter } from './codex-hook-io.js'
 
 const SESSION_DIR = join(tmpdir(), 'plur-agy-sessions')
 const STALE_SESSION_FILE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000 // 7 days
@@ -70,22 +70,16 @@ export function agyIsSessionStarted(conversationId: string): boolean {
 }
 
 /**
- * Same fail-open contract as codex-hook-io's incrementCounter: an unpersistable counter reports itself as exceeded.
- * Read-then-write, unlike ticketCounter: racing hooks can read the same value and both return it.
+ * The same counter as codex-hook-io's incrementCounter: `ticketCounter` hands each caller a distinct value, so
+ * racing hooks never lose an increment, and an unpersistable counter reports itself as exceeded (fail open).
  */
 export function agyIncrementCounter(path: string): number {
   if (!ensureDir()) return Number.MAX_SAFE_INTEGER
-  let n = 0
   try {
-    n = parseInt(readFileSync(path, 'utf8').trim(), 10) || 0
-  } catch { /* first increment */ }
-  n += 1
-  try {
-    writeFileSync(path, String(n), { mode: 0o600 })
+    return ticketCounter(path)
   } catch {
     return Number.MAX_SAFE_INTEGER
   }
-  return n
 }
 
 // ── Per-turn injection cache ────────────────────────────────────────────────

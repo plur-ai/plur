@@ -3,7 +3,7 @@
 Models: `spec/formal/PlurSpec/HookCounters.lean` (new) and `spec/formal/PlurSpec/R2CLI.lean`
 (extended; every existing theorem name still proves).
 
-## 1. Which counters lose increments — CONFIRMED+FIXED (Codex), CONFIRMED+NEEDS-OWNER (Antigravity)
+## 1. Which counters lose increments — CONFIRMED+FIXED (Codex), CONFIRMED+DECIDED (Antigravity, option "switch")
 
 Both reports in the lead were true, about different counters:
 
@@ -12,7 +12,7 @@ Both reports in the lead were true, about different counters:
 | Claude Code Stop (`hook-learn-check.ts` `incrementCounter`) | wrapper of `ticketCounter` | no |
 | Cursor (`cursor-hook-io.ts` `incrementCounter`) | `ticketCounter` | no |
 | Codex (`codex-hook-io.ts` `incrementCounter`) | read-then-write | **yes**, now fixed |
-| Antigravity (`agy-hook-io.ts` `agyIncrementCounter`) | read-then-write | **yes**, not fixed |
+| Antigravity (`agy-hook-io.ts` `agyIncrementCounter`) | read-then-write | **yes**, now fixed (owner decision) |
 
 Callers depend on distinct values. `hook-codex-guard` and `hook-agy-guard` deny while the
 count is at most 1 (`MAX_BLOCKS_BEFORE_FALLBACK = 1`), and their docstrings say "nudge once".
@@ -33,12 +33,14 @@ The script was a throwaway worker that calls the built counter functions.
   old code (`[1,1]` where `[1,2]` was expected). It passes now:
   `packages/cli/test/formal-hook-counters-codex.test.ts`, which replays the racing hook
   in-process between the first hook's read and its write.
-- Antigravity, NEEDS-OWNER: the existing test `formal-r2-cli-misc.test.ts` ("an identical
-  message re-sent…") reads `a1.turncount` and expects the text `1`, then `2`. That pins the
-  integer file format, and `ticketCounter` writes one token per line. I may not edit that
-  test, so I only corrected the docstring.
-- R2CLI header: changed to name which counters use `ticketCounter` and that the agy counter
-  does not.
+- Antigravity, DECIDED (owner, option "switch"): `agyIncrementCounter` returns
+  `ticketCounter(path)` like the Codex counter, keeping the untrusted-dir check and the fail-open
+  `MAX_SAFE_INTEGER`. Test, red before the change (`expected [ 1, 1 ] to deeply equal [ 1, 2 ]`
+  and `expected [ 1, 1, 1, 1, 1 ] to deeply equal [ 1, 2, 3, 4, 5 ]`), green after:
+  `packages/cli/test/formal-hook-counters-agy.test.ts` (two racing hooks; a chain of five
+  racing increments). The format pin in `formal-r2-cli-misc.test.ts` ("an identical message
+  re-sent…") now counts ticket lines in `a1.turncount` (1, then 2) instead of reading an integer.
+- R2CLI header: all four counters use `ticketCounter`.
 
 Mutations, each tried in a scratch copy:
 - `value := l.length` (append-then-stat): `ticket_distinct_any_schedule` breaks.
@@ -140,7 +142,7 @@ Model `HookCounters.WorkerLock`. Lock = token or nothing. A takeover is `rename`
    - (b) port the ladder into auto-rate.ts (about 40 lines, duplicates core);
    - (c) accept the window (it needs a stale lock, two contenders and a third acquire inside
      one rename) and change the docstring and inventory rule to say so.
-2. Antigravity counter. Options:
+2. DECIDED: option (a) "switch", see §1. Antigravity counter. Options:
    - (a) switch `agyIncrementCounter` to `ticketCounter` and update the `formal-r2-cli-misc`
      assertion to the line count;
    - (b) switch only the guard's `guard-count` path;

@@ -5,6 +5,9 @@
   tests: ["packages/cli/test/formal-hook-counters-codex.test.ts::every off spelling, in any case and padding, turns hybrid injection off"]
 "packages/cli/src/lib/codex-hook-io.ts#ticketCounter":
   lean: ["PlurSpec/HookCounters.lean:ticket_distinct_any_schedule"]
+"packages/cli/src/lib/agy-hook-io.ts#agyIncrementCounter":
+  lean: ["PlurSpec/HookCounters.lean:ticket_distinct_any_schedule", "PlurSpec/HookCounters.lean:guard_denies_at_most_once"]
+  tests: ["packages/cli/test/formal-hook-counters-agy.test.ts::two racing guard hooks get distinct counts, so exactly one denies", "packages/cli/test/formal-hook-counters-agy.test.ts::a chain of racing increments loses none: five hooks, each racing the next, count 1..5"]
 "packages/cli/src/commands/hook-learn-check.ts#incrementCounter":
   lean: ["PlurSpec/HookCounters.lean:ticket_distinct_any_schedule"]
 "packages/cli/src/lib/cursor-hook-io.ts#incrementCounter":

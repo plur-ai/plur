@@ -18,10 +18,11 @@ def upd {β : Type} (f : Nat → β) (p : Nat) (v : β) : Nat → β :=
 
 /-! ## 1. Counters
 
-### Read-then-write (`agyIncrementCounter`; Codex `incrementCounter` before the fix)
+### Read-then-write (the Codex and Antigravity counters before they moved to `ticketCounter`)
 
 Each caller reads the integer in the file, then writes read+1 and returns it.
-The two steps of different callers interleave. -/
+The two steps of different callers interleave. No counter uses this any more;
+it is kept as the counterexample `ticketCounter` answers. -/
 namespace RMW
 
 structure S where
