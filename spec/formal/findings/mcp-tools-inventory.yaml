@@ -19,16 +19,19 @@
     - "packages/mcp/test/formal-mcp-tools-serial.test.ts::a second call does not start while the first is still running"
     - "packages/mcp/test/formal-mcp-tools-serial.test.ts::a call that fails does not block the next one"
 "packages/mcp/src/tools.ts#SESSION_TTL_MS":
-  lean: ["PlurSpec/McpTools.lean:open_within_ttl", "PlurSpec/McpTools.lean:implicit_unexpired"]
+  lean: ["PlurSpec/McpTools.lean:open_within_ttl", "PlurSpec/McpTools.lean:implicit_unexpired", "PlurSpec/McpTools.lean:explicit_expired_no_default"]
   tests:
     - "packages/mcp/test/formal-mcp-tools-session.test.ts::an expired session is never the implicit session, and a later start is the lone open one"
     - "packages/mcp/test/formal-mcp-tools-session.test.ts::a session still inside its TTL keeps its default"
+    - "packages/mcp/test/formal-mcp-tools-session.test.ts::an explicit session id stops resolving once its 8 hours are up, without waiting for a later sweep"
 "packages/mcp/src/tools.ts#_pendingScopeEvictions":
   lean: ["PlurSpec/McpTools.lean:expired_registration_cleared"]
 "packages/mcp/src/tools.ts#_resolveWriteSession":
-  lean: ["PlurSpec/McpTools.lean:ambiguous_no_session_default"]
+  lean: ["PlurSpec/McpTools.lean:ambiguous_no_session_default", "PlurSpec/McpTools.lean:inject_unknown_id_no_session", "PlurSpec/McpTools.lean:inject_expired_no_session"]
+  tests: ["packages/mcp/test/formal-mcp-tools-session.test.ts::without the server, plur_inject and plur_inject_hybrid treat a session id never started or registered as no session", "packages/mcp/test/formal-mcp-tools-session.test.ts::without the server, plur_inject still passes a session registered in core", "packages/mcp/test/formal-mcp-tools-session.test.ts::an explicit session id stops resolving once its 8 hours are up, without waiting for a later sweep"]
 "packages/mcp/src/tools.ts#_writeSession":
-  lean: ["PlurSpec/McpTools.lean:write_never_process_slot", "PlurSpec/McpTools.lean:ambiguous_no_session_default"]
+  lean: ["PlurSpec/McpTools.lean:write_never_process_slot", "PlurSpec/McpTools.lean:write_now_never_process_slot", "PlurSpec/McpTools.lean:ambiguous_no_session_default", "PlurSpec/McpTools.lean:explicit_expired_no_default"]
+  tests: ["packages/mcp/test/formal-mcp-tools-session.test.ts::an explicit session id stops resolving once its 8 hours are up, without waiting for a later sweep"]
 "packages/mcp/src/tools.ts#_resolveScopeSession":
   lean: ["PlurSpec/McpTools.lean:ambiguous_change_refused", "PlurSpec/McpTools.lean:accepted_set_targets_session"]
   tests: ["packages/mcp/test/formal-mcp-tools-session.test.ts::a session-scope set or clear with two sessions open and no id is refused, and changes nothing"]

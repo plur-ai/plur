@@ -4,7 +4,8 @@ import PlurSpec.Adapters
 # McpTools — session resolution, scope refusals and call serialisation
 
 Models of packages/mcp/src/tools.ts (`_cleanExpiredSessions`,
-`_implicitSessionId`, `_knownSession`, `_writeSession`, `_resolveScopeSession`,
+`_implicitSessionId`, `_knownSession`, `_writeSession`, `_resolveWriteSession`,
+`_resolveScopeSession`,
 the plur_session_scope and plur_episode_to_engram handlers) and
 packages/mcp/src/server.ts (`acquireCall` / `callTail`). Each section follows
 the code branch for branch, proves the property, shows the good case is
@@ -417,6 +418,176 @@ theorem expired_registration_cleared (now : Nat) (tel : List Rec) (s : Adapters.
 theorem live_registration_kept :
     "B" ∈ (Adapters.sweep (expiredIds (TTL + 2) [recA, { recB with started := 5 }]) true
       { open_ := ["A", "B"], keyed := ["A", "B"], pending := [] }).keyed := by decide
+
+/-! ### Sweep before resolving
+
+`_writeSession` and `_resolveWriteSession` (plur_inject / plur_inject_hybrid)
+first run the plur-bearing sweep: expired telemetry is dropped and the expired
+sessions' registrations are cleared. `sweepSt` models that sweep for the ids the
+TTL picks now; registrations of ids an earlier id-only sweep expired are
+Adapters' pending set, which the same call clears
+(`expired_registration_cleared`). `writeSession` above is the resolution that
+runs on the swept state. -/
+
+def sweepSt (s : St) : St :=
+  { s with tel := sweepTel s.now s.tel,
+           core := { s.core with keyed := s.core.keyed.filter (fun p => !(expiredIds s.now s.tel).contains p.1) } }
+
+/-- `_writeSession` as the code runs it: sweep, then resolve. -/
+def writeSessionNow (res : String → Bool) (s : St) (ctx : Option WS)
+    (base explicit : Option String) (free : Bool) : Out :=
+  writeSession res (sweepSt s) ctx base explicit free
+
+/-- `_resolveWriteSession` without a FolderScopeContext: sweep; `chosen` if
+`_knownSession(chosen, plur, false)`, else NO_SESSION — the rule of `localSess`. -/
+def injectLocal (res : String → Bool) (s : St) (explicit : Option String) : Sess :=
+  localSess res (sweepSt s) none explicit
+
+theorem lookup_filter_drop (l : List (String × Option String)) (ids : List String) (c : String)
+    (hc : ids.contains c = true) : (l.filter (fun p => !ids.contains p.1)).lookup c = none := by
+  induction l with
+  | nil => rfl
+  | cons p t ih =>
+    obtain ⟨k, v⟩ := p
+    cases hk : ids.contains k
+    · have hne : (c == k) = false := by
+        cases h : c == k
+        · rfl
+        · rw [beq_iff_eq.mp h, hk] at hc; cases hc
+      simp only [List.filter_cons, hk, Bool.not_false, if_true, List.lookup, hne]; exact ih
+    · simp only [List.filter_cons, hk, Bool.not_true, Bool.false_eq_true, if_false]; exact ih
+
+theorem lookup_filter_keep (l : List (String × Option String)) (ids : List String) (c : String)
+    (hc : ids.contains c = false) : (l.filter (fun p => !ids.contains p.1)).lookup c = l.lookup c := by
+  induction l with
+  | nil => rfl
+  | cons p t ih =>
+    obtain ⟨k, v⟩ := p
+    by_cases hck : c = k
+    · subst hck; simp only [List.filter_cons, hc, Bool.not_false, if_true, List.lookup, beq_self_eq_true]
+    · have hne : (c == k) = false := by simp [hck]
+      cases hk : ids.contains k
+      · simp only [List.filter_cons, hk, Bool.not_false, if_true, List.lookup, hne]; exact ih
+      · simp only [List.filter_cons, hk, Bool.not_true, Bool.false_eq_true, if_false, List.lookup, hne]
+        exact ih
+
+theorem lookup_filter_none (l : List (String × Option String)) (ids : List String) (c : String)
+    (h : l.lookup c = none) : (l.filter (fun p => !ids.contains p.1)).lookup c = none := by
+  cases hc : ids.contains c
+  · rw [lookup_filter_keep l ids c hc]; exact h
+  · exact lookup_filter_drop l ids c hc
+
+theorem expired_mem_ids (now : Nat) (tel : List Rec) (r : Rec) (hr : r ∈ tel)
+    (he : expired now r = true) : (expiredIds now tel).contains r.id = true := by
+  have : r.id ∈ expiredIds now tel := List.mem_map.mpr ⟨r, List.mem_filter.mpr ⟨hr, he⟩, rfl⟩
+  simpa using this
+
+/-- Sessions stay registered across the sweep: an open session is not expired,
+so its id is not among the ones whose registration is cleared. -/
+theorem reg_sweep (s : St) (hr : Reg s)
+    (hu : ∀ r ∈ s.tel, ∀ r' ∈ s.tel, r.id = r'.id → r = r') : Reg (sweepSt s) := by
+  intro r hm
+  have hm' := List.mem_filter.mp hm
+  have hne : expired s.now r = false := by simpa using hm'.2
+  have hc : (expiredIds s.now s.tel).contains r.id = false := by
+    cases h : (expiredIds s.now s.tel).contains r.id
+    · rfl
+    · exfalso
+      have hmem : r.id ∈ expiredIds s.now s.tel := by simpa using h
+      obtain ⟨r', hr', hid⟩ := List.mem_map.mp hmem
+      have hr'' := List.mem_filter.mp hr'
+      have := hu r' hr''.1 r hm'.1 hid
+      subst this
+      simp [hne] at hr''
+  show ((s.core.keyed.filter (fun p => !(expiredIds s.now s.tel).contains p.1)).lookup r.id).isSome
+  rw [lookup_filter_keep _ _ _ hc]
+  exact hr r hm'.1
+
+/-- The write, run after its sweep, still never takes the process slot. -/
+theorem write_now_never_process_slot (res : String → Bool) (s : St) (hr : Reg s)
+    (hu : ∀ r ∈ s.tel, ∀ r' ∈ s.tel, r.id = r'.id → r = r') (ctx : Option WS)
+    (b e : Option String) (free : Bool) (x : Sess)
+    (h : writeSessionNow res s ctx b e free = Out.sess x) :
+    (sweepSt s).core.get x = (sweepSt s).core.own x :=
+  write_never_process_slot res (sweepSt s) (reg_sweep s hr hu) ctx b e free x h
+
+theorem expired_gone (s : St) (c : String)
+    (hall : ∀ r ∈ s.tel, r.id = c → expired s.now r = true) : ∀ r ∈ (sweepSt s).tel, r.id ≠ c := by
+  intro r hm hid
+  have hm' := List.mem_filter.mp hm
+  have := hall r hm'.1 hid
+  simp [this] at hm'
+
+/-- **An explicit id stops resolving when its TTL is up.** Once every
+telemetry entry for `c` is expired (and one exists), a write naming `c` gets no
+default from it, through the server or not, with no later sweep needed. -/
+theorem explicit_expired_no_default (res : String → Bool) (s : St) (ctx : Option WS) (free : Bool)
+    (c : String) (r : Rec) (hr : r ∈ s.tel) (hid : r.id = c) (he : expired s.now r = true)
+    (hall : ∀ r ∈ s.tel, r.id = c → expired s.now r = true) :
+    writeSessionNow res s ctx none (some c) free ≠ Out.sess (.key c) := by
+  have hcore : (sweepSt s).core.keyed.lookup c = none :=
+    lookup_filter_drop _ _ _ (hid ▸ expired_mem_ids s.now s.tel r hr he)
+  exact unknown_id_no_default res (sweepSt s) ctx none free c (Or.inl rfl) (expired_gone s c hall)
+    (fun _ => hcore)
+
+theorem inject_no_session_of (res : String → Bool) (s : St) (c : String)
+    (ht : ∀ r ∈ (sweepSt s).tel, r.id ≠ c) (hcore : (sweepSt s).core.keyed.lookup c = none) :
+    injectLocal res s (some c) = .noSession := by
+  have h := unknown_id_no_default res (sweepSt s) none none true c (Or.inl rfl) ht (fun _ => hcore)
+  simp only [writeSession, ne_eq, Out.sess.injEq] at h
+  unfold injectLocal
+  revert h
+  unfold localSess
+  split
+  · split
+    · rename_i c0 hc0 _
+      simp only [chosenOf] at hc0
+      cases hc0
+      intro h; exact absurd rfl h
+    · intro _; rfl
+  · intro _; rfl
+
+/-- **Outside the server, plur_inject treats an id this process never
+registered as no session**, the rule writes use. -/
+theorem inject_unknown_id_no_session (res : String → Bool) (s : St) (c : String)
+    (ht : ∀ r ∈ s.tel, r.id ≠ c) (hcore : s.core.keyed.lookup c = none) :
+    injectLocal res s (some c) = .noSession :=
+  inject_no_session_of res s c (fun r hm => ht r (sweepTel_sub _ _ r hm)) (lookup_filter_none _ _ _ hcore)
+
+/-- Outside the server, plur_inject naming a session past its TTL passes no session. -/
+theorem inject_expired_no_session (res : String → Bool) (s : St) (c : String) (r : Rec)
+    (hr : r ∈ s.tel) (hid : r.id = c) (he : expired s.now r = true)
+    (hall : ∀ r ∈ s.tel, r.id = c → expired s.now r = true) :
+    injectLocal res s (some c) = .noSession :=
+  inject_no_session_of res s c (expired_gone s c hall)
+    (lookup_filter_drop _ _ _ (hid ▸ expired_mem_ids s.now s.tel r hr he))
+
+/-- ORIGINAL inject resolution: the explicit id, as given. -/
+def injectOrig (explicit : Option String) : Sess :=
+  match explicit with
+  | some e => .key e
+  | none => .noSession
+
+/-- Replayed (formal-mcp-tools-session.test.ts, "without the server, plur_inject
+and plur_inject_hybrid…"): the original passes "never-started", which core
+answers with the slot B set. -/
+theorem orig_inject_unknown_takes_slot : twoOpen.core.get (injectOrig (some "never-started")) = some "project:b" := rfl
+
+/-- Non-vacuity: a session registered in core still counts outside the server. -/
+theorem inject_registered_kept :
+    injectLocal (fun _ => false) { twoOpen with tel := [] } (some "A") = .key "A" := by decide
+
+/-- Non-vacuity and the boundary: a named session resolves at its TTL and stops
+one millisecond after. The original explicit branch did not sweep. -/
+def oneOld (now : Nat) : St :=
+  { now := now, tel := [recA], core := { keyed := [("A", some "project:a")], slot := none } }
+theorem named_at_ttl_resolves :
+    writeSessionNow (fun _ => false) (oneOld TTL) none none (some "A") true = Out.sess (.key "A") := by decide
+theorem named_past_ttl_none :
+    writeSessionNow (fun _ => false) (oneOld (TTL + 1)) none none (some "A") true = Out.sess .noSession := by
+  decide
+theorem orig_named_past_ttl_resolves :
+    writeSession (fun _ => false) (oneOld (TTL + 1)) none none (some "A") true = Out.sess (.key "A") := by decide
 
 /-! ## 3. plur_session_scope: refusals and what op:"clear" restores -/
 

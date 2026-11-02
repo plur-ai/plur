@@ -302,12 +302,20 @@ anchors:
     kind: guarantee
     rule: >-
       An id-less write or injection with not exactly one session open takes no session default, never the last-started
-      session's scope.
+      session's scope; outside the server an injection naming a session this process never registered, or one past its
+      TTL, passes no session.
     lean:
       - PlurSpec/Adapters.lean:unresolved_session_no_default
       - PlurSpec/Adapters.lean:fixed_ambiguous_no_default
       - PlurSpec/McpTools.lean:ambiguous_no_session_default
+      - PlurSpec/McpTools.lean:inject_unknown_id_no_session
+      - PlurSpec/McpTools.lean:inject_expired_no_session
     tests:
+      - >-
+        packages/mcp/test/formal-mcp-tools-session.test.ts::without the server, plur_inject and plur_inject_hybrid treat a session id never started or registered as no session
+      - packages/mcp/test/formal-mcp-tools-session.test.ts::without the server, plur_inject still passes a session registered in core
+      - >-
+        packages/mcp/test/formal-mcp-tools-session.test.ts::an explicit session id stops resolving once its 8 hours are up, without waiting for a later sweep
       - >-
         packages/mcp/test/formal-apply-surface-session.test.ts::two sessions open, id-less plur_learn: neither session's
         default is used
@@ -342,9 +350,13 @@ anchors:
     lean:
       - PlurSpec/Adapters.lean:fixed_no_session_ignores_slot
       - PlurSpec/McpTools.lean:write_never_process_slot
+      - PlurSpec/McpTools.lean:write_now_never_process_slot
       - PlurSpec/McpTools.lean:ambiguous_no_session_default
+      - PlurSpec/McpTools.lean:explicit_expired_no_default
     tests:
       - "packages/mcp/test/formal-apply-surface-session.test.ts::no session open: the process slot is not used either"
+      - >-
+        packages/mcp/test/formal-mcp-tools-session.test.ts::an explicit session id stops resolving once its 8 hours are up, without waiting for a later sweep
   packages/mcp/src/tools.ts#{ warnings }:
     kind: guarantee
     rule: >-
@@ -688,8 +700,11 @@ anchors:
         packages/mcp/test/formal-mcp-tools-session.test.ts::an expired session is never the implicit session, and a
         later start is the lone open one
       - packages/mcp/test/formal-mcp-tools-session.test.ts::a session still inside its TTL keeps its default
+      - >-
+        packages/mcp/test/formal-mcp-tools-session.test.ts::an explicit session id stops resolving once its 8 hours are up, without waiting for a later sweep
     lean:
       - PlurSpec/McpTools.lean:open_within_ttl
+      - PlurSpec/McpTools.lean:explicit_expired_no_default
       - PlurSpec/McpTools.lean:implicit_unexpired
   packages/mcp/src/tools.ts#SessionTelemetry:
     kind: guarantee

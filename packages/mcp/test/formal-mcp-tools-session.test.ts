@@ -4,13 +4,15 @@
  * several sessions open, with and without a session id, through the server
  * (a FolderScopeContext attached) and without it; plur_episode_to_engram
  * follows the same rule as plur_learn; an expired session is never chosen;
- * a scope clear for a session this server did not start restores nothing.
+ * a scope clear for a session this server did not start restores nothing;
+ * outside the server plur_inject treats an id this process never registered
+ * as no session; an explicit id stops resolving once its eight hours are up.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
-import { Plur } from '@plur-ai/core'
+import { Plur, NO_SESSION } from '@plur-ai/core'
 import { getToolDefinitions, _resetSessionTelemetry, FOLDER_SCOPE, type FolderScopeContext } from '../src/tools.js'
 
 describe('MCP session resolution (formal McpTools)', () => {
@@ -132,6 +134,45 @@ describe('MCP session resolution (formal McpTools)', () => {
     vi.setSystemTime(new Date('2026-01-01T07:59:59Z'))
     await call('plur_learn', { statement: 'inside the TTL' })
     expect((await plur.list()).find(e => e.statement === 'inside the TTL')?.scope).toBe('project:live')
+  })
+
+  it('without the server, plur_inject and plur_inject_hybrid treat a session id never started or registered as no session', async () => {
+    await start('project:a')
+    await start('project:b')
+    const inject = vi.spyOn(plur, 'inject')
+    const hybrid = vi.spyOn(plur, 'injectHybrid')
+    await call('plur_inject', { task: 'release tagging', session_id: 'never-started' })
+    await call('plur_inject_hybrid', { task: 'release tagging', session_id: 'never-started' })
+    const passed = [inject.mock.calls[0][1]?.session_id, hybrid.mock.calls[0][1]?.session_id]
+    expect(passed).toEqual([NO_SESSION, NO_SESSION])
+    for (const session of passed) expect(plur.getSessionScope({ session })).not.toBe('project:b')
+  })
+
+  it('without the server, plur_inject still passes a session registered in core', async () => {
+    plur.setSessionScope('project:embedded', { session: 'embedded' })
+    const inject = vi.spyOn(plur, 'inject')
+    await call('plur_inject', { task: 'release tagging', session_id: 'embedded' })
+    expect(inject.mock.calls[0][1]?.session_id).toBe('embedded')
+  })
+
+  it('an explicit session id stops resolving once its 8 hours are up, without waiting for a later sweep', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    const t0 = new Date('2026-01-01T00:00:00Z').getTime()
+    const ttl = 8 * 60 * 60 * 1000
+    vi.setSystemTime(t0)
+    const old = await start('project:old')
+    vi.setSystemTime(t0 + ttl - 1)
+    await call('plur_learn', { statement: 'named, just inside the limit', session_id: old })
+    expect((await plur.list()).find(e => e.statement === 'named, just inside the limit')?.scope).toBe('project:old')
+    vi.setSystemTime(t0 + ttl + 1)
+    await call('plur_learn', { statement: 'named, just past the limit', session_id: old })
+    await call('plur_learn', { statement: 'named through the server, past the limit', session_id: old, [FOLDER_SCOPE]: serverCtx() } as Record<string, unknown>)
+    const list = await plur.list()
+    expect(list.find(e => e.statement === 'named, just past the limit')?.scope).not.toBe('project:old')
+    expect(list.find(e => e.statement === 'named through the server, past the limit')?.scope).not.toBe('project:old')
+    const inject = vi.spyOn(plur, 'inject')
+    await call('plur_inject', { task: 'release tagging', session_id: old })
+    expect(inject.mock.calls[0][1]?.session_id).toBe(NO_SESSION)
   })
 
   it('through the server, clearing the scope of a session this server did not start restores nothing', async () => {

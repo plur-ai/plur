@@ -1010,12 +1010,18 @@ const NO_SESSION_SLOT_WARNING =
   'dialing context. Call plur_session_start (then plur_session_scope with its session_id) to scope a session.'
 
 /**
- * The session a WRITE or INJECT passes to core: explicit `session_id`, else the lone open session, else core's
+ * The session an INJECT passes to core: explicit `session_id`, else the lone open session, else core's
  * `NO_SESSION` — never `undefined`, which would fall back to the last-started session's default (possibly a team
- * scope) and leak an id-less write into another session's scope.
+ * scope) and leak an id-less inject into another session's scope. Expired sessions are swept first, so an id past
+ * its TTL is no session. Without a FolderScopeContext an id this process never registered is no session, the rule
+ * `_writeSession` applies to writes.
  */
-function _resolveWriteSession(args: Record<string, unknown>): string {
-  return _resolveInjectionSession(args) ?? NO_SESSION
+function _resolveWriteSession(args: Record<string, unknown>, plur: Plur): string {
+  _cleanExpiredSessions(plur)
+  const chosen = _resolveInjectionSession(args)
+  if (chosen === undefined) return NO_SESSION
+  if (!_folderContext(args) && !_knownSession(chosen, plur, false)) return NO_SESSION
+  return chosen
 }
 
 /** Registry keys holding a workspace's scope; no real session id starts with NUL. */
@@ -1044,6 +1050,9 @@ function _knownSession(id: string, plur: Plur, viaServer: boolean): boolean {
  *   FolderScopeContext the session alone decides, and an id core has no registration for is no session.
  */
 async function _writeSession(args: Record<string, unknown>, plur: Plur, base?: string | undefined, read = false, explicitDestinations = false): Promise<string> {
+  // An explicit id past its TTL resolves to nothing: expire it, and clear its
+  // registration, before resolving.
+  _cleanExpiredSessions(plur)
   const explicit = typeof args.session_id === 'string' && args.session_id.length > 0 ? args.session_id : undefined
   const chosen = base !== undefined ? base : (explicit ?? _implicitSessionId())
   const ctx = _folderContext(args)
@@ -2140,7 +2149,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
       },
       handler: async (args, plur) => {
         // An ambiguous/absent session passes NO_SESSION (no session default).
-        const session_id = _resolveWriteSession(args)
+        const session_id = _resolveWriteSession(args, plur)
         const result = await plur.inject(args.task as string, {
           budget: args.budget as number | undefined,
           scope: args.scope as string | undefined,
@@ -2186,7 +2195,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
         // One deadline from handler entry, as plur_recall.
         const deadline_at = Date.now() + resolveRecallDeadlineMs()
         // An ambiguous/absent session passes NO_SESSION (no session default).
-        const session_id = _resolveWriteSession(args)
+        const session_id = _resolveWriteSession(args, plur)
         const result = await plur.injectHybrid(args.task as string, {
           budget: args.budget as number | undefined,
           scope: args.scope as string | undefined,

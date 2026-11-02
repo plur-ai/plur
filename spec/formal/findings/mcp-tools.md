@@ -40,7 +40,7 @@ the handlers). Through the server the slot is never set, so it was not reachable
 - Counterexample theorem: `orig_unknown_id_takes_slot`; fixed: `fixed_unknown_id_no_slot`.
 - Fix (tools.ts `_writeSession`): `if (!ctx) return chosen !== undefined && _knownSession(chosen, plur, false) ? chosen : NO_SESSION`.
   A core-registered id still counts (test "without the server, a session registered in core still supplies its default").
-- Residual (not changed): `_resolveWriteSession` for plur_inject / plur_inject_hybrid
+- DECIDED (owner, option "nosession"), see Questions 1. Residual before the decision: `_resolveWriteSession` for plur_inject / plur_inject_hybrid
   passes an explicit unknown id to core unchecked; outside the server that reads the
   slot for injection scope. Same shape; left for the owner (see questions).
 
@@ -67,8 +67,10 @@ had no documented way to name its session.
   session's registration, fed with exactly the ids the TTL picks (`expiredIds`).
   Non-vacuity: `live_registration_kept`. Builds on `Adapters.sweep`/`Adapters.Inv`.
 - TESTED: expired session not implicit; a session inside its TTL keeps its default.
-- Note: an explicit id of an expired-but-not-yet-swept session still resolves (only
-  implicit resolution and session_start sweep). Bounded by the next sweep; reported, not changed.
+- DECIDED (owner, option "sweep"), see Questions 2: `_writeSession` and `_resolveWriteSession`
+  run the plur-bearing sweep (`_cleanExpiredSessions(plur)`) before resolving, so an explicit id
+  past its eight hours resolves to nothing at once, through the server or not. Before the
+  decision an explicit id of an expired-but-not-yet-swept session still resolved until the next sweep.
 
 ## 3. Refusals in plur_session_scope
 
@@ -113,8 +115,24 @@ releases on success and failure.
 
 ## Questions for the owner
 
-1. plur_inject / plur_inject_hybrid with an explicit session id this process never
+1. DECIDED: option (a) "nosession". plur_inject / plur_inject_hybrid with an explicit session id this process never
    saw, outside the server: (a) treat it as no session, like writes now do; (b) keep
    passing it (injection scope may come from the slot). Through the server it is harmless.
-2. An explicit id of a session past its 8 h TTL but not yet swept still resolves:
+   Applied: without a FolderScopeContext `_resolveWriteSession` passes `NO_SESSION` unless
+   `_knownSession(id, plur, false)`. Model: `injectLocal`, PROVED `inject_unknown_id_no_session`,
+   `orig_inject_unknown_takes_slot` (counterexample), `inject_registered_kept` (non-vacuity).
+   Test, red before (`expected [ 'never-started', 'never-started' ] to deeply equal [ '\u0000plur:no-session', …(1) ]`),
+   green after: `formal-mcp-tools-session.test.ts::without the server, plur_inject and
+   plur_inject_hybrid treat a session id never started or registered as no session`; kept case:
+   `…::without the server, plur_inject still passes a session registered in core`.
+2. DECIDED: option (a) "sweep". An explicit id of a session past its 8 h TTL but not yet swept still resolves:
    (a) sweep before any explicit resolution so it stops at exactly 8 h; (b) keep (bounded by the next sweep).
+   Applied: `_writeSession` and `_resolveWriteSession` call `_cleanExpiredSessions(plur)` first.
+   Model: `sweepSt`, `writeSessionNow`; PROVED `explicit_expired_no_default`,
+   `inject_expired_no_session`, `write_now_never_process_slot` (the slot rule survives the sweep);
+   boundary `named_at_ttl_resolves` / `named_past_ttl_none`; counterexample
+   `orig_named_past_ttl_resolves`. Test (fake Date), red before (`expected 'project:old' not to
+   be 'project:old'`), green after: `formal-mcp-tools-session.test.ts::an explicit session id
+   stops resolving once its 8 hours are up, without waiting for a later sweep`.
+   Through the server an injection still passes an expired explicit id to core; its registration
+   is gone, so no session default applies.
