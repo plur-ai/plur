@@ -67,7 +67,7 @@ already pins `CLI_VERSION` to the release shape.
   is kept because sync's `.gitignore` lists `keys/`.
 - embedding-gemma.ts: `isLoaded` reports in-process load; `modelPresent` checks the disk.
 - dsh memory-section.ts `renderBlock`: constraints go last, replaced by a WITHHELD notice;
-  the block is empty when not even the notice fits.
+  when not even the notice fits, the notice alone is emitted past the budget (owner decision below).
 
 ## Other unbacked rules: TESTED
 
@@ -82,9 +82,18 @@ already pins `CLI_VERSION` to the release shape.
   home (cwd inside it): the mcp_config.json sha256 was the same after both runs
   (`f6c21b83…`), and only `.gemini/config/{mcp_config,hooks}.json` existed.
 
-## Possible gap (NEEDS-OWNER)
+## Possible gap — DECIDED (owner, option "notice")
 
 dsh `renderBlock`: when the budget is below the WITHHELD notice (~60 tokens), the whole
 block is empty, so constraints are dropped with no notice. Options: (a) accept, because
 an empty block is "no memory", not "no rules"; (b) always emit the notice even past budget;
 (c) set a minimum budget in the caller.
+
+Applied (b): with constraints present and no rung fitting, `renderBlock` returns the notice
+alone, past the budget; with no constraints, a block that does not fit is still empty, and a
+zero budget still renders nothing (the config requires at least 1). Test, red before
+(`expected '' to contain '## CONSTRAINTS'`), green after:
+`packages/dsh/test/memory-section.test.ts::shows the withheld notice alone when not even the
+notice fits the budget` (budgets 1 and 5). It replaces the pin "emits nothing when not even the
+notice fits", which asserted the old behaviour; "emits nothing when a tiny budget holds no
+constraints to withhold" keeps the empty case. No Lean model covers `renderBlock`.

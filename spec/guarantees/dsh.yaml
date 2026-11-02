@@ -91,8 +91,8 @@ anchors:
     why: "Interface doc for a plain map read; never-throws is trivially true."
   packages/dsh/src/memory-section.ts#renderBlock:
     kind: guarantee
-    rule: "Sections are dropped whole, never cut mid-engram; constraints are never dropped silently."
-    tests: ["packages/dsh/test/memory-section.test.ts::emits nothing rather than a truncated engram when even directives overflow", "packages/dsh/test/memory-section.test.ts::never sheds CONSTRAINTS silently"]
+    rule: "Sections are dropped whole, never cut mid-engram; constraints are never dropped silently: when not even the WITHHELD notice fits, the notice is emitted past the budget."
+    tests: ["packages/dsh/test/memory-section.test.ts::emits nothing rather than a truncated engram when even directives overflow", "packages/dsh/test/memory-section.test.ts::never sheds CONSTRAINTS silently", "packages/dsh/test/memory-section.test.ts::shows the withheld notice alone when not even the notice fits the budget"]
   packages/dsh/src/scope.ts#createScopeResolver:
     kind: guarantee
     rule: "An agent's scope is the workspace's declared scope or the configured default, never the global store; a broken workspace file narrows to the default."

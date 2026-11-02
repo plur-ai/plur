@@ -54,7 +54,8 @@ export function estimateTokens(text: string): number {
  * Render the memory block for the `plur:memory` system-prompt section.
  * Sections are dropped whole, never truncated mid-engram (a half engram reads as complete). Under budget pressure
  * `consider` goes first, then `directives`; `constraints` last, and then replaced by a WITHHELD
- * notice, never dropped silently. When not even the notice fits, the block is empty.
+ * notice, never dropped silently. When not even the notice fits, the notice alone is emitted past the budget; with
+ * no constraints to withhold, a block that does not fit is empty.
  *
  * @param injection - the result of a PLUR injection call.
  * @param budgetTokens - approximate token ceiling for the whole block.
@@ -98,9 +99,12 @@ export function renderBlock(injection: InjectionLike | undefined, budgetTokens: 
         : notice
       if (estimateTokens(block) <= budget) return block
     }
+    // Not even the notice fits: emit it anyway, past the budget, so the
+    // prohibitions read as withheld rather than absent.
+    return notice
   }
 
-  // Not even the notice fits. Emit nothing rather than a truncated engram.
+  // Nothing fits and no constraints are withheld. Emit nothing rather than a truncated engram.
   return ''
 }
 
