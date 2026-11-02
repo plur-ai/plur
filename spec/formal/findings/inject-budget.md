@@ -57,7 +57,7 @@ Neither has a scope to name, so the behaviour is intended, but the comment claim
 now states the exception. `formal-inject-budget-origin.test.ts` checks the scope line in directives, constraints and
 consider, and that an empty scope gets no line.
 
-## 4. tensions.ts `TensionScanResult.skipped` — CONFIRMED (comment fixed) + NEEDS-OWNER
+## 4. tensions.ts `TensionScanResult.skipped` — CONFIRMED + DECIDED (c)
 
 The comment said every policy skip is counted. In fact only measured-under skips are counted. Snapshot pairs dropped
 by `snapshot_pairs: 'skip'` (reachable only when `temporal_domains` is configured), expired windows and supersedes
@@ -66,7 +66,14 @@ links leave no trace. Counting snapshot skips would change the result shape, and
 changed. The comment now names what is counted and what is not. `formal-inject-budget-tensions.test.ts` pins the
 current behaviour.
 
-NEEDS-OWNER: should snapshot-pair skips be reported?
+DECIDED: should snapshot-pair skips be reported?
 (a) keep as is, with the comment corrected;
 (b) add `skipped.snapshot` and `skipped.snapshot_pairs`, an additive field shown by the CLI and MCP (the existing exact-shape tests would need updating);
 (c) treat every configured gate (snapshot, measured-under) as reportable and leave the structural ones (expired, supersedes, recorded) out.
+
+Decision: (c) "gates". `skipped` keeps `measured_under` and `measured_under_pairs` and adds `snapshot` and
+`snapshot_pairs` (type `TensionSkips`); a pair both gates match counts once, as snapshot. Structural skips
+stay uncounted. The CLI `--json` output and the MCP scan result pass `skipped` through whole. Tests:
+`formal-inject-budget-tensions.test.ts` (5; the snapshot-skip test that pinned "not counted" now pins
+"counted"), and the two exact-shape assertions in `tensions-measured-under-gate.test.ts` gained the new
+fields.

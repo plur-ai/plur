@@ -1199,15 +1199,21 @@ anchors:
   packages/core/src/tensions.ts#TensionScanResult:
     kind: guarantee
     rule: >-
-      every pair the measured-under gate skips is counted and named in the result; snapshot, expired, supersedes and
-      recorded skips are not counted
+      every pair a configured gate skips (snapshot, measured-under) is counted and named in the result; structural
+      skips (recorded pairs, supersedes links, closed validity windows) are not counted
     tests:
       - >-
         packages/core/test/tensions-measured-under-gate.test.ts::getCandidatePairsDetailed counts and names the skipped
         pair
       - >-
-        packages/core/test/formal-inject-budget-tensions.test.ts::a snapshot pair skipped by policy is dropped and not
-        counted in skipped
+        packages/core/test/formal-inject-budget-tensions.test.ts::a snapshot pair skipped by policy is counted and
+        named in skipped
+      - >-
+        packages/core/test/formal-inject-budget-tensions.test.ts::the scan result reports the snapshot skip without
+        calling the judge
+      - >-
+        packages/core/test/formal-inject-budget-tensions.test.ts::structural skips stay uncounted: recorded pairs,
+        supersedes links, closed windows
   packages/core/src/trust.ts#isDirectoryTrusted:
     kind: guarantee
     rule: >-

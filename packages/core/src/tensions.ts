@@ -21,15 +21,29 @@ export interface TensionScanResult {
   new_tensions: number
   tensions: TensionPair[]
   /**
-   * Pairs the measured-under gate removed (`measured_under_pairs: 'skip'`).
-   * A skip that leaves no trace is indistinguishable from a pair that was
-   * never a candidate, so a measured-under skip is never silent: it is
-   * counted here and its pair key (sorted ids joined by ':') listed. Always
-   * present; zero when nothing was skipped. Not counted: snapshot pairs
-   * dropped by `snapshot_pairs: 'skip'`, expired validity windows,
-   * supersedes links and already-recorded pairs.
+   * Pairs a configured gate removed before the judge. A skip that leaves no
+   * trace is indistinguishable from a pair that was never a candidate, so
+   * each one is counted and its pair key (sorted ids joined by ':') listed:
+   * `snapshot` for snapshot-vs-snapshot pairs from different days
+   * (`snapshot_pairs: 'skip'` with `temporal_domains` configured),
+   * `measured_under` for same-origin measurements under differing
+   * configurations (`measured_under_pairs: 'skip'`). A pair both gates match
+   * is counted once, as snapshot. The gates run before the shared-subject
+   * pre-filter, so a gated pair is counted whether or not it shares a
+   * subject. Always present; zero when nothing was skipped. Not counted,
+   * because no setting controls them: pairs in non-overlapping scopes or
+   * domains, already-recorded pairs, supersedes links, closed validity
+   * windows, and ungated pairs with no shared subject.
    */
-  skipped: { measured_under: number; measured_under_pairs: string[] }
+  skipped: TensionSkips
+}
+
+/** The gate skips a scan reports; see TensionScanResult.skipped. */
+export interface TensionSkips {
+  measured_under: number
+  measured_under_pairs: string[]
+  snapshot: number
+  snapshot_pairs: string[]
 }
 
 /** A statement handed to the judge — `date` is its recorded date. */
@@ -443,8 +457,8 @@ export interface CandidatePairOptions {
 
 export interface CandidatePairs {
   pairs: Array<[Engram, Engram]>
-  /** Policy skips, so a scan can report what it did not look at. */
-  skipped: { measured_under: number; measured_under_pairs: string[] }
+  /** Gate skips, so a scan can report what it did not look at. */
+  skipped: TensionSkips
 }
 
 export function getCandidatePairs(
@@ -464,6 +478,7 @@ export function getCandidatePairsDetailed(
   const snapshotMode = options?.snapshot_pairs ?? 'skip'
   const measuredUnderMode = options?.measured_under_pairs ?? 'skip'
   const skippedMeasuredUnder: string[] = []
+  const skippedSnapshot: string[] = []
   // Use the shared validity evaluator, never a string comparison of a
   // timestamp against a date: `'2026-09-07T01:00:00Z' < '2026-09-07'` is false
   // at every hour of that day, so a window closed at 01:00 would read as live.
@@ -502,8 +517,12 @@ export function getCandidatePairsDetailed(
       if (expired[i] || expired[j]) continue
 
       // Snapshot-vs-snapshot at different timestamps is an
-      // event log, not a contradiction.
-      if (snapshotMode === 'skip' && isSnapshotPair(a, b, temporalDomains)) continue
+      // event log, not a contradiction. Counted and keyed like the
+      // measured-under gate below.
+      if (snapshotMode === 'skip' && isSnapshotPair(a, b, temporalDomains)) {
+        skippedSnapshot.push([a.id, b.id].sort().join(':'))
+        continue
+      }
 
       // Same-origin measurements taken under different
       // configurations are refinements, not contradictions. Never silent:
@@ -529,7 +548,10 @@ export function getCandidatePairsDetailed(
   scored.sort((x, y) => y.overlap - x.overlap)
   return {
     pairs: scored.map(s => s.pair),
-    skipped: { measured_under: skippedMeasuredUnder.length, measured_under_pairs: skippedMeasuredUnder },
+    skipped: {
+      measured_under: skippedMeasuredUnder.length, measured_under_pairs: skippedMeasuredUnder,
+      snapshot: skippedSnapshot.length, snapshot_pairs: skippedSnapshot,
+    },
   }
 }
 
