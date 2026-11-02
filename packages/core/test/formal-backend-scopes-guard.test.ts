@@ -93,14 +93,13 @@ describe('QueueHoldStore', () => {
 
   it('on a YAML store (no loadByIds), a row another writer queued after a whole-corpus read is still held', async () => {
     // Full rows: the YAML store drops rows that fail the engram schema.
-    const full = (e: Engram): Engram => ({
+    const full = (e: Engram): Engram => Object.assign({
       version: 2, consolidated: false, visibility: 'private',
       knowledge_type: { memory_class: 'semantic', cognitive_level: 'remember' },
       knowledge_anchors: [], associations: [], derivation_count: 1, pack: null, abstract: null,
       derived_from: null, polarity: null, content_hash: e.id, commitment: 'leaning', write_count: 1,
       sources: [], recurrence_count: 0, summary: '', engram_version: 1, episode_ids: [],
-      ...e,
-    } as Engram)
+    }, e) as Engram
     const dir = mkdtempSync(join(tmpdir(), 'plur-hold-yaml-'))
     try {
       const file = join(dir, 'engrams.yaml')
