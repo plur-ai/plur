@@ -3,6 +3,10 @@
  * Model: spec/formal/PlurSpec/BackendScopes.lean (part B).
  */
 import { describe, it, expect } from 'vitest'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { YamlPrimaryStore } from '../src/store/yaml-primary-store.js'
 import { QueueHoldStore, RemoteOnlyStoreGuard } from '../src/store/remote-only-store-guard.js'
 import type { Engram } from '../src/schemas/engram.js'
 
@@ -85,6 +89,36 @@ describe('QueueHoldStore', () => {
     await expect(hold.append!(stripped)).rejects.toThrow(/queue/i)
     await expect(hold.save([row('P1'), stripped])).rejects.toThrow(/queue/i)
     expect(inner.rows.find(r => r.id === 'X')!.scope).toBe(TEAM)
+  })
+
+  it('on a YAML store (no loadByIds), a row another writer queued after a whole-corpus read is still held', async () => {
+    // Full rows: the YAML store drops rows that fail the engram schema.
+    const full = (e: Engram): Engram => ({
+      version: 2, consolidated: false, visibility: 'private',
+      knowledge_type: { memory_class: 'semantic', cognitive_level: 'remember' },
+      knowledge_anchors: [], associations: [], derivation_count: 1, pack: null, abstract: null,
+      derived_from: null, polarity: null, content_hash: e.id, commitment: 'leaning', write_count: 1,
+      sources: [], recurrence_count: 0, summary: '', engram_version: 1, episode_ids: [],
+      ...e,
+    } as Engram)
+    const dir = mkdtempSync(join(tmpdir(), 'plur-hold-yaml-'))
+    try {
+      const file = join(dir, 'engrams.yaml')
+      const mine = new YamlPrimaryStore(file)
+      await mine.save([full(row('ENG-P1'))])
+      const hold = new QueueHoldStore(mine as any, s => s === TEAM)
+      await hold.load()
+      await hold.loadCached()
+      // A second instance on the same file queues X after that read.
+      const other = new YamlPrimaryStore(file)
+      await other.save([...(await other.load()), full(queued('ENG-X'))])
+      expect((await other.load()).map(r => r.id)).toEqual(['ENG-P1', 'ENG-X'])
+      const stripped = full(row('ENG-X', { scope: 'global' }))
+      await expect(hold.save([full(row('ENG-P1')), stripped])).rejects.toThrow(/queue/i)
+      expect((await other.load()).find(r => r.id === 'ENG-X')!.scope).toBe(TEAM)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   it('forwards every non-write member of the inner store, bound to it, and wraps the three writes', async () => {

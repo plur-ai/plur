@@ -175,6 +175,9 @@ anchors:
       - >-
         packages/core/test/formal-backend-scopes-guard.test.ts::a row queued by another writer after a whole-corpus
         read is still held when written unmarked
+      - >-
+        packages/core/test/formal-backend-scopes-guard.test.ts::on a YAML store (no loadByIds), a row another writer
+        queued after a whole-corpus read is still held
   packages/core/src/store/remote-only-store-guard.ts#QueueHoldStore.loadByIds:
     kind: guarantee
     rule: Every non-write capability of the inner store is forwarded, so one added later is never silently dropped.

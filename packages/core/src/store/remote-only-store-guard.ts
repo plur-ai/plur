@@ -215,7 +215,9 @@ export class QueueHoldStore implements PrimaryStore {
       const want = new Set(unknown)
       const rows = this.inner.loadByIds
         ? await this.inner.loadByIds(unknown)
-        : (await this.inner.load()).filter(e => want.has(e.id))
+        // loadCached is proven current by the store (or is a plain load), so
+        // a row another writer queued is seen without a second full parse.
+        : (await this.inner.loadCached()).filter(e => want.has(e.id))
       for (const e of rows) if (want.has(e.id)) current.set(e.id, e)
     }
     return current
