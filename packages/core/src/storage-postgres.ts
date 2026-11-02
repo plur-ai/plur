@@ -1409,7 +1409,7 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
     if (vector.length !== expectedDim) {
       throw new Error(
         `[postgres] Refusing to persist a ${vector.length}-dim embedding for "${engramId}": `
-        + `this store's embedding column is ${expectedDim}-dim (#335). `
+        + `this store's embedding column is ${expectedDim}-dim. `
         + `The active embedder (PLUR_EMBEDDER) and the store must agree.`,
       )
     }

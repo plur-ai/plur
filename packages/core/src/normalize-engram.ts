@@ -24,7 +24,7 @@ export interface NormalizeRule {
 export const RULES: readonly NormalizeRule[] = [
   {
     id: '#866',
-    description: 'reference_count → write_count (renamed in #866)',
+    description: 'reference_count → write_count',
     // Guarded on write_count being ABSENT, so a record already carrying the new
     // name keeps its value even if a stale reference_count rides alongside it.
     applies: raw => !('write_count' in raw) && 'reference_count' in raw,

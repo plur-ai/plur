@@ -1655,16 +1655,16 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
 
   if (report.staleNpxMcp) {
     outputText('')
-    outputText('⚠  plur MCP still launched via npx — vulnerable to ENOTEMPTY cache corruption on version bumps (#234).')
-    outputText('   This is the same bug class as #178 (which fixed hooks). Symptom: Claude Code')
+    outputText('⚠  plur MCP still launched via npx — vulnerable to ENOTEMPTY cache corruption on version bumps.')
+    outputText('   Hooks had the same problem and were fixed. Symptom: Claude Code')
     outputText('   sessions silently lose PLUR memory after a new @plur-ai/mcp publish.')
     outputText('   Fix: run `plur init` to migrate to the local MCP binary (no npx, no race).')
   }
 
   if (report.pgliteGemmaReembedNeeded) {
     outputText('')
-    outputText('⚠  PGLite backend + embedding-gemma: stored vectors may be stale (#483).')
-    outputText('   embedding-gemma\'s role prefixes were corrected in 0.14.0 (#483), but the PGLite')
+    outputText('⚠  PGLite backend + embedding-gemma: stored vectors may be stale.')
+    outputText('   embedding-gemma\'s role prefixes were corrected in 0.14.0, but the PGLite')
     outputText('   backend keys its embedding cache on vector dimension (unchanged at 768d), so it')
     outputText('   does NOT auto-rebuild — recall keeps serving the old (wrong-prefix) embedding')
     outputText('   space silently. The SQLite/flat-file backend auto-rebuilds; PGLite cannot.')
@@ -1673,7 +1673,7 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
 
   if (report.staleContentHashes > 0) {
     outputText('')
-    outputText(`⚠  ${report.staleContentHashes} engram${report.staleContentHashes === 1 ? '' : 's'} have a stale content_hash (#896, #911).`)
+    outputText(`⚠  ${report.staleContentHashes} engram${report.staleContentHashes === 1 ? '' : 's'} have a stale content_hash.`)
     outputText('   This happens after upgrading from a version where normalizeStatement used ASCII \\w')
     outputText('   — any statement containing non-ASCII letters hashes differently under the new')
     outputText('   normalizer. Stale hashes act as dedup attractors: re-learns that hash-match the')
@@ -1685,7 +1685,7 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
   if (report.ignoredDuplicateStores.length > 0) {
     const n = report.ignoredDuplicateStores.length
     outputText('')
-    outputText(`⚠  config.yaml lists ${n} store entr${n === 1 ? 'y' : 'ies'} that ${n === 1 ? 'is' : 'are'} ignored at load (#1319):`)
+    outputText(`⚠  config.yaml lists ${n} store entr${n === 1 ? 'y' : 'ies'} that ${n === 1 ? 'is' : 'are'} ignored at load:`)
     for (const d of report.ignoredDuplicateStores) {
       outputText(`   - "${d.scope}" (${d.path}): the same file as ${d.duplicateOf}`)
     }

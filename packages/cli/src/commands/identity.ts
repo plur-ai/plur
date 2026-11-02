@@ -71,7 +71,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       '  Any address works. Nothing verifies it — packs are not signed — so this',
       '  is a claim about who is answerable, not proof of it. An email address',
       '  is accepted too, but the pack export privacy scan flags email addresses,',
-      '  so memories attributed to one are held back from every pack (#999).',
+      '  so memories attributed to one are held back from every pack.',
     ].join('\n'))
     return
   }

@@ -181,7 +181,7 @@ export const provenanceIdentityMethods: ProvenanceIdentityMethods & ThisType<Plu
     // choose it rather than at the first empty export.
     const warning = value && containsEmail(value)
       ? `"${value}" is an email address. The pack export privacy scan flags email addresses, so memories `
-        + 'attributed to it are held back from every pack until #999 lands. Prefer a local name '
+        + 'attributed to it are held back from every pack. Prefer a local name '
         + '(local:yourname) or a DID if you intend to share.'
       : undefined
     if (warning) logger.warning(`[plur:identity] ${warning}`)

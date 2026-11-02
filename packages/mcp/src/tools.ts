@@ -490,7 +490,7 @@ export function validateToolArgs(
 
     let dropHint = ''
     if (wholePayloadDrop) {
-      dropHint = ' Known intermittent client-side issue (plur-ai/plur#772, refines #297): some MCP ' +
+      dropHint = ' Known intermittent client-side issue: some MCP ' +
         'clients transiently drop the ENTIRE arguments payload — most often when several tool calls ' +
         'are batched into a single message. Nothing was stored or evaluated. Retry the IDENTICAL ' +
         'call with the full payload, as the ONLY tool call in that message — identical retries ' +
@@ -503,7 +503,7 @@ export function validateToolArgs(
             'is not comma-split: send it as a JSON string; a bare string is one item.)'
           : '')
     } else if (arrayShapedDrop) {
-      dropHint = ' Known client-side bug (plur-ai/plur#297): some MCP clients drop ' +
+      dropHint = ' Known client-side bug: some MCP clients drop ' +
         `array-typed parameters from a large arguments payload while keeping the earlier fields ` +
         `(here: ${missingArrayParams.join(', ')}). This is size-sensitive — the same call often ` +
         `succeeds with a shorter payload, so shrink the other fields (e.g. a briefer summary) as well. ` +
@@ -520,7 +520,7 @@ export function validateToolArgs(
       ? 'The request reached the server but its arguments did not — do not abandon the call, and do ' +
         'not rewrite the payload: it was never evaluated. Retry the IDENTICAL call; it usually ' +
         'succeeds. If you issued several tool calls in one message, send them one per message — ' +
-        'batching is the strongest correlate of this drop (#772).'
+        'batching is the strongest correlate of this drop.'
       : 'The call reached the server — this is a malformed-arguments error, not a transport failure. ' +
         'Fix the field(s) named above and retry; do not abandon the call.'
     return {
@@ -1430,7 +1430,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
         'cannot tell a duplicate from a correction of it. ' +
         'Multi-agent note: in an orchestration that spawns subagents, have the PARENT session own plur_learn writes — ' +
         'spawned subagents should return their findings as text for the parent to persist, rather than each calling ' +
-        'plur_learn (tool availability is not guaranteed in every subagent context). See plur-ai/plur#281.',
+        'plur_learn (tool availability is not guaranteed in every subagent context).',
       annotations: { title: 'Learn', destructiveHint: false, idempotentHint: false },
       inputSchema: {
         type: 'object',
@@ -1444,18 +1444,18 @@ function getAllToolDefinitions(): ToolDefinition[] {
           scope: { type: 'string', description: 'Namespace, e.g. global, project:myapp' },
           domain: { type: 'string', description: 'Domain tag, e.g. software.deployment' },
           tags: { type: 'array', items: { type: 'string' }, description: 'Searchable keyword tags — contribute to BM25/embedding recall, so concrete keywords pay off' },
-          rationale: { type: 'string', description: 'The mechanism that makes the statement true, and therefore the condition under which it would STOP being true. One sentence. "Because the user said so on <date>" is a citation, not a mechanism: that belongs in `source`. This text is indexed, so a real mechanism also carries concrete nouns a future query can match. NOTE: constraints render without rationale (plur-ai/plur#1144), so a mechanism a prohibition needs the model to weigh must stay in the statement.' },
+          rationale: { type: 'string', description: 'The mechanism that makes the statement true, and therefore the condition under which it would STOP being true. One sentence. "Because the user said so on <date>" is a citation, not a mechanism: that belongs in `source`. This text is indexed, so a real mechanism also carries concrete nouns a future query can match. NOTE: constraints render without rationale, so a mechanism a prohibition needs the model to weigh must stay in the statement.' },
           source: { type: 'string', description: 'Origin of this knowledge (URL, conversation ref, etc.)' },
           pinned: { type: 'boolean', description: 'Always-load flag. If true, this engram bypasses the keyword-relevance gate at injection time. Use sparingly: meta-rules, safety conventions, core operating principles only.' },
-          commitment: { type: 'string', enum: ['exploring', 'leaning', 'decided', 'locked', 'draft'], description: 'How firmly the user has committed to this belief (default: leaning). `draft` marks the engram as pending human approval: core stores and RECALLS it normally but NEVER injects it (#1141), so an unapproved rule cannot shape agent behaviour. Retrieval stays open because reviewing something requires reading it.' },
+          commitment: { type: 'string', enum: ['exploring', 'leaning', 'decided', 'locked', 'draft'], description: 'How firmly the user has committed to this belief (default: leaning). `draft` marks the engram as pending human approval: core stores and RECALLS it normally but NEVER injects it, so an unapproved rule cannot shape agent behaviour. Retrieval stays open because reviewing something requires reading it.' },
           locked_reason: { type: 'string', description: 'Why this engram is locked (only meaningful when commitment=locked)' },
-          valid_from: { type: 'string', description: 'ISO date (YYYY-MM-DD) the knowledge becomes valid — inject/recall skip the engram before this date (#347)' },
-          valid_until: { type: 'string', description: 'ISO date (YYYY-MM-DD) the knowledge expires — inject/recall skip the engram after this date. Set this for any time-bound fact (offers, deadlines, temporary endpoints). When omitted, an explicit expiry phrase in the statement ("valid until 31 May 2026") is auto-parsed and echoed back (#347)' },
-          supersedes: { type: 'array', items: { type: 'string' }, description: 'Engram IDs this statement intentionally replaces (#240). Writes relations.supersedes on the new engram and the reverse superseded_by edge on each local target. Supersedes-linked pairs are skipped by tension scans — an intentional update is not a contradiction. Use when updating a standing fact (new version, changed rule) rather than contradicting it.' },
-          session_id: { type: 'string', description: 'Session this write belongs to (from plur_session_start). Resolves the session default scope (incl. mid-session plur_session_scope changes) when no explicit scope is passed. Optional when one session is open. With none or several open and no session_id, NO session default applies: the write takes the unscoped path (#243, E7).' },
+          valid_from: { type: 'string', description: 'ISO date (YYYY-MM-DD) the knowledge becomes valid — inject/recall skip the engram before this date' },
+          valid_until: { type: 'string', description: 'ISO date (YYYY-MM-DD) the knowledge expires — inject/recall skip the engram after this date. Set this for any time-bound fact (offers, deadlines, temporary endpoints). When omitted, an explicit expiry phrase in the statement ("valid until 31 May 2026") is auto-parsed and echoed back' },
+          supersedes: { type: 'array', items: { type: 'string' }, description: 'Engram IDs this statement intentionally replaces. Writes relations.supersedes on the new engram and the reverse superseded_by edge on each local target. Supersedes-linked pairs are skipped by tension scans — an intentional update is not a contradiction. Use when updating a standing fact (new version, changed rule) rather than contradicting it.' },
+          session_id: { type: 'string', description: 'Session this write belongs to (from plur_session_start). Resolves the session default scope (incl. mid-session plur_session_scope changes) when no explicit scope is passed. Optional when one session is open. With none or several open and no session_id, NO session default applies: the write takes the unscoped path.' },
           measured_under: {
             type: 'object',
-            description: 'Measurement context for numeric or benchmark-derived claims (#869). Records the conditions under which the asserted value was measured — model, source_type, hardware, dataset, date. When present, the tension scanner does not treat two measurements from the same store taken under different configurations as a contradiction (the skipped pair is reported in the scan result). Omit for non-numeric engrams.',
+            description: 'Measurement context for numeric or benchmark-derived claims. Records the conditions under which the asserted value was measured — model, source_type, hardware, dataset, date. When present, the tension scanner does not treat two measurements from the same store taken under different configurations as a contradiction (the skipped pair is reported in the scan result). Omit for non-numeric engrams.',
             properties: {
               model: { type: 'string', description: 'Model or system variant (e.g. "claude-opus-4", "gpt-4o")' },
               source_type: { type: 'string', description: 'Source environment type (e.g. "local-git", "gitlab", "bench", "production")' },
@@ -1467,7 +1467,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
           attribution: {
             type: 'object',
             description:
-              'Who is answerable for this memory (#961). Every sub-field optional; OMIT rather than guess — a memory with no agent is honest, one with an invented agent is worse than none. Set asserted_by to "unidentified" when nobody is identified, rather than leaving it out: absence cannot be told apart from a memory written before this existed.',
+              'Who is answerable for this memory. Every sub-field optional; OMIT rather than guess — a memory with no agent is honest, one with an invented agent is worse than none. Set asserted_by to "unidentified" when nobody is identified, rather than leaving it out: absence cannot be told apart from a memory written before this existed.',
             properties: {
               asserted_by: { type: 'string', description: 'Who or what asserted it. Any address: a local name, a Decentralized Identifier, or "unidentified".' },
               runtime: {
@@ -1497,7 +1497,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
             type: 'string',
             enum: ['observed', 'documented', 'structural', 'asserted', 'inferred', 'revised'],
             description:
-              'What KIND of claim this is (#963), and the most useful single field for anyone later deciding how much to trust it. Use "asserted" when a PERSON stated it outright, "inferred" when YOU worked it out, "documented" when you took it from prose someone wrote, "observed" for a record of something that happened, "structural" when read off the shape of an artifact, "revised" for a rewrite. Omit only when it genuinely cannot be determined.',
+              'What KIND of claim this is, and the most useful single field for anyone later deciding how much to trust it. Use "asserted" when a PERSON stated it outright, "inferred" when YOU worked it out, "documented" when you took it from prose someone wrote, "observed" for a record of something that happened, "structural" when read off the shape of an artifact, "revised" for a rewrite. Omit only when it genuinely cannot be determined.',
           },
           license: {
             type: 'string',
@@ -1818,13 +1818,13 @@ function getAllToolDefinitions(): ToolDefinition[] {
         'input_index), aggregate stats, and any per-item failures (each with its input index) — a single bad item ' +
         'does not abort the batch. Use this when an orchestration fans out and wants to persist consolidated findings without N ' +
         'separate calls. LLM dedup calls are capped (default 50, override with max_llm_calls) to bound bulk-import cost. ' +
-        'Each item is written through the same routed path as plur_learn (learnRouted, #930), resolves the same ' +
+        'Each item is written through the same routed path as plur_learn (learnRouted), resolves the same ' +
         'session default scope (pass `session_id` when several sessions are open) and the same .plur.yaml domain ' +
         'default, and a `pinned` item is refused with pinned_quota_exceeded when the pinned set has no room — ' +
         'reported in `failures`, the rest of the batch still written. Items take no `visibility`: each gets the ' +
         'default ("private" — excluded from packs and shared git sync), and an item whose scope is a team store ' +
         'still goes to that team store; to keep a team-scope memory local, use plur_learn with an explicit ' +
-        'visibility: "private". See plur-ai/plur#281.',
+        'visibility: "private".',
       // A batch never overwrites or deletes an existing memory (see the
       // description), so it is not destructive and stays behind plur_admin.
       annotations: { title: 'Learn (batch)', destructiveHint: false, idempotentHint: false },
@@ -1845,12 +1845,12 @@ function getAllToolDefinitions(): ToolDefinition[] {
                 rationale: { type: 'string', description: 'Why this knowledge matters — also enters the search corpus' },
                 source: { type: 'string', description: 'Origin of this knowledge (URL, conversation ref, etc.)' },
                 pinned: { type: 'boolean', description: 'Always-load flag. Use sparingly: meta-rules, safety conventions, core principles.' },
-                commitment: { type: 'string', enum: ['exploring', 'leaning', 'decided', 'locked', 'draft'], description: 'How firmly the user has committed (default: leaning). `draft` marks the engram as pending human approval: core stores and RECALLS it normally but NEVER injects it (#1141), so an unapproved rule cannot shape agent behaviour. Retrieval stays open because reviewing something requires reading it.' },
+                commitment: { type: 'string', enum: ['exploring', 'leaning', 'decided', 'locked', 'draft'], description: 'How firmly the user has committed (default: leaning). `draft` marks the engram as pending human approval: core stores and RECALLS it normally but NEVER injects it, so an unapproved rule cannot shape agent behaviour. Retrieval stays open because reviewing something requires reading it.' },
                 valid_from: { type: 'string', description: 'ISO date (YYYY-MM-DD) the knowledge becomes valid' },
                 valid_until: { type: 'string', description: 'ISO date (YYYY-MM-DD) the knowledge expires' },
                 measured_under: {
                   type: 'object',
-                  description: 'Measurement context for numeric/benchmark claims (#869). Fields: model, source_type, hardware, dataset, date.',
+                  description: 'Measurement context for numeric/benchmark claims. Fields: model, source_type, hardware, dataset, date.',
                   properties: {
                     model: { type: 'string' },
                     source_type: { type: 'string' },
@@ -1864,7 +1864,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
             },
           },
           max_llm_calls: { type: 'number', description: 'Max LLM dedup calls across the whole batch (default 50). Once spent, remaining items fall back to the local cosine path (no API cost); the dedup.mode on each result says which ran. Pass a large number to opt out.' },
-          session_id: { type: 'string', description: 'Session these writes belong to (from plur_session_start). Resolves the session default scope for items without an explicit scope, exactly as plur_learn does. Optional when one session is open. With none or several open and no session_id, NO session default applies: the write takes the unscoped path (#243, E7).' },
+          session_id: { type: 'string', description: 'Session these writes belong to (from plur_session_start). Resolves the session default scope for items without an explicit scope, exactly as plur_learn does. Optional when one session is open. With none or several open and no session_id, NO session default applies: the write takes the unscoped path.' },
         },
         required: ['engrams'],
       },
@@ -2088,7 +2088,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
           budget: { type: 'object', description: 'Budget constraints for sub-agents. Hybrid mode only — ignored when mode:"keyword".', properties: { max_tokens: { type: 'number' }, max_results: { type: 'number' } } },
           caller_session_id: { type: 'string', description: 'Session ID of calling agent for budget enforcement. Hybrid mode only — ignored when mode:"keyword".' },
           include_episodes: { type: 'boolean', description: 'If true, include linked episode summaries for each engram (SP2 episodic anchoring). Hybrid mode only — ignored when mode:"keyword".' },
-          session_id: { type: 'string', description: 'Session this recall belongs to (from plur_session_start). Its default scope (incl. mid-session plur_session_scope changes) sets the remote dialing context when no explicit scope filter is passed. Optional when one session is open (#243); with none or several open and no session_id, no session default applies.' },
+          session_id: { type: 'string', description: 'Session this recall belongs to (from plur_session_start). Its default scope (incl. mid-session plur_session_scope changes) sets the remote dialing context when no explicit scope filter is passed. Optional when one session is open; with none or several open and no session_id, no session default applies.' },
         },
         required: ['query'],
       },
@@ -2109,7 +2109,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
           budget: { type: 'object', description: 'Budget constraints for sub-agents', properties: { max_tokens: { type: 'number' }, max_results: { type: 'number' } } },
           caller_session_id: { type: 'string', description: 'Session ID of calling agent for budget enforcement' },
           include_episodes: { type: 'boolean', description: 'If true, include linked episode summaries for each engram (SP2 episodic anchoring)' },
-          session_id: { type: 'string', description: 'Session this recall belongs to (from plur_session_start). Its default scope sets the remote dialing context when no explicit scope filter is passed (#243). Optional when one session is open; with none or several open and no session_id, no session default applies.' },
+          session_id: { type: 'string', description: 'Session this recall belongs to (from plur_session_start). Its default scope sets the remote dialing context when no explicit scope filter is passed. Optional when one session is open; with none or several open and no session_id, no session default applies.' },
         },
         required: ['query'],
       },
@@ -2132,7 +2132,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
           task: { type: 'string', description: 'The task description to inject context for' },
           budget: { type: 'number', description: 'Token budget for injection (default 2000)' },
           scope: { type: 'string', description: 'Scope filter for engram selection' },
-          session_id: { type: 'string', description: 'Session this injection belongs to (from plur_session_start). Optional when one session is open. With none or several open and no session_id, no session default applies (E7) and the injection is not attributed to any session.' },
+          session_id: { type: 'string', description: 'Session this injection belongs to (from plur_session_start). Optional when one session is open. With none or several open and no session_id, no session default applies and the injection is not attributed to any session.' },
         },
         required: ['task'],
       },
@@ -2176,7 +2176,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
           task: { type: 'string', description: 'The task description to inject context for' },
           budget: { type: 'number', description: 'Token budget for injection (default 2000)' },
           scope: { type: 'string', description: 'Scope filter for engram selection' },
-          session_id: { type: 'string', description: 'Session this injection belongs to (from plur_session_start). Optional when one session is open. With none or several open and no session_id, no session default applies (E7) and the injection is not attributed to any session.' },
+          session_id: { type: 'string', description: 'Session this injection belongs to (from plur_session_start). Optional when one session is open. With none or several open and no session_id, no session default applies and the injection is not attributed to any session.' },
         },
         required: ['task'],
       },
@@ -2239,7 +2239,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
           },
           scope: {
             type: 'string',
-            description: 'Store scope to target directly, e.g. "primary" for the local store or a remote scope like "group:plur/plur-ai/engineering". Required when the same engram ID exists in multiple stores (#850).',
+            description: 'Store scope to target directly, e.g. "primary" for the local store or a remote scope like "group:plur/plur-ai/engineering". Required when the same engram ID exists in multiple stores.',
           },
           signals: {
             type: 'array',
@@ -2381,9 +2381,9 @@ function getAllToolDefinitions(): ToolDefinition[] {
           search: { type: 'string', description: 'Search term to find engram to retire' },
           reason: {
             type: 'string',
-            description: 'Why this is being retired. Recorded in the history log and on the engram (#959). Say what changed, not just that something did.',
+            description: 'Why this is being retired. Recorded in the history log and on the engram. Say what changed, not just that something did.',
           },
-          scope: { type: 'string', description: 'Which store holds it (#831). Ids are minted per store, so one id can name several unrelated engrams. Pass "primary" to stay on disk — the local primary store and any local secondary stores, never a remote — or a remote scope (e.g. "group:plur/plur-ai/engineering") to target that server. A scope matching no configured store is rejected, not guessed at. Omit it and an id resolving in two places is refused.' },
+          scope: { type: 'string', description: 'Which store holds it. Ids are minted per store, so one id can name several unrelated engrams. Pass "primary" to stay on disk — the local primary store and any local secondary stores, never a remote — or a remote scope (e.g. "group:plur/plur-ai/engineering") to target that server. A scope matching no configured store is rejected, not guessed at. Omit it and an id resolving in two places is refused.' },
         },
       },
       handler: async (args, plur) => {
@@ -2681,7 +2681,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
           remote_type: {
             type: 'string',
             enum: ['personal', 'shared'],
-            description: 'What the sync remote is for (#640). personal (default): mirror everything non-local, private included — a solo user\'s own backup. shared: push ONLY shared-scope, non-private engrams — personal-family and private engrams never reach the remote. On both, episode/candidate/tension records naming a non-pushed engram are stripped too (#686). Persist the choice in config.yaml as sync.remote_type instead of passing it per call.',
+            description: 'What the sync remote is for. personal (default): mirror everything non-local, private included — a solo user\'s own backup. shared: push ONLY shared-scope, non-private engrams — personal-family and private engrams never reach the remote. On both, episode/candidate/tension records naming a non-pushed engram are stripped too. Persist the choice in config.yaml as sync.remote_type instead of passing it per call.',
           },
         },
       },
@@ -3210,7 +3210,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
         type: 'object',
         properties: {
           retry: { type: 'boolean', description: 'If true, reset cached embedder failure state and retry the model load before reporting' },
-          rerank_eval: { type: 'boolean', description: 'If true and a reranker is configured (PLUR_RERANKER), run the per-store self-eval gate (#451): probes synthesized from this store\'s own engrams compare rerank-on vs RRF-only ordering. Verdict is cached in the store and advisory — it never auto-disables reranking. Costs one cross-encoder pass per probe (~20 probes).' },
+          rerank_eval: { type: 'boolean', description: 'If true and a reranker is configured (PLUR_RERANKER), run the per-store self-eval gate: probes synthesized from this store\'s own engrams compare rerank-on vs RRF-only ordering. Verdict is cached in the store and advisory — it never auto-disables reranking. Costs one cross-encoder pass per probe (~20 probes).' },
         },
       },
       handler: async (args, plur) => {
@@ -3303,8 +3303,8 @@ function getAllToolDefinitions(): ToolDefinition[] {
             // is ms-scale — telling tiny-tier users to expect seconds would
             // mask a real fault.
             const latencyNote = rerankerName === 'bge-reranker-v2-m3'
-              ? 'seconds-scale per recall on CPU is expected — #220'
-              : 'ms-scale per recall on CPU is expected — #451'
+              ? 'seconds-scale per recall on CPU is expected'
+              : 'ms-scale per recall on CPU is expected'
             rerankerDetail = rerankerOk
               ? `${rerankerName} loaded and scoring (probe ${Date.now() - probeStart}ms; ${latencyNote})`
               : `Probe returned malformed scores (${JSON.stringify(scores)}) — recall silently falls back to RRF-only`
@@ -3314,7 +3314,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
             if (kind === 'corrupt-cache') {
               rerankerDetail = `Model cache looks corrupt (${message}) — recall silently falls back to RRF-only`
               remediation.push(
-                `Reranker model cache is corrupt — the classic symptom of a truncated download (#340). Delete ~/.cache/huggingface/hub/${hfCacheDirName(adapter.modelId)}/ and run plur_doctor with retry:true — the model will redownload via the classic (non-Xet) path.`,
+                `Reranker model cache is corrupt — the classic symptom of a truncated download. Delete ~/.cache/huggingface/hub/${hfCacheDirName(adapter.modelId)}/ and run plur_doctor with retry:true — the model will redownload via the classic (non-Xet) path.`,
               )
             } else {
               rerankerDetail = `Failed to load: ${message} — recall silently falls back to RRF-only`
@@ -3369,7 +3369,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
                 check: 'reranker per-store eval',
                 ok: true,
                 detail:
-                  'Not yet evaluated on this store — cross-encoders can be net-negative out-of-domain (#451). ' +
+                  'Not yet evaluated on this store — cross-encoders can be net-negative out-of-domain. ' +
                   'Run plur_doctor with rerank_eval:true for the advisory self-check before trusting reranked order.',
               })
             } else {
@@ -4083,7 +4083,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
       name: 'plur_session_scope',
       description:
         'Adjust or inspect the session default write scope MID-session — narrow, expand, or switch context without ' +
-        'restarting the session (#243). op:"set" replaces the default scope used by unscoped plur_learn calls for the ' +
+        'restarting the session. op:"set" replaces the default scope used by unscoped plur_learn calls for the ' +
         'rest of the session AND the org context that decides which enterprise hosts plur_recall dials (it needs an open ' +
         'session: with none open it refuses, since no id-less call reads a session-less slot); op:"show" ' +
         'reports the effective scope and how it was derived (project config, session_start default, or a mid-session ' +
@@ -4627,7 +4627,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
 
     {
       name: 'plur_suggest_scope',
-      description: 'Suggest which registered scope(s) an engram belongs in, ranked by fit. Deterministic — no LLM, no network. Scores the statement keywords, optional domain (a dotted namespace like "plur.core.security"), and tags against the covers[] each scope declares. ADVISORY ONLY: this does not route or store anything; pass the chosen scope to plur_learn yourself. Returns candidates sorted by confidence (empty when nothing matches). Candidates below min_confidence (default: scope_routing.min_confidence config, else 0.15) are suppressed — a lone coincidental keyword scores ≈0.12 and is noise, not signal (#670); pass min_confidence: 0 to see every scored candidate.',
+      description: 'Suggest which registered scope(s) an engram belongs in, ranked by fit. Deterministic — no LLM, no network. Scores the statement keywords, optional domain (a dotted namespace like "plur.core.security"), and tags against the covers[] each scope declares. ADVISORY ONLY: this does not route or store anything; pass the chosen scope to plur_learn yourself. Returns candidates sorted by confidence (empty when nothing matches). Candidates below min_confidence (default: scope_routing.min_confidence config, else 0.15) are suppressed — a lone coincidental keyword scores ≈0.12 and is noise, not signal; pass min_confidence: 0 to see every scored candidate.',
       annotations: { title: 'Suggest scope', readOnlyHint: true, idempotentHint: true },
       inputSchema: {
         type: 'object',
@@ -4733,7 +4733,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
 
     {
       name: 'plur_promote',
-      description: 'Activate candidate engrams so they appear in injection results. Status change only — it does NOT move an engram to another scope; to promote an engram into a team/shared scope use plur_rescope (#676).',
+      description: 'Activate candidate engrams so they appear in injection results. Status change only — it does NOT move an engram to another scope; to promote an engram into a team/shared scope use plur_rescope.',
       annotations: { title: 'Promote', destructiveHint: false, idempotentHint: true },
       inputSchema: {
         type: 'object',
@@ -4776,7 +4776,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
 
     {
       name: 'plur_rescope',
-      description: 'Move existing engram(s) to a different scope (#676) — e.g. promote a personal/local engram into a team scope so it reaches the shared store. Bypasses the content-hash dedup that makes a plur_learn re-emit a silent no-op: rescope matches by id and moves the engram. Remote targets (a configured writable store scope): a copy is pushed via the routed write path (the server assigns the id, provenance is kept in the copy\'s source field) and the local original is soft-retired with a superseded_by link — set keep_local:true to keep it active. Local targets (local, global, project:*): the scope is rewritten in place, preserving id and activation. The target must be local/global/project:* or a scope with a configured writable store — anything else fails early (typo protection). Content is re-scanned for secrets/sensitive material before any shared/remote target and a hit blocks the move. Batch via ids; dry_run:true previews every decision without mutating anything. NOT candidate activation — that is plur_promote.',
+      description: 'Move existing engram(s) to a different scope — e.g. promote a personal/local engram into a team scope so it reaches the shared store. Bypasses the content-hash dedup that makes a plur_learn re-emit a silent no-op: rescope matches by id and moves the engram. Remote targets (a configured writable store scope): a copy is pushed via the routed write path (the server assigns the id, provenance is kept in the copy\'s source field) and the local original is soft-retired with a superseded_by link — set keep_local:true to keep it active. Local targets (local, global, project:*): the scope is rewritten in place, preserving id and activation. The target must be local/global/project:* or a scope with a configured writable store — anything else fails early (typo protection). Content is re-scanned for secrets/sensitive material before any shared/remote target and a hit blocks the move. Batch via ids; dry_run:true previews every decision without mutating anything. NOT candidate activation — that is plur_promote.',
       // NOT destructive: a rescope never removes content. A local target
       // rewrites the scope in place (same id, same activation); a remote
       // target retires the local original only after the copy was pushed, and
@@ -4813,7 +4813,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
 
     {
       name: 'plur_tensions',
-      description: 'Tension lifecycle (#181). Default: list persisted tension records (unresolved first). scan:true runs an LLM contradiction scan, persists NEW detections as records, and skips already-recorded pairs. Lifecycle actions: action:"confirm" (real conflict), action:"dismiss" (false positive — pair suppressed from future scans), action:"resolve" + winner:<engram_id> (loser engram retired). Scan requires OPENAI_API_KEY or OPENROUTER_API_KEY env var, or explicit llm_base_url + llm_api_key args.',
+      description: 'Tension lifecycle. Default: list persisted tension records (unresolved first). scan:true runs an LLM contradiction scan, persists NEW detections as records, and skips already-recorded pairs. Lifecycle actions: action:"confirm" (real conflict), action:"dismiss" (false positive — pair suppressed from future scans), action:"resolve" + winner:<engram_id> (loser engram retired). Scan requires OPENAI_API_KEY or OPENROUTER_API_KEY env var, or explicit llm_base_url + llm_api_key args.',
       // Not idempotent: scan persists each NEW detection, and an LLM judge
       // can find new pairs on a repeat call.
       // Destructive: action "resolve" retires the losing engram with no copy
@@ -4839,7 +4839,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
           min_confidence: { type: 'number', description: 'Minimum confidence threshold for scan mode (0–1, default: 0.7)' },
           max_pairs: { type: 'number', description: 'Maximum candidate pairs to evaluate in scan mode (default: 50)' },
           batch_size: { type: 'number', description: 'Pairs judged per LLM call in scan mode (default: 5). Set to 1 for sequential single-pair judging.' },
-          temporal_discount: { type: 'boolean', description: 'Multiply judge confidence by a days-apart ladder (same day x1.0 ... 15+ days x0.3) in scan mode (#240). Overrides the config default (tensions.temporal_discount, off by default). The judge prompt already carries recorded dates; enable this only when date-aware judging alone leaves too many temporal-evolution false positives.' },
+          temporal_discount: { type: 'boolean', description: 'Multiply judge confidence by a days-apart ladder (same day x1.0 ... 15+ days x0.3) in scan mode. Overrides the config default (tensions.temporal_discount, off by default). The judge prompt already carries recorded dates; enable this only when date-aware judging alone leaves too many temporal-evolution false positives.' },
         },
       },
       handler: async (args, plur) => {
@@ -4960,7 +4960,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
           count: records.length,
           ...(legacy.length > 0 ? {
             legacy_conflicts: legacy,
-            purge_hint: 'legacy_conflicts are unvalidated relations.conflicts refs (importer heuristics or pre-#138 residue) — run scan:true to judge them, or plur_tensions_purge to clear them.',
+            purge_hint: 'legacy_conflicts are unvalidated relations.conflicts refs (importer heuristics or older residue) — run scan:true to judge them, or plur_tensions_purge to clear them.',
           } : {}),
           ...(records.length === 0 && legacy.length === 0
             ? { hint: 'No persisted tensions. Run scan:true to detect contradictions.' }

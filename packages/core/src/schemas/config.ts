@@ -53,7 +53,7 @@ export const StoreEntrySchema = z.object({
    */
   dial: z.enum(['always', 'never']).optional().catch(undefined),
   description: z.string().optional()
-    .describe('Human-readable explanation of what this scope is for (#345). Surfaced in store/scope discovery.'),
+    .describe('Human-readable explanation of what this scope is for. Surfaced in store/scope discovery.'),
   // `covers` and `sensitivity` are shape-tolerant: a malformed SHAPE
   // (e.g. `covers: 5`, `sensitivity: 'oops'`) must NOT fail the whole StoreEntry
   // safeParse — otherwise loadConfig drops the entry incl. its url/token.
@@ -62,12 +62,12 @@ export const StoreEntrySchema = z.object({
   // scalar `allow`/`forbid`) is handled field-by-field inside
   // ScopeSensitivitySchema, which never throws.
   covers: z.preprocess((val) => (Array.isArray(val) ? val.filter((x) => typeof x === 'string') : undefined), z.array(z.string()).optional())
-    .describe('Topics/domains this scope is the home for (#345). Advisory; surfaced in discovery. A non-array shape coerces to undefined (not fatal) so it never drops the whole store entry.'),
+    .describe('Topics/domains this scope is the home for. Advisory; surfaced in discovery. A non-array shape coerces to undefined (not fatal) so it never drops the whole store entry.'),
   sensitivity: z.preprocess(
     (val) => (val != null && typeof val === 'object' && !Array.isArray(val) ? val : undefined),
     ScopeSensitivitySchema.optional(),
   )
-    .describe("Per-scope sensitivity policy (#345) consumed by the write-time leak guard. When present, overrides the default shared-scope demote-everything behavior for this scope. A non-object shape coerces to undefined (not fatal) so it never drops the whole store entry."),
+    .describe("Per-scope sensitivity policy consumed by the write-time leak guard. When present, overrides the default shared-scope demote-everything behavior for this scope. A non-object shape coerces to undefined (not fatal) so it never drops the whole store entry."),
 })
   // Preserve unknown/future TOP-LEVEL store fields on a successful parse, so a config written by a NEWER PLUR (extra top-level keys) is not
   // silently stripped when an OLDER PLUR re-parses and writes it back. The

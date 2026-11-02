@@ -249,7 +249,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
  */
 export function skippedStoreLines(skipped: Array<{ path: string; folder: string }>, root: string): string[] {
   if (skipped.length === 0) return []
-  const lines = ['', `Found ${skipped.length === 1 ? 'a memory store that was' : `${skipped.length} memory stores that were`} not added, because ${skipped.length === 1 ? 'its folder has' : 'their folders have'} no decision of ${skipped.length === 1 ? 'its' : 'their'} own (#1588):`]
+  const lines = ['', `Found ${skipped.length === 1 ? 'a memory store that was' : `${skipped.length} memory stores that were`} not added, because ${skipped.length === 1 ? 'its folder has' : 'their folders have'} no decision of ${skipped.length === 1 ? 'its' : 'their'} own:`]
   for (const s of skipped) {
     const command = folderSetOnCommand(s.folder, root)
     // The path is data, never a shell word: escaped, so a pasted line runs

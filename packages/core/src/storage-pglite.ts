@@ -774,7 +774,7 @@ export class PGLiteAdapter implements DerivedIndexAdapter {
       if (vector.length !== expectedDim) {
         throw new Error(
           `[pglite] Refusing to persist a ${vector.length}-dim embedding for "${engramId}": ` +
-          `this store's embedding ${this.hasVector ? 'column' : 'table'} is ${expectedDim}-dim (#335). ` +
+          `this store's embedding ${this.hasVector ? 'column' : 'table'} is ${expectedDim}-dim. ` +
           `The active embedder (PLUR_EMBEDDER) and the indexed store must agree — ` +
           `run 'plur sync --reembed --full' to rebuild the index at the active embedder's dim.`,
         )

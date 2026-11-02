@@ -14,7 +14,7 @@ import { computeContentHash, isHashable } from '../content-hash.js'
  */
 export const migration: Migration = {
   id: '20260813-006-recompute-content-hashes',
-  description: 'Recompute content_hash with the Unicode-aware normalizer (#896, #911)',
+  description: 'Recompute content_hash with the Unicode-aware normalizer',
   up(engrams: Engram[]): Engram[] {
     return engrams.map(e => {
       if (!e.statement || !isHashable(e.statement)) return e

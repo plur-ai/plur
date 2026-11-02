@@ -526,7 +526,7 @@ export function appendHistoryStamped(
       logger.warning(
         `[plur] history could not be written to ${filePath}: ${(err as Error).message}. ` +
         `The operation itself succeeded. While this persists, \`plur restore\` cannot name ` +
-        `unrecoverable engrams and engram-id allocation loses its cross-compaction guarantee (#816).`,
+        `unrecoverable engrams and engram-id allocation loses its cross-compaction guarantee.`,
       )
     }
     return false
