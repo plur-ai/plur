@@ -879,7 +879,7 @@ function resolveExplicitFolderPolicy(dir: string, opts: FolderPolicyOptions): Fo
 // Writes (CLI only): set / remove, with the nonce and shared-scope guards.
 // ---------------------------------------------------------------------------
 
-export type FolderMapErrorCode = 'malformed' | 'nonce-required' | 'nonce-unknown' | 'nonce-expired' | 'nonce-folder' | 'nonce-answer' | 'nonce-session' | 'scope-unconfigured' | 'invalid' | 'covers-home'
+export type FolderMapErrorCode = 'malformed' | 'nonce-required' | 'nonce-unknown' | 'nonce-expired' | 'nonce-folder' | 'nonce-answer' | 'nonce-session' | 'nonce-stale' | 'scope-unconfigured' | 'invalid' | 'covers-home'
 
 export class FolderMapError extends Error {
   constructor(public readonly code: FolderMapErrorCode, message: string) {
@@ -950,6 +950,11 @@ export interface SetFolderOptions {
   stores?: readonly StoreEntry[]
   /** Present when the write comes from the ask flow. */
   nonce?: string
+  /**
+   * The git default scopes the folder question was resolved with, so a
+   * nonce-redeemed write sees the folder's policy as the question did.
+   */
+  gitScopes?: readonly GitScopeSource[]
   /**
    * The session the redeeming command runs in, when its host says so
    * (PLUR_FOLDER_SESSION). Only that session's nonces are
@@ -1176,6 +1181,7 @@ function setFolderEntryUnlocked(root: string, folder: string, change: FolderChan
   const map = loadForWrite(root)
   const literal = opts.literal === true
   const consume = opts.nonce !== undefined ? verifyFolderNonce(root, opts.nonce, folder, change, opts.now, home, literal, opts.session) : null
+  if (consume) refuseIfDecided(root, folder, home, opts.gitScopes)
   const key = folderEntryKey(folder, home, literal)
   const { applied, nameOnly } = findEntryIndex(map.folders, folder, home, literal)
   // Every entry for this folder merges into ONE, keeping what is in effect except
@@ -1281,21 +1287,37 @@ function setFolderEntryUnlocked(root: string, folder: string, change: FolderChan
 }
 
 /**
+ * A folder question is shown only while the folder is undecided (`ask`), and
+ * its nonce answers that question. Refuse the nonce-redeemed write when the
+ * folder has been decided another way since (by hand, or by a parent entry):
+ * nothing is written and the nonce is not consumed. "Not now" writes nothing
+ * and is not checked here.
+ */
+function refuseIfDecided(root: string, folder: string, home: string, gitScopes?: readonly GitScopeSource[]): void {
+  const policy = resolveFolderPolicy(folder, { root, home, readOnly: true, ...(gitScopes ? { gitScopes } : {}) })
+  if (policy.mode === 'ask') return
+  throw new FolderMapError('nonce-stale',
+    `${escapedPath(folder)} was decided another way after this question was shown (memory there is now ${policy.mode}), ` +
+    'so this answer no longer applies; nothing was changed. See plur folders list, or change it by hand with plur folders set.')
+}
+
+/**
  * Remove the entry for `folder` (exact entry, not a covering one). Returns
  * whether one was removed. A `nonce` (from the ask flow) is checked like
  * `setFolderEntry`'s and consumed only when an entry was removed and saved.
  */
 export function removeFolderEntry(
-  root: string, folder: string, home: string = homedir(), opts?: { nonce?: string; now?: number; session?: string },
+  root: string, folder: string, home: string = homedir(), opts?: { nonce?: string; now?: number; session?: string; gitScopes?: readonly GitScopeSource[] },
 ): boolean {
   return locked(root, () => removeFolderEntryUnlocked(root, folder, home, opts))
 }
 
 function removeFolderEntryUnlocked(
-  root: string, folder: string, home: string, opts?: { nonce?: string; now?: number; session?: string },
+  root: string, folder: string, home: string, opts?: { nonce?: string; now?: number; session?: string; gitScopes?: readonly GitScopeSource[] },
 ): boolean {
   const map = loadForWrite(root)
   const consume = opts?.nonce !== undefined ? verifyFolderNonce(root, opts.nonce, folder, { remove: true }, opts.now, home, false, opts.session) : null
+  if (consume) refuseIfDecided(root, folder, home, opts?.gitScopes)
   const { applied, nameOnly } = findEntryIndex(map.folders, folder, home)
   const matched = [...applied, ...nameOnly]
   if (matched.length === 0) return false

@@ -57,8 +57,10 @@ export function isPersonalScope(scope: string): boolean {
  * `project:app`, `project:app:sub`, and `project:app/x` but NOT `project:application`.
  *
  * Use everywhere a read-side filter or store-load gate decides scope membership.
- * The SQL paths (storage-indexed, storage-pglite) inline the equivalent:
- *   `scope = ? OR scope LIKE ?||':%' OR scope LIKE ?||'/%'`.
+ * The SQL paths inline the equivalent, case-sensitively like this function:
+ * storage-pglite/-postgres as `scope = $n OR scope LIKE $n||':%' OR ...` (LIKE
+ * is case-sensitive there), storage-indexed as `instr(scope, ?||':') = 1`
+ * (SQLite LIKE case-folds).
  */
 export function isScopeWithin(scope: string, queryScope: string): boolean {
   return scope === queryScope

@@ -466,8 +466,24 @@ theorem unresolved_session_no_default (r : Registry) (proj : Option String) (a :
     effScopeW r (endCtx r proj a) = none := by
   simp [effScopeW, learnCtx, batchCtx, endCtx, hres, hsc]
 
-theorem fixed_ambiguous_no_default :
-    effScopeW twoSessions (learnCtx twoSessions none noId) = none := rfl
+/-- An id-less write takes no session default unless exactly one session is
+open, for every registry: zero or several open sessions give nothing, whatever
+the process slot and the keyed registrations hold; one open session gives its
+own registration. -/
+theorem fixed_ambiguous_no_default (r : Registry) (proj : Option String) :
+    (r.open_.length ≠ 1 → effScopeW r (learnCtx r proj noId) = none) ∧
+    (∀ s, r.open_ = [s] → effScopeW r (learnCtx r proj noId) = r.get (some s)) := by
+  constructor
+  · intro h
+    have : resolveSession r none = none := by
+      unfold resolveSession
+      match hr : r.open_ with
+      | [] => rfl
+      | [s] => simp [hr] at h
+      | _ :: _ :: _ => rfl
+    simp [effScopeW, learnCtx, noId, this]
+  · intro s hs
+    simp [effScopeW, learnCtx, noId, resolveSession, hs]
 /-- Zero sessions open: a stale process slot is not used either. -/
 theorem fixed_no_session_ignores_slot :
     effScopeW { keyed := [], dflt := some "group:acme/eng", open_ := [] }
@@ -695,8 +711,55 @@ def mergeCursorOrig (c : CursorCfg) (adds : List Entry) : CursorCfg :=
 def mergeCursor (c : CursorCfg) (adds : List Entry) : CursorCfg :=
   { c with hooks := strip c.hooks ++ adds }
 
-theorem cursor_keeps_extra (c : CursorCfg) (adds : List Entry) :
-    (mergeCursor c adds).extra = c.extra := rfl
+/-- hooks.json as the JSON object it is: key/value pairs, lookup reads the
+first binding. `set` is a spread that overrides one key. -/
+abbrev Obj := List (String × String)
+def Obj.set (o : Obj) (k v : String) : Obj := (k, v) :: o.filter (fun p => p.1 != k)
+
+theorem obj_lookup_filter_ne (o : Obj) (k k' : String) (h : k' ≠ k) :
+    (o.filter (fun p => p.1 != k)).lookup k' = o.lookup k' := by
+  induction o with
+  | nil => rfl
+  | cons p t ih =>
+    obtain ⟨a, b⟩ := p
+    by_cases ha : a = k
+    · subst ha
+      have : (k' == a) = false := by simp [h]
+      simp [List.filter, List.lookup, this, ih]
+    · have : (a != k) = true := by simp [ha]
+      simp only [List.filter, this, List.lookup]
+      split <;> simp_all
+
+theorem obj_set_lookup_ne (o : Obj) (k v k' : String) (h : k' ≠ k) :
+    (o.set k v).lookup k' = o.lookup k' := by
+  have : (k' == k) = false := by simp [h]
+  simp [Obj.set, List.lookup, this, obj_lookup_filter_ne o k k' h]
+
+theorem obj_set_lookup_eq (o : Obj) (k v : String) : (o.set k v).lookup k = some v := by
+  simp [Obj.set]
+
+/-- `mergeCursorHooks`: `clean = { ...config, hooks: stripped }`, then
+`{ ...clean, version: clean.version ?? 1, hooks }`. Hook lists are opaque here
+(the hooks value is `merge`'s, §3). -/
+def mergeCursorObj (o : Obj) (hooks : String) : Obj :=
+  (o.set "hooks" hooks).set "version" ((o.lookup "version").getD "1")
+/-- The shape that rebuilt the object from `version` and `hooks` only. -/
+def mergeCursorObjOrig (o : Obj) (hooks : String) : Obj :=
+  [("version", (o.lookup "version").getD "1"), ("hooks", hooks)]
+
+/-- For every hooks.json object: every key other than `hooks` and `version`
+reads back unchanged, a present `version` is kept, and `hooks` is the merged list. -/
+theorem cursor_keeps_extra (o : Obj) (hooks : String) :
+    (∀ k, k ≠ "hooks" → k ≠ "version" → (mergeCursorObj o hooks).lookup k = o.lookup k) ∧
+    (∀ v, o.lookup "version" = some v → (mergeCursorObj o hooks).lookup "version" = some v) ∧
+    (mergeCursorObj o hooks).lookup "hooks" = some hooks := by
+  refine ⟨fun k hh hv => ?_, fun v hv => ?_, ?_⟩
+  · simp only [mergeCursorObj]; rw [obj_set_lookup_ne _ _ _ _ hv, obj_set_lookup_ne _ _ _ _ hh]
+  · simp [mergeCursorObj, obj_set_lookup_eq, hv]
+  · simp only [mergeCursorObj]; rw [obj_set_lookup_ne _ _ _ _ (by decide), obj_set_lookup_eq]
+
+theorem orig_cursor_obj_drops_extra :
+    (mergeCursorObjOrig [("$schema", "x")] "h").lookup "$schema" = none := by decide
 theorem cursor_idempotent (c : CursorCfg) (adds : List Entry) (h : Installable adds) :
     mergeCursor (mergeCursor c adds) adds = mergeCursor c adds := by
   simp only [mergeCursor]

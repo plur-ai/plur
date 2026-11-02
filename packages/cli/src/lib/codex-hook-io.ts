@@ -235,20 +235,15 @@ export function isSessionStarted(sessionId: string): boolean {
 }
 
 /**
- * Read-modify-write a small integer counter file. Used for the guard's
- * block count and the learn-nudge cadence. Not atomic — two hooks racing on
- * the same counter can lose an increment, which costs at most one extra
- * nudge and is not worth a lock file.
+ * Per-session counter for the guard's block count and the learn-nudge
+ * cadence. Every caller gets a distinct value (ticketCounter): with a
+ * read-then-write counter, parallel PreToolUse hooks all read the same count
+ * and the guard denies each of them instead of nudging once.
  */
 export function incrementCounter(path: string): number {
   if (!ensureDir()) return Number.MAX_SAFE_INTEGER // untrustable dir — same fail-open as an unwritable one
-  let n = 0
   try {
-    n = parseInt(readFileSync(path, 'utf8').trim(), 10) || 0
-  } catch { /* first increment */ }
-  n += 1
-  try {
-    writeFileSync(path, String(n), { mode: 0o600 })
+    return ticketCounter(path)
   } catch {
     // A counter that cannot be persisted cannot bound anything: returning 1
     // here would never exceed MAX_BLOCKS_BEFORE_FALLBACK, and the guard would
@@ -256,7 +251,6 @@ export function incrementCounter(path: string): number {
     // exceeded so callers fail OPEN (the documented posture for these hooks).
     return Number.MAX_SAFE_INTEGER
   }
-  return n
 }
 
 /**

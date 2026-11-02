@@ -471,3 +471,43 @@ models:
       - packages/core/src/atomic-write.ts
       - packages/gateway/src/client.ts
       - packages/gateway/src/llm.ts
+  - model: PlurSpec/BackendScopes.lean
+    covers:
+      - packages/core/src/storage-pglite.ts
+      - packages/core/src/storage-postgres.ts
+      - packages/core/src/storage-indexed.ts
+      - packages/core/src/store/remote-only-store-guard.ts
+      - packages/core/src/scope-util.ts
+      - packages/core/src/remote-only.ts
+  - model: PlurSpec/FolderRules.lean
+    covers:
+      - packages/core/src/folder-map-check.ts
+      - packages/core/src/folder-ask.ts
+      - packages/core/src/folder-map-text.ts
+      - packages/core/src/folders.ts
+      - packages/mcp/src/folder-gate.ts
+      - packages/core/src/plur/folders-policy.ts
+  - model: PlurSpec/HookCounters.lean
+    covers:
+      - packages/cli/src/lib/codex-hook-io.ts
+      - packages/cli/src/lib/cursor-hook-io.ts
+      - packages/cli/src/lib/agy-hook-io.ts
+      - packages/cli/src/lib/auto-rate.ts
+      - packages/cli/src/commands/hook-auto-rate.ts
+      - packages/cli/src/commands/hook-learn-check.ts
+      - packages/core/src/store/async-lock.ts
+  - model: PlurSpec/SecretsInstall.lean
+    covers:
+      - packages/core/src/secrets.ts
+      - packages/core/src/instruction-section.ts
+      - packages/cli/src/mcp-config.ts
+  - model: PlurSpec/RemoteHealth.lean
+    covers:
+      - packages/core/src/remote-recall.ts
+      - packages/core/src/store/remote-store.ts
+      - packages/core/src/seen-on-server.ts
+      - packages/core/src/plur/remote-results.ts
+  - model: PlurSpec/McpTools.lean
+    covers:
+      - packages/mcp/src/tools.ts
+      - packages/mcp/src/server.ts

@@ -728,7 +728,8 @@ describe('writes: nonce and shared-scope guards', () => {
 
   it('rm from the ask flow takes a nonce too, and a failed rm does not consume it', () => {
     const d = mk('rm-nonce')
-    setFolderEntry(root, d, { mode: 'off' }, { configuredScopes: [], home })
+    // An undecided (ask) entry: a nonce answers the question of an undecided folder.
+    setFolderEntry(root, d, { mode: 'ask' }, { configuredScopes: [], home })
     const other = mk('rm-other')
     const n = issueFolderNonce(root, 'sess-rm', d, { remove: true })
     expect(() => removeFolderEntry(root, other, home, { nonce: n })).toThrow(expect.objectContaining({ code: 'nonce-folder' }))
@@ -1021,6 +1022,8 @@ describe('nonce binding to the answer (#1378)', () => {
     const d = mk('bind-rm')
     const t = issueFolderNonce(root, 'sess-b3', d, { trusted: true })
     expect(setFolderEntry(root, d, { trusted: true }, opts(t)).trusted).toBe(true)
+    // Back to undecided, so the later nonces answer an open question.
+    setFolderEntry(root, d, { mode: 'ask' }, { configuredScopes: [], home })
     const off = issueFolderNonce(root, 'sess-b3', d, { mode: 'off' })
     expect(() => removeFolderEntry(root, d, home, { nonce: off })).toThrow(expect.objectContaining({ code: 'nonce-answer' }))
     const rm = issueFolderNonce(root, 'sess-b3', d, { remove: true })

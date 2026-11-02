@@ -1,0 +1,180 @@
+anchors:
+  packages/dsh/src/capture.ts#CaptureDeps:
+    kind: note
+    why: "A wiring instruction for maintainers: the write queue must be the shared one."
+  packages/dsh/src/capture.ts#registerCapture:
+    kind: guarantee
+    rule: "Episode capture never makes a turn wait on a store write, and writes from two live sessions go through one queue and never interleave."
+    none: "no test checks that a turn does not wait on capture"
+  packages/dsh/src/client.ts#ReadScope:
+    kind: note
+    why: "Documents the shape of the read filter; the rule that both fields are set is enforced by readScope."
+  packages/dsh/src/commands.ts#registerCommands.handler:
+    kind: guarantee
+    rule: "The memory-viewer command reports a failure to start as a result with the reason, never by throwing into the host."
+    tests: ["packages/dsh/test/viewer.test.ts::reports a start failure as text instead of throwing into the host"]
+  packages/dsh/src/config.ts#Config:
+    kind: guarantee
+    rule: "Without a configured scope each workspace gets its own derived scope, never one shared default and never global, and writes always go to that workspace scope."
+    tests: ["packages/dsh/test/config.test.ts::honours an explicit scope, and never the ambient global store", "packages/dsh/test/scope.test.ts::does not pool two clients that named their directory the same thing"]
+  packages/dsh/src/engine.ts#Engine:
+    kind: guarantee
+    rule: "The directory trust check answers false when the engine is unavailable or the check throws, so the workspace-scope gate fails closed."
+    tests: ["packages/dsh/test/formal-apply-surface-trust.test.ts::a throwing trust check fails closed"]
+  packages/dsh/src/engine.ts#loadEngine:
+    kind: guarantee
+    rule: "If core cannot be loaded, the plugin degrades to no memory instead of crashing the host."
+    tests: ["packages/dsh/test/engine.test.ts::survives a constructor that throws, e.g. a WASM store that will not init"]
+  packages/dsh/src/guard.ts#createWriteQueue:
+    kind: guarantee
+    rule: "A failed write never breaks serialisation for the writes queued after it."
+    tests: ["packages/dsh/test/guard.test.ts::a rejected write does not poison the queue"]
+  packages/dsh/src/guard.ts#guard:
+    kind: guarantee
+    rule: "A guarded PLUR call never rejects: any throw, rejection or timeout becomes undefined, and its timer never keeps the process alive."
+    tests: ["packages/dsh/test/guard.test.ts::never rejects, even when the error observer itself throws", "packages/dsh/test/guard.test.ts::does not leave a pending timer after a fast success"]
+  packages/dsh/src/guard.ts#GuardOptions:
+    kind: guarantee
+    rule: "A PLUR failure never fails the host agent's turn."
+    tests: ["packages/dsh/test/plugin.test.ts::does not reject when recall throws"]
+  packages/dsh/src/guard.ts#writable:
+    kind: guarantee
+    rule: "A write is reported as done only when a loaded engine actually performed it."
+    lean: ["PlurSpec/Adapters.lean:dsh_report_truthful"]
+    tests: ["packages/dsh/test/formal-adapters-dsh.test.ts::with core unloadable, plur_learn does not say \"Stored.\" and counts nothing"]
+  packages/dsh/src/index.ts#apply:
+    kind: guarantee
+    rule: "Refreshing the memory block is not awaited, so a slow or wedged store never stalls the turn."
+    tests: ["packages/dsh/test/integration.test.ts::a hung store does not stall the turn"]
+  packages/dsh/src/index.ts#block:
+    kind: guarantee
+    rule: "Rendering runs inside the guard, so a malformed engram never escapes into the host."
+    tests: ["packages/dsh/test/hostile.test.ts::survives a getter that throws when read"]
+  packages/dsh/src/index.ts#disposeSection.text:
+    kind: guarantee
+    rule: "The prompt section is synchronous and read from cache only, so prompt assembly never waits on the store; an assembly with no agent gets no memory."
+    tests: ["packages/dsh/test/plugin.test.ts::the section text provider is synchronous and returns a string", "packages/dsh/test/host-conformance.test.ts::renders nothing for an assembly that carries no agent"]
+  packages/dsh/src/index.ts#MAX_TRACKED_AGENTS:
+    kind: guarantee
+    rule: "Cached state for live agents stays bounded even when the host never reports an agent disposed."
+    tests: ["packages/dsh/test/hostile.test.ts::caps tracked agents even when the host never emits agent/disposed"]
+  packages/dsh/src/index.ts#trusts:
+    kind: guarantee
+    rule: "A workspace scope is adopted only from a trusted directory, and scope global never."
+    lean: ["PlurSpec/Adapters.lean:untrusted_never_adopted", "PlurSpec/Adapters.lean:dsh_never_global"]
+    tests: ["packages/dsh/test/formal-apply-surface-trust.test.ts::never the ambient global store: `scope: global` in a trusted workspace is not adopted"]
+  packages/dsh/src/index.ts#viewer:
+    kind: note
+    why: "Explains a host quirk: reading an undeclared service throws before any typeof guard runs."
+  packages/dsh/src/learn.ts#LearnDeps:
+    kind: note
+    why: "A wiring instruction for maintainers: the write queue must be the shared one."
+  packages/dsh/src/learn.ts#PATTERNS:
+    kind: guarantee
+    rule: "Auto-learning fires only on high-precision correction patterns, not on ordinary sentences that happen to contain never or always."
+    tests: ["packages/dsh/test/learn.test.ts::does not learn from: "]
+  packages/dsh/src/learn.ts#registerLearning:
+    kind: guarantee
+    rule: "Auto-learn counts a capture only when a loaded engine performed the write."
+    lean: ["PlurSpec/Adapters.lean:dsh_report_truthful"]
+    tests: ["packages/dsh/test/formal-adapters-dsh.test.ts::auto-learn does not count a capture the facade silently dropped"]
+  packages/dsh/src/memory-section.ts#assemble:
+    kind: guarantee
+    rule: "Constraints come first in the memory block and are the last section dropped under budget pressure."
+    tests: ["packages/dsh/test/memory-section.test.ts::drops DIRECTIVES before CONSTRAINTS when over budget"]
+  packages/dsh/src/memory-section.ts#createMemoryCache:
+    kind: guarantee
+    rule: "An unchanged memory set never rewrites the system prompt."
+    tests: ["packages/dsh/test/memory-section.test.ts::write returns true on change and false when unchanged", "packages/dsh/test/integration.test.ts::an unchanged memory set leaves the prompt byte-identical"]
+  packages/dsh/src/memory-section.ts#MemoryCache:
+    kind: note
+    why: "Interface doc for a plain map read; never-throws is trivially true."
+  packages/dsh/src/memory-section.ts#renderBlock:
+    kind: guarantee
+    rule: "Sections are dropped whole, never cut mid-engram; constraints are never dropped silently: when not even the WITHHELD notice fits, the notice is emitted past the budget."
+    tests: ["packages/dsh/test/memory-section.test.ts::emits nothing rather than a truncated engram when even directives overflow", "packages/dsh/test/memory-section.test.ts::never sheds CONSTRAINTS silently", "packages/dsh/test/memory-section.test.ts::shows the withheld notice alone when not even the notice fits the budget"]
+  packages/dsh/src/scope.ts#createScopeResolver:
+    kind: guarantee
+    rule: "An agent's scope is the workspace's declared scope or the configured default, never the global store; a broken workspace file narrows to the default."
+    tests: ["packages/dsh/test/scope.test.ts::never returns the ambient global store", "packages/dsh/test/scope.test.ts::falls back to the default when the workspace read throws"]
+  packages/dsh/src/scope.ts#createScopeResolver.resolve:
+    kind: guarantee
+    rule: "Unconfigured workspaces never share one default scope; each gets a scope derived from its path."
+    tests: ["packages/dsh/test/scope.test.ts::does not pool two clients that named their directory the same thing"]
+  packages/dsh/src/scope.ts#readScope:
+    kind: guarantee
+    rule: "Every read carries the exact scope allow-list, so one project's memories never reach another project's prompt."
+    tests: ["packages/dsh/test/scope-isolation.test.ts::plur_recall in workspace A does not read workspace B scope"]
+  packages/dsh/src/scope.ts#ScopeResolver:
+    kind: guarantee
+    rule: "The resolved scope for an agent is never the global store."
+    tests: ["packages/dsh/test/scope.test.ts::never returns the ambient global store"]
+  packages/dsh/src/session-log.ts#recallQueryFrom:
+    kind: guarantee
+    rule: "The recall query is built from user messages only; another plugin's injected context never becomes the query."
+    tests: ["packages/dsh/test/session-log.test.ts::ignores plugin-sourced context so recall never drifts onto its own output"]
+  packages/dsh/src/session-log.ts#textOf:
+    kind: guarantee
+    rule: "Extracting text from a message never throws, whatever its shape."
+    tests: ["packages/dsh/test/session-log.test.ts::tolerates malformed content without throwing"]
+  packages/dsh/src/skills.ts#registerSkills:
+    kind: guarantee
+    rule: "A host that rejects the skill does not stop memory working."
+    none: "no test makes skill registration throw"
+  packages/dsh/src/tools.ts#body:
+    kind: guarantee
+    rule: "A tool call never throws into the host; a failing store becomes a message."
+    tests: ["packages/dsh/test/tools.test.ts::a failing store degrades to a message instead of throwing into the host"]
+  packages/dsh/src/tools.ts#registerTools:
+    kind: guarantee
+    rule: "A tool definition the host rejects does not abort plugin mount."
+    none: "no test makes tool registration throw"
+  packages/dsh/src/viewer.ts#(module):
+    kind: note
+    why: "Explains why the viewer is imported lazily."
+  packages/dsh/src/viewer.ts#createViewer:
+    kind: guarantee
+    rule: "The memory viewer never writes to the engine."
+    none: "no test checks that the viewer performs no writes"
+  packages/dsh/src/viewer.ts#ready:
+    kind: guarantee
+    rule: "An engine that failed to load is reported as an error, not served as an empty store."
+    none: "no test opens the viewer on an engine whose ready() is false"
+  packages/dsh/src/viewer.ts#starting:
+    kind: guarantee
+    rule: "Concurrent viewer opens start one server, never two."
+    tests: ["packages/dsh/test/viewer.test.ts::does not race two servers when opened concurrently"]
+  packages/dsh/src/viewer.ts#storePath:
+    kind: guarantee
+    rule: "A failing status call does not stop the viewer serving memory."
+    tests: ["packages/dsh/test/viewer.test.ts::still serves when status is broken"]
+  packages/dsh/src/viewer.ts#ViewerController:
+    kind: guarantee
+    rule: "Opening the viewer twice hands back the same URL rather than starting a second server."
+    tests: ["packages/dsh/test/viewer.test.ts::reuses the running server instead of leaking a second one"]
+  packages/dsh/src/workspace-scope.ts#(module):
+    kind: guarantee
+    rule: "The search for a workspace's .plur.yaml stops at the git root, so a project never inherits a parent project's scope."
+    tests: ["packages/dsh/test/workspace-scope.test.ts::stops at the git root rather than escaping into a parent project"]
+  packages/dsh/src/workspace-scope.ts#findWorkspaceScope:
+    kind: guarantee
+    rule: "Finding the declared scope never throws and stops at the git root."
+    tests: ["packages/dsh/test/workspace-scope.test.ts::stops at the git root rather than escaping into a parent project", "packages/dsh/test/workspace-scope.test.ts::returns undefined on malformed YAML rather than throwing"]
+  packages/dsh/src/workspace-scope.ts#readWorkspaceScope:
+    kind: guarantee
+    rule: "Reading a workspace scope never throws; an unreadable or malformed file narrows to the default instead of widening."
+    tests: ["packages/dsh/test/workspace-scope.test.ts::returns undefined on malformed YAML rather than throwing"]
+  packages/dsh/src/workspace-scope.ts#shellWord:
+    kind: guarantee
+    rule: "A printed command is never offered for a path holding characters the shell would expand, or a line-break, bidi or zero-width character."
+    none: "no test exercises this copy of the quoting rule"
+  packages/dsh/src/workspace-scope.ts#trustedWorkspaceScope:
+    kind: guarantee
+    rule: "A declared scope is adopted only from a trusted directory and never when it is global; a throwing trust check fails closed."
+    lean: ["PlurSpec/Adapters.lean:untrusted_never_adopted", "PlurSpec/Adapters.lean:dsh_never_global"]
+    tests: ["packages/dsh/test/formal-apply-surface-trust.test.ts::a throwing trust check fails closed", "packages/dsh/test/formal-apply-surface-trust.test.ts::untrusted: the declared scope is ignored"]
+  packages/dsh/src/workspace-scope.ts#trustRemedy:
+    kind: guarantee
+    rule: "The warning suggests plur trust only when granting trust can actually help."
+    lean: ["PlurSpec/Adapters.lean:remedy_honest"]
+    tests: ["packages/dsh/test/formal-audit-1228c.test.ts::an engine without isDirectoryTrusted: the warning does not promise"]

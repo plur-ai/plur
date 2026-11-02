@@ -1,0 +1,1670 @@
+anchors:
+  packages/core/src/actor-keys.ts#(module):
+    kind: guarantee
+    rule: >-
+      A private signing key is stored owner-only and never synced with the store; a signature from an unknown identity
+      is reported as a named failure, not skipped.
+    tests:
+      - "packages/core/test/actor-keys.test.ts::with --signatures: unknown signer is \"unknown_signer\", NOT a chain break"
+      - packages/core/test/actor-keys.test.ts::sets private key file mode to 0600
+  packages/core/src/actor-keys.ts#existing:
+    kind: guarantee
+    rule: Initialising a key for an identity that already has a valid key reuses it and does not overwrite it.
+    tests:
+      - >-
+        packages/core/test/actor-keys.test.ts::is idempotent: second call returns the same public key without
+        overwriting
+  packages/core/src/actor-keys.ts#initActorKey:
+    kind: guarantee
+    rule: >-
+      Initialising a key for an identity that already has a valid key reuses it; a new private key is written with
+      owner-only permissions.
+    tests:
+      - >-
+        packages/core/test/actor-keys.test.ts::is idempotent: second call returns the same public key without
+        overwriting
+      - packages/core/test/actor-keys.test.ts::sets private key file mode to 0600
+  packages/core/src/actor-keys.ts#keysDirFor:
+    kind: guarantee
+    rule: >-
+      A relative keys folder is resolved against the store, never against the process working directory, so every
+      process finds the same keys.
+    tests:
+      - packages/core/test/verify-review-0.23.test.ts::resolves against the store, not the process working directory
+  packages/core/src/actor-keys.ts#loadKeysRegistry:
+    kind: note
+    why: Describes loading behaviour (missing file is empty, unparseable file throws); the hard-rule wording is incidental.
+  packages/core/src/actor-keys.ts#loadPrivateKeyBuffer:
+    kind: guarantee
+    rule: A private key readable by group or world is refused for signing.
+    tests:
+      - packages/core/test/actor-keys.test.ts::throws when the key file has wrong permissions (group-readable)
+      - packages/core/test/actor-keys.test.ts::throws when the key file has world-readable permissions
+  packages/core/src/actor-keys.ts#registerPublicKey:
+    kind: guarantee
+    rule: Registering a public key writes the registry atomically, and re-registering the same key changes nothing.
+    tests:
+      - packages/core/test/actor-keys.test.ts::registering the same identity with the same key is a no-op (idempotent)
+      - packages/core/test/actor-keys.test.ts::writes keys.yaml atomically and with required fields
+  packages/core/src/actor-keys.ts#registry:
+    kind: guarantee
+    rule: A keys registry that cannot be parsed is refused and left as it is, never replaced by a fresh one.
+    tests:
+      - packages/core/test/actor-keys-audit.test.ts::refuses to overwrite an unparseable keys.yaml
+  packages/core/src/actor-keys.ts#safeFileName:
+    kind: guarantee
+    rule: Two different identities never map to the same key file name, and no file name contains a colon.
+    tests:
+      - packages/core/test/actor-keys-audit.test.ts::key file names carry no colon and distinct identities never collide
+  packages/core/src/actor-keys.ts#tmp:
+    kind: guarantee
+    rule: A private key file is written through a temp file and rename, so a crash never leaves a partial key.
+    tests:
+      - >-
+        packages/core/test/formal-secrets-install-keywrite.test.ts::a write that fails part way leaves no key file and
+        no temp file
+      - >-
+        packages/core/test/formal-secrets-install-keywrite.test.ts::a rename that fails leaves no key file and no temp
+        file
+  packages/core/src/async-mutex.ts#KeyedAsyncMutex.run:
+    kind: guarantee
+    rule: Evicting an idle per-key lock never lets two waiters on the same key hold different locks at once.
+    none: no test races eviction against a new waiter on the same key
+  packages/core/src/atomic-write.ts#(module):
+    kind: guarantee
+    rule: >-
+      On Windows, a credential write over a destination whose access list cannot be inspected is refused rather than
+      written unprotected.
+    lean:
+      - PlurSpec/Persistence.lean:refused_leaves_dest
+      - PlurSpec/Persistence.lean:unknown_creates_nothing
+    tests:
+      - "packages/core/test/codex2-atomic-first-write.test.ts::icacls output names no account (unparseable): refuses"
+  packages/core/src/atomic-write.ts#ALLOW_UNPROTECTED_ENV:
+    kind: guarantee
+    rule: >-
+      A credential write whose owner-only protection cannot be established is refused unless the owner opted out, and
+      every unprotected write the opt-out allows is reported.
+    lean:
+      - PlurSpec/Persistence.lean:allow_off_is_default
+      - PlurSpec/Persistence.lean:allow_wide_is_reported
+    tests:
+      - packages/core/test/config-owner-only.test.ts::still refused
+  packages/core/src/atomic-write.ts#AtomicWriteOptions:
+    kind: guarantee
+    rule: >-
+      A credential write on Windows makes the temp file owner-only and verifies it before writing any byte, or is
+      refused with the destination untouched.
+    lean:
+      - PlurSpec/Persistence.lean:secret_write_owner_only
+      - PlurSpec/Persistence.lean:secret_unprotectable_refused
+    tests:
+      - >-
+        packages/core/test/codex2-atomic-first-write.test.ts::secret write that cannot be protected (shared destination,
+        grant fails): refused, destination unchanged
+  packages/core/src/atomic-write.ts#REFUSED_CREDENTIAL_WRITE:
+    kind: guarantee
+    rule: The error for a refused credential write names the cause and the opt-out and never contains the content.
+    tests:
+      - >-
+        packages/core/test/config-owner-only.test.ts::a refused registerEnterpriseServer names the cause and the
+        opt-out, never the key
+  packages/core/src/atomic-write.ts#atomicWrite:
+    kind: guarantee
+    rule: >-
+      A store write either fully replaces the file or leaves it as it was, never half-written or empty after a crash,
+      never loosens the existing file mode, and leaves no temp file behind on failure.
+    lean:
+      - PlurSpec/Persistence.lean:secret_write_owner_only
+    tests:
+      - >-
+        packages/core/test/codex2-atomic-first-write.test.ts::a 0644 destination still ends at 0644 (mode preserved,
+        never widened mid-write)
+      - >-
+        packages/core/test/codex2-atomic-first-write.test.ts::never writes through a link planted at the temp name
+        (exclusive create)
+      - packages/core/test/telemetry-atomic-write.test.ts::never reuses a tmp path across writes to the same file
+    promises:
+      - DUR-2
+  packages/core/src/atomic-write.ts#fsyncDir:
+    kind: note
+    why: Explains why a failed directory fsync is best-effort and not an error; states no rule of its own.
+  packages/core/src/atomic-write.ts#refuseUnprotected:
+    kind: guarantee
+    rule: >-
+      A Windows credential write whose protection cannot be established throws and writes nothing, unless the opt-out is
+      set, in which case it is reported.
+    lean:
+      - PlurSpec/Persistence.lean:secret_unprotectable_refused
+      - PlurSpec/Persistence.lean:allow_wide_is_reported
+    tests:
+      - packages/core/test/config-owner-only.test.ts::a refusal is one line that names the cause and the opt-out
+  packages/core/src/atomic-write.ts#winAccount:
+    kind: guarantee
+    rule: >-
+      Ordinary writes never run the Windows access-list tool; credential writes always get a verified owner-only temp
+      file or are refused with nothing written.
+    lean:
+      - PlurSpec/Persistence.lean:ordinary_never_refused
+      - PlurSpec/Persistence.lean:secret_write_owner_only
+    tests:
+      - packages/core/test/codex2-atomic-first-write.test.ts::ordinary writes never call icacls
+      - >-
+        packages/core/test/codex2-atomic-first-write.test.ts::protection that cannot be verified: refuses, writes
+        nothing, destination unchanged
+  packages/core/src/backend-selection.ts#(module):
+    kind: guarantee
+    rule: PGLite is never chosen by store size, only when explicitly requested.
+    tests:
+      - packages/core/test/backend-selection.test.ts::never selects PGLite by size, at any corpus size
+  packages/core/src/backend-selection.ts#resolveBackendTier:
+    kind: guarantee
+    rule: >-
+      Choosing a backend never throws, never picks PGLite by size, and a fallback from the requested tier is always
+      reported.
+    tests:
+      - packages/core/test/backend-selection.test.ts::never selects PGLite by size, at any corpus size
+      - >-
+        packages/core/test/backend-selection.test.ts::caps at SQLite when the corpus wants Postgres but nothing is
+        configured
+      - >-
+        packages/core/test/backend-selection.test.ts::is total: nonsense counts degrade to the smallest tier rather than
+        throwing
+  packages/core/src/backend-selection.ts#v:
+    kind: guarantee
+    rule: >-
+      A backend override from the environment or config always wins over size, regardless of case or surrounding
+      whitespace.
+    tests:
+      - packages/core/test/backend-selection.test.ts::honours every tier name from the env var, whatever the size says
+  packages/core/src/backup.ts#(module):
+    kind: guarantee
+    rule: >-
+      A daily backup is taken only of a store that passes validation, under the store lock so never of a half-written
+      file, and never by a read-only instance.
+    tests:
+      - packages/core/test/backup.test.ts::REFUSES to snapshot a corrupt store, leaving the last good one intact
+      - packages/core/test/backup.test.ts::takes at most one snapshot per day
+  packages/core/src/backup.ts#SHRINK_TOLERANCE:
+    kind: guarantee
+    rule: A snapshot of a store that shrank more than the tolerance against the last known-good count is refused.
+    lean:
+      - PlurSpec/Persistence.lean:truncation_refused
+    tests:
+      - packages/core/test/backup.test.ts::REFUSES a snapshot of a truncated store, using the last good count
+  packages/core/src/backup.ts#aside:
+    kind: guarantee
+    rule: >-
+      An unverifiable same-day snapshot is set aside and replaced with a fresh verified one, so the day does not end
+      without a usable backup.
+    tests:
+      - >-
+        packages/core/test/audit-backup-snapshot.test.ts::replaces an unverifiable same-day snapshot with a fresh
+        verified one, keeping the old bytes aside
+  packages/core/src/backup.ts#baseline:
+    kind: guarantee
+    rule: >-
+      A shrink made by PLUR itself moves the backup baseline, while a file smaller than what PLUR last wrote is still
+      refused.
+    lean:
+      - PlurSpec/Persistence.lean:replay_rebaselines
+      - PlurSpec/Persistence.lean:replay_truncation_refused
+    tests:
+      - >-
+        packages/core/test/formal-apply-budget-backup.test.ts::a legitimate >10% removal by PLUR re-baselines: the next
+        day is snapshotted
+      - packages/core/test/formal-apply-budget-backup.test.ts::an external truncation (no PLUR write) is still refused
+  packages/core/src/backup.ts#invalid:
+    kind: guarantee
+    rule: >-
+      The backup gate judges each entry by the same rule the loader uses, so it never accepts entries the loader would
+      drop.
+    tests:
+      - packages/core/test/backup.test.ts::rejects schema-invalid entries
+  packages/core/src/backup.ts#maybeDailyBackup:
+    kind: guarantee
+    rule: A backup failure never makes the triggering write fail, and a store that fails the gate is reported.
+    none: no test makes the snapshot itself throw and checks the write still succeeds
+  packages/core/src/backup.ts#plan:
+    kind: guarantee
+    rule: A restore runs under the store lock and replaces the store atomically, refusing a backup that does not verify.
+    tests:
+      - packages/core/test/backup.test.ts::refuses to restore a backup whose bytes do not match its sidecar
+      - packages/core/test/backup.test.ts::refuses to restore a backup that does not itself validate
+  packages/core/src/backup.ts#recordLastWritten:
+    kind: note
+    why: Describes a best-effort bookkeeping helper that swallows its own errors; no user-facing rule.
+  packages/core/src/backup.ts#restoreBackup:
+    kind: guarantee
+    rule: >-
+      A restore is refused unless the backup verifies (unless forced), and the current store is moved aside, never
+      deleted.
+    tests:
+      - packages/core/test/backup.test.ts::restores and keeps the pre-restore store aside
+      - packages/core/test/backup.test.ts::refuses to restore a backup whose bytes do not match its sidecar
+  packages/core/src/backup.ts#sameDay:
+    kind: guarantee
+    rule: An intact same-day snapshot is never overwritten, even when the backup state file is lost.
+    tests:
+      - >-
+        packages/core/test/audit-backup-snapshot.test.ts::never overwrites a same-day recovery snapshot when state
+        metadata is lost
+  packages/core/src/backup.ts#strongest:
+    kind: guarantee
+    rule: >-
+      A missing or corrupt backup state file does not disable the shrink check; the strongest existing snapshot's count
+      is used as the baseline.
+    none: no test removes the state file and checks a truncated store is still refused
+  packages/core/src/backup.ts#validateStore:
+    kind: guarantee
+    rule: >-
+      A store file that does not parse, has invalid entries or empty ids, is empty or lacks a final newline, or shrank
+      past tolerance, is not fit to back up or restore from.
+    tests:
+      - packages/core/test/backup.test.ts::rejects a zero-length file
+      - packages/core/test/backup.test.ts::rejects schema-invalid entries
+      - packages/core/test/backup.test.ts::flags a file that does not end in a newline
+  packages/core/src/backup.ts#writeFileDurable:
+    kind: guarantee
+    rule: A snapshot file is published atomically and durably, so a crash never leaves a partial snapshot.
+    none: no test interrupts a snapshot write
+  packages/core/src/capsule.ts#WriteCapsuleOptions:
+    kind: note
+    why: "Documents a known limitation: capsule signatures are carried and length-checked but not verified."
+  packages/core/src/capsule.ts#signerPresent:
+    kind: guarantee
+    rule: A capsule whose signed flag disagrees with its signer is refused as ambiguous, with that defect named.
+    tests:
+      - >-
+        packages/core/test/capsule.test.ts::SIGNED set with signer: null is refused as an ambiguous envelope, not as a
+        size mismatch
+      - packages/core/test/capsule.test.ts::a signer with SIGNED clear is refused too
+  packages/core/src/claude-user-config.ts#RegisterClaudeUserMcpOptions:
+    kind: guarantee
+    rule: >-
+      Registering PLUR in the Claude user config keeps every other key, refuses malformed files untouched, re-applies
+      once over a concurrent change and then refuses.
+    tests:
+      - >-
+        packages/core/test/claude-user-config-1564.test.ts::L5: an mcpServers that is not an object is refused,
+        untouched, with no backup
+      - packages/core/test/claude-user-config-1564.test.ts::changed again after the one re-apply → refused
+  packages/core/src/config-file.ts#writeConfigFile:
+    kind: guarantee
+    rule: >-
+      Every write of the config file leaves it owner-only, and on Windows a write whose temp file cannot be made
+      owner-only is refused.
+    lean:
+      - PlurSpec/Persistence.lean:every_config_writer_protected
+      - PlurSpec/Persistence.lean:helper_never_silent
+    tests:
+      - >-
+        packages/core/test/config-owner-only.test.ts::a 0644 config.yaml is 0600 after a store write, and stays 0600
+        after a rewrite
+      - >-
+        packages/core/test/config-owner-only.test.ts::protection that cannot be established: the write is refused and
+        config.yaml is unchanged
+  packages/core/src/config.ts#loadConfig:
+    kind: guarantee
+    rule: >-
+      A malformed store entry or field in the config loses at most that entry or field, never the whole config or the
+      other store registrations.
+    lean:
+      - PlurSpec/StoreEntry.lean:load_ok_fixed
+    tests:
+      - packages/core/test/formal-store-entry.test.ts::drops the field, not every store
+      - packages/core/test/pr3-config-robustness.test.ts::a bad forbid category does NOT drop the entry
+  packages/core/src/config.ts#storeEntryForDisk:
+    kind: guarantee
+    rule: The in-memory scope-expansion marker is never written to the config file.
+    none: no test checks the expansion marker is absent from the written config
+  packages/core/src/content-fields.ts#LEARN_CONTEXT_FIELD_ROLES:
+    kind: note
+    why: >-
+      Explains the field-role table and that the compiler keeps it complete; the 'never persisted' wording describes a
+      session key, not a rule of this code.
+  packages/core/src/content-fields.ts#LEARN_CONTEXT_FIELD_ROLES.related:
+    kind: note
+    why: Labels the field; the 'never-overwrite' wording names the batch linking behaviour implemented elsewhere.
+  packages/core/src/content-fields.ts#PLUR_BOOKKEEPING_KEYS:
+    kind: guarantee
+    rule: >-
+      Only the enumerated PLUR bookkeeping keys are exempt from the content scan; any other structured-data key,
+      including an unknown underscore key, is scanned.
+    tests:
+      - packages/core/test/leak-surface.test.ts::scans an unknown _key and skips the known ones
+  packages/core/src/content-fields.ts#engramContentFields:
+    kind: guarantee
+    rule: >-
+      Every field on an engram except PLUR's own bookkeeping keys is included in the content scan, so a new field cannot
+      escape it.
+    tests:
+      - >-
+        packages/core/test/leak-surface.test.ts::the engram-side scan strips only PLUR bookkeeping keys, and keeps user
+        structured_data
+  packages/core/src/deadline.ts#withDeadline:
+    kind: guarantee
+    rule: >-
+      A deadline race resolves with the value or a distinct missed-deadline marker, propagates an early rejection, and
+      always clears its timer.
+    tests:
+      - >-
+        packages/core/test/deadline.test.ts::returns DEADLINE_MISSED when the deadline passes first and clears its timer
+        either way
+      - packages/core/test/deadline.test.ts::propagates a rejection that arrives before the deadline
+  packages/core/src/decay.ts#daysSince:
+    kind: guarantee
+    rule: A memory with an unparseable access date is still eligible for injection rather than silently never injected.
+    lean:
+      - PlurSpec/ScopeInject.lean:decay_total
+    tests:
+      - packages/core/test/formal-scopeinject-decay.test.ts::an engram with a malformed last_accessed is still injected
+    promises:
+      - FDB-5
+  packages/core/src/decay.ts#decayedStrength:
+    kind: guarantee
+    rule: Decay never raises a memory's strength and never takes a strength above the floor below it.
+    lean:
+      - PlurSpec/ScopeInject.lean:decay_nonincreasing_above_floor
+      - PlurSpec/ScopeInject.lean:decay_above_floor_bounded
+      - PlurSpec/ScopeInject.lean:sub_floor_stays
+    tests:
+      - packages/core/test/formal-apply-budget-decay.test.ts::a strength of 0 does not rise with time
+      - >-
+        packages/core/test/formal-apply-budget-decay.test.ts::good case: a strength above the floor still decays toward
+        it, never below
+    promises:
+      - FDB-3
+  packages/core/src/dedup.ts#DEDUP_DECISION_GUIDE:
+    kind: guarantee
+    rule: No duplicate-check decision rewrites an existing memory; an update saves a new memory that supersedes the old.
+    promises:
+      - LRN-8
+  packages/core/src/embeddings.ts#CACHE_LOCK_OPTS:
+    kind: guarantee
+    rule: An embedding-cache write waits at most a short bounded time for its lock and is skipped rather than waited out.
+    none: no test holds the cache lock and checks the save is skipped promptly
+  packages/core/src/embeddings.ts#_setCachedEmbedder:
+    kind: note
+    why: A test-only hook; 'production code never calls this' is a convention for maintainers.
+  packages/core/src/embeddings.ts#activeEmbedderDim:
+    kind: guarantee
+    rule: An external vector column is sized to the dimension the active embedder produces, never to the default constant.
+    tests:
+      - packages/core/test/embed-dim-contract.test.ts::PLUR_EMBEDDER=bge-base → 768 column, NOT the 384 constant
+  packages/core/src/embeddings.ts#allowBackgroundModelLoad:
+    kind: guarantee
+    rule: A short-lived CLI or hook process never downloads the embedding model.
+    tests:
+      - >-
+        packages/core/test/recall-model-missing-1587.test.ts::keyword results at once, with the reason and the next
+        step; no process spawned, no download
+    promises:
+      - REC-3
+  packages/core/src/embeddings.ts#appendEntries:
+    kind: guarantee
+    rule: A record appended to the embedding delta file is never swallowed by a line a killed process left unfinished.
+    tests:
+      - >-
+        packages/core/test/recall-deadline-1586-round7.test.ts::a partial line, then an append: the appended record is
+        recovered
+  packages/core/src/embeddings.ts#cacheProgress:
+    kind: guarantee
+    rule: >-
+      Vectors computed by a recall that hits its deadline are saved atomically before the reply, so each cut-off recall
+      makes progress.
+    tests:
+      - >-
+        packages/core/test/recall-deadline-1586-round7.test.ts::many cut-off recalls: the delta is folded in once it
+        passes the threshold
+  packages/core/src/embeddings.ts#deferFold:
+    kind: guarantee
+    rule: The deferred embedding-cache fold never keeps a process alive.
+    none: no test checks the fold timer is unref'd
+  packages/core/src/embeddings.ts#embeddingSearch:
+    kind: guarantee
+    rule: A queued remote-only save is never embedded or written to the embedding cache.
+    tests:
+      - >-
+        packages/core/test/remote-only-derived-copies.test.ts::fillEmbeddingCache and embeddingSearch skip it, and the
+        cache holds no entry for it
+  packages/core/src/embeddings.ts#embeddingSearchWithScores:
+    kind: guarantee
+    rule: A queued remote-only save is never embedded or written to the embedding cache.
+    none: no test exercises the scored embedding search with a queued remote-only save
+  packages/core/src/embeddings.ts#fillEmbeddingCache:
+    kind: guarantee
+    rule: >-
+      Background cache filling stops at the first failure and is never retried, and never embeds a queued remote-only
+      save.
+    tests:
+      - >-
+        packages/core/test/remote-only-derived-copies.test.ts::fillEmbeddingCache and embeddingSearch skip it, and the
+        cache holds no entry for it
+  packages/core/src/embeddings.ts#maybeStartBackgroundModelLoad:
+    kind: guarantee
+    rule: The background model load starts at most once per process, is never awaited by a recall, and is never retried.
+    tests:
+      - >-
+        packages/core/test/recall-model-missing-1587.test.ts::starts at most one in-process load, and recall never waits
+        for it
+  packages/core/src/embeddings.ts#mergeEmbeddingsIntoCache:
+    kind: guarantee
+    rule: An older delta record is never applied over an imported embedding vector.
+    tests:
+      - >-
+        packages/core/test/recall-deadline-1586-round7.test.ts::the migration import is not overridden by an older delta
+        record
+  packages/core/src/embeddings.ts#rawScore:
+    kind: note
+    why: States an empirical fact about cosine scores on same-language text to justify clamping.
+  packages/core/src/embeddings.ts#readDisabledFromEnv:
+    kind: note
+    why: Describes which spellings disable embeddings; 'cannot be retested' is a note about testing.
+  packages/core/src/embeddings.ts#semanticModelState:
+    kind: guarantee
+    rule: A recall never downloads a missing embedding model; it answers with keyword results.
+    tests:
+      - >-
+        packages/core/test/recall-model-missing-1587.test.ts::keyword results at once, with the reason and the next
+        step; no process spawned, no download
+    promises:
+      - REC-3
+  packages/core/src/engrams.ts#EngramStoreUnreadableError:
+    kind: guarantee
+    rule: A store file that exists but cannot be read as engrams is refused, never treated as an empty store.
+    tests:
+      - packages/core/test/unreadable-store-guard.test.ts::a truncated file throws rather than reading as empty
+      - packages/core/test/unreadable-store-guard.test.ts::the engrams SURVIVE a write attempt against a corrupted store
+    promises:
+      - DUR-3
+  packages/core/src/engrams.ts#HeldFile:
+    kind: note
+    why: Type documentation for records held back from a commit; no rule of its own.
+  packages/core/src/engrams.ts#HeldRecoveryUnreadableError:
+    kind: note
+    why: Names an error type; 'cannot be read' describes when it is thrown.
+  packages/core/src/engrams.ts#PendingRename:
+    kind: guarantee
+    rule: >-
+      Loading a store never writes history; an id rename found at load is recorded by the next write that puts the new
+      id on disk.
+    tests:
+      - >-
+        packages/core/test/formal-audit-persist-renames.test.ts::a read-only load writes no history, however often it
+        runs
+      - >-
+        packages/core/test/formal-audit-persist-renames.test.ts::the rename is recorded once, by the write that puts the
+        new id on disk
+  packages/core/src/engrams.ts#SYNC_HELD_RENAME_REASON:
+    kind: note
+    why: A history reason label; 'never-pushed' describes the record, not a rule.
+  packages/core/src/engrams.ts#assertShrinkAllowed:
+    kind: guarantee
+    rule: >-
+      A whole-store write that would drop more than the tolerated share of the memories on disk is refused unless the
+      caller declared it.
+    lean:
+      - PlurSpec/R2Persist.lean:fixed_fail_closed
+      - PlurSpec/R2Persist.lean:base_bounds
+    tests:
+      - packages/core/test/store-corruption-guard.test.ts::refuses a write that would drop the corpus past the tolerance
+      - >-
+        evals/durability/test_promise_DUR4_wiping_save_refused.test.ts::one save that would keep 2 of 20 memories is
+        refused and the store is untouched
+    promises:
+      - DUR-4
+  packages/core/src/engrams.ts#countEngramsOnDisk:
+    kind: guarantee
+    rule: >-
+      An existing store file whose records cannot be counted exactly makes the write fail, never lets it replace the
+      store.
+    lean:
+      - PlurSpec/R2Persist.lean:fixed_fail_closed
+    tests:
+      - packages/core/test/formal-r2-persist-shrink.test.ts::refuses to overwrite a merge-conflicted store
+      - packages/core/test/formal-r2-persist-shrink.test.ts::refuses to overwrite a zero-byte store
+  packages/core/src/engrams.ts#countRecordStarts:
+    kind: guarantee
+    rule: Counting records on disk is exact, including entries with multi-line text.
+    tests:
+      - >-
+        packages/core/test/store-corruption-guard.test.ts::counts records exactly without parsing, including multi-line
+        scalars
+  packages/core/src/engrams.ts#engramIdDatePrefix:
+    kind: guarantee
+    rule: New local ids are always minted in the full-date form; the legacy compact form is read but never minted.
+    tests:
+      - packages/core/test/engrams.test.ts::mints canonical full-date IDs (ENG-YYYY-MM-DD-NNN)
+  packages/core/src/engrams.ts#engramStoreEntries:
+    kind: guarantee
+    rule: A store whose engrams key has no value is refused as unreadable, not loaded as empty.
+    tests:
+      - packages/core/test/store-corruption-guard.test.ts::refuses a null engrams key
+    promises:
+      - DUR-3
+  packages/core/src/engrams.ts#generateEngramId:
+    kind: guarantee
+    rule: A new id never reuses one minted earlier, even after the memory holding it was compacted away.
+    tests:
+      - packages/core/test/engram-id-reuse.test.ts::a compacted id is not handed to the next engram
+      - packages/core/test/engram-id-reuse.test.ts::is purely additive — extra ids can only raise the suffix
+  packages/core/src/engrams.ts#isTransientPackDir:
+    kind: guarantee
+    rule: A staging or displaced copy left behind by a pack install is never treated as a pack.
+    tests:
+      - >-
+        packages/core/test/pack-integrity-v2.test.ts::staging and displaced copies left by an install are not treated as
+        packs
+      - packages/core/test/pack-registry-dir.test.ts::a leftover staging copy does not make the legacy row ambiguous
+  packages/core/src/engrams.ts#judgeShrink:
+    kind: guarantee
+    rule: >-
+      A run of undeclared shrinking writes never ends below the tolerated share of what was last written, and the guard
+      is never looser than a per-write check.
+    lean:
+      - PlurSpec/R2Persist.lean:new_implies_old
+      - PlurSpec/R2Persist.lean:base_bounds
+    tests:
+      - >-
+        evals/durability/test_promise_DUR4_wiping_save_refused.test.ts::small saves that each drop one memory cannot
+        erode the store below half
+    promises:
+      - DUR-4
+  packages/core/src/engrams.ts#legacyStorePrefix:
+    kind: guarantee
+    rule: The legacy three-letter store prefix is only read, never used to mint a new id.
+    none: no test checks that no new id carries the legacy prefix
+  packages/core/src/engrams.ts#m:
+    kind: note
+    why: A warning to callers not to strip prefixes blindly with the permissive pattern.
+  packages/core/src/engrams.ts#matchLegacyPackId:
+    kind: guarantee
+    rule: >-
+      An earlier-form pack id resolves only when exactly one pack row answers to it; a current id always wins, and an id
+      two packs share names neither.
+    tests:
+      - packages/core/test/pack-legacy-id-and-stale-copy.test.ts::an earlier id two packs answer to names neither
+      - >-
+        packages/core/test/pack-legacy-id-and-stale-copy.test.ts::a slug-form pack keeps its id, which the earlier
+        scheme already gave it
+  packages/core/src/engrams.ts#mergeHeldRecords:
+    kind: guarantee
+    rule: >-
+      A held, never-pushed record whose id a pulled record carries with different content is kept under a fresh id, and
+      an identical one is not added twice.
+    lean:
+      - PlurSpec/R2Persist.lean:restore_both_reachable
+      - PlurSpec/Persistence.lean:r2_rekey_no_loss
+    tests:
+      - >-
+        packages/core/test/formal-audit-persist-sync-crash.test.ts::the write persists the held records once, and the
+        next sync does not duplicate them
+    promises:
+      - SYN-5
+  packages/core/src/engrams.ts#namespaceEngramId:
+    kind: guarantee
+    rule: "Namespacing an id is idempotent: an already-namespaced or legacy-prefixed id is not wrapped twice."
+    tests:
+      - >-
+        packages/core/test/store-prefix-unique.test.ts::namespaceEngramId is idempotent and upgrades an old-form id of
+        the same scope
+  packages/core/src/engrams.ts#namespacePackEngrams:
+    kind: guarantee
+    rule: >-
+      Pack rows are handed out under pack ids with references inside the pack rewritten to match, and the pack file
+      itself is never modified.
+    tests:
+      - >-
+        packages/core/test/pack-id-distinct-from-own.test.ts::a pack whose rule was corrected inside the pack delivers
+        only the correction
+    promises:
+      - PCK-3
+  packages/core/src/engrams.ts#packEngramId:
+    kind: guarantee
+    rule: >-
+      A pack row is never handed out under the same id as one of my own memories, and two packs shipping one id stay
+      distinct.
+    tests:
+      - >-
+        packages/core/test/pack-id-distinct-from-own.test.ts::a pack row carrying my memory id is injected under a pack
+        id, not mine
+      - packages/core/test/pack-id-distinct-from-own.test.ts::two packs shipping the same id stay distinct
+    promises:
+      - PCK-4
+  packages/core/src/engrams.ts#packIdSlug:
+    kind: guarantee
+    rule: Two different pack names never produce the same pack id part.
+    tests:
+      - >-
+        packages/core/test/pack-id-distinct-from-own.test.ts::two pack names that normalise to the same slug still get
+        distinct ids
+  packages/core/src/engrams.ts#parseNamespacedId:
+    kind: guarantee
+    rule: A bare id or a pack id is never mistaken for a store-namespaced id.
+    tests:
+      - packages/core/test/store-prefix.test.ts::does not mangle server, cold, or pack engram shapes
+  packages/core/src/engrams.ts#parseRecordArrayFile:
+    kind: guarantee
+    rule: >-
+      A side-record file that does not parse is refused, and its invalid entries are kept and written back, never
+      dropped.
+    tests:
+      - packages/core/test/tension-lifecycle.test.ts::carries quarantined tension records through an unrelated mutation
+    promises:
+      - DUR-3
+  packages/core/src/engrams.ts#quarantined:
+    kind: guarantee
+    rule: Entries withheld from callers because they are invalid are written back on every save, never deleted.
+    lean:
+      - PlurSpec/R2Persist.lean:reattach_no_loss
+      - PlurSpec/R2Persist.lean:reattach_clear
+    tests:
+      - >-
+        packages/core/test/store-corruption-guard.test.ts::withholds invalid entries from callers but preserves them on
+        the next save
+    promises:
+      - DUR-3
+  packages/core/src/engrams.ts#recordIdRenames:
+    kind: guarantee
+    rule: Each id rename is recorded in history exactly once, across writes and processes.
+    tests:
+      - >-
+        packages/core/test/formal-audit-persist-renames.test.ts::recordIdRenames is idempotent against an existing log
+        (another process already recorded it)
+    promises:
+      - HIS-1
+  packages/core/src/engrams.ts#saveEngrams:
+    kind: guarantee
+    rule: >-
+      Every whole-store write is refused when the file on disk holds materially more memories than the write would keep,
+      unless the caller declared the shrink.
+    lean:
+      - PlurSpec/R2Persist.lean:fixed_fail_closed
+      - PlurSpec/R2Persist.lean:base_bounds
+    tests:
+      - packages/core/test/store-corruption-guard.test.ts::refuses a write of an empty array over a populated store
+    promises:
+      - DUR-4
+  packages/core/src/engrams.ts#storePrefix:
+    kind: guarantee
+    rule: Scopes that share the first three letters still get different store prefixes.
+    tests:
+      - packages/core/test/store-prefix-unique.test.ts::two team scopes of one org get different prefixes
+      - packages/core/test/store-prefix-unique.test.ts::no collisions across a realistic set of scopes
+  packages/core/src/episodes.ts#loadEpisodesWithQuarantine:
+    kind: guarantee
+    rule: >-
+      A corrupt or wrongly shaped episode log is refused rather than read as empty, so the next capture cannot overwrite
+      it.
+    none: no test captures an episode over a corrupt log and checks the file is left as it was
+  packages/core/src/expiry.ts#KEYWORD_RE:
+    kind: guarantee
+    rule: A 'valid from' phrase is never read as an expiry date.
+    tests:
+      - packages/core/test/expiry.test.ts::does NOT match "valid from <date>" (that is a start, not an expiry)
+  packages/core/src/expiry.ts#MONTHS:
+    kind: guarantee
+    rule: >-
+      An expiry date is set only from an expiry keyword immediately followed by a fully specified, unambiguous date,
+      never guessed.
+    tests:
+      - packages/core/test/expiry.test.ts::does NOT guess when the year is missing
+      - packages/core/test/expiry.test.ts::does NOT parse ambiguous numeric slash dates
+      - packages/core/test/expiry.test.ts::does NOT match dates without an expiry keyword
+  packages/core/src/expiry.ts#extractExpiry:
+    kind: guarantee
+    rule: When no unambiguous expiry phrase matches, no expiry date is set.
+    tests:
+      - packages/core/test/expiry.test.ts::returns null for statements with no temporal content
+      - packages/core/test/expiry.test.ts::does NOT guess when the year is missing
+  packages/core/src/feedback.ts#applyFeedbackSignal:
+    kind: guarantee
+    rule: An automatic rating changes strength only and never makes a memory more settled.
+    tests:
+      - >-
+        packages/core/test/feedback-auto-source.test.ts::a positive auto signal raises strength but leaves commitment
+        untouched
+      - >-
+        packages/core/test/feedback-auto-source.test.ts::moves retrieval_strength and never commitment, however many
+        times it fires
+    promises:
+      - FDB-2
+  packages/core/src/feedback.ts#nextCommitment:
+    kind: guarantee
+    rule: >-
+      A positive rating raises commitment one step, never to locked, and never changes an unrecognised state such as a
+      draft.
+    tests:
+      - packages/core/test/feedback-commitment.test.ts::advances the canonical ladder
+      - packages/core/test/feedback-commitment.test.ts::leaves an unknown value untouched rather than advancing it
+    promises:
+      - FDB-2
+  packages/core/src/file-lock.ts#steal:
+    kind: guarantee
+    rule: >-
+      A lock whose holder is confirmed alive is never stolen, however old; at most one process holds the lock, crashes
+      included.
+    lean:
+      - PlurSpec/R2Persist.lean:ladder_mutex
+      - PlurSpec/R2Persist.lean:ladder_guard_excl
+    tests:
+      - packages/core/test/lock.test.ts::does not steal from a holder confirmed to be alive, however old the lock
+      - >-
+        packages/core/test/formal-r2-persist-guard.test.ts::two live stealers never share the guard, so at most one
+        holder is in the critical section
+  packages/core/src/file-lock.ts#withLock:
+    kind: guarantee
+    rule: A lock file is published complete, never visible as an empty file.
+    none: no test checks that the synchronous lock file is never visible empty; the async lock has that test
+  packages/core/src/folder-ask.ts#(module):
+    kind: guarantee
+    rule: >-
+      The skipped-store hint is shown at most once per session and folder, and looking it up never throws or breaks a
+      prompt.
+    tests:
+      - >-
+        packages/cli/test/folder-safety-1588.test.ts::one line on the first prompt of a session, with the command; not
+        again in that session; again in a new one
+  packages/core/src/folder-ask.ts#FolderAsk:
+    kind: guarantee
+    rule: >-
+      A notice about a folder that cannot be named safely or an unreadable folder map offers no answers and issues no
+      nonce.
+    tests:
+      - >-
+        packages/cli/test/folder-ask-unsafe-paths.test.ts::repo/x* with an untrusted .plur.yaml: no command, no nonce,
+        nothing written, sibling repo/xyz unaffected
+  packages/core/src/folder-ask.ts#LINE_UNSAFE:
+    kind: guarantee
+    rule: A folder path containing a line-ending or line-rewriting character is never printed raw into the agent's context.
+    tests:
+      - >-
+        packages/cli/test/folder-safety-1588.test.ts::a folder name with a line break gets its path escaped and no
+        command
+  packages/core/src/folder-ask.ts#SCOPE_GRAMMAR:
+    kind: guarantee
+    rule: >-
+      Free text from an untrusted repository settings file never reaches the agent through the folder question; only
+      values that fit the scope or domain grammar are shown, as quoted repository text.
+    tests:
+      - >-
+        packages/cli/test/hook-folder-map.test.ts::an untrusted .plur.yaml cannot put text into the question: invalid
+        values are named, not copied
+  packages/core/src/folder-ask.ts#anyProjectStoreFile:
+    kind: note
+    why: >-
+      Describes a cheap over-approximating pre-check whose bounds restate the discovery walk; a wider walk would only
+      cost time.
+  packages/core/src/folder-ask.ts#buildFolderAsk:
+    kind: guarantee
+    rule: >-
+      A notice about a broken folder map prints only the map's path, the line number and a plain key, never text or
+      values from the file.
+    tests:
+      - packages/core/test/folder-map-repair.test.ts::never quotes a value from the file — only the key on that line
+    promises:
+      - OFF-3
+  packages/core/src/folder-ask.ts#claimAsk:
+    kind: guarantee
+    rule: >-
+      A session is asked about a folder once; when the marker folder cannot be trusted the question repeats rather than
+      never being asked.
+    tests:
+      - packages/core/test/folder-ask-marker-per-folder.test.ts::two folders in one session are each asked once
+  packages/core/src/folder-ask.ts#clearFolderAsk:
+    kind: guarantee
+    rule: >-
+      A resumed session is asked again about every folder, nonces stay single-use, and nothing is deleted through a
+      symlinked or foreign marker folder.
+    tests:
+      - >-
+        packages/core/test/folder-ask-marker-per-folder.test.ts::a resume clears the session for every folder it asked
+        about
+      - >-
+        packages/cli/test/hook-folder-map.test.ts::after a resume, the session is asked again with a fresh nonce that
+        works once (option C)
+  packages/core/src/folder-ask.ts#folderMarkerDir:
+    kind: guarantee
+    rule: >-
+      Session markers are kept only in a real folder owned by this user with mode 0700; a symlinked or foreign marker
+      folder is refused.
+    tests:
+      - >-
+        packages/core/test/folder-safety-1588.test.ts::the marker folder is 0700, and a symlinked one is refused for
+        hints and questions alike
+  packages/core/src/folder-ask.ts#folderRepairCommand:
+    kind: guarantee
+    rule: A repair command is offered only when the store path can be printed safely in a command.
+    tests:
+      - >-
+        packages/core/test/folder-map-repair.test.ts::folderRepairCommand: plain for the default store, --path for
+        another, null for an unsafe path
+  packages/core/src/folder-ask.ts#folderSetOnCommand:
+    kind: guarantee
+    rule: >-
+      No set-on command is offered for a folder name the folder question refuses; the folder is otherwise quoted for the
+      shell.
+    tests:
+      - >-
+        packages/core/test/folder-safety-1588.test.ts::quotes the folder and offers nothing for a folder the folder
+        question refuses
+  packages/core/src/folder-ask.ts#markerDirSafe:
+    kind: guarantee
+    rule: Markers are read or swept only in a real folder owned by this user, and that folder is never created by the check.
+    tests:
+      - >-
+        packages/core/test/folder-safety-1588.test.ts::the marker folder is 0700, and a symlinked one is refused for
+        hints and questions alike
+  packages/core/src/folder-ask.ts#markerTag:
+    kind: guarantee
+    rule: Being asked about one folder never silences the question about another folder in the same session.
+    tests:
+      - packages/core/test/folder-ask-marker-per-folder.test.ts::two folders in one session are each asked once
+  packages/core/src/folder-ask.ts#requestedRemoteText:
+    kind: guarantee
+    rule: Only the parsed plain host of a requested remote is shown, never the raw string.
+    tests:
+      - >-
+        packages/cli/test/hook-folder-map.test.ts::valid requested values are shown on their own line, marked as quoted
+        repository text, host only
+  packages/core/src/folder-ask.ts#skippedStoreHintClaimed:
+    kind: guarantee
+    rule: Checking whether the skipped-store hint was given never writes anything.
+    tests:
+      - packages/core/test/formal-folder-rules-writes.test.ts::with no marker folder, the lookup creates none
+      - packages/core/test/formal-folder-rules-writes.test.ts::with a marker folder, the lookup adds and removes nothing
+  packages/core/src/folder-ask.ts#skippedStoreHintLine:
+    kind: note
+    why: >-
+      Describes the hint line's content; the wording about a folder that cannot be offered refers to the command rules
+      defined elsewhere.
+  packages/core/src/folder-ask.ts#storeBlocked:
+    kind: note
+    why: Explains why glob characters are allowed in a store path.
+  packages/core/src/folder-ask.ts#suggestScopes:
+    kind: guarantee
+    rule: >-
+      The folder question never offers an unconfigured scope, and an untrusted repository's requested scope and domain
+      are ignored.
+    tests:
+      - >-
+        packages/cli/test/hook-folder-map.test.ts::"Yes, without its settings" never writes the scope the untrusted
+        repository requested
+  packages/core/src/folder-ask.ts#trust:
+    kind: guarantee
+    rule: >-
+      Each offered answer has its own single-use nonce, and a nonce is refused for any answer other than the one it was
+      issued for.
+    tests:
+      - >-
+        packages/cli/test/folder-ask-nonce-per-answer.test.ts::the "Yes, without its settings" nonce is refused with
+        --trusted, and changes nothing
+      - >-
+        packages/cli/test/folder-ask-nonce-per-answer.test.ts::every offered command carries its own nonce and works
+        exactly once; none grants another answer
+    lean:
+      - PlurSpec/FolderRules.lean:issued_grants_only_its_answer
+      - PlurSpec/FolderRules.lean:issued_works_once
+      - PlurSpec/FolderRules.lean:trusted_distinguished
+  packages/core/src/folder-map-check.ts#FolderEntrySchema:
+    kind: guarantee
+    rule: >-
+      Folder-map messages name the line and at most a plain key, never a path, scope or other value; a repair is all or
+      nothing.
+    tests:
+      - packages/core/test/folder-map-repair.test.ts::never quotes a value from the file — only the key on that line
+      - packages/core/test/folder-map-repair.test.ts::refuses all of it when one problem is unfixable (no half repair)
+    promises:
+      - OFF-3
+  packages/core/src/folder-map-check.ts#MAX_REPAIR_LINES:
+    kind: guarantee
+    rule: A broken folder map above the line cap is pinpointed but never planned for repair.
+    tests:
+      - >-
+        packages/core/test/folder-map-repair-safety.test.ts::a 6,000-line map with one bad indent: fast, and too large
+        to repair automatically
+  packages/core/src/folder-map-check.ts#Scan:
+    kind: guarantee
+    rule: A broken folder map containing a lone carriage return is never repaired.
+    tests:
+      - packages/core/test/folder-map-repair-invariant.test.ts::a broken one is refused, never "repaired"
+  packages/core/src/folder-map-check.ts#YES_NO:
+    kind: guarantee
+    rule: A yes/no word in a mode field is never guessed into a mode.
+    tests:
+      - "packages/core/test/folder-map-repair-invariant.test.ts::R3: a mode becomes on only from a literal on"
+    lean:
+      - PlurSpec/FolderRules.lean:suggest_safe
+  packages/core/src/folder-map-check.ts#keepsWhatWasWritten:
+    kind: guarantee
+    rule: >-
+      A repair is accepted only when the result parses to exactly the entries, keys and values written on the original
+      lines, and a commented-out mode never becomes a value.
+    tests:
+      - >-
+        packages/core/test/folder-map-repair-safety.test.ts::fixable repairs only ever produce entries, keys and values
+        written on their own lines
+  packages/core/src/folder-map-check.ts#near:
+    kind: guarantee
+    rule: A one-letter-off mode guess never switches memory on and never selects remote-only.
+    tests:
+      - "packages/core/test/folder-map-repair-invariant.test.ts::R3: a mode becomes on only from a literal on"
+    lean:
+      - PlurSpec/FolderRules.lean:guess_never_on
+      - PlurSpec/FolderRules.lean:guess_never_remote_only
+  packages/core/src/folder-map-check.ts#onWithoutLiteralOn:
+    kind: guarantee
+    rule: >-
+      A folder-map repair never switches memory on for an entry unless its own lines say plur: on, except a legacy entry
+      proven untouched.
+    tests:
+      - >-
+        packages/core/test/folder-map-repair-invariant.test.ts::invariant fuzz: repaired on ⊆ literal plur: on in the
+        original
+      - packages/core/test/folder-map-repair-invariant.test.ts::neither folder is on after the repair
+    promises:
+      - OFF-3
+  packages/core/src/folder-map-check.ts#open:
+    kind: guarantee
+    rule: A folder map with a key whose value may continue on later lines is refused for repair.
+    tests:
+      - packages/core/test/folder-map-repair-invariant.test.ts::emptyValueSameIndentList
+  packages/core/src/folder-map-check.ts#parses:
+    kind: guarantee
+    rule: Indentation is re-written only when the folder map does not parse.
+    tests:
+      - >-
+        packages/core/test/formal-folder-rules-writes.test.ts::a parseable map with a wrong mode keeps its own
+        indentation
+  packages/core/src/folder-map-check.ts#parts:
+    kind: guarantee
+    rule: >-
+      A lone carriage return counts as a line break for the line cap and empty-file check, and the repair refuses such
+      text.
+    tests:
+      - packages/core/test/folder-map-repair-invariant.test.ts::lone-CR lines count toward the cap
+  packages/core/src/folder-map-check.ts#planFolderMapRepair:
+    kind: guarantee
+    rule: Any folder map the line-based repair could read differently from YAML is refused whole, never partly repaired.
+    tests:
+      - >-
+        packages/core/test/folder-map-repair-safety.test.ts::F2: block scalars and nested values are never re-indented
+        into structure
+      - packages/core/test/folder-map-repair.test.ts::refuses all of it when one problem is unfixable (no half repair)
+  packages/core/src/folder-map-check.ts#printable:
+    kind: guarantee
+    rule: A key that is neither one of the map's own keys nor a near misspelling of one is never printed.
+    tests:
+      - packages/core/test/folder-map-repair-safety.test.ts::an unknown entry key never prints a secret-looking name
+  packages/core/src/folder-map-check.ts#problemLines:
+    kind: guarantee
+    rule: >-
+      A repair never brings memory back on for a legacy entry unless every one of its own lines is left exactly as
+      written.
+    tests:
+      - >-
+        packages/core/test/folder-map-repair-invariant.test.ts::an entry with scope (or trusted) and no plur would
+        resolve on: a slip in it is not repaired
+      - >-
+        packages/core/test/folder-map-repair-invariant.test.ts::with its own lines untouched it is repaired, and plur:
+        on is written beside them
+  packages/core/src/folder-map-check.ts#refuse:
+    kind: note
+    why: Labels a helper that builds the unfixable result; no rule of its own.
+  packages/core/src/folder-map-check.ts#valueSpan:
+    kind: guarantee
+    rule: A commented-out mode is never read as a mode.
+    tests:
+      - "packages/core/test/folder-map-repair-safety.test.ts::F1: a commented-out mode is never turned into a mode"
+  packages/core/src/folder-map-check.ts#yamlFeatureLine:
+    kind: guarantee
+    rule: A folder map using a YAML tag, anchor, alias or block scalar anywhere is never repaired.
+    tests:
+      - >-
+        packages/core/test/folder-map-repair-invariant.test.ts::R1: a tag, anchor, alias or block scalar anywhere means
+        no repair
+  packages/core/src/folders.ts#(module):
+    kind: guarantee
+    rule: >-
+      The folder map is written only through the CLI; a repository's settings file is only a request; in a remote-only
+      folder personal and local scopes are refused and recall never reads the local store.
+    tests:
+      - >-
+        packages/core/test/folder-remote-only.test.ts::personal and local-only scopes are refused, naming the folder and
+        how to change it; nothing is written or sent
+      - >-
+        packages/core/test/folder-remote-only.test.ts::recall and inject dial the folder scope and read packs, never the
+        personal local store
+  packages/core/src/folders.ts#FOLDER_NONCE_TTL_MS:
+    kind: note
+    why: Defines a nonce lifetime; 'never reports its end' describes the case it covers.
+  packages/core/src/folders.ts#FolderEntry:
+    kind: guarantee
+    rule: A folder entry marked literal is never read as a glob, even when its name contains * or ?.
+    tests:
+      - packages/core/test/folders.test.ts::records a folder named proj? literally, so its siblings stay unmapped
+  packages/core/src/folders.ts#FolderMapFault:
+    kind: note
+    why: Type documentation; 'cannot be used' describes the fault.
+  packages/core/src/folders.ts#FolderMapRepairResult:
+    kind: guarantee
+    rule: >-
+      A folder-map repair that needs a hand fix, cannot read the file, or finds the file changed since the dry run
+      writes nothing.
+    tests:
+      - "packages/core/test/folder-map-repair.test.ts::unfixable: nothing changes, no backup"
+      - packages/core/test/folder-map-repair.test.ts::apply refuses when the file changed since the diff was shown
+  packages/core/src/folders.ts#FolderPolicy:
+    kind: guarantee
+    rule: >-
+      With an unreadable folder map every folder is ask, never on because of a project marker; a repository's requested
+      token is never shown in the question.
+    tests:
+      - >-
+        packages/core/test/folder-map-failsafe.test.ts::a YAML syntax error: ask, naming the file and the line, even
+        with a project marker
+      - >-
+        packages/cli/test/hook-folder-map.test.ts::an untrusted .plur.yaml remote asks once, offers --trusted, and never
+        shows the token
+    promises:
+      - OFF-3
+    lean:
+      - PlurSpec/FolderRules.lean:malformed_never_on
+  packages/core/src/folders.ts#SetFolderOptions:
+    kind: guarantee
+    rule: >-
+      A remote-only entry whose scope no url store serves is refused, and an entry covering the home folder, a
+      filesystem root or an ancestor of home is refused with nothing written.
+    tests:
+      - >-
+        packages/core/test/folder-remote-only.test.ts::refuses a scope no url store serves (scope-unconfigured), and a
+        missing scope
+      - >-
+        packages/core/test/folders.test.ts::refuses $HOME, a symlink to it, an ancestor and the filesystem root; nothing
+        is written
+  packages/core/src/folders.ts#applied:
+    kind: guarantee
+    rule: >-
+      An entry that names a folder only by another spelling (as typed, through a symlink, or in another case) never
+      contributes its trust grant or scope.
+    tests:
+      - >-
+        packages/core/test/folders.test.ts::a merge never activates the grant or scope of an entry spelled through a
+        symlink
+  packages/core/src/folders.ts#appliedEntries:
+    kind: guarantee
+    rule: >-
+      Merging folder entries never reroutes writes: the scope comes only from entries that applied, the most specific
+      one first.
+    tests:
+      - packages/core/test/folders.test.ts::a merge that sets no scope keeps the scope the resolver applied
+  packages/core/src/folders.ts#editedMapText:
+    kind: note
+    why: >-
+      Describes when a targeted edit falls back to writing the whole map; 'cannot be done safely' describes the fallback
+      condition.
+  packages/core/src/folders.ts#entryForms:
+    kind: guarantee
+    rule: >-
+      A stored folder entry is never resolved on disk, so a symlink planted after the decision cannot redirect it;
+      folding case never drops an off match.
+    tests:
+      - >-
+        packages/core/test/folders.test.ts::a symlinked path resolves to the same entry, and a symlink swapped in later
+        is not trusted
+      - packages/core/test/folders.test.ts::an `off` entry spelled in another case covers the folder
+  packages/core/src/folders.ts#error:
+    kind: guarantee
+    rule: >-
+      An empty folder map or one with an unknown top-level key is treated as broken by every reader, the same as the
+      memory tools.
+    tests:
+      - packages/core/test/folder-map-repair-invariant.test.ts::folderMapProblem, the resolver and repair agree
+    promises:
+      - OFF-3
+  packages/core/src/folders.ts#findEntryIndex:
+    kind: guarantee
+    rule: >-
+      On a case-insensitive filesystem an edit or removal finds an entry recorded in another letter case instead of
+      adding a second one, without resolving the path on disk.
+    tests:
+      - packages/core/test/folders.test.ts::set and rm find an entry recorded in another case, and set replaces it
+  packages/core/src/folders.ts#folderMapProblem:
+    kind: guarantee
+    rule: >-
+      Checking the folder map never writes it, and an existing map that says nothing or has an unknown top-level key is
+      reported as broken.
+    tests:
+      - "packages/core/test/folder-map-failsafe.test.ts::a schema error: ask with reason malformed-map"
+    promises:
+      - OFF-3
+  packages/core/src/folders.ts#folderOffEntries:
+    kind: guarantee
+    rule: A more specific on entry never overrides an off entry for the same folder.
+    tests:
+      - packages/core/test/folders.test.ts::off wins over a more specific on entry and over a .plur.yaml
+    promises:
+      - OFF-1
+    lean:
+      - PlurSpec/FolderRules.lean:off_always_off
+  packages/core/src/folders.ts#hit:
+    kind: note
+    why: Explains why untrust also clears a mis-cased grant even though that grant never applied.
+  packages/core/src/folders.ts#home:
+    kind: guarantee
+    rule: >-
+      A repository whose root is the home folder never switches memory on or sets a default project for everything under
+      home.
+    lean:
+      - PlurSpec/GitFolder.lean:home_requires_decision
+    tests:
+      - packages/core/test/folder-safety-1588.test.ts::a working folder outside any repository does not walk above HOME
+  packages/core/src/folders.ts#hostFolderNonces:
+    kind: guarantee
+    rule: >-
+      A host's outstanding nonces are reused only for the same process id and start time, so a reused process id never
+      matches, and the lookup consumes nothing.
+    tests:
+      - >-
+        packages/core/test/folder-lows-1562.test.ts::the same pid with another start time is another process: nothing to
+        reuse
+    lean:
+      - PlurSpec/FolderRules.lean:no_start_no_match
+      - PlurSpec/FolderRules.lean:match_same_pid_close
+      - PlurSpec/FolderRules.lean:reused_pid_far_start
+  packages/core/src/folders.ts#issueFolderNonceUnlocked:
+    kind: note
+    why: Explains the order of cleanup when issuing a nonce.
+  packages/core/src/folders.ts#load:
+    kind: guarantee
+    rule: Importing legacy trust entries never overwrites a folder map another writer created meanwhile.
+    tests:
+      - >-
+        packages/core/test/formal-folder-rules-writes.test.ts::importing trust.yaml never overwrites a map another
+        writer created meanwhile
+  packages/core/src/folders.ts#loadFolderMap:
+    kind: guarantee
+    rule: >-
+      Loading the folder map never throws; a malformed map is empty with one warning, and a read-only load writes
+      nothing.
+    tests:
+      - packages/core/test/folders.test.ts::a malformed file is empty with one warning, never a throw
+  packages/core/src/folders.ts#lockHeld:
+    kind: guarantee
+    rule: >-
+      Every read-modify-write of the folder map, legacy trust list and nonce files is serialised under one lock, so
+      parallel edits never lose writes.
+    tests:
+      - >-
+        packages/core/test/formal-folder-rules-writes.test.ts::parallel folder-map writes from several processes lose
+        none
+  packages/core/src/folders.ts#map:
+    kind: guarantee
+    rule: A refused or failed folder-map write never consumes the nonce.
+    tests:
+      - packages/core/test/folders.test.ts::rm from the ask flow takes a nonce too, and a failed rm does not consume it
+    lean:
+      - PlurSpec/FolderRules.lean:failed_write_keeps_nonce
+  packages/core/src/folders.ts#mode:
+    kind: guarantee
+    rule: A name-only entry can only make a folder's mode more restrictive; its on never becomes the mode.
+    tests:
+      - >-
+        packages/core/test/folders.test.ts::a name-only `on` (spelled through a symlink) never becomes the mode through
+        trust/untrust or a merge
+  packages/core/src/folders.ts#modeEntries:
+    kind: guarantee
+    rule: >-
+      A repository marker never turns a remote-only folder back into local memory, and remote-only matches as widely as
+      off.
+    tests:
+      - >-
+        packages/core/test/folder-remote-only.test.ts::beats a project marker in the folder: a repo cannot turn
+        remote-only back into local memory
+    lean:
+      - PlurSpec/FolderRules.lean:remote_only_kept
+  packages/core/src/folders.ts#namesSameFolder:
+    kind: guarantee
+    rule: >-
+      Revoking a trust grant removes every spelling of that folder's grant but never a sibling folder's that differs
+      only in case.
+    tests:
+      - packages/core/test/folders.test.ts::line that differs only in case (case-sensitive filesystem)
+      - >-
+        packages/core/test/folders.test.ts::F2: untrust removes a ~-spelled trust.yaml line (the map matcher, not string
+        equality)
+  packages/core/src/folders.ts#nonces:
+    kind: guarantee
+    rule: A malformed record in one nonce file never makes another session's folder answer fail.
+    tests:
+      - >-
+        packages/core/test/folder-nonce-sweep.test.ts::a file with a null or garbage record does not make another
+        session
+  packages/core/src/folders.ts#readLegacyTrustEntries:
+    kind: guarantee
+    rule: Reading the legacy trust list never writes it.
+    tests:
+      - >-
+        packages/core/test/folders.test.ts::imports trust entries once, as trusted entries; trust.yaml is left
+        byte-identical
+  packages/core/src/folders.ts#readMapText:
+    kind: guarantee
+    rule: >-
+      Only a genuinely missing folder map counts as absent; a dangling symlink or unsearchable parent is a map that
+      cannot be read, and non-UTF-8 bytes are reported, never repaired.
+    tests:
+      - packages/core/test/folder-lows-1562.test.ts::a map that cannot be read at all says the same
+      - >-
+        packages/core/test/folder-map-repair-safety.test.ts::a file that is not valid UTF-8 is not repaired (nothing
+        written, no backup)
+  packages/core/src/folders.ts#refuseIfDecided:
+    kind: guarantee
+    rule: >-
+      A nonce-redeemed set or rm is refused once the folder is no longer undecided (decided by hand or by a parent
+      entry after the question was shown); nothing is written and the nonce is not consumed. "Not now" is not checked.
+    tests:
+      - >-
+        packages/core/test/folder-nonce-decided-meanwhile.test.ts::--scope X --on is refused once a parent became
+        remote-only, and the folder stays remote-only
+      - packages/core/test/folder-nonce-decided-meanwhile.test.ts::removal with a nonce is refused after the entry was decided by hand
+      - packages/core/test/folder-nonce-decided-meanwhile.test.ts::the kept nonce works again once the folder is undecided again
+      - >-
+        packages/core/test/folder-nonce-decided-meanwhile.test.ts::"not now" writes nothing, so it is still accepted
+        on a decided folder
+    lean:
+      - PlurSpec/FolderRules.lean:decided_meanwhile_keeps_nonce
+      - PlurSpec/FolderRules.lean:remote_only_answer_refused
+      - PlurSpec/FolderRules.lean:same_key_same_redeemed_write
+  packages/core/src/folders.ts#removeFolderEntryUnlocked:
+    kind: guarantee
+    rule: Removing a trusted folder entry also removes its legacy trust line for every removed entry, and never adds one.
+    tests:
+      - >-
+        packages/core/test/folders.test.ts::F2: rm removes the trust.yaml line of every matched trusted entry, applied
+        and name-only
+      - "packages/core/test/folders.test.ts::F2: a revocation never adds to trust.yaml and leaves unrelated lines alone"
+  packages/core/src/folders.ts#removeLegacyTrustEntry:
+    kind: guarantee
+    rule: >-
+      A revoked grant is removed from the legacy trust list so an older reader cannot bring it back, and a failed write
+      throws rather than half-applying.
+    tests:
+      - >-
+        packages/core/test/folders.test.ts::F2: folders rm of a trusted entry also removes its trust.yaml line; no
+        re-import
+  packages/core/src/folders.ts#repairFolderMap:
+    kind: guarantee
+    rule: >-
+      A folder-map repair applies only unambiguous fixes, backs up the original, writes atomically, and writes nothing
+      if any problem needs a hand fix or the file changed since the dry run.
+    tests:
+      - "packages/core/test/folder-map-repair.test.ts::apply: backup with the original bytes, new file, re-checked"
+      - packages/core/test/folder-map-repair.test.ts::apply refuses when the file changed since the diff was shown
+      - "packages/core/test/folder-map-repair.test.ts::unfixable: nothing changes, no backup"
+  packages/core/src/folders.ts#resolveExplicitFolderPolicy:
+    kind: guarantee
+    rule: An unreadable folder map makes every folder ask, never on, and folder-map writes refuse it too.
+    tests:
+      - >-
+        packages/core/test/folder-map-failsafe.test.ts::a YAML syntax error: ask, naming the file and the line, even
+        with a project marker
+      - packages/core/test/folders.test.ts::a write refuses a malformed file rather than overwriting it
+    promises:
+      - OFF-3
+    lean:
+      - PlurSpec/FolderRules.lean:malformed_never_on
+  packages/core/src/folders.ts#resolveFolderPolicy:
+    kind: guarantee
+    rule: >-
+      Any matching off entry makes memory off; remote-only is never overridden by a marker; an untrusted repository's
+      requests are ignored; a git default only fills an absent default and never bypasses a refusal, an explicit ask or
+      remote-only.
+    tests:
+      - packages/core/test/folders.test.ts::off wins over a more specific on entry and over a .plur.yaml
+      - >-
+        packages/core/test/folders.test.ts::D1: an untrusted .plur.yaml under a map decision uses the map, never the
+        hint
+    promises:
+      - OFF-1
+      - OFF-4
+    lean:
+      - PlurSpec/FolderRules.lean:off_always_off
+      - PlurSpec/FolderRules.lean:remote_only_kept
+      - PlurSpec/FolderRules.lean:untrusted_asks
+      - PlurSpec/FolderRules.lean:explicit_ask_kept
+      - PlurSpec/FolderRules.lean:home_keeps_asking
+  packages/core/src/folders.ts#same:
+    kind: guarantee
+    rule: >-
+      Letter case is never folded blindly: on a case-sensitive volume revoking one folder does not remove a sibling's
+      entry that differs only in case.
+    tests:
+      - packages/core/test/folders.test.ts::line that differs only in case (case-sensitive filesystem)
+  packages/core/src/folders.ts#sameFolderIgnoringCase:
+    kind: guarantee
+    rule: >-
+      Two spellings differing only in case are treated as one folder only when they are the same directory entry; links
+      are never followed and any error means no match.
+    tests:
+      - >-
+        packages/core/test/folders.test.ts::a sibling folder that differs only in case keeps its own entry
+        (case-sensitive filesystem)
+  packages/core/src/folders.ts#setFolderEntryUnlocked:
+    kind: guarantee
+    rule: >-
+      Changing only the scope never switches a remote-only folder back to local memory, and a used nonce is never left
+      valid for a second use.
+    tests:
+      - >-
+        packages/core/test/folder-remote-only.test.ts::changes only the scope; it never switches the folder back to
+        local memory
+      - packages/core/test/folders.test.ts::an ask-flow nonce works once, for its folder only
+    lean:
+      - PlurSpec/FolderRules.lean:nonce_single_use
+  packages/core/src/folders.ts#stem:
+    kind: guarantee
+    rule: A folder-map repair backup never overwrites an earlier backup.
+    tests:
+      - packages/core/test/folder-map-repair.test.ts::two repairs in the same second keep both backups
+  packages/core/src/folders.ts#stores:
+    kind: guarantee
+    rule: >-
+      A folder entry naming a team scope with no configured or granted store is refused, so memories do not silently
+      stay local.
+    tests:
+      - packages/core/test/folders.test.ts::a shared scope needs a configured store; a personal one does not
+  packages/core/src/folders.ts#surgicalMapText:
+    kind: note
+    why: Describes a byte-preserving edit with a safe fallback; the hard-rule wording is incidental.
+  packages/core/src/folders.ts#sweepFolderNonces:
+    kind: guarantee
+    rule: Only nonce files none of whose nonces could still be redeemed are swept; an unreadable file is judged by its age.
+    tests:
+      - packages/core/test/folder-nonce-sweep.test.ts::a file with one live nonce among expired ones is kept
+      - >-
+        packages/core/test/folder-nonce-sweep.test.ts::an unreadable file is swept by its age on disk, a fresh one is
+        left
+  packages/core/src/folders.ts#verifyFolderNonce:
+    kind: guarantee
+    rule: >-
+      A nonce that is unknown, expired, or issued for a different folder or answer is refused, a failed write never
+      burns it, and a record with no bound answer authorises nothing.
+    tests:
+      - packages/core/test/folders.test.ts::a missing or stale nonce is refused and nothing is written
+      - packages/core/test/folders.test.ts::a nonce record with no bound answer authorises nothing
+    lean:
+      - PlurSpec/FolderRules.lean:verify_binds
+      - PlurSpec/FolderRules.lean:unbound_record_authorises_nothing
+      - PlurSpec/FolderRules.lean:failed_write_keeps_nonce
+  packages/core/src/folders.ts#where:
+    kind: guarantee
+    rule: >-
+      When a broken folder map cannot be repaired automatically, the message says to fix it by hand instead of pointing
+      at the repair command.
+    tests:
+      - >-
+        packages/core/test/folders-repair-scope-1567.test.ts::unrepairable: "fix line N by hand", and repair only as the
+        re-check
+  packages/core/src/fresh-tail.ts#FRESH_TAIL_DAYS:
+    kind: guarantee
+    rule: The fresh-memory boost is applied only at scoring time and never stored on the memory.
+    none: no test checks the boost is absent from the saved memory
+  packages/core/src/fts.ts#CorpusStats:
+    kind: note
+    why: "A contract for store implementers: supply corpus statistics only under the exact matching rule, or none."
+  packages/core/src/fts.ts#TOKENIZER_VERSION:
+    kind: note
+    why: A maintainer instruction to bump the version on any tokenizer change; the test pins it.
+  packages/core/src/fts.ts#engramSearchText:
+    kind: note
+    why: Explains a defensive read of tags; 'always has it' is a schema fact.
+  packages/core/src/git-origin.ts#GitScopeSource:
+    kind: guarantee
+    rule: Only scopes the server listed are used for a git default, never its pinned scopes.
+    lean:
+      - PlurSpec/GitScope.lean:scope_sound
+    tests:
+      - packages/core/test/git-default-scope.test.ts::a pinned scope the server did not list is never a default
+  packages/core/src/git-origin.ts#SCP_RE:
+    kind: note
+    why: Describes the scp-style remote pattern.
+  packages/core/src/git-origin.ts#cacheProblem:
+    kind: note
+    why: Describes a helper's return value; 'cannot be used' names the condition.
+  packages/core/src/git-origin.ts#gitDefaultScope:
+    kind: guarantee
+    rule: >-
+      A git default scope is only ever one that a fresh, host-matching server listed and mapped to exactly this project,
+      and the only such pair; any doubt gives unknown, never a guess.
+    lean:
+      - PlurSpec/GitScope.lean:scope_sound
+      - PlurSpec/GitScope.lean:scope_unique
+      - PlurSpec/GitScope.lean:stale_never_scope
+    tests:
+      - packages/core/test/git-default-scope.test.ts::two servers mapping the same path → ambiguous
+      - >-
+        packages/core/test/git-default-scope.test.ts::a stale second server on the same GitLab makes the answer unknown,
+        never a guess
+  packages/core/src/git-origin.ts#loadGitScopeSources:
+    kind: guarantee
+    rule: >-
+      Reading git scope sources never throws, drops wrong-shaped fields rather than entries, and never lets a token or
+      url credentials reach a source.
+    tests:
+      - packages/core/test/git-default-scope.test.ts::hand-edited junk is dropped field by field, never thrown
+      - >-
+        packages/core/test/git-default-scope.test.ts::https origin with credentials maps, and the outcome never carries
+        them
+  packages/core/src/git-origin.ts#sameGitlab:
+    kind: guarantee
+    rule: An ssh remote's port is never compared with the GitLab web port.
+    tests:
+      - >-
+        packages/core/test/git-default-scope.test.ts::ssh ports are not compared (the GitLab web port is not its ssh
+        port)
+  packages/core/src/history.ts#HistoryEvent:
+    kind: guarantee
+    rule: >-
+      A history event whose predecessor could not be read records a declared gap rather than a fabricated hash, and
+      session-level events never match a real memory.
+    lean:
+      - PlurSpec/Provenance.lean:failed_append_is_gap
+      - PlurSpec/Provenance.lean:walk_only_gaps
+    promises:
+      - PROOF-1
+  packages/core/src/history.ts#TAIL_BYTES:
+    kind: note
+    why: States that the tail window is a heuristic, not a guarantee.
+  packages/core/src/history.ts#TAIL_WINDOW:
+    kind: guarantee
+    rule: >-
+      A large history event never makes an intact log read as a gap, and an unreadable tail is a declared gap, never an
+      error.
+    tests:
+      - packages/core/test/history-checkpoint.test.ts::a large event does not break the chain for the NEXT event
+      - packages/core/test/history-checkpoint.test.ts::reads the hash of an event line far longer than 8 KiB
+  packages/core/src/history.ts#appendHistory:
+    kind: guarantee
+    rule: >-
+      A history append never throws, chains under a lock, and records a declared gap instead of a fabricated hash when
+      the lock or predecessor cannot be read.
+    lean:
+      - PlurSpec/Provenance.lean:locked_append_links
+      - PlurSpec/Provenance.lean:failed_append_is_gap
+      - PlurSpec/Provenance.lean:locked_run_verifies
+    tests:
+      - packages/core/test/history-chain.test.ts::history write failure does not propagate to caller (best-effort)
+      - packages/core/test/history-chain.test.ts::second event in same file has prev equal to first hash
+    promises:
+      - PROOF-1
+  packages/core/src/history.ts#appendHistoryBatch:
+    kind: guarantee
+    rule: A batch history append never throws and writes exactly the chain that the same events appended one by one would.
+    lean:
+      - PlurSpec/Provenance.lean:batch_eq_singles
+      - PlurSpec/Provenance.lean:batch_eq_singles_months
+    tests:
+      - packages/core/test/history-batch-chain.test.ts::across a month boundary into a file that already has events
+  packages/core/src/history.ts#appendHistoryStamped:
+    kind: guarantee
+    rule: >-
+      Without the chain lock an event is written as a declared gap, never chained to an unread tail, so it is never
+      mistaken for tampering; an event whose payload cannot be built is not written.
+    lean:
+      - PlurSpec/Provenance.lean:failed_append_is_gap
+      - PlurSpec/Provenance.lean:walk_only_gaps
+    tests:
+      - packages/core/test/checkpoint-store-binding.test.ts::throws and writes NO event when the store is unparseable
+  packages/core/src/history.ts#appendHistoryStamped.writeEventLine:
+    kind: guarantee
+    rule: >-
+      A failed history append never fails the caller's change, and only a writer holding the chain lock updates the
+      chain-head caches.
+    tests:
+      - packages/core/test/chain-head-sidecar.test.ts::leaves no sidecar behind when the lock could not be taken
+      - packages/core/test/history-chain.test.ts::history write failure does not propagate to caller (best-effort)
+  packages/core/src/history.ts#attestStore:
+    kind: guarantee
+    rule: >-
+      A store attestation takes its hash and count from one read and throws on a store it cannot parse, never attesting
+      a count of zero.
+    tests:
+      - packages/core/test/history-checkpoint.test.ts::derives hash and count from the SAME bytes
+      - packages/core/test/history-checkpoint.test.ts::THROWS on a malformed store rather than attesting a count of 0
+  packages/core/src/history.ts#canonicalEventBytes:
+    kind: guarantee
+    rule: >-
+      An event's canonical bytes sort keys recursively, have no extra whitespace, include the predecessor link and
+      exclude the hash.
+    tests:
+      - packages/core/test/history-chain.test.ts::excludes the hash field from canonical bytes
+      - packages/core/test/history-chain.test.ts::includes the prev field in canonical bytes
+  packages/core/src/history.ts#computeEventHash:
+    kind: guarantee
+    rule: An event's hash never covers its own hash field.
+    tests:
+      - packages/core/test/history-chain.test.ts::produces same hash regardless of whether hash field is pre-set
+  packages/core/src/history.ts#countEngramsInStore:
+    kind: note
+    why: A thin wrapper with advice to callers; 'always' wording is incidental.
+  packages/core/src/history.ts#current:
+    kind: guarantee
+    rule: >-
+      A future-stamped history file never captures later appends; a future-stamped event joins the current month's file
+      so the chain stays one.
+    lean:
+      - PlurSpec/Provenance.lean:future_stamp_joins_current
+      - PlurSpec/Provenance.lean:noLaterThan_sstep
+    tests:
+      - "packages/core/test/verify-review-0.23.test.ts::R3: a future-stamped month file does not capture later appends"
+      - >-
+        packages/core/test/verify-review-0.23.test.ts::a future-stamped event joins the current month file and the chain
+        stays one
+  packages/core/src/history.ts#dropTornTail:
+    kind: guarantee
+    rule: >-
+      A fragment left by a writer killed mid-append is dropped under the chain lock so the next event is never glued
+      onto it.
+    tests:
+      - packages/core/test/verify-review-0.23.test.ts::a fragment left by a dead writer is still dropped
+  packages/core/src/history.ts#emitCheckpoint.event_hash:
+    kind: guarantee
+    rule: A checkpoint whose history line was not written returns no hash to anchor.
+    tests:
+      - >-
+        packages/core/test/verify-review-0.23.test.ts::emitCheckpoint returns event_hash null when the history line
+        could not be written
+  packages/core/src/history.ts#evTime:
+    kind: guarantee
+    rule: The injection duplicate check never drops a real record because of an unparseable or future timestamp.
+    tests:
+      - packages/core/test/injection-dedup.test.ts::treats an unparseable timestamp as OUT of the window
+      - packages/core/test/injection-dedup.test.ts::treats a future timestamp as OUT of the window
+  packages/core/src/history.ts#generateInjectionId:
+    kind: guarantee
+    rule: An injection record holds memory ids only, never their statements, and no injection outcome is ever synthesised.
+    tests:
+      - packages/core/test/co-injection-fields.test.ts::still records ids and query_hash
+    promises:
+      - PROOF-2
+  packages/core/src/history.ts#hashEngramsFile:
+    kind: note
+    why: >-
+      States where the function is called from (not the hot write path), a usage note rather than a rule this code
+      enforces.
+  packages/core/src/history.ts#mintedIdsWithPrefix:
+    kind: guarantee
+    rule: An id freed by compaction is never reused, and reading the minted ids never throws.
+    tests:
+      - packages/core/test/engram-id-reuse.test.ts::a compacted id is not handed to the next engram
+      - packages/core/test/engram-id-reuse.test.ts::stays monotonic even when history is unreadable
+  packages/core/src/history.ts#observationHolds:
+    kind: guarantee
+    rule: >-
+      A cached chain head is used only while the log file has the same size and inode; any doubt falls back to reading
+      the tail.
+    tests:
+      - packages/core/test/history-chain.test.ts::a cache whose observation no longer holds is NOT served
+  packages/core/src/history.ts#parsed:
+    kind: guarantee
+    rule: >-
+      The store hash covers each memory's id, status and record hash, never usage counters, so ordinary recall and
+      feedback do not break verification.
+    tests:
+      - packages/core/test/verify-review-0.23.test.ts::the learn alone is ordinary use
+  packages/core/src/history.ts#readCoInjections:
+    kind: guarantee
+    rule: >-
+      Reading injection records never throws; unknown sources become unknown, and non-string ids and malformed
+      timestamps are dropped.
+    tests:
+      - packages/core/test/co-injection-fields.test.ts::coerces an unrecognised source to "unknown"
+      - packages/core/test/co-injection-fields.test.ts::drops non-string ids so they can never reach a renderer
+      - packages/core/test/co-injection-fields.test.ts::drops a Date.parse-lenient timestamp carrying a control char
+  packages/core/src/history.ts#readRekeyedPairs:
+    kind: note
+    why: Describes a one-pass performance shape; 'cannot be a rekey' names a filter.
+  packages/core/src/history.ts#recordStoreSync:
+    kind: guarantee
+    rule: >-
+      Memories changed by a sync pull are recorded by id, never content, so verify does not report them as edits behind
+      PLUR's back.
+    tests:
+      - "packages/core/test/verify-review-0.23.test.ts::R9: a numeric id changed by a pull is still named"
+  packages/core/src/history.ts#storeRecordMap:
+    kind: note
+    why: Describes a helper's return value; 'cannot be read' names when it is null.
+  packages/core/src/history.ts#warnedHistoryPaths:
+    kind: note
+    why: Explains warning once per path to avoid log floods.
+  packages/core/src/history.ts#writeChainHead:
+    kind: guarantee
+    rule: A chain-head sidecar write failure never fails the history append, and a reader never sees a half-written sidecar.
+    none: no test makes the sidecar write fail or interrupts it
+  packages/core/src/history.ts#written:
+    kind: guarantee
+    rule: A checkpoint is still written, unsigned, when the signing key cannot be read or signing fails.
+    tests:
+      - "packages/core/test/actor-keys.test.ts::signing failure is best-effort: unsigned checkpoint is written on error"
+  packages/core/src/remote-recall.ts#isLegacyRateLimitCooldown:
+    kind: guarantee
+    rule: >-
+      A breaker cooldown is never read as an older file's host-wide 429, whatever another token's 429 left in
+      last_state.
+    lean:
+      - PlurSpec/RemoteHealth.lean:breaker_never_legacy
+      - PlurSpec/RemoteHealth.lean:breaker_trial_reachable
+      - PlurSpec/RemoteHealth.lean:save_clears_breaker
+      - PlurSpec/RemoteHealth.lean:legacy_still_honoured
+    tests:
+      - >-
+        packages/core/test/formal-remote-health-breaker.test.ts::the breaker still allows its trial read after the
+        half-open wait
+      - packages/core/test/formal-remote-health-breaker.test.ts::a successful save still ends the breaker cooldown
+      - >-
+        packages/core/test/formal-remote-health-breaker.test.ts::the write leg reports the cooldown as the breaker, not
+        a rate limit
+      - >-
+        packages/core/test/formal-remote-health-breaker.test.ts::a host-wide 429 cooldown from an older file is still
+        honoured to its end

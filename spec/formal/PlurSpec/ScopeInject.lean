@@ -660,17 +660,9 @@ theorem fill_le (budget : Nat) (cs : List Nat) : ∀ u, u ≤ budget → fill bu
     · exact ih u h
     · exact ih _ (by omega)
 
-/-- What `tokens_used` can reach: sections ≤ maxTokens, but the consider pool
-(DIP-19, own budget 200) and spreading (own `spread_budget`, 480) are added on
-top — the bound is `maxTokens + 200 + spreadBudget`, not `maxTokens`. -/
-theorem tokens_used_bound (maxT spreadB : Nat) (sec cons spr : List Nat) :
-    fill maxT 0 sec + fill 200 0 cons + fill spreadB 0 spr ≤ maxT + 200 + spreadB := by
-  have := fill_le maxT sec 0 (Nat.zero_le _)
-  have := fill_le 200 cons 0 (Nat.zero_le _)
-  have := fill_le spreadB spr 0 (Nat.zero_le _)
-  omega
-
-/-- Replayed: maxTokens 500 → tokens_used 448 + 375 = 823. -/
+/-- Pre-cap-sum counterexample: the consider pool and spreading had budgets of
+their own on top of the sections. Replayed: maxTokens 500 → tokens_used 448 + 375 = 823.
+`tokens_used_bound` (§8) is the claim the code makes now. -/
 theorem tokens_used_exceeds_budget : fill 500 0 [448] + fill 200 0 [190] + fill 480 0 [185] > 500 := by
   decide
 
@@ -948,5 +940,281 @@ theorem sub_floor_rises : decOld 50000 0 223130 > 0 * 1000000 := by decide
 
 /-- The fixed code on the same input: 0 stays 0. -/
 theorem sub_floor_stays : decNew 50000 0 223130 = 0 := by decide
+
+/-! ## 8. The whole injection budget, branch for branch (inject.ts `selectAndSpread`)
+
+`total_le_budget` (§5) takes the section spend `S ≤ maxT` as a hypothesis. This
+section models how the sections spend it: the tiered pinned pass, the
+constraints-floor pass, the directives pass and the slack pass, then the
+consider pool (sliced to 5) and spreading activation (stopped at a count cap).
+The per-pack / per-domain caps are oracles (`ok*`, given what each pass has
+admitted), so every bound holds whatever they decide. Nat subtraction is the
+code's `Math.max(0, …)`. -/
+
+def sumL : List Nat → Nat
+  | [] => 0
+  | x :: xs => x + sumL xs
+
+theorem sumL_append (a b : List Nat) : sumL (a ++ b) = sumL a + sumL b := by
+  induction a with
+  | nil => simp [sumL]
+  | cons x xs ih => simp only [List.cons_append, sumL, ih]; omega
+
+theorem sumL_take_le (k : Nat) (l : List Nat) : sumL (l.take k) ≤ sumL l := by
+  induction l generalizing k with
+  | nil => simp [sumL]
+  | cons x xs ih =>
+    cases k with
+    | zero => simp [sumL]
+    | succ k => simp only [List.take_succ_cons, sumL]; have := ih k; omega
+
+/-- `fillTokenBudget`'s unpinned loop: `tokensUsed + cost > maxTokens` skips;
+then the fairness caps (`ok`) may skip; else the engram is appended. -/
+def fillS (ok : List Nat → Nat → Bool) (budget : Nat) : List Nat → List Nat → List Nat
+  | acc, [] => acc
+  | acc, c :: cs =>
+    if sumL acc + c > budget then fillS ok budget acc cs
+    else if ok acc c = false then fillS ok budget acc cs
+    else fillS ok budget (acc ++ [c]) cs
+
+theorem fillS_le (ok : List Nat → Nat → Bool) (budget : Nat) (cs : List Nat) :
+    ∀ acc, sumL acc ≤ budget → sumL (fillS ok budget acc cs) ≤ budget := by
+  induction cs with
+  | nil => intro acc h; exact h
+  | cons c cs ih =>
+    intro acc h; unfold fillS
+    split
+    · exact ih acc h
+    · split
+      · exact ih acc h
+      · apply ih; rw [sumL_append]; simp only [sumL]; omega
+
+/-! ### 8a. The pinned pass with two tiers (`fillTokenBudget` pinned loop)
+
+`pinB` = `floor(base × pinnedShareRatio)`, `hardCap` = `pinnedHardCap`,
+`R` = `hardPinnedReserve` over every candidate. The ledger's
+`spent − hardSpent` is `softS`. Blocking is per tier; a total-budget skip
+blocks both. -/
+
+structure TPin where
+  rank : Nat
+  cost : Nat
+  hard : Bool
+  deriving DecidableEq, Repr
+
+structure TSt where
+  used  : Nat
+  hardS : Nat
+  softS : Nat
+  skH   : Option Nat
+  skS   : Option Nat
+  adm   : List TPin
+  om    : List TPin
+  deriving Repr
+
+def tstep (maxT pinB hardCap R : Nat) (st : TSt) (p : TPin) : TSt :=
+  if blockedBy (if p.hard then st.skH else st.skS) p.rank then { st with om := p :: st.om }
+  else if st.used + p.cost > maxT then
+    { st with om := p :: st.om, skS := some (minOpt st.skS p.rank), skH := some (minOpt st.skH p.rank) }
+  else if p.hard then
+    if st.hardS + p.cost > hardCap ∨ st.hardS + st.softS + p.cost > pinB then
+      { st with om := p :: st.om, skH := some (minOpt st.skH p.rank) }
+    else { st with adm := p :: st.adm, used := st.used + p.cost, hardS := st.hardS + p.cost }
+  else if st.softS + p.cost > pinB - R then
+    { st with om := p :: st.om, skS := some (minOpt st.skS p.rank) }
+  else { st with adm := p :: st.adm, used := st.used + p.cost, softS := st.softS + p.cost }
+
+def trun (maxT pinB hardCap R : Nat) (st : TSt) : List TPin → TSt
+  | [] => st
+  | p :: ps => trun maxT pinB hardCap R (tstep maxT pinB hardCap R st p) ps
+
+def hardSum : List TPin → Nat
+  | [] => 0
+  | p :: ps => (if p.hard then p.cost else 0) + hardSum ps
+
+/-- `hardPinnedReserve`: the hard candidates' cost, up to the hard cap. -/
+def reserve (hardCap : Nat) (ps : List TPin) : Nat := min hardCap (hardSum ps)
+
+def tinit : TSt := ⟨0, 0, 0, none, none, [], []⟩
+
+def TInv (maxT pinB hardCap R : Nat) (st : TSt) : Prop :=
+  st.used = st.hardS + st.softS ∧ st.used ≤ maxT ∧ st.hardS ≤ hardCap ∧ st.softS ≤ pinB - R
+
+theorem tstep_inv (maxT pinB hardCap R : Nat) (st : TSt) (p : TPin)
+    (h : TInv maxT pinB hardCap R st) : TInv maxT pinB hardCap R (tstep maxT pinB hardCap R st p) := by
+  unfold TInv at *
+  obtain ⟨h1, h2, h3, h4⟩ := h
+  unfold tstep
+  repeat' split
+  all_goals first
+    | exact ⟨h1, h2, h3, h4⟩
+    | (refine ⟨?_, ?_, ?_, ?_⟩ <;> simp only <;> omega)
+
+theorem tstep_hard (maxT pinB hardCap R : Nat) (st : TSt) (p : TPin) :
+    (tstep maxT pinB hardCap R st p).hardS ≤ st.hardS + (if p.hard then p.cost else 0) := by
+  unfold tstep
+  repeat' split
+  all_goals first | (simp only; omega) | simp_all
+
+theorem trun_props (maxT pinB hardCap R : Nat) (ps : List TPin) :
+    ∀ st, TInv maxT pinB hardCap R st →
+      TInv maxT pinB hardCap R (trun maxT pinB hardCap R st ps) ∧
+      (trun maxT pinB hardCap R st ps).hardS ≤ st.hardS + hardSum ps := by
+  induction ps with
+  | nil => intro st h; exact ⟨h, by simp [trun, hardSum]⟩
+  | cons p ps ih =>
+    intro st h
+    have ⟨hi, hh⟩ := ih _ (tstep_inv maxT pinB hardCap R st p h)
+    refine ⟨hi, ?_⟩
+    have := tstep_hard maxT pinB hardCap R st p
+    simp only [trun, hardSum]
+    omega
+
+/-- **INJ-6, pinned share:** the pinned pass never spends more than the
+injection budget, never more than the pinned share in total, and the hard
+tier never more than its sub-cap — for every pin list, order and cost. Needs
+`hardCap ≤ pinB`, which `pinnedHardCap` guarantees by clamping the hard ratio
+to [0, 1]. -/
+theorem pinned_within_share (maxT pinB hardCap : Nat) (ps : List TPin) (hcap : hardCap ≤ pinB) :
+    let st := trun maxT pinB hardCap (reserve hardCap ps) tinit ps
+    st.used ≤ maxT ∧ st.hardS + st.softS ≤ pinB ∧ st.hardS ≤ hardCap := by
+  dsimp only
+  have h0 : TInv maxT pinB hardCap (reserve hardCap ps) tinit := by
+    simp [TInv, tinit]
+  have ⟨⟨_, h2, h3, h4⟩, hh⟩ := trun_props maxT pinB hardCap (reserve hardCap ps) ps tinit h0
+  have ht : tinit.hardS = 0 := rfl
+  rw [ht, Nat.zero_add] at hh
+  generalize trun maxT pinB hardCap (reserve hardCap ps) tinit ps = st at *
+  have hR : st.hardS ≤ reserve hardCap ps := Nat.le_min.mpr ⟨h3, hh⟩
+  have hR2 : reserve hardCap ps ≤ hardCap := Nat.min_le_left _ _
+  exact ⟨h2, by omega, h3⟩
+
+/-- Non-vacuity: a hard and a soft pin that fit are both admitted. -/
+theorem pinned_tiers_admitted :
+    let ps := [TPin.mk 0 200 true, TPin.mk 0 250 false]
+    (trun 1000 500 250 (reserve 250 ps) tinit ps).adm.length = 2 := by decide
+
+/-- A soft pin of a higher origin cannot spend what the hard tier holds back:
+soft 400 at origin 0, hard 200 at origin 1, share 500 (reserve 200): the soft
+pin is omitted, the hard pin admitted. -/
+theorem soft_cannot_spend_reserve :
+    let ps := [TPin.mk 0 400 false, TPin.mk 1 200 true]
+    let st := trun 1000 500 250 (reserve 250 ps) tinit ps
+    st.adm = [TPin.mk 1 200 true] ∧ st.om = [TPin.mk 0 400 false] := by decide
+
+/-! ### 8b. The section passes after the pins -/
+
+/-- Pre-fix: the constraints-floor pass got `floor − pc` whatever the pins left. -/
+def sectionsOld (ok1 ok2 ok3 : List Nat → Nat → Bool) (maxT floor p pc : Nat)
+    (cs ds rest : List Nat) : Nat :=
+  let f := sumL (fillS ok1 (floor - pc) [] cs)
+  let d := sumL (fillS ok2 (maxT - p - f) [] ds)
+  let sl := maxT - p - f - d
+  let s := if sl > 0 then sumL (fillS ok3 sl [] rest) else 0
+  p + f + d + s
+
+/-- Post-fix: the floor pass gets `min(floor − pc, maxT − p)`; directives get
+what pins and floor left; the slack pass what directives left. `p` is the
+pinned pass's spend, `pc` the part of it on pinned constraints. -/
+def sectionsNew (ok1 ok2 ok3 : List Nat → Nat → Bool) (maxT floor p pc : Nat)
+    (cs ds rest : List Nat) : Nat :=
+  let f := sumL (fillS ok1 (min (floor - pc) (maxT - p)) [] cs)
+  let d := sumL (fillS ok2 (maxT - p - f) [] ds)
+  let sl := maxT - p - f - d
+  let s := if sl > 0 then sumL (fillS ok3 sl [] rest) else 0
+  p + f + d + s
+
+/-- Replayed (formal-inject-budget-sections.test.ts, pre-fix: 1341 tokens at
+maxTokens 1000 with `pinned_ratio: 1`): pins spend the whole budget and the
+floor pass still adds its 400. -/
+theorem old_sections_exceed :
+    sectionsOld (fun _ _ => true) (fun _ _ => true) (fun _ _ => true) 1000 400 1000 0 [400] [] [] = 1400 := by
+  decide
+
+/-- **Fixed code:** the sections never spend more than the budget, once the
+pins are within it — for every floor, every cap decision and every list. -/
+theorem sections_le_budget (ok1 ok2 ok3 : List Nat → Nat → Bool) (maxT floor p pc : Nat)
+    (cs ds rest : List Nat) (hp : p ≤ maxT) :
+    sectionsNew ok1 ok2 ok3 maxT floor p pc cs ds rest ≤ maxT := by
+  unfold sectionsNew
+  simp only
+  have hf := fillS_le ok1 (min (floor - pc) (maxT - p)) cs [] (by simp [sumL])
+  have hm : min (floor - pc) (maxT - p) ≤ maxT - p := Nat.min_le_right _ _
+  have hd := fillS_le ok2 (maxT - p - sumL (fillS ok1 (min (floor - pc) (maxT - p)) [] cs)) ds []
+    (by simp [sumL])
+  split
+  · have hs := fillS_le ok3 (maxT - p - sumL (fillS ok1 (min (floor - pc) (maxT - p)) [] cs)
+      - sumL (fillS ok2 (maxT - p - sumL (fillS ok1 (min (floor - pc) (maxT - p)) [] cs)) [] ds))
+      rest [] (by simp [sumL])
+    omega
+  · omega
+
+theorem sections_replay :
+    sectionsNew (fun _ _ => true) (fun _ _ => true) (fun _ _ => true) 1000 400 1000 0 [400] [] [] = 1000 := by
+  decide
+
+/-- Non-vacuity: with room, the floor, directives and slack passes all deliver. -/
+theorem sections_keep :
+    sectionsNew (fun _ _ => true) (fun _ _ => true) (fun _ _ => true) 2000 800 500 0 [300, 900] [400] [600]
+      = 500 + 300 + 400 + 600 := by
+  decide
+
+/-! ### 8c. Consider pool and spreading activation -/
+
+/-- The spreading loop: over the budget → skip (`continue`); at the count cap → stop. -/
+def spreadRun (eff cap : Nat) : Nat → Nat → List Nat → Nat
+  | _, t, [] => t
+  | n, t, c :: cs =>
+    if t + c > eff then spreadRun eff cap n t cs
+    else if n ≥ cap then t
+    else spreadRun eff cap (n + 1) (t + c) cs
+
+theorem spreadRun_le (eff cap : Nat) (cs : List Nat) :
+    ∀ n t, t ≤ eff → spreadRun eff cap n t cs ≤ eff := by
+  induction cs with
+  | nil => intro n t h; exact h
+  | cons c cs ih =>
+    intro n t h; unfold spreadRun
+    split
+    · exact ih n t h
+    · split
+      · exact h
+      · exact ih _ _ (by omega)
+
+/-- The consider pool gets `min(200, rem)` and is sliced to its first 5;
+spreading gets `min(spread_budget, rem − pool)`. -/
+def poolsNew (okC : List Nat → Nat → Bool) (maxT spreadB cap S : Nat) (cons spr : List Nat) : Nat :=
+  let rem := maxT - S
+  let pool := sumL ((fillS okC (min 200 rem) [] cons).take 5)
+  let sp := spreadRun (min spreadB (rem - pool)) cap 0 0 spr
+  S + pool + sp
+
+theorem pools_le_budget (okC : List Nat → Nat → Bool) (maxT spreadB cap S : Nat)
+    (cons spr : List Nat) (hS : S ≤ maxT) : poolsNew okC maxT spreadB cap S cons spr ≤ maxT := by
+  unfold poolsNew
+  simp only
+  have hc := fillS_le okC (min 200 (maxT - S)) cons [] (by simp [sumL])
+  have ht := sumL_take_le 5 (fillS okC (min 200 (maxT - S)) [] cons)
+  have hm : min 200 (maxT - S) ≤ maxT - S := Nat.min_le_right _ _
+  have hp := spreadRun_le (min spreadB (maxT - S - sumL ((fillS okC (min 200 (maxT - S)) [] cons).take 5)))
+    cap spr 0 0 (Nat.zero_le _)
+  have hm2 : min spreadB (maxT - S - sumL ((fillS okC (min 200 (maxT - S)) [] cons).take 5))
+      ≤ maxT - S - sumL ((fillS okC (min 200 (maxT - S)) [] cons).take 5) := Nat.min_le_right _ _
+  omega
+
+/-- **INJ-2, the claim the code makes (`InternalInjectionResult.tokens_used`,
+`selectAndSpread` CAP-SUM):** the whole injection — pins, constraints floor,
+directives, constraints slack, consider pool and spreading — never exceeds
+`maxTokens`, for every pinned share, hard cap, floor, spread budget, count cap,
+fairness-cap decision and candidate list. -/
+theorem tokens_used_bound (ok1 ok2 ok3 okC : List Nat → Nat → Bool)
+    (maxT floor pinB hardCap spreadB cap pc : Nat) (pins : List TPin)
+    (cs ds rest cons spr : List Nat) (hcap : hardCap ≤ pinB) :
+    let pst := trun maxT pinB hardCap (reserve hardCap pins) tinit pins
+    poolsNew okC maxT spreadB cap (sectionsNew ok1 ok2 ok3 maxT floor pst.used pc cs ds rest) cons spr
+      ≤ maxT := by
+  intro pst
+  have hp := (pinned_within_share maxT pinB hardCap pins hcap).1
+  exact pools_le_budget _ _ _ _ _ _ _ (sections_le_budget _ _ _ _ _ _ _ _ _ _ hp)
 
 end PlurSpec.ScopeInject

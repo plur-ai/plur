@@ -1,6 +1,6 @@
 import {
   appendFileSync, readFileSync, openSync, fstatSync, readSync, closeSync, existsSync,
-  writeSync, renameSync, unlinkSync, statSync, readdirSync,
+  renameSync, unlinkSync, readdirSync,
 } from 'fs'
 import { join, dirname, basename } from 'path'
 import { tmpdir } from 'os'
@@ -12,6 +12,9 @@ import {
   readProjectConfigFromPath,
   bareEngramId,
   FEEDBACK_SOURCE_CAPABILITY,
+  EMPTY_LOCK_GRACE_MS,
+  publishLockFileSync,
+  takeOverLockSync,
   type RatedEngram,
 } from '@plur-ai/core'
 import { createPlur, type GlobalFlags } from '../plur.js'
@@ -236,52 +239,30 @@ function heldByOlderWorker(path: string): boolean {
 }
 
 /**
- * Take over a worker lock judged stale, atomically, mirroring core's `stealLock`: CLAIM by renaming to a unique
- * name, verify it is the stale one, else restore it with an exclusive create. Never a plain unlink — that can
- * delete a newly created live lock (`InjectLock.old_removes_live`). Returns true only if the stale lock was removed.
+ * Is a worker lock with these contents and mtime abandoned? Its owner's pid is
+ * dead, or it is older than the worker ceiling. An empty lock (an older worker
+ * that died between create and write) gets core's short grace period.
  */
-export function takeOverStaleWorkerLock(path: string, expected: string): boolean {
-  const claim = `${path}.steal.${process.pid}.${Math.random().toString(36).slice(2, 10)}`
-  try { renameSync(path, claim) } catch { return false }
-  try {
-    const current = readFileSync(claim, 'utf8')
-    if (current === expected) {
-      unlinkSync(claim)
-      return true
-    }
-    // A live holder's lock. Put it back — never over a lock acquired since.
-    try {
-      const fd = openSync(path, 'wx', 0o600)
-      try { writeSync(fd, current) } finally { closeSync(fd) }
-    } catch { /* someone acquired meanwhile; theirs wins */ }
-    try { unlinkSync(claim) } catch { /* best effort */ }
-    return false
-  } catch {
-    try { unlinkSync(claim) } catch { /* never leave the claim behind */ }
-    return false
-  }
+export function workerLockAbandoned(holder: string, mtimeMs: number, now = Date.now()): boolean {
+  const age = now - mtimeMs
+  if (holder === '') return age > EMPTY_LOCK_GRACE_MS
+  return !pidAlive(parseInt(holder, 10)) || age > WORKER_STALE_MS
 }
 
-/** Exported for tests. Acquire this session's worker lock, taking over a stale one. */
+/**
+ * Exported for tests. Acquire this session's worker lock. The lock is published
+ * with its token already in it, and a stale one is taken over by core's guarded
+ * takeover, which re-judges the lock under its steal guard, so a live worker is
+ * never displaced.
+ */
 export function acquireWorkerLock(path: string): boolean {
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      const fd = openSync(path, 'wx', 0o600)
-      try { writeSync(fd, WORKER_TOKEN) } finally { closeSync(fd) }
+      publishLockFileSync(path, WORKER_TOKEN)
       return true
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== 'EEXIST') return false
-      let observed: string
-      let stale: boolean
-      try {
-        observed = readFileSync(path, 'utf8')
-        const owner = parseInt(observed, 10)
-        stale = !pidAlive(owner) || Date.now() - statSync(path).mtimeMs > WORKER_STALE_MS
-      } catch {
-        continue // released between the create and the read: try the create again
-      }
-      if (!stale) return false
-      takeOverStaleWorkerLock(path, observed) // win or lose, the next create decides
+      if (!takeOverLockSync(path, workerLockAbandoned)) return false
     }
   }
   return false

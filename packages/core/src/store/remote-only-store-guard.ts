@@ -181,18 +181,16 @@ export class QueueHoldStore implements PrimaryStore {
   /**
    * Stored state of every remote-only queued row this store has read or written, by id; writes are checked against
    * it at no extra read. An unknown row is read in a targeted way when the incoming row carries the marker, or when
-   * its id was never returned and no whole-corpus read happened. Markers are only set on creation, so a row read
-   * without one cannot gain one except through this check.
+   * its id was never returned by a read through this store, even after a whole-corpus read: another writer may have
+   * queued it since. Markers are only set on creation, so a row read without one cannot gain one except through this check.
    */
   private readonly _queued = new Map<string, Engram>()
-  /** Ids some read through this store returned, and whether one read all. */
+  /** Ids some read through this store returned. */
   private readonly _seen = new Set<string>()
-  private _readAll = false
 
   private _seeAll(rows: Engram[]): void {
     this._queued.clear()
     this._seen.clear()
-    this._readAll = true
     for (const e of rows) this._seen.add(e.id)
     for (const e of rows) if (isQueuedRow(e)) this._queued.set(e.id, heldState(e))
   }
@@ -210,14 +208,16 @@ export class QueueHoldStore implements PrimaryStore {
       if (known) current.set(e.id, known)
       // A marked row not known as queued: a new queued save, or a retarget of
       // one this store never returned. An unmarked row this store never
-      // returned, before any whole-corpus read: it may overwrite a queued row.
-      else if (isQueuedRow(e) || (!this._readAll && !this._seen.has(e.id))) unknown.push(e.id)
+      // returned: it may overwrite a row another writer queued.
+      else if (isQueuedRow(e) || !this._seen.has(e.id)) unknown.push(e.id)
     }
     if (unknown.length > 0) {
       const want = new Set(unknown)
       const rows = this.inner.loadByIds
         ? await this.inner.loadByIds(unknown)
-        : (await this.inner.load()).filter(e => want.has(e.id))
+        // loadCached is proven current by the store (or is a plain load), so
+        // a row another writer queued is seen without a second full parse.
+        : (await this.inner.loadCached()).filter(e => want.has(e.id))
       for (const e of rows) if (want.has(e.id)) current.set(e.id, e)
     }
     return current

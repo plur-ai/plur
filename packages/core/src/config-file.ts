@@ -4,12 +4,13 @@ import { atomicWrite, ALLOW_UNPROTECTED_ENV, CONFIG_FILE_MODE, _atomicWriteAcl }
 import { checkOwnerOnly, protectOwnerOnly, type OwnerOnlyResult } from './owner-only.js'
 
 /**
- * The one way core writes `config.yaml` (device key, tokens); owner-only after EVERY write:
+ * The one way core writes `config.yaml` (device key, tokens); every write is made owner-only:
  * 1. Unix: an existing file is tightened to 0600 first (atomicWrite keeps its mode).
  * 2. `atomicWrite(…, { mode: 0600, secret: true })` — on Windows refuses (throws)
  *    unless the temp file is owner-only before its first byte.
- * 3. {@link protectOwnerOnly} re-applies and verifies; a failure logs one stderr line
- *    and is returned, the write stands, and `plur doctor` re-checks.
+ * 3. {@link protectOwnerOnly} re-applies and verifies. If that fails (or the
+ *    unprotected opt-out is set) the write still stands: one stderr line is logged,
+ *    the failure is returned, and `plur doctor` re-checks.
  * `content` may be bytes (backup restores). test/config-owner-only.test.ts keeps every
  * config writer here; kept apart from sync.ts (crash-test seam) and owner-only.ts (cycles).
  */

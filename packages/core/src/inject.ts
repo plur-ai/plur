@@ -1034,10 +1034,13 @@ export function selectAndSpread(
   const otherCandidates = unpinned.filter(e => !isConstraintCandidate(e))
 
   const constraintsFloor = Math.floor(maxTokens * CONSTRAINTS_FLOOR_RATIO)
-  // Pinned constraints draw on the constraints floor first.
+  // Pinned constraints draw on the constraints floor first, and the floor
+  // stops at what the pins left: with a pinned share above
+  // 1 − CONSTRAINTS_FLOOR_RATIO the pins and the floor together would
+  // otherwise overrun `maxTokens`.
   const firstPass = fillTokenBudget(constraintCandidates,
-    Math.max(0, constraintsFloor - pinnedConstraintTokens), maxTokens, pinnedLedger, hardRatio, pinnedRatio,
-    pinnedConstraints)
+    Math.max(0, Math.min(constraintsFloor - pinnedConstraintTokens, maxTokens - pinnedPass.tokens_used)),
+    maxTokens, pinnedLedger, hardRatio, pinnedRatio, pinnedConstraints)
 
   // Directives get everything the pins and the constraints floor did not use.
   const directivesBudget = Math.max(0, maxTokens - pinnedPass.tokens_used - firstPass.tokens_used)
@@ -1260,6 +1263,10 @@ const metaSafe = (value: string): string => entrySafe(value).replace(/\s*\|\s*/g
  * personal note read the same otherwise. Rendered on every layer, as its own
  * line rather than a field of the layer-3 meta line, so it reads the same in
  * every section and cannot be shadowed by a forged meta field.
+ *
+ * Only a non-empty scope is shown. The schema requires a scope string but
+ * accepts `''`, and a cost estimate renders a bare entry with no scope at
+ * all; neither has a scope to name, so neither gets the line.
  */
 function originLines(engram: WireEngram, indent: string): string[] {
   const scope = (engram as { scope?: unknown }).scope

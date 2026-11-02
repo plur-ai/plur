@@ -591,6 +591,18 @@ export function createFolderGate(plur: Plur, opts: { sessionId?: string; hosts?:
           if (notNow.has(dir)) return notNowAnswer(asked.get(dir)?.ask.folder ?? dir)
           return askFor(dir, policy)
         }
+        // Only on and remote-only let the tool run. An `off` read here (the
+        // map changed after the off check above) turns memory off too.
+        if (policy.mode !== 'on' && policy.mode !== 'remote-only') {
+          return folderOffAnswer(plur, [dir]) ?? {
+            success: true,
+            plur: 'off',
+            folder: dir,
+            message:
+              `PLUR is off for this folder (${JSON.stringify(dir)}): your folder map turns memory off here, so nothing ` +
+              `was read from or written to memory. This is not an error — carry on without memory.`,
+          }
+        }
         on.push({ dir, ...(policy.scope ? { scope: policy.scope } : {}) })
       }
       // The workspace's scope: workspaceWriteScope, the one resolver every

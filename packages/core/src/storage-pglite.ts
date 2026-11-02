@@ -395,14 +395,16 @@ export class PGLiteAdapter implements DerivedIndexAdapter {
     if (filter.scope) {
       // Read-side scope filter, three parts OR'd:
       //  (1) personal-family pass-through: every non-shared scope (SQL form of
-      //      isPersonalScope; keep in sync with SHARED_SCOPE_PREFIXES).
+      //      isPersonalScope; keep in sync with SHARED_SCOPE_PREFIXES). The
+      //      family prefix is case-folded like isSharedScope, or `Group:x`
+      //      would pass as personal (Postgres LIKE is case-sensitive).
       //  (2) the requested scope or a descendant on a real `:`/`/` delimiter,
       //      never a sibling prefix.
       //  (3) mounted-scope grants: VISIBILITY ONLY, never widening the `scopes`
       //      authorization clause. SQL twin of makeVisibilityPredicate
       //      (scope-util.ts); keep all four arms in lockstep.
       let clause =
-        `((NOT (${col}scope LIKE 'group:%' OR ${col}scope LIKE 'project:%' OR ${col}scope LIKE 'space:%' OR ${col}scope LIKE 'team:%' OR ${col}scope LIKE 'org:%' OR ${col}scope = 'public' OR ${col}scope LIKE 'public:%' OR ${col}scope LIKE 'public/%'))`
+        `((NOT (lower(${col}scope) LIKE 'group:%' OR lower(${col}scope) LIKE 'project:%' OR lower(${col}scope) LIKE 'space:%' OR lower(${col}scope) LIKE 'team:%' OR lower(${col}scope) LIKE 'org:%' OR lower(${col}scope) = 'public' OR lower(${col}scope) LIKE 'public:%' OR lower(${col}scope) LIKE 'public/%'))`
         + ` OR ${col}scope = $${i++} OR ${col}scope LIKE $${i++} || ':%' ESCAPE '\\' OR ${col}scope LIKE $${i++} || '/%' ESCAPE '\\'`
       // Escaped for the same reason as the Postgres copy — these two clauses
       // must stay identical; drift between them is an authorization bypass.

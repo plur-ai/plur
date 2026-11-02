@@ -1010,12 +1010,18 @@ const NO_SESSION_SLOT_WARNING =
   'dialing context. Call plur_session_start (then plur_session_scope with its session_id) to scope a session.'
 
 /**
- * The session a WRITE or INJECT passes to core: explicit `session_id`, else the lone open session, else core's
+ * The session an INJECT passes to core: explicit `session_id`, else the lone open session, else core's
  * `NO_SESSION` — never `undefined`, which would fall back to the last-started session's default (possibly a team
- * scope) and leak an id-less write into another session's scope.
+ * scope) and leak an id-less inject into another session's scope. Expired sessions are swept first, so an id past
+ * its TTL is no session. Without a FolderScopeContext an id this process never registered is no session, the rule
+ * `_writeSession` applies to writes.
  */
-function _resolveWriteSession(args: Record<string, unknown>): string {
-  return _resolveInjectionSession(args) ?? NO_SESSION
+function _resolveWriteSession(args: Record<string, unknown>, plur: Plur): string {
+  _cleanExpiredSessions(plur)
+  const chosen = _resolveInjectionSession(args)
+  if (chosen === undefined) return NO_SESSION
+  if (!_folderContext(args) && !_knownSession(chosen, plur, false)) return NO_SESSION
+  return chosen
 }
 
 /** Registry keys holding a workspace's scope; no real session id starts with NUL. */
@@ -1041,13 +1047,18 @@ function _knownSession(id: string, plur: Plur, viaServer: boolean): boolean {
  *   workspace's answer (the default itself is not changed).
  * - No session (none, several unnamed, or unknown id — never the process slot): the scope every root agrees on, or
  *   none. Roots are resolved right before core admits the write. An explicit `scope` still wins in core; without a
- *   FolderScopeContext the session alone decides.
+ *   FolderScopeContext the session alone decides, and an id core has no registration for is no session.
  */
 async function _writeSession(args: Record<string, unknown>, plur: Plur, base?: string | undefined, read = false, explicitDestinations = false): Promise<string> {
+  // An explicit id past its TTL resolves to nothing: expire it, and clear its
+  // registration, before resolving.
+  _cleanExpiredSessions(plur)
   const explicit = typeof args.session_id === 'string' && args.session_id.length > 0 ? args.session_id : undefined
   const chosen = base !== undefined ? base : (explicit ?? _implicitSessionId())
   const ctx = _folderContext(args)
-  if (!ctx) return chosen ?? NO_SESSION
+  // Without the server, an id core holds no registration for is no session:
+  // core would answer it with the process slot the last-started session set.
+  if (!ctx) return chosen !== undefined && _knownSession(chosen, plur, false) ? chosen : NO_SESSION
   // An id this process never registered has no default.
   const session = chosen !== undefined && _knownSession(chosen, plur, true) ? chosen : NO_SESSION
   let ws: Awaited<ReturnType<FolderScopeContext['resolve']>> = null
@@ -2138,7 +2149,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
       },
       handler: async (args, plur) => {
         // An ambiguous/absent session passes NO_SESSION (no session default).
-        const session_id = _resolveWriteSession(args)
+        const session_id = _resolveWriteSession(args, plur)
         const result = await plur.inject(args.task as string, {
           budget: args.budget as number | undefined,
           scope: args.scope as string | undefined,
@@ -2184,7 +2195,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
         // One deadline from handler entry, as plur_recall.
         const deadline_at = Date.now() + resolveRecallDeadlineMs()
         // An ambiguous/absent session passes NO_SESSION (no session default).
-        const session_id = _resolveWriteSession(args)
+        const session_id = _resolveWriteSession(args, plur)
         const result = await plur.injectHybrid(args.task as string, {
           budget: args.budget as number | undefined,
           scope: args.scope as string | undefined,
@@ -4995,15 +5006,20 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
           scope: { type: 'string', description: 'Scope for the new engram' },
           domain: { type: 'string', description: 'Domain tag for the new engram' },
           tags: { type: 'array', items: { type: 'string' }, description: 'Tags for the new engram' },
+          session_id: { type: 'string', description: 'Session this memory belongs to (from plur_session_start). Optional when one session is open. With none or several open and no session_id, no session default applies.' },
         },
         required: ['episode_id'],
       },
       handler: async (args, plur) => {
+        // A split window answers with plur_learn's refusal.
+        let session: string
+        try { session = await _writeSession(args, plur) }
+        catch (err) { if (err instanceof RootsDisagreeError) return err.refusal; throw err }
         const engram = await plur.episodeToEngram(args.episode_id as string, {
           scope: args.scope as string | undefined,
           // The same default as every other new write: never the process-wide
           // slot.
-          session: await _writeSession(args, plur),
+          session: session,
           domain: args.domain as string | undefined,
           tags: args.tags as string[] | undefined,
         })

@@ -88,8 +88,8 @@ export function makeEmbeddingGemmaAdapter(): EmbedderAdapter {
     dim: DIM,
     modelId: EMBEDDING_GEMMA_MODEL_ID,
     embed: embedOne,
-    // Reports whether the model is on disk, so a recall never downloads it
-    // (q8 weights, as loaded above).
+    // isLoaded: whether this process has loaded the model (never loads or
+    // downloads it). modelPresent: whether the q8 weights are on disk.
     isLoaded: () => gemmaLoaded,
     modelPresent: () => modelPresence(EMBEDDING_GEMMA_MODEL_ID, GEMMA_WEIGHTS),
     async embedBatch(texts: string[]): Promise<Float32Array[]> {

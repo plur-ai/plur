@@ -3,7 +3,8 @@
  * when the team store later refuses the token, this record is the only evidence left.
  * An append-only JSONL file in the plur dir (not `cache/`, not synced), one `{"id","scope","at"}` line per sighting.
  * Bounded by ROTATION, never rewriting: past {@link SEEN_ON_SERVER_GENERATION_BYTES} the live file is renamed over
- * the previous generation and lookups read both, so concurrent appends are never lost.
+ * the previous generation and lookups read both, so an append racing one rotation still lands in a file that is read.
+ * Only a second rotation inside one append's open→write window (another full generation written meanwhile) loses it.
  * Appends are best effort (evidence, never a gate): failures are swallowed.
  */
 import * as fs from 'fs'

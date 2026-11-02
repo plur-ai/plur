@@ -1,0 +1,31 @@
+"packages/core/src/inject.ts#remainingAfterSections":
+  lean: ["PlurSpec/ScopeInject.lean:tokens_used_bound", "PlurSpec/ScopeInject.lean:sections_le_budget", "PlurSpec/ScopeInject.lean:pools_le_budget", "PlurSpec/ScopeInject.lean:total_le_budget"]
+  tests: ["packages/core/test/formal-inject-budget-sections.test.ts::holds across pinned shares and budgets"]
+"packages/core/src/inject.ts#fillTokenBudget":
+  lean: ["PlurSpec/ScopeInject.lean:pinned_within_share", "PlurSpec/ScopeInject.lean:soft_cannot_spend_reserve"]
+"packages/core/src/inject.ts#DEFAULT_PINNED_HARD_RATIO":
+  lean: ["PlurSpec/ScopeInject.lean:pinned_within_share"]
+"packages/core/src/inject.ts#selectAndSpread":
+  lean: ["PlurSpec/ScopeInject.lean:tokens_used_bound"]
+  tests: ["packages/core/test/formal-inject-budget-sections.test.ts::pinned_ratio 1: pins fill the budget, the constraints floor gets nothing more"]
+"packages/core/src/inject.ts#originLines":
+  rule: "Every delivered memory with a non-empty scope says which scope it came from, on its own line."
+  tests: ["packages/core/test/formal-inject-budget-origin.test.ts::every delivered memory with a scope shows it, in directives, constraints and consider", "packages/core/test/formal-inject-budget-origin.test.ts::an empty scope is delivered without a scope line"]
+"packages/core/src/tensions.ts#TensionScanResult":
+  rule: "every pair the measured-under gate skips is counted and named in the result; snapshot, expired, supersedes and recorded skips are not counted"
+  tests: ["packages/core/test/formal-inject-budget-tensions.test.ts::a snapshot pair skipped by policy is dropped and not counted in skipped"]
+"packages/core/src/plur/injection.ts#recordedSessionId":
+  tests: ["packages/core/test/formal-inject-budget-injection.test.ts::an inject with the no-session marker records no session id"]
+"packages/core/src/plur/injection.ts#remotePromise.session":
+  tests: ["packages/core/test/formal-inject-budget-injection.test.ts::the workspace dial scope is never recorded as a session"]
+"packages/core/src/plur/injection.ts#st":
+  tests: ["packages/core/test/formal-inject-budget-injection.test.ts::injectHybrid with embeddings disabled reports bm25-only and no degradation"]
+"packages/core/src/plur/injection.ts#InjectionMethods":
+  tests: ["packages/core/test/formal-inject-budget-injection.test.ts::not dialled, failed or missing outcomes are reported as not served", "packages/core/test/formal-inject-budget-injection.test.ts::a folder with no scope is never reported as served"]
+"packages/core/src/plur/injection.ts#modelMissing":
+  tests: ["packages/core/test/recall-model-missing-1587.test.ts::keyword results at once, with the reason and the next step; no process spawned, no download"]
+promises:
+  INJ-2:
+    lean: ["PlurSpec/ScopeInject.lean:tokens_used_bound", "PlurSpec/ScopeInject.lean:sections_le_budget", "PlurSpec/ScopeInject.lean:pools_le_budget"]
+  INJ-6:
+    lean: ["PlurSpec/ScopeInject.lean:pinned_within_share", "PlurSpec/ScopeInject.lean:pinned_priority"]
