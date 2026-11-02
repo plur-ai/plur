@@ -469,8 +469,23 @@ async function takeOver(lockPath: string, staleThreshold: number): Promise<boole
 
 /** Synchronous twin of {@link takeOver}, for `withLock` in `sync.ts`. */
 export function takeOverSync(lockPath: string, staleThreshold: number): boolean {
+  return takeOverLockSync(lockPath, (holder, mtimeMs) => isAbandoned(holder, mtimeMs, staleThreshold))
+}
+
+/**
+ * {@link takeOverSync} with the caller's own abandonment rule, for lock files
+ * whose token format core does not parse. `abandoned(holder, mtimeMs)` judges
+ * the lock's contents and mtime; it is asked again under the steal guard, so a
+ * holder that is live by then keeps its lock. Returns false when another
+ * contender is taking over the same lock instance, true when the caller should
+ * try to acquire again.
+ */
+export function takeOverLockSync(
+  lockPath: string,
+  abandoned: (holder: string, mtimeMs: number) => boolean,
+): boolean {
   const seen = inspectLockSync(lockPath)
-  if (!seen || !isAbandoned(seen.holder, seen.mtimeMs, staleThreshold)) return true
+  if (!seen || !abandoned(seen.holder, seen.mtimeMs)) return true
   const guardToken = makeToken()
   const slot = acquireStealSlotSync(lockPath, seen.holder, guardToken)
   if (!slot) return false
@@ -480,7 +495,7 @@ export function takeOverSync(lockPath: string, staleThreshold: number): boolean 
     // Still abandoned NOW, not only the same file. A holder we
     // cannot probe proves it is alive only by refreshing its mtime, and it may
     // have done so since we judged it.
-    if (!isAbandoned(cur.holder, cur.mtimeMs, staleThreshold)) return true
+    if (!abandoned(cur.holder, cur.mtimeMs)) return true
     if (stealLockSync(lockPath, cur.holder, cur.ino)) {
       for (let k = 0; k < STEAL_GUARD_SLOTS; k++) {
         const other = stealGuardPath(lockPath, seen.holder, k)

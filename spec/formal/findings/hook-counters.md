@@ -75,7 +75,7 @@ Mutations, each tried in a scratch copy:
   `session_end_closes` (non-vacuity). Mutations that break it: unlink after a failed
   capture; unlink a corrupt checkpoint; drop an unresolvable-folder checkpoint.
 
-## 4. Auto-rate worker lock — CONFIRMED+NEEDS-OWNER (takeover), PROVED (wait), TESTED (hook)
+## 4. Auto-rate worker lock — CONFIRMED+DECIDED (takeover, option "core"), PROVED (wait), TESTED (hook)
 
 Model `HookCounters.WorkerLock`. Lock = token or nothing. A takeover is `rename` then `check`
 (claim = judged token: unlink it; otherwise restore it with `wx`). An acquire is `wx`.
@@ -86,8 +86,8 @@ Model `HookCounters.WorkerLock`. Lock = token or nothing. A takeover is `rename`
   `lone_contender_takes_over` (non-vacuity), and `live_holder_restored` (a live lock moved
   aside is put back when nobody acquires in the window). Mutation: claiming by read instead
   of exclusive rename breaks the invariant proof and `second_contender_loses`.
-- REFUTED, "a live holder is never displaced" (the inventory rule of
-  `takeOverStaleWorkerLock`): `live_holder_displaced`. Steps:
+- REFUTED for the cli's own takeover, "a live holder is never displaced" (the inventory rule of
+  `takeOverStaleWorkerLock`): `orig_live_holder_displaced`. Steps:
   1. A takes over dead lock 9 and acquires.
   2. B, acting on its outdated read of 9, renames A's live lock aside.
   3. C acquires in that window.
@@ -118,9 +118,23 @@ Model `HookCounters.WorkerLock`. Lock = token or nothing. A takeover is `rename`
   - real `runWorker` inline leaves in under 1 s behind a live older holder with a pending
     `.queue-ws` turn.
 
+- DECIDED (owner, option "core"): core exports `takeOverLockSync(lockPath, abandoned)`, the
+  guarded takeover behind `takeOverSync` with a pluggable abandonment rule, plus
+  `publishLockFileSync`. `acquireWorkerLock` publishes its token with `publishLockFileSync` and
+  takes a stale lock over with `takeOverLockSync(path, workerLockAbandoned)`. The cli's own
+  `takeOverStaleWorkerLock` is gone. Model: `grename` (a rename only while the path still holds
+  the judged token, which the steal guard makes one step), PROVED `live_holder_never_displaced`
+  (once the path holds a live token, every schedule of creates, guarded takeovers and checks
+  leaves it there), `live_holder_kept_replay` (the counterexample's schedule, now harmless);
+  `stale_taken_over_at_most_once` still proves with `grename`. Test, red before the change
+  (`expected '…:worker-c:qws' to be '…:worker-a:qws'`), green after:
+  `packages/cli/test/formal-hook-counters-worker-lock.test.ts::two workers race for a stale lock
+  while a third acquires: the live holder keeps the lock`. The H2 test "a stale worker lock is
+  taken over atomically" now calls `acquireWorkerLock` and `takeOverLockSync`.
+
 ## NEEDS-OWNER
 
-1. Worker-lock takeover window (auto-rate.ts). Options:
+1. DECIDED: option (a) "core", see §4. Worker-lock takeover window (auto-rate.ts). Options:
    - (a) export a sync takeover from core with a pluggable liveness check, and use its guard
      ladder here;
    - (b) port the ladder into auto-rate.ts (about 40 lines, duplicates core);
@@ -135,4 +149,4 @@ Model `HookCounters.WorkerLock`. Lock = token or nothing. A takeover is `rename`
 ## Not covered
 
 `hook-auto-rate.ts#guard` (worker ceiling waits for an idle store) and `auto-rate.ts#captureDeadline`
-stay unbacked. The latter depends on item 1.
+stay unbacked.

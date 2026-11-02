@@ -7,10 +7,10 @@
  *    `appendIds` used to fail open and the verdict was applied anyway, so a
  *    failed record (full disk, quota, an unwritable file) let the same engram
  *    be rated again on every later turn.
- * 2. A stale worker lock is taken over atomically (claim by rename, then
- *    verify), never by a plain unlink — the pattern the model refutes
- *    (`InjectLock.old_removes_live`): a second contender that judged the same
- *    dead lock stale must not remove the lock the first one now holds.
+ * 2. A stale worker lock is taken over by core's guarded takeover, never by a
+ *    plain unlink — the pattern the model refutes (`InjectLock.old_removes_live`):
+ *    a second contender that judged the same dead lock stale must not remove
+ *    the lock the first one now holds.
  * 3. The Codex writer and reader derive the auto-rate session id the same way.
  *
  * Runs in-process with a stub store; TMPDIR points into a temp dir.
@@ -19,6 +19,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
+import { takeOverLockSync } from '@plur-ai/core'
 
 const ID = 'ENG-2026-09-29-00h2'
 const STATEMENT = 'Tag every release candidate with the sprint number'
@@ -84,15 +85,15 @@ describe('decision H2 — auto-rate at most once per engram per session', () => 
     const mod = await load()
     mkdirSync(join(root, 'plur-auto-rate'), { recursive: true, mode: 0o700 })
     const lock = join(root, 'plur-auto-rate', 'claude-h2-lock.worker')
-    // A dead worker's lock. Two contenders read it and both judge it stale.
+    // A dead worker's lock.
     const dead = '999999999'
     writeFileSync(lock, dead)
     // A takes it over and now holds a live lock.
-    expect(mod.takeOverStaleWorkerLock(lock, dead)).toBe(true)
     expect(mod.acquireWorkerLock(lock)).toBe(true)
     const heldByA = readFileSync(lock, 'utf8')
-    // B acts on what it read before A's takeover — the dead content.
-    expect(mod.takeOverStaleWorkerLock(lock, dead)).toBe(false)
+    expect(heldByA).not.toBe(dead)
+    // B judges the lock again, finds a live holder and leaves it in place.
+    expect(takeOverLockSync(lock, mod.workerLockAbandoned)).toBe(true)
     expect(existsSync(lock)).toBe(true)
     expect(readFileSync(lock, 'utf8')).toBe(heldByA)
   })

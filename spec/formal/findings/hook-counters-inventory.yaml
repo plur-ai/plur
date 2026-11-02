@@ -11,10 +11,9 @@
   lean: ["PlurSpec/R2CLI.lean:fixed_writes_only_vetted", "PlurSpec/HookCounters.lean:ticket_distinct_any_schedule"]
 "packages/cli/src/lib/cursor-hook-io.ts#markSessionStarted":
   lean: ["PlurSpec/R2CLI.lean:fixed_writes_only_vetted"]
-# The rule is refuted in general (HookCounters.lean:live_holder_displaced, NEEDS-OWNER);
-# these back the parts that hold.
-"packages/cli/src/lib/auto-rate.ts#takeOverStaleWorkerLock":
-  lean: ["PlurSpec/HookCounters.lean:stale_taken_over_at_most_once", "PlurSpec/HookCounters.lean:live_holder_restored"]
+"packages/cli/src/lib/auto-rate.ts#acquireWorkerLock":
+  lean: ["PlurSpec/HookCounters.lean:live_holder_never_displaced", "PlurSpec/HookCounters.lean:stale_taken_over_at_most_once"]
+  tests: ["packages/cli/test/formal-hook-counters-worker-lock.test.ts::two workers race for a stale lock while a third acquires: the live holder keeps the lock"]
 "packages/cli/src/commands/hook-auto-rate.ts#run":
   lean: ["PlurSpec/HookCounters.lean:inline_never_waits"]
   tests: ["packages/cli/test/formal-hook-counters-auto-rate.test.ts::when the worker cannot start, the turn is rated inline without waiting on a lock", "packages/cli/test/formal-hook-counters-auto-rate.test.ts::leaves at once even while a live older worker holds the lock and a .queue-ws turn is pending"]

@@ -35,6 +35,21 @@ anchors:
       - >-
         packages/cli/test/hook-auto-rate-remote.test.ts::a worker killed while a verdict is in flight never applies it
         twice (write-ahead)
+  packages/cli/src/lib/auto-rate.ts#acquireWorkerLock:
+    kind: guarantee
+    rule: >-
+      Acquiring the auto-rate worker lock never displaces a live worker: a stale lock is taken over only through core's
+      guarded takeover, which re-judges it under the steal guard.
+    tests:
+      - >-
+        packages/cli/test/formal-hook-counters-worker-lock.test.ts::two workers race for a stale lock while a third
+        acquires: the live holder keeps the lock
+      - >-
+        packages/cli/test/hook-auto-rate-h2.test.ts::a stale worker lock is taken over atomically: a late contender
+        cannot remove the new holder
+    lean:
+      - PlurSpec/HookCounters.lean:live_holder_never_displaced
+      - PlurSpec/HookCounters.lean:stale_taken_over_at_most_once
   packages/cli/src/lib/auto-rate.ts#agyReplySinceLastUser:
     kind: guarantee
     rule: >-
@@ -105,16 +120,6 @@ anchors:
       - >-
         packages/cli/test/hook-cursor-workspace-roots.test.ts::M1: auto-capture, roots alpha + an unscoped on root →
         stored with no scope
-  packages/cli/src/lib/auto-rate.ts#takeOverStaleWorkerLock:
-    kind: guarantee
-    rule: Taking over a stale auto-rate worker lock never removes a live lock acquired in the meantime.
-    tests:
-      - >-
-        packages/cli/test/hook-auto-rate-h2.test.ts::a stale worker lock is taken over atomically: a late contender
-        cannot remove the new holder
-    lean:
-      - PlurSpec/HookCounters.lean:stale_taken_over_at_most_once
-      - PlurSpec/HookCounters.lean:live_holder_restored
   packages/cli/src/lib/auto-rate.ts#waitUntil:
     kind: note
     why: Explains why a worker waits for a lock held by an older version across an upgrade.

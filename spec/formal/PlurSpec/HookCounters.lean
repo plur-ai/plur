@@ -2,8 +2,8 @@
 # PlurSpec.HookCounters — hook counters and the auto-rate worker lock
 
 Models of `packages/cli/src/lib/{codex,cursor,agy}-hook-io.ts` (the per-session
-counters), `packages/cli/src/lib/auto-rate.ts` (`takeOverStaleWorkerLock`,
-`acquireWorkerLock`, the `runWorker` wait) and the counter callers
+counters), `packages/cli/src/lib/auto-rate.ts` (`acquireWorkerLock` with
+core's `takeOverLockSync`, the `runWorker` wait) and the counter callers
 (`hook-codex-guard`, `hook-agy-guard`: deny while the count is at most 1).
 Findings and replays: `spec/formal/findings/hook-counters.md`.
 
@@ -152,14 +152,22 @@ theorem counts_when_ok (n : Nat) : codexIncr true (some n) = n := rfl
 
 end FailOpen
 
-/-! ## 2. The auto-rate worker lock (`acquireWorkerLock`, `takeOverStaleWorkerLock`)
+/-! ## 2. The auto-rate worker lock (`acquireWorkerLock`, core's `takeOverLockSync`)
 
 The lock file holds a token or nothing. A contender that judged token `e` stale
-takes it over in two steps: `rename` (moves whatever is at the path now into
-its private claim, or fails when nothing is there), then `check` (claim = `e`:
-unlink it and report a takeover; otherwise put it back with an exclusive
-create, which fails if the path is taken). A plain acquire is an exclusive
-create. `held` records who believes it holds the lock. -/
+takes it over in two steps: a rename (moves whatever is at the path now into
+its private claim), then `check` (claim = `e`: unlink it and report a takeover;
+otherwise put it back with an exclusive create, which fails if the path is
+taken). A plain acquire is an exclusive create. `held` records who believes it
+holds the lock.
+
+`grename p e` is the rename core's takeover performs: under the steal guard for
+`e` it re-inspects the lock and renames only while the path still holds `e`.
+The guard admits one contender per judged token (`R2Persist.ladder_mutex`), a
+dead holder never releases, and a create fails while the path is taken, so the
+path cannot change between that re-inspection and the rename; the model makes
+the two one step. `rename p` is the unguarded rename, kept for the counterexample
+`orig_live_holder_displaced`. -/
 namespace WorkerLock
 
 structure S where
@@ -170,14 +178,19 @@ structure S where
 
 inductive Ev where
   | create (t : Nat)            -- `openSync(path, 'wx')` by the worker with token t
-  | rename (p : Nat)            -- contender p: `renameSync(path, claim)`
+  | rename (p : Nat)            -- contender p: unguarded `renameSync(path, claim)`
+  | grename (p : Nat) (e : Nat) -- contender p: guarded rename, only while the path holds e
   | check (p : Nat) (e : Nat)   -- contender p: compare with the judged token e
+
+def renameStep (s : S) (p : Nat) : S :=
+  match s.claims p, s.lock with
+  | none, some c => { s with lock := none, claims := upd s.claims p (some c) }
+  | _, _ => s
 
 def step (s : S) : Ev → S
   | .create t => if s.lock = none then { s with lock := some t, held := t :: s.held } else s
-  | .rename p => match s.claims p, s.lock with
-    | none, some c => { s with lock := none, claims := upd s.claims p (some c) }
-    | _, _ => s
+  | .rename p => renameStep s p
+  | .grename p e => if s.lock = some e then renameStep s p else s
   | .check p e => match s.claims p with
     | some c =>
       let s1 := { s with claims := upd s.claims p none }
@@ -229,6 +242,20 @@ macro "inst_close" : tactic => `(tactic| (
   try have := j4 p b
   simp_all [upd]))
 
+theorem inv_renameStep (e : Nat) (s : S) (p : Nat) (h : Inv e s) : Inv e (renameStep s p) := by
+  obtain ⟨j1, j2, j3, j4⟩ := h
+  cases hc : s.claims p with
+  | some c => simp only [renameStep, hc]; exact ⟨j1, j2, j3, j4⟩
+  | none =>
+    cases hl : s.lock with
+    | none => simp only [renameStep, hc, hl]; exact ⟨j1, j2, j3, j4⟩
+    | some c =>
+      simp only [renameStep, hc, hl]
+      refine ⟨fun h => by simp at h, fun a ha => ?_, fun a b hab ha => ?_, fun a b hab ha => ?_⟩
+      · by_cases hap : a = p <;> by_cases hce : c = e <;> inst_close
+      · by_cases hap : a = p <;> by_cases hbp : b = p <;> by_cases hce : c = e <;> inst_close
+      · by_cases hap : a = p <;> by_cases hbp : b = p <;> by_cases hce : c = e <;> inst_close
+
 set_option maxHeartbeats 2000000 in
 theorem inv_step (e : Nat) (s : S) (ev : Ev) (hf : ∀ t, ev = .create t → t ≠ e)
     (h : Inv e s) : Inv e (step s ev) := by
@@ -240,18 +267,11 @@ theorem inv_step (e : Nat) (s : S) (ev : Ev) (hf : ∀ t, ev = .create t → t �
     · simp only [step, hl, if_true]
       exact ⟨fun h => by simp at h; exact absurd h ht, j2, j3, j4⟩
     · simp only [step, hl, if_false]; exact ⟨j1, j2, j3, j4⟩
-  | rename p =>
-    cases hc : s.claims p with
-    | some c => simp only [step, hc]; exact ⟨j1, j2, j3, j4⟩
-    | none =>
-      cases hl : s.lock with
-      | none => simp only [step, hc, hl]; exact ⟨j1, j2, j3, j4⟩
-      | some c =>
-        simp only [step, hc, hl]
-        refine ⟨fun h => by simp at h, fun a ha => ?_, fun a b hab ha => ?_, fun a b hab ha => ?_⟩
-        · by_cases hap : a = p <;> by_cases hce : c = e <;> inst_close
-        · by_cases hap : a = p <;> by_cases hbp : b = p <;> by_cases hce : c = e <;> inst_close
-        · by_cases hap : a = p <;> by_cases hbp : b = p <;> by_cases hce : c = e <;> inst_close
+  | rename p => exact inv_renameStep e s p ⟨j1, j2, j3, j4⟩
+  | grename p e' =>
+    by_cases hl : s.lock = some e'
+    · simp only [step, hl, if_true]; exact inv_renameStep e s p ⟨j1, j2, j3, j4⟩
+    · simp only [step, hl, if_false]; exact ⟨j1, j2, j3, j4⟩
   | check p e' =>
     cases hc : s.claims p with
     | none => simp only [step, hc]; exact ⟨j1, j2, j3, j4⟩
@@ -288,6 +308,7 @@ theorem inv_run (e : Nat) (s : S) (es : List Ev) (hf : fresh e es) (h : Inv e s)
       cases ev with
       | create t => exact hf.2
       | rename _ => exact hf
+      | grename _ _ => exact hf
       | check _ _ => exact hf
     exact ih (step s ev) hrest (inv_step e s ev hev h)
 
@@ -302,28 +323,130 @@ theorem stale_taken_over_at_most_once (e : Nat) (es : List Ev) (hf : fresh e es)
 
 /-- Non-vacuity: a lone contender does take the stale lock over, and then acquires. -/
 theorem lone_contender_takes_over :
-    let s := run (init 9) [.rename 1, .check 1 9, .create 1]
+    let s := run (init 9) [.grename 1 9, .check 1 9, .create 1]
     s.won 1 = some 9 ∧ s.lock = some 1 := by decide
 
 /-- Two contenders that judged the same dead lock: only the first rename wins;
 the second claims nothing. -/
 theorem second_contender_loses :
-    (run (init 9) [.rename 1, .rename 2, .check 1 9, .check 2 9]).won 2 = none := by decide
+    (run (init 9) [.grename 1 9, .grename 2 9, .check 1 9, .check 2 9]).won 2 = none := by decide
 
 /-- A live holder, put aside by a late contender, is put back when nobody
 acquires inside that window. -/
 theorem live_holder_restored (e a p : Nat) (hae : a ≠ e) (s : S)
     (hl : s.lock = some a) (hc : s.claims p = none) :
     (run s [.rename p, .check p e]).lock = some a := by
-  simp [run, step, hl, hc, upd, hae]
+  simp [run, step, renameStep, hl, hc, upd, hae]
 
-/-- **Counterexample (replayed against `auto-rate.ts`): a live holder IS
-displaced.** A takes over dead lock 9 and holds it; B, acting on its outdated
-read of 9, renames A's lock aside; C acquires in that window; B's put-back fails.
-A and C both believe they hold the lock and the file names only C. -/
-theorem live_holder_displaced :
+/-- **Counterexample for the unguarded rename (replayed against the cli's own
+takeover before it moved to core's): a live holder IS displaced.** A takes over
+dead lock 9 and holds it; B, acting on its outdated read of 9, renames A's lock
+aside; C acquires in that window; B's put-back fails. A and C both believe they
+hold the lock and the file names only C. -/
+theorem orig_live_holder_displaced :
     let s := run (init 9) [.rename 1, .check 1 9, .create 1, .rename 2, .create 3, .check 2 9]
     s.held = [3, 1] ∧ s.lock = some 3 := by decide
+
+/-- No contender claims anything but the judged token. -/
+def GInv (e : Nat) (s : S) : Prop := ∀ p, s.claims p = none ∨ s.claims p = some e
+
+/-- The events of `acquireWorkerLock` on core's takeover: creates, guarded
+renames of the judged token `e`, and checks. -/
+def guarded (e : Nat) : List Ev → Prop
+  | [] => True
+  | .create _ :: es => guarded e es
+  | .grename _ e' :: es => e' = e ∧ guarded e es
+  | .check _ _ :: es => guarded e es
+  | .rename _ :: _ => False
+
+theorem ginv_step (e : Nat) (s : S) (ev : Ev) (hg : ∀ p e', ev = .grename p e' → e' = e)
+    (hr : ∀ p, ev ≠ .rename p) (h : GInv e s) : GInv e (step s ev) := by
+  intro q
+  cases ev with
+  | create t =>
+    by_cases hl : s.lock = none
+    · simp only [step, hl, if_true]; exact h q
+    · simp only [step, hl, if_false]; exact h q
+  | rename p => exact absurd rfl (hr p)
+  | grename p e' =>
+    have he : e' = e := hg p e' rfl
+    subst he
+    by_cases hl : s.lock = some e'
+    · simp only [step, hl, if_true, renameStep]
+      cases hc : s.claims p with
+      | some c => simp only []; exact h q
+      | none =>
+        simp only []
+        by_cases hqp : q = p
+        · subst hqp; simp [upd]
+        · simp [upd, hqp]; exact h q
+    · simp only [step, hl, if_false]; exact h q
+  | check p e' =>
+    cases hc : s.claims p with
+    | none => simp only [step, hc]; exact h q
+    | some c =>
+      by_cases hce : c = e'
+      · simp only [step, hc, hce, if_true]
+        by_cases hqp : q = p
+        · subst hqp; simp [upd]
+        · simp [upd, hqp]; exact h q
+      · by_cases hl : s.lock = none
+        · simp only [step, hc, hce, hl, if_false, if_true]
+          by_cases hqp : q = p
+          · subst hqp; simp [upd]
+          · simp [upd, hqp]; exact h q
+        · simp only [step, hc, hce, hl, if_false]
+          by_cases hqp : q = p
+          · subst hqp; simp [upd]
+          · simp [upd, hqp]; exact h q
+
+/-- One step never moves a live holder's token `t ≠ e` off the path. -/
+theorem kept_step (e t : Nat) (s : S) (ev : Ev) (hte : t ≠ e)
+    (hg : ∀ p e', ev = .grename p e' → e' = e) (hr : ∀ p, ev ≠ .rename p)
+    (h : GInv e s) (hl : s.lock = some t) : (step s ev).lock = some t := by
+  cases ev with
+  | create t' => simp [step, hl]
+  | rename p => exact absurd rfl (hr p)
+  | grename p e' =>
+    have he : e' = e := hg p e' rfl
+    subst he
+    have : ¬ s.lock = some e' := by rw [hl]; simp [hte]
+    simp only [step, this, if_false]; exact hl
+  | check p e' =>
+    cases hc : s.claims p with
+    | none => simp only [step, hc]; exact hl
+    | some c =>
+      by_cases hce : c = e'
+      · simp only [step, hc, hce, if_true]; exact hl
+      · have hn : ¬ s.lock = none := by rw [hl]; simp
+        simp only [step, hc, hce, hn, if_false]; exact hl
+
+/-- **A live worker is never displaced.** Once the path holds a live token
+`t ≠ e`, every schedule of creates, guarded takeovers of `e` and checks leaves
+it there. -/
+theorem live_holder_never_displaced (e t : Nat) (es : List Ev) (hg : guarded e es)
+    (s : S) (h : GInv e s) (hte : t ≠ e) (hl : s.lock = some t) :
+    (run s es).lock = some t := by
+  induction es generalizing s with
+  | nil => exact hl
+  | cons ev es ih =>
+    have hev : (∀ p e', ev = .grename p e' → e' = e) ∧ (∀ p, ev ≠ .rename p) ∧ guarded e es := by
+      cases ev with
+      | create _ => exact ⟨(fun _ _ h => by cases h), (fun _ h => by cases h), hg⟩
+      | rename _ => exact absurd hg (by simp [guarded])
+      | grename _ e' =>
+        exact ⟨(fun _ _ h => by cases h; exact hg.1), (fun _ h => by cases h), hg.2⟩
+      | check _ _ => exact ⟨(fun _ _ h => by cases h), (fun _ h => by cases h), hg⟩
+    exact ih hev.2.2 (step s ev) (ginv_step e s ev hev.1 hev.2.1 h)
+      (kept_step e t s ev hte hev.1 hev.2.1 h hl)
+
+theorem ginv_init (e : Nat) : GInv e (init e) := fun _ => Or.inl rfl
+
+/-- Non-vacuity: the counterexample's schedule on core's takeover. B's guarded
+rename finds A's live token, not 9, and moves nothing; C's create fails. -/
+theorem live_holder_kept_replay :
+    let s := run (init 9) [.grename 1 9, .check 1 9, .create 1, .grename 2 9, .create 3, .check 2 9]
+    s.held = [1] ∧ s.lock = some 1 := by decide
 
 end WorkerLock
 

@@ -67,7 +67,7 @@ export { classifyPolarity } from './polarity.js'
 export { canonicalize, findProjectConfigPath, readProjectConfig, readProjectConfigFromPath, type ProjectConfig } from './project-config.js'
 export { NO_SESSION, SessionScopeRegistry } from './session-scopes.js'
 export { SessionBreadcrumbs } from './session-state.js'
-export { pendingStoreLockOps } from './store/async-lock.js'
+export { pendingStoreLockOps, publishLockFileSync, takeOverLockSync, EMPTY_LOCK_GRACE_MS } from './store/async-lock.js'
 // The trust gate a project's REMOTE settings must pass before an adapter may
 // route prompt text to the host they name. Lives in core, not the CLI, so
 // out-of-package adapters (@plur-ai/opencode) take the capability and the gate
