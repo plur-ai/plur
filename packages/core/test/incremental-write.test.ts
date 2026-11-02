@@ -129,11 +129,11 @@ describe('incremental write seam through Plur (#740)', () => {
       counting.reset()
       await plur.learn('use PostgreSQL for production', { type: 'behavioral' })
       // learn(): one load() under the lock + one loadCached() for the merged
-      // dedup view — then the write itself reuses that corpus. saves === 1 and
-      // loads === 1 is the pre-seam cost; a store-level append that re-parsed
-      // would show as loads === 2.
+      // dedup view — then the write itself reuses that corpus. The queue hold
+      // reads the new id before the save (one more load() on a store without
+      // loadByIds); a store-level append that re-parsed would show as a third.
       expect(counting.saves).toBe(1)
-      expect(counting.loads).toBe(1)
+      expect(counting.loads).toBe(2)
       expect(counting.cachedLoads).toBeLessThanOrEqual(2)
     })
 
@@ -156,9 +156,10 @@ describe('incremental write seam through Plur (#740)', () => {
       counting.reset()
       const newE = await plur.learn('plur cli version is 0.16.1', { supersedes: [oldE.id] })
       // The fallback save carries the mutated targets with the corpus — k
-      // superseded targets must NOT cost k extra writes (or any extra parse).
+      // superseded targets must NOT cost k extra writes (or any extra parse
+      // beyond the queue hold's read of the new id).
       expect(counting.saves).toBe(1)
-      expect(counting.loads).toBe(1)
+      expect(counting.loads).toBe(2)
       expect((await plur.getById(oldE.id))?.relations?.superseded_by).toEqual([newE.id])
     })
   })

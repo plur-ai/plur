@@ -71,7 +71,7 @@ The four rules that had no backing now have tests. Each test was mutation-checke
 - QueueHoldStore forwards every non-write member, bound to the inner store (mutation: forward only `role`; the test fails).
 - allIds returns ids only.
 
-## NEEDS-OWNER: queue hold trusts a stale "read all" cache
+## DECIDED (option b, "lookup"): queue hold trusts a stale "read all" cache
 
 The queue hold (QueueHoldStore) skips the targeted read for an unmarked row whose id it never saw once a
 whole-corpus read has happened (`!this._readAll && !this._seen.has(id)`). Suppose another writer queues
@@ -89,3 +89,9 @@ Options:
   without loadByIds, on every write of a new id.
 - (c) Also track forwarded reads (`findActiveByContentHash`) in `_seen`/`_queued`. This narrows the gap
   but does not close it.
+
+Decision: (b). `QueueHoldStore._current` reads every id not in `_seen` in a targeted way, whole-corpus read
+or not; the `_readAll` flag is gone. Test: `formal-backend-scopes-guard.test.ts` "a row queued by another
+writer after a whole-corpus read is still held when written unmarked" (updateMany, append and save each
+refused; failed before the change). No Lean model covers this cache (BackendScopes part B models the guard,
+not the hold).

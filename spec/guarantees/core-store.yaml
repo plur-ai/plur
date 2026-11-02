@@ -165,11 +165,16 @@ anchors:
         returned row
   packages/core/src/store/remote-only-store-guard.ts#QueueHoldStore._queued:
     kind: guarantee
-    rule: A row read without the remote-only queue marker cannot gain one except through the hold check.
+    rule: >-
+      A row read without the remote-only queue marker cannot gain one except through the hold check, and a row whose id
+      no read through the store returned is read before it is written, even after a whole-corpus read.
     tests:
       - >-
         packages/core/test/formal-backend-scopes-guard.test.ts::a row read without the queue marker cannot gain a
         malformed one
+      - >-
+        packages/core/test/formal-backend-scopes-guard.test.ts::a row queued by another writer after a whole-corpus
+        read is still held when written unmarked
   packages/core/src/store/remote-only-store-guard.ts#QueueHoldStore.loadByIds:
     kind: guarantee
     rule: Every non-write capability of the inner store is forwarded, so one added later is never silently dropped.

@@ -74,6 +74,19 @@ describe('QueueHoldStore', () => {
     expect(inner.rows[0].scope).toBe(TEAM)
   })
 
+  it('a row queued by another writer after a whole-corpus read is still held when written unmarked', async () => {
+    const inner = memStore([row('P1')])
+    const hold = new QueueHoldStore(inner as any, s => s === TEAM)
+    await hold.load()
+    // Another instance queues X after that read; the caller gets X some other way.
+    inner.rows.push(structuredClone(queued('X')))
+    const stripped = row('X', { scope: 'global' })
+    await expect(hold.updateMany!([stripped])).rejects.toThrow(/queue/i)
+    await expect(hold.append!(stripped)).rejects.toThrow(/queue/i)
+    await expect(hold.save([row('P1'), stripped])).rejects.toThrow(/queue/i)
+    expect(inner.rows.find(r => r.id === 'X')!.scope).toBe(TEAM)
+  })
+
   it('forwards every non-write member of the inner store, bound to it, and wraps the three writes', async () => {
     const inner = memStore([row('P1')])
     const hold = new QueueHoldStore(inner as any, () => true) as any
