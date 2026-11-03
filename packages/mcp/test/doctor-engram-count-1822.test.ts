@@ -68,6 +68,22 @@ describe('plur_doctor engram store check reports the local count (#1822)', () =>
     } finally { await client.close(); await server.close(); plur.close() }
   }, 30000)
 
+  it('a cold remote cache is reported as not loaded yet, not as an empty server', async () => {
+    const { plur, client, server, call } = await fixture()
+    try {
+      // No session_start: nothing in this process has loaded the remote cache.
+      const doctor = await call('plur_doctor', {})
+      const store = doctor.checks.find((c: any) => c.check === 'engram store')
+      expect(store.detail).toMatch(/^0 engrams across 0 packs at /)
+
+      const remote = doctor.checks.find((c: any) => c.check === 'remote store cache')
+      expect(remote).toBeDefined()
+      expect(remote.ok).toBe(true)
+      expect(remote.detail).toContain('not loaded yet in this process (0 cached)')
+      expect(remote.detail).not.toMatch(/^0 engrams/)
+    } finally { await client.close(); await server.close(); plur.close() }
+  }, 30000)
+
   it('session_start store_stats stays the local count on a second call in the same process', async () => {
     const { plur, client, server, call } = await fixture()
     try {

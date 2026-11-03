@@ -3257,7 +3257,11 @@ function getAllToolDefinitions(): ToolDefinition[] {
           checks.push({
             check: 'remote store cache',
             ok: true,
-            detail: `${status.remote_cached_engram_count} engrams from server scopes cached in this process (not stored in ${status.storage_root})`,
+            // 0 here means nothing has loaded the remote caches in this process
+            // yet, not that the server holds nothing — say which.
+            detail: status.remote_cached_engram_count > 0
+              ? `${status.remote_cached_engram_count} engrams from server scopes cached in this process (not stored in ${status.storage_root})`
+              : 'server scopes not loaded yet in this process (0 cached); the server may still hold engrams',
           })
         }
         // When embeddings are explicitly disabled, mark the embedder check as
