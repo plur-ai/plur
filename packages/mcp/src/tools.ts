@@ -3244,11 +3244,22 @@ function getAllToolDefinitions(): ToolDefinition[] {
         }
         const after = plur.embedderStatus()
         const checks: Record<string, unknown>[] = []
+        // The engrams on this machine, the same number session_start
+        // reports. status().engram_count also holds whatever the remote stores
+        // have cached in this process, which is 0 or the whole team corpus
+        // depending on what ran before — those rows get their own line.
         checks.push({
           check: 'engram store',
-          ok: status.engram_count > 0,
-          detail: `${status.engram_count} engrams across ${status.pack_count} packs at ${status.storage_root}`,
+          ok: status.local_engram_count > 0,
+          detail: `${status.local_engram_count} engrams across ${status.pack_count} packs at ${status.storage_root}`,
         })
+        if ((status.config?.stores ?? []).some(s => !!s.url)) {
+          checks.push({
+            check: 'remote store cache',
+            ok: true,
+            detail: `${status.remote_cached_engram_count} engrams from server scopes cached in this process (not stored in ${status.storage_root})`,
+          })
+        }
         // When embeddings are explicitly disabled, mark the embedder check as
         // ok with a "disabled-on-purpose" detail. Hybrid search is then
         // expected to run BM25-only and that's a healthy state, not a fault.
@@ -3718,7 +3729,9 @@ function getAllToolDefinitions(): ToolDefinition[] {
         // than by refusing to start.
         const status = await plur.status().catch(() => null)
         const store_stats = {
-          engram_count: status?.engram_count ?? 0,
+          // Local, so it does not change once warmRemoteCaches() below
+          // has filled the remote caches (a second session_start used to count them).
+          engram_count: status?.local_engram_count ?? 0,
           episode_count: status?.episode_count ?? 0,
           pack_count: status?.pack_count ?? 0,
         }
