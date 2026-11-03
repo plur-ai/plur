@@ -397,8 +397,15 @@ Generate an improved version of the procedure that prevents this failure. Return
       return (raw.engram_version ?? 1) > 1
     }).length
 
+    // Rows served from a remote store's in-process cache are counted apart:
+    // they appear only once the cache is warm, so mixing them into a "local"
+    // number made it depend on what else this process had done.
+    const remoteCached = active.filter(e => (e as any)._fromRemoteStore === true).length
+
     return {
       engram_count: active.length,
+      local_engram_count: active.length - remoteCached,
+      remote_cached_engram_count: remoteCached,
       episode_count: episodes.length,
       pack_count: packs.length,
       storage_root: this.paths.root,
