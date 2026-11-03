@@ -1157,7 +1157,8 @@ export function vcRuntimeMissing(env: NodeJS.ProcessEnv, folder?: string): strin
   return VC_RUNTIME_DLLS.filter(dll => !existsSync(join(dir, dll)))
 }
 
-function vcRuntimeFolder(env: NodeJS.ProcessEnv, folder?: string): string | null {
+/** The folder {@link vcRuntimeMissing} checks: `folder` when given, else <SystemRoot>\\System32 (win32 path rules on every host), else null. */
+export function vcRuntimeFolder(env: NodeJS.ProcessEnv, folder?: string): string | null {
   if (folder !== undefined) return folder
   const root = windowsSystemRoot(env)
   return root ? win32.join(root, 'System32') : null
@@ -1842,11 +1843,14 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
       outputText('  or download https://aka.ms/vs/17/release/vc_redist.x64.exe, then run `plur doctor` again.')
     }
     for (const line of embeddingNetworkHint(report.embedder.lastError)) outputText(line)
-    outputText('  Likely causes:')
-    outputText('    - First-run download not completed (try again in a few seconds)')
-    outputText('    - Network blocked HuggingFace Hub — check huggingface.co connectivity')
-    outputText('    - @huggingface/transformers package failed to load (ONNX runtime issue)')
-    outputText('    - pnpm hoisting: onnxruntime-node not findable from transformers package root')
+    // The generic causes would contradict a Visual C++ runtime diagnosis.
+    if (!vc) {
+      outputText('  Likely causes:')
+      outputText('    - First-run download not completed (try again in a few seconds)')
+      outputText('    - Network blocked HuggingFace Hub — check huggingface.co connectivity')
+      outputText('    - @huggingface/transformers package failed to load (ONNX runtime issue)')
+      outputText('    - pnpm hoisting: onnxruntime-node not findable from transformers package root')
+    }
     outputText('  To opt out (run BM25-only intentionally): set PLUR_DISABLE_EMBEDDINGS=1')
     outputText('    or write `embeddings: { enabled: false }` to ~/.plur/config.yaml')
   }

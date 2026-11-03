@@ -16,6 +16,7 @@ import { tmpdir } from 'os'
 import {
   VC_RUNTIME_DLLS,
   vcRuntimeMissing,
+  vcRuntimeFolder,
   vcRuntimeDiagnosis,
   embedderWithVcRuntime,
   printText,
@@ -54,8 +55,11 @@ describe('vcRuntimeMissing (#1824)', () => {
   })
 
   it('checks <SystemRoot>\\System32 by absolute path for a verified SystemRoot', () => {
-    // C:\Windows\System32 does not exist here, so every file reads as missing.
-    expect(vcRuntimeMissing({ SystemRoot: 'C:\\Windows' })).toEqual([...VC_RUNTIME_DLLS])
+    // The resolved folder, not file existence, so the case holds on any host.
+    expect(vcRuntimeFolder({ SystemRoot: 'C:\\Windows' })).toBe('C:\\Windows\\System32')
+    expect(vcRuntimeFolder({ SystemRoot: 'd:\\windows' })).toBe('d:\\windows\\System32')
+    expect(vcRuntimeFolder({ SystemRoot: '\\\\server\\share\\Windows' })).toBeNull()
+    expect(vcRuntimeFolder({ SystemRoot: 'C:\\Windows' }, dir)).toBe(dir)
   })
 })
 
@@ -175,6 +179,11 @@ describe('printText names the Visual C++ runtime (#1824)', () => {
     // The closing Fix names the runtime, not the model download.
     expect(text).toMatch(/Fix: .*Visual C\+\+ Redistributable/)
     expect(text).not.toContain('BGE-small-en-v1.5 download')
+    // The generic causes would contradict the diagnosis; the opt-out stays.
+    expect(text).not.toContain('Likely causes:')
+    expect(text).not.toContain('First-run download not completed')
+    expect(text).not.toContain('pnpm hoisting')
+    expect(text).toContain('PLUR_DISABLE_EMBEDDINGS=1')
   })
 
   it('prints the same report as before when the runtime is present', () => {
@@ -185,5 +194,6 @@ describe('printText names the Visual C++ runtime (#1824)', () => {
     expect(withCheck).toBe(out.join(''))
     expect(withCheck).not.toContain('Visual C++')
     expect(withCheck).toContain('BGE-small-en-v1.5 download')
+    expect(withCheck).toContain('Likely causes:')
   })
 })
