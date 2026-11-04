@@ -1168,7 +1168,7 @@ export function vcRuntimeFolder(env: NodeJS.ProcessEnv, folder?: string): string
  * Why the embedder could not load, when the cause is a missing Visual C++
  * runtime; null otherwise. On Windows the files decide, because the
  * error text is translated; the English text is used only when SystemRoot
- * cannot be verified. The same rule as plur-enterprise's setup check.
+ * is not verified. The same rule as plur-enterprise's setup check.
  */
 export function vcRuntimeDiagnosis(
   embedder: DoctorReport['embedder'],
