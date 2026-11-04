@@ -648,7 +648,7 @@ pnpm install && pnpm build && pnpm test
 
 - **Bug reports** — issue with reproduction steps
 - **Feature requests** — issue describing the use case
-- **Code** — fork, branch, PR. Tests required.
+- **Code** — fork, branch from `development`, open a PR into `development`. Tests required. See [CONTRIBUTING.md](CONTRIBUTING.md).
 - **Integrations** — build PLUR support for other tools
 
 Before submitting: `pnpm test` passes, `pnpm build` succeeds, no new external deps in core without discussion.

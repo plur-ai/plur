@@ -33,6 +33,17 @@ pnpm test
 
 ~3500 tests across ~200 files (Vitest + Python suites). All must pass before committing.
 
+### Branches
+
+`development` is the integration branch; `main` is the release branch.
+
+- Branch from `origin/development` and open pull requests against `development` (`gh pr create --base development`). Never branch from or target `main` for feature or fix work, even though a fresh clone and `gh pr create` may default to `main`.
+- `main` receives only release promotions from `development` and release-time fixes (for example a changelog correction the manifest gate asks for). Anything merged into `main` goes back to `development` through a `main` → `development` pull request.
+- A fix for an already published version: ask the maintainers before targeting `main`.
+- Pull requests into `integration/**` branches (stacked work) skip the GitHub test matrix; the full CI runs when the integration branch comes into `development`.
+
+Details: `CONTRIBUTING.md`, "Making a change", "Reviewing and merging" and "Releases".
+
 ## Package dependency
 
 ```
