@@ -50,8 +50,8 @@ pnpm --filter @plur-ai/core build
    ```
 
    A fresh clone may check out `main`. Do not branch from it: work cut from
-   `main` conflicts with `development` and has to be rebased before it can
-   merge.
+   `main` usually conflicts with `development` and has to be rebased before
+   it can merge.
 
    **Stacked work.** A pull request that depends on another one still in
    review may branch from, and target, that pull request's branch.
@@ -107,10 +107,21 @@ pnpm --filter @plur-ai/core build
    afterwards and one was missed entirely, staying open for days after it had
    shipped.
 
+   **Closing keywords do not fire on `development` yet.** GitHub closes a
+   linked issue only when the pull request merges into the default branch,
+   which is still `main`. A pull request into `development` gets no linked
+   issues: `Closes #1514` in #1773 and `Closes #1761` in #1765 left both
+   issues open after the merge. Until `development` becomes the default
+   branch, keep the closing keywords (repeated for every issue, as above) for
+   traceability, and close each linked issue by hand once the pull request
+   has merged. For work that only partly fixes an issue, write `Part of #N`
+   instead.
+
 7. **Green before merge.** `pnpm test` and `pnpm build` must pass.
 
-8. **Record the outcome on the issue.** Closing keywords cover the ordinary
-   case. When they don't — a partial fix, a change of approach, or work with
+8. **Record the outcome on the issue.** Closing keywords, or closing by hand
+   while they do not fire on `development` (step 6), cover the ordinary case.
+   When they don't — a partial fix, a change of approach, or work with
    no diff to point at — say so on the issue itself.
 
    This matters most for **configuration and process changes**, which leave no
@@ -159,11 +170,13 @@ it, or assign it.
 ## Reviewing and merging
 
 Every change lands through a reviewed pull request — no direct pushes to
-`main` or `development`. The one exception is the release commit:
-`scripts/release.sh` commits the version bump and pushes it straight to
-`main` (`chore: release vX.Y.Z`), with its tag. Branch protection on
-`development` requires the CI checks but not an approving review; the review
-rule there is policy, not enforced.
+`main` or `development`. The one exception is the release commit: when there
+is a version bump to commit, `scripts/release.sh` commits it
+(`chore: release vX.Y.Z`) and pushes it straight to `main` with its tag.
+When the versions were already bumped (0.22.0), it only tags the commit it
+verified. Branch protection on `development` requires only the CI checks,
+not a pull request or a review, and does not bind admins: the whole rule —
+through a pull request, with a review — is policy there, not enforced.
 
 Which branch a pull request targets:
 
@@ -187,9 +200,9 @@ Which branch a pull request targets:
    next promotion neither conflicts nor drops the fix.
 
 5. **A fix for a published version (a hotfix): ask the maintainers first.**
-   There is no fixed rule yet. Once, during the 0.22 release, such a fix
-   went straight into `main` (#1781, shipped as 0.22.1) and came back to
-   `development` through #1779. Do not open a pull request against `main`
+   There is no fixed rule yet. Around the 0.22 release, fixes went straight
+   into `main` (#1652 and #1206 on 2026-10-21; #1781, shipped as 0.22.1) and
+   came back to `development` through #1766 and #1779. Do not open a pull request against `main`
    for it without a maintainer's agreement.
 
 Review rules:
