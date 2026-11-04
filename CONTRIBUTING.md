@@ -200,10 +200,12 @@ Which branch a pull request targets:
    next promotion neither conflicts nor drops the fix.
 
 5. **A fix for a published version (a hotfix): ask the maintainers first.**
-   There is no fixed rule yet. Around the 0.22 release, fixes went straight
-   into `main` (#1652 and #1206 on 2026-10-21; #1781, shipped as 0.22.1) and
-   came back to `development` through #1766 and #1779. Do not open a pull request against `main`
-   for it without a maintainer's agreement.
+   There is no fixed rule yet. Since `development` began (#1656, 2026-10-18),
+   one fix for a published version went straight into `main`: #1781, shipped
+   as 0.22.1, came back to `development` through #1779. #1652 and #1206 also
+   merged into `main`, on 2026-10-21, but were opened before `development`
+   existed; they came back through #1766. Do not open a pull request against
+   `main` for a hotfix without a maintainer's agreement.
 
 Review rules:
 
