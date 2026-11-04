@@ -49,9 +49,10 @@ pnpm --filter @plur-ai/core build
    git checkout -b fix-sync-conflict origin/development
    ```
 
-   A fresh clone may check out `main`. Do not branch from it: work cut from
-   `main` usually conflicts with `development` and has to be rebased before
-   it can merge.
+   A fresh clone may check out `main`. Do not branch from it: `main` is
+   behind `development` between releases, so work cut from `main` starts
+   from an older tree and may conflict with changes that have landed on
+   `development` since.
 
    **Stacked work.** A pull request that depends on another one still in
    review may branch from, and target, that pull request's branch.
@@ -238,7 +239,7 @@ A release reaches `main` in three steps:
    promotion, when fixes land on `development` after the first one.
 
 2. **Release from `main`.** After the promotion merges, the release runs from
-   `main`: `scripts/release.sh <version>` refuses to run unless the checkout
+   `main`: `scripts/release.sh <version>` refuses to release unless the checkout
    is `main` and equals `origin/main`. Release commits and tags follow
    [RELEASING.md](RELEASING.md).
 

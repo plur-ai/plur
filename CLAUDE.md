@@ -37,7 +37,7 @@ pnpm test
 
 `development` is the integration branch; `main` is the release branch.
 
-- Branch from `origin/development` and open pull requests against `development` (`gh pr create --base development`). Never branch from or target `main` for feature or fix work, even though a fresh clone and `gh pr create` may default to `main`.
+- Branch from `origin/development` and open pull requests against `development` (`gh pr create --base development`). Never branch from or target `main` for feature or ordinary fix work, even though a fresh clone and `gh pr create` may default to `main`.
 - `main` receives release promotions from `development` and release-time fixes (for example a changelog correction the manifest gate asks for). The only direct push to `main` is the release commit that `scripts/release.sh` makes. Anything merged into `main` goes back to `development` through a `main` → `development` pull request.
 - A fix for an already published version: ask the maintainers before targeting `main`.
 - A pull request that depends on another open pull request may branch from, and target, that pull request's branch.
