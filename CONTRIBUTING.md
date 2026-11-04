@@ -54,12 +54,26 @@ pnpm --filter @plur-ai/core build
    merge.
 
    **Stacked work.** A pull request that depends on another one still in
-   review may branch from, and target, that pull request's branch. Larger
-   work can collect on an `integration/**` branch. Pull requests into an
-   `integration/**` branch skip the GitHub test matrix and get a lighter
-   check instead (`.github/workflows/stacked-local-proof.yml`); the full CI
-   runs when the integration branch comes into `development` through its own
-   pull request.
+   review may branch from, and target, that pull request's branch.
+   `integration/**` branches are the branches the overnight agent stacks its
+   work on. Pull requests into them skip the GitHub test matrix (`ci.yml`);
+   the full CI runs once, when the integration branch comes into
+   `development` through its own pull request. Instead,
+   `.github/workflows/stacked-local-proof.yml` checks each one:
+
+   - The description has a line `Promises: ID, ID` naming the promises the
+     change makes green. None of them may already be green in the base's
+     `evals/baseline.json`, and each must be green when the workflow runs it
+     again.
+   - Only product source and product tests change (`packages/*/src`, and
+     `packages/*/test` outside `test/helpers`). A manifest, the lockfile, a
+     build or vitest config, a workflow, a script, a shared helper, an eval
+     or docs are refused.
+   - Pull requests from forks are not run.
+
+   [evals/README.md](evals/README.md) also asks such a pull request to paste
+   the output of `scripts/evals-local.sh gate <its base>` into its
+   description; the workflow does not rely on it.
 
 4. **Write tests.** Every change to behavior needs a test. Add unit tests in
    the affected package's `test/` directory (named `*.test.ts`). For changes to
@@ -145,16 +159,21 @@ it, or assign it.
 ## Reviewing and merging
 
 Every change lands through a reviewed pull request — no direct pushes to
-`main` or `development`.
+`main` or `development`. The one exception is the release commit:
+`scripts/release.sh` commits the version bump and pushes it straight to
+`main` (`chore: release vX.Y.Z`), with its tag. Branch protection on
+`development` requires the CI checks but not an approving review; the review
+rule there is policy, not enforced.
 
 Which branch a pull request targets:
 
 1. **Feature and fix pull requests target `development`.** This is the
    normal case; see "Making a change" above.
 
-2. **`main` receives only release promotions from `development`.** A
-   promotion is a pull request from `development` into `main`, titled
-   "Release X.Y.Z: promote development to main" (#1775, #1799, #1804).
+2. **`main` receives release promotions from `development`, plus the
+   exceptions below.** A promotion is a pull request from `development` into
+   `main`, titled like "Release X.Y.Z: promote development to main" (#1775,
+   #1799, #1804).
    See "Releases" below.
 
 3. **Release-time fixes may target `main`.** These are fixes the release
@@ -174,7 +193,6 @@ Which branch a pull request targets:
    for it without a maintainer's agreement.
 
 Review rules:
-
 
 - **A `CHANGES_REQUESTED` review is a block, not a suggestion.** The
   **reviewer** clears it — by re-reviewing and approving, or by dismissing

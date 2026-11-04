@@ -38,9 +38,9 @@ pnpm test
 `development` is the integration branch; `main` is the release branch.
 
 - Branch from `origin/development` and open pull requests against `development` (`gh pr create --base development`). Never branch from or target `main` for feature or fix work, even though a fresh clone and `gh pr create` may default to `main`.
-- `main` receives only release promotions from `development` and release-time fixes (for example a changelog correction the manifest gate asks for). Anything merged into `main` goes back to `development` through a `main` → `development` pull request.
+- `main` receives release promotions from `development` and release-time fixes (for example a changelog correction the manifest gate asks for). The only direct push to `main` is the release commit that `scripts/release.sh` makes. Anything merged into `main` goes back to `development` through a `main` → `development` pull request.
 - A fix for an already published version: ask the maintainers before targeting `main`.
-- Pull requests into `integration/**` branches (stacked work) skip the GitHub test matrix; the full CI runs when the integration branch comes into `development`.
+- `integration/**` branches are where the overnight agent stacks its work. Pull requests into them skip the GitHub test matrix; the full CI runs when the integration branch comes into `development`. Instead, `stacked-local-proof.yml` requires a `Promises: ID, ID` line in the description (promises not yet in the baseline, green when re-run) and refuses any change outside product source and product tests (`packages/*/src`, `packages/*/test` outside `test/helpers`): no manifest, lockfile, config, workflow, script, helper, eval or docs. Fork pull requests are not run.
 
 Details: `CONTRIBUTING.md`, "Making a change", "Reviewing and merging" and "Releases".
 
