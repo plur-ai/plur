@@ -3,7 +3,7 @@ import { CLI_VERSION } from '../version.js'
 import { codexConfigTomlPath } from '../mcp-config.js'
 import { spawn } from 'child_process'
 import { existsSync, readFileSync, realpathSync, statSync, accessSync, constants } from 'fs'
-import { join, extname, dirname, resolve } from 'path'
+import { join, extname, dirname, resolve, win32 } from 'path'
 import { homedir, platform } from 'os'
 import { createRequire } from 'module'
 import { createPlur, type GlobalFlags } from '../plur.js'
@@ -28,7 +28,7 @@ import { hasPlurCodexHooks, readCodexHooksConfig } from '../codex-hooks.js'
 import { hasPlurAgyHooks, readAgyHooksConfig } from '../antigravity-hooks.js'
 import { codexHome, missingNodeEntryPaths, readCodexPlurMcpCommand, isOwnWin32CmdShimCommand } from '../mcp-config.js'
 import { opencodeConfigDir, opencodeConfigPath, readOpencodeConfig, PLUR_OPENCODE_PLUGIN } from '../opencode-config.js'
-import { computeContentHash, detectPlurStorage, loadEngrams, resolveBackendTier, loadConfig, describeNeedsAction, describeHeld, classifyStoreDuplicates, folderMapProblem, tokenFromEnv, tokenEnvUnsetDetail, tokenEnvUnsetFix, offlineByEnv } from '@plur-ai/core'
+import { computeContentHash, detectPlurStorage, loadEngrams, resolveBackendTier, loadConfig, describeNeedsAction, describeHeld, classifyStoreDuplicates, folderMapProblem, tokenFromEnv, tokenEnvUnsetDetail, tokenEnvUnsetFix, offlineByEnv, windowsSystemRoot } from '@plur-ai/core'
 import { plurRoot } from '../lib/folder-gate.js'
 import { readHookInstalls, readHookRuns, type HookTool } from '../lib/hook-runs.js'
 import type { ServerStoreCheck } from '@plur-ai/core'
@@ -114,7 +114,11 @@ interface DoctorReport {
    * profile if the server doesn't even come up once.
    */
   cursorHandshake: { ok: boolean; serverName?: string; serverVersion?: string; toolCount?: number; error?: string } | null
-  embedder: { available: boolean; loaded: boolean; lastError: string | null; modelLoaded: boolean; disabled: boolean; disabledReason: string | null }
+  embedder: {
+    available: boolean; loaded: boolean; lastError: string | null; modelLoaded: boolean; disabled: boolean; disabledReason: string | null
+    /** Windows only, and only when the model failed to load without the Visual C++ runtime. */
+    vcRuntime?: VcRuntimeDiagnosis
+  }
   /**
    * Whether the current directory looks like a Cursor project (a `.cursor/`
    * dir exists) and, if so, whether Cursor's OWN config files — not any
@@ -1126,6 +1130,66 @@ export function embeddingNetworkHint(
   return lines
 }
 
+/** The Microsoft Visual C++ runtime files onnxruntime-node's binding needs on Windows. */
+export const VC_RUNTIME_DLLS = ['vcruntime140.dll', 'vcruntime140_1.dll', 'msvcp140.dll'] as const
+/** What English Windows says when a DLL a native module needs is missing. Windows translates it. */
+const MISSING_DLL = 'The specified module could not be found'
+const VC_REDIST_FIX = 'install the Microsoft Visual C++ Redistributable: `winget install --id Microsoft.VCRedist.2015+.x64`, ' +
+  'or download https://aka.ms/vs/17/release/vc_redist.x64.exe. Then run `plur doctor` again.'
+
+export interface VcRuntimeDiagnosis {
+  /** The runtime files missing from `folder`; null when the folder could not be checked and the error text decided. */
+  missing: string[] | null
+  /** The folder checked, or null. */
+  folder: string | null
+  fix: string
+}
+
+/**
+ * The Visual C++ runtime files missing from `folder`, or null when the folder
+ * is not known. The default folder is <SystemRoot>\System32, by absolute path,
+ * for a SystemRoot of <drive>:\Windows only. Only file existence is checked;
+ * nothing is run.
+ */
+export function vcRuntimeMissing(env: NodeJS.ProcessEnv, folder?: string): string[] | null {
+  const dir = vcRuntimeFolder(env, folder)
+  if (!dir) return null
+  return VC_RUNTIME_DLLS.filter(dll => !existsSync(join(dir, dll)))
+}
+
+/** The folder {@link vcRuntimeMissing} checks: `folder` when given, else <SystemRoot>\\System32 (win32 path rules on every host), else null. */
+export function vcRuntimeFolder(env: NodeJS.ProcessEnv, folder?: string): string | null {
+  if (folder !== undefined) return folder
+  const root = windowsSystemRoot(env)
+  return root ? win32.join(root, 'System32') : null
+}
+
+/**
+ * Why the embedder could not load, when the cause is a missing Visual C++
+ * runtime; null otherwise. On Windows the files decide, because the
+ * error text is translated; the English text is used only when SystemRoot
+ * is not verified. The same rule as plur-enterprise's setup check.
+ */
+export function vcRuntimeDiagnosis(
+  embedder: DoctorReport['embedder'],
+  o: { platform: NodeJS.Platform; env: NodeJS.ProcessEnv; folder?: string },
+): VcRuntimeDiagnosis | null {
+  if (o.platform !== 'win32' || embedder.modelLoaded || embedder.disabled) return null
+  const folder = vcRuntimeFolder(o.env, o.folder)
+  const missing = vcRuntimeMissing(o.env, o.folder)
+  if (missing !== null) return missing.length ? { missing, folder, fix: VC_REDIST_FIX } : null
+  return embedder.lastError?.includes(MISSING_DLL) ? { missing: null, folder: null, fix: VC_REDIST_FIX } : null
+}
+
+/** The report's embedder, with `vcRuntime` added only when {@link vcRuntimeDiagnosis} finds the runtime missing. */
+export function embedderWithVcRuntime(
+  embedder: DoctorReport['embedder'],
+  o: { platform: NodeJS.Platform; env: NodeJS.ProcessEnv; folder?: string },
+): DoctorReport['embedder'] {
+  const vcRuntime = vcRuntimeDiagnosis(embedder, o)
+  return vcRuntime ? { ...embedder, vcRuntime } : embedder
+}
+
 /** Config files Claude Code reads hooks and settings from, but never MCP servers. */
 function isClaudeSettingsFile(path: string): boolean {
   return path === claudeCodeGlobalSettingsPath() || path === join(process.cwd(), '.claude', 'settings.json')
@@ -1432,7 +1496,8 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
 
     return {
       configs, hooksInstalled, mcpRegistered, claudeCodeMcp, datacoreCollision, staleNpxHooks, staleNpxMcp, brokenNodeMcp,
-      hookShim, mcpShim, handshake, cursorHandshake, embedder,
+      hookShim, mcpShim, handshake, cursorHandshake,
+      embedder: embedderWithVcRuntime(embedder, { platform: process.platform, env: process.env }),
       cursorProjectDetected, cursorWired, codexDetected, codexWired, codexCmdShimMcp, windowsHookFallback, agyDetected, agyWired,
       pgliteGemmaReembedNeeded, staleContentHashes, pgliteOrphan, ignoredDuplicateStores, skippedProjectStores, tokenEnvUnset, tokenEnvFound, opencode, outbox, folderMap, overall, serverStores, hookTrust,
     }
@@ -1768,12 +1833,24 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
     if (report.embedder.lastError) {
       outputText(`  Last error: ${report.embedder.lastError}`)
     }
+    const vc = report.embedder.vcRuntime
+    if (vc) {
+      outputText(vc.missing
+        ? `  The Microsoft Visual C++ Redistributable is not installed: ${vc.missing.join(', ')} missing from ${vc.folder}.`
+        : '  The Microsoft Visual C++ Redistributable is probably not installed (a module the ONNX runtime needs could not be found).')
+      outputText('  The ONNX runtime that loads the model needs it. Install it with:')
+      outputText('    winget install --id Microsoft.VCRedist.2015+.x64')
+      outputText('  or download https://aka.ms/vs/17/release/vc_redist.x64.exe, then run `plur doctor` again.')
+    }
     for (const line of embeddingNetworkHint(report.embedder.lastError)) outputText(line)
-    outputText('  Likely causes:')
-    outputText('    - First-run download not completed (try again in a few seconds)')
-    outputText('    - Network blocked HuggingFace Hub — check huggingface.co connectivity')
-    outputText('    - @huggingface/transformers package failed to load (ONNX runtime issue)')
-    outputText('    - pnpm hoisting: onnxruntime-node not findable from transformers package root')
+    // The generic causes would contradict a Visual C++ runtime diagnosis.
+    if (!vc) {
+      outputText('  Likely causes:')
+      outputText('    - First-run download not completed (try again in a few seconds)')
+      outputText('    - Network blocked HuggingFace Hub — check huggingface.co connectivity')
+      outputText('    - @huggingface/transformers package failed to load (ONNX runtime issue)')
+      outputText('    - pnpm hoisting: onnxruntime-node not findable from transformers package root')
+    }
     outputText('  To opt out (run BM25-only intentionally): set PLUR_DISABLE_EMBEDDINGS=1')
     outputText('    or write `embeddings: { enabled: false }` to ~/.plur/config.yaml')
   }
@@ -1809,7 +1886,9 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
       outputText('  Fix: run `plur init --cursor` from this project — this project\'s own')
       outputText('       .cursor/ config is incomplete even though other checks above passed.')
     }
-    if (!report.embedder.modelLoaded && !report.embedder.disabled) {
+    if (report.embedder.vcRuntime) {
+      outputText(`  Fix: ${report.embedder.vcRuntime.fix}`)
+    } else if (!report.embedder.modelLoaded && !report.embedder.disabled) {
       outputText('  Fix: from the @plur-ai/core package directory, run a script that imports')
       outputText('       @huggingface/transformers and calls pipeline() once to trigger the')
       outputText('       BGE-small-en-v1.5 download (~130MB).')
