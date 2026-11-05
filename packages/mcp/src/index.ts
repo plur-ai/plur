@@ -31,13 +31,20 @@ Docs: https://plur.ai · https://github.com/plur-ai/plur
 
 // --- Constants (must be before any await that uses them) ---
 
-// Pinned to THIS build's version, never @latest (#1069): an @latest entry
-// makes npx rewrite its cached native binaries on every publish, and macOS
-// SIGKILLs (CODESIGNING Invalid Page) any process that pages one in
-// mid-rewrite. Upgrades re-run init, which re-pins.
-const MCP_SERVER_CONFIG = {
-  command: 'npx',
-  args: ['-y', `@plur-ai/mcp@${VERSION}`],
+// The local MCP shim `plur init` installs (~/.plur/bin/plur-mcp, which runs
+// the installed @plur-ai/mcp with node). Preferred when present: a global
+// upgrade replaces the package at the same path, so the entry follows it
+// without a re-pin (#1832). Not on Windows, where current Node cannot spawn
+// the `.cmd` shim (#1267).
+const MCP_SHIM = join(homedir(), '.plur', 'bin', 'plur-mcp')
+
+// Otherwise npx, pinned to THIS build's version, never @latest (#1069): an
+// @latest entry makes npx rewrite its cached native binaries on every
+// publish, and macOS SIGKILLs (CODESIGNING Invalid Page) any process that
+// pages one in mid-rewrite. Upgrades re-run init, which re-pins.
+function mcpServerConfig(): { command: string; args: string[] } {
+  if (platform() !== 'win32' && existsSync(MCP_SHIM)) return { command: MCP_SHIM, args: [] }
+  return { command: 'npx', args: ['-y', `@plur-ai/mcp@${VERSION}`] }
 }
 
 // --- Pack-upgrade helpers ---
@@ -101,10 +108,13 @@ export function extractManifestVersion(skillMdPath: string): string | null {
 }
 
 // Prefer local hook shim if available (installed by `plur init`, see #178).
-// Fall back to npx for first-time users who haven't run `plur init` yet.
+// Fall back to npx for first-time users who haven't run `plur init` yet,
+// pinned like the MCP entry (#1069, #1832): a bare `npx @plur-ai/cli`
+// resolves latest on every publish and races the npx cache rewrite. The CLI
+// is released in lockstep with this package, so the same version exists.
 const _shimName = platform() === 'win32' ? 'plur-hook.cmd' : 'plur-hook'
 const _shimCandidate = join(homedir(), '.plur', 'bin', _shimName)
-const CLI = existsSync(_shimCandidate) ? _shimCandidate : 'npx @plur-ai/cli'
+const CLI = existsSync(_shimCandidate) ? _shimCandidate : `npx -y @plur-ai/cli@${VERSION}`
 
 /**
  * Hook set for `plur-mcp init`: the same hooks `plur init` writes to user
@@ -315,20 +325,31 @@ function readJsonObjectForWrite(path: string): { data: Record<string, unknown>; 
 }
 
 /**
- * Heal the @latest entries THIS command's older releases wrote — the #1069
- * npx cache-rewrite race. Only the exact racey shape is touched; a custom or
- * version-pinned entry is the user's decision. Returns true when it changed.
+ * Move the npx entry THIS command's releases wrote to what it writes today:
+ * the @latest/bare shape (the #1069 npx cache-rewrite race), and a pin older
+ * than or equal to this build (#1832 — so a global upgrade reaches the config
+ * on the next init, the rule `plur init` applies to every editor). A newer
+ * pin, another package or a custom command is the user's and is kept. Other
+ * fields (env, type, timeout) are kept. Returns the status line, or null when
+ * nothing changed.
  */
-function healRaceyEntry(servers: Record<string, unknown>): boolean {
+function healOwnNpxEntry(servers: Record<string, unknown>): string | null {
   const existing = servers.plur as { command?: string; args?: string[] } | undefined
-  if (!existing || typeof existing !== 'object') return false
+  if (!existing || typeof existing !== 'object') return null
   const args = existing.args ?? []
   const spec = args.filter(a => a !== '-y' && !a.startsWith('-'))[0] ?? ''
-  if (existing.command !== 'npx' || !/^@plur-ai\/mcp(@latest)?$/.test(spec)) return false
-  const healed = { ...existing, ...MCP_SERVER_CONFIG }
-  if (JSON.stringify(healed) === JSON.stringify(existing)) return false
+  if (existing.command !== 'npx') return null
+  const m = /^@plur-ai\/mcp(?:@(.+))?$/.exec(spec)
+  if (!m) return null
+  const tag = m[1]
+  const racey = tag === undefined || tag === 'latest'
+  const oldPin = !racey && /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(tag) && compareSemver(tag, VERSION) <= 0 ? tag : null
+  if (!racey && !oldPin) return null
+  const healed = { ...existing, ...mcpServerConfig() }
+  if (JSON.stringify(healed) === JSON.stringify(existing)) return null
   servers.plur = healed
-  return true
+  if (racey) return 'upgraded stale npx entry'
+  return healed.command === 'npx' ? `updated the npx pin ${oldPin} → ${VERSION}` : `replaced the pinned npx entry (${oldPin}) with the installed MCP server`
 }
 
 /**
@@ -356,8 +377,8 @@ async function installClaudeUserMcp(): Promise<{ ok: boolean; status: string }> 
   // The same implementation `plur init` uses (#1564 review).
   const r = registerClaudeUserMcp({
     userPath: join(homedir(), '.claude.json'),
-    entry: () => ({ ...MCP_SERVER_CONFIG }),
-    heal: (config) => healRaceyEntry(config.mcpServers as Record<string, unknown>) ? 'upgraded stale npx entry' : null,
+    entry: () => mcpServerConfig(),
+    heal: (config) => healOwnNpxEntry(config.mcpServers as Record<string, unknown>),
     legacyEntry: oldEntry,
     legacyPath,
     rerunCommand: 'plur-mcp init',
