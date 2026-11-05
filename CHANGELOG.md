@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### Fixes
+
+- The update notice, `plur_status` and `plur doctor`'s opencode plugin check
+  ask your own npm which version `latest` names, so they use the same
+  registry, scoped `@plur-ai:registry` mirror, proxy, certificate and token as
+  `npm install`. Behind a company mirror the notice reports the mirror's
+  `latest` instead of npmjs.org's, so the suggested `npm i -g …@latest`
+  installs the version it names. When that registry cannot be reached, PLUR
+  says `Could not reach <host> to check for updates (<reason>). No update is
+  advertised.` and runs normally; it never shows a version it saw earlier as
+  current. The MCP server and the OpenClaw plugin keep the answer in the
+  store's `cache/update-check.json` (6 hours, 30 minutes after a failure), so a
+  restart within that time asks npm nothing. (#1833)
+
 ## 0.23.0
 
 Memory you can prove. (#1790, #1799)
