@@ -28,6 +28,8 @@ npx @plur-ai/claw setup
 
 `setup` enables the plugin in `~/.openclaw/openclaw.json`, assigns it to the memory slot, and (if you've opted into a community allowlist) adds `plur-claw` to it. Restart the OpenClaw gateway and every agent session now has persistent memory.
 
+The plugin installs [`@plur-ai/core`](https://www.npmjs.com/package/@plur-ai/core) 0.23.0 or later (below 1.0) with it, so it runs the current core, not the one it was built with.
+
 If you'd rather configure by hand, the equivalent edit to `~/.openclaw/openclaw.json` is:
 
 ```json

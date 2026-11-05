@@ -4,9 +4,9 @@
 
 Part of [PLUR](https://plur.ai) — the engram exchange layer connecting agents across tools. Compatible with the MCP server ([`@plur-ai/mcp`](https://npmjs.com/package/@plur-ai/mcp)) for Claude Code, Cursor, and Windsurf, and with [`@plur-ai/claw`](https://npmjs.com/package/@plur-ai/claw) for OpenClaw. One store, shared across every PLUR-compatible tool.
 
-The 0.21.4 plugin supports OpenCode V1 and V2 through separate host adapters.
-OpenCode V2 requires this new plugin entrypoint; the older 0.2.1 plugin fails to
-load there. `plur doctor` checks configuration and package availability, but a
+The plugin supports OpenCode V1 and V2 through separate host adapters (since
+0.21.4). OpenCode V2 requires this plugin entrypoint; the older 0.2.1 plugin
+fails to load there. `plur doctor` checks configuration and package availability, but a
 successful check does not prove the host loaded a plugin.
 
 ## What it does
@@ -25,10 +25,12 @@ Everything is stored as plain YAML in `~/.plur/` — the same store `@plur-ai/mc
 Requires Node.js 22 or newer:
 
 ```sh
-npm install -g @plur-ai/cli@0.21.4 @plur-ai/mcp@0.21.4
+npm install -g @plur-ai/cli @plur-ai/mcp
 plur init --opencode
 plur doctor
 ```
+
+The plugin installs [`@plur-ai/core`](https://npmjs.com/package/@plur-ai/core) 0.23.0 or later (below 1.0) with it, so it reads and writes `~/.plur/` with the current core, not the one it was built with.
 
 Restart OpenCode after setup or an upgrade, including its background service on V2. Plain `plur init` auto-detects an existing OpenCode config directory; `--opencode` also sets up a new one, and `--no-opencode` skips it.
 
@@ -36,7 +38,7 @@ The default file is `~/.config/opencode/opencode.json`. An existing `opencode.js
 
 Init writes both layers:
 
-- The PLUR plugin declaration for automatic recall and learning. V1 uses `plugin`; V2 also accepts `plugins` with string or `{ "package": "@plur-ai/opencode@0.21.4", "options": {} }` entries.
+- The PLUR plugin declaration for automatic recall and learning. V1 uses `plugin`; V2 also accepts `plugins` with string or `{ "package": "@plur-ai/opencode", "options": {} }` entries.
 - `mcp.plur` (legacy) or an existing V2 `mcp.servers.plur` map for explicit memory tools. When MCP is installed, its command is the Node executable plus the installed package's JavaScript entry, on Unix and Windows. Let init resolve these machine-specific paths.
 
 On an upgrade, init advances older exact plugin pins to the plugin version shipped with the CLI. It preserves comments, formatting, tuple/object options and unrelated fields in JSON or JSONC. Newer pins, tags and bare unpinned entries are left alone; `--keep-opencode-plugin` retains an intentional older pin. V2 removal directives such as `-plur` and `-*` are preserved; init does not override a deliberate disable. This does not force OpenCode to refresh its cache for a bare plugin name.
@@ -47,7 +49,7 @@ Upgrade with the same install/init commands above. `plur doctor` reports plugin 
 
 ## Verified host versions
 
-The packed 0.21.4 artifact is tested with actual **OpenCode 2.0.23** and
+Tested with: the packed 0.21.4 artifact, with actual **OpenCode 2.0.23** and
 **OpenCode 1.18.0**, launched with **Node 24.13.0**. The V1 SDK remains pinned at
 1.18.30; the V2 adapter is typechecked against `@opencode/plugin` 2.0.23. Older
 V2 releases have not been verified. Existing V1 support starts at 1.18.0.
