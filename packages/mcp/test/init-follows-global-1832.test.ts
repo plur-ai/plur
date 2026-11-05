@@ -88,11 +88,15 @@ describe.skipIf(process.platform === 'win32')('plur-mcp init follows a global up
     expect(plurEntry()).toEqual({ command: shim, args: [] })
   })
 
-  it('a newer pin, a fork and a custom command stay', () => {
+  it('a newer pin, a fork, a custom command and a pinned entry with extra arguments stay', () => {
     for (const plur of [
       { command: 'npx', args: ['-y', '@plur-ai/mcp@999.0.0'] },
       { command: 'npx', args: ['-y', '@plur-ai/mcp-experimental@0.0.1'] },
       { command: '/opt/my-plur', args: [] },
+      // Pinned, but not this command's argv: the extra arguments are the user's.
+      { command: 'npx', args: ['-y', '@plur-ai/mcp@0.0.1', '--profile', 'full'] },
+      { command: 'npx', args: ['-p', '@plur-ai/mcp@0.0.1', 'my-wrapper'] },
+      { command: 'npx', args: ['--package', '@plur-ai/mcp@0.0.1', 'my-wrapper'] },
     ]) {
       seed(plur)
       init()

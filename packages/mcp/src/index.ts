@@ -336,9 +336,13 @@ function readJsonObjectForWrite(path: string): { data: Record<string, unknown>; 
 function healOwnNpxEntry(servers: Record<string, unknown>): string | null {
   const existing = servers.plur as { command?: string; args?: string[] } | undefined
   if (!existing || typeof existing !== 'object') return null
-  const args = existing.args ?? []
-  const spec = args.filter(a => a !== '-y' && !a.startsWith('-'))[0] ?? ''
   if (existing.command !== 'npx') return null
+  // Only the exact argv this command writes, `npx [-y|--yes] <spec>`: an
+  // extra argument, `-p <pkg> <bin>` or `--package` makes it a custom entry
+  // whose arguments a rewrite would drop (#1832 review).
+  const args = existing.args ?? []
+  const spec = args.length === 1 ? args[0]
+    : args.length === 2 && (args[0] === '-y' || args[0] === '--yes') ? args[1] : ''
   const m = /^@plur-ai\/mcp(?:@(.+))?$/.exec(spec)
   if (!m) return null
   const tag = m[1]
