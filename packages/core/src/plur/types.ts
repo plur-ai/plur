@@ -39,7 +39,28 @@ export interface IndexSyncError {
 
 
 export interface StatusResult {
+  /**
+   * Every non-retired engram this instance has loaded: the primary store,
+   * local path stores, installed packs AND whatever rows the remote (url)
+   * stores have cached in this process. The remote part is 0 until something
+   * warms those caches, so this number can change within one process.
+   * Use `local_engram_count` for a stable count of what is on this machine.
+   */
   engram_count: number
+  /**
+   * The engrams on this machine: primary store, local path stores and
+   * installed packs — `engram_count` without the remote stores' cached rows.
+   * Does not depend on whether the remote caches are warm.
+   * Computed after the same `domain` / `created_after` filters as `engram_count`.
+   */
+  local_engram_count: number
+  /**
+   * Rows the remote (url) stores have cached in this process. 0 until the
+   * caches are warmed (session_start, warmRemoteCaches).
+   * Computed after the same `domain` / `created_after` filters as `engram_count`,
+   * so `local_engram_count + remote_cached_engram_count === engram_count`.
+   */
+  remote_cached_engram_count: number
   episode_count: number
   pack_count: number
   storage_root: string
