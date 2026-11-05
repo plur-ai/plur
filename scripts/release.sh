@@ -615,6 +615,45 @@ echo "  ✓ packages/cli/src/version.ts"
 sed -i '' "s/toBe('${OLD_CORE}')/toBe('$VERSION')/g" packages/mcp/test/server.test.ts
 echo "  ✓ packages/mcp/test/server.test.ts"
 
+# Plugin core floor (#1831). A plugin released in this run is built and tested
+# against core $VERSION, so its published range starts there: `>=$VERSION <1`.
+# Its code may use exports that only this core has, and an older floor would
+# let npm pair it with a core where its import fails at load. Rewrites the
+# plugin's core dependency (workspace:<range>), its core peer where it has one,
+# and the matching specifier in pnpm-lock.yaml, so `--frozen-lockfile` still
+# passes. Called only for the plugins whose flag was given.
+set_plugin_core_floor() {
+  local plugin="$1"
+  node -e "
+    const fs = require('fs');
+    const plugin = '$plugin', range = '>=$VERSION <1';
+    const path = './packages/' + plugin + '/package.json';
+    const pkg = JSON.parse(fs.readFileSync(path, 'utf8'));
+    const old = pkg.dependencies && pkg.dependencies['@plur-ai/core'];
+    if (!old || !old.startsWith('workspace:')) {
+      console.error('packages/' + plugin + ': no workspace: @plur-ai/core dependency to set the floor on (' + old + ')');
+      process.exit(1);
+    }
+    pkg.dependencies['@plur-ai/core'] = 'workspace:' + range;
+    if (pkg.peerDependencies && pkg.peerDependencies['@plur-ai/core']) pkg.peerDependencies['@plur-ai/core'] = range;
+    fs.writeFileSync(path, JSON.stringify(pkg, null, 2) + '\n');
+    const lock = fs.readFileSync('pnpm-lock.yaml', 'utf8');
+    const entry = '\n  packages/' + plugin + ':\n';
+    const at = lock.indexOf(entry);
+    const end = at < 0 ? -1 : lock.indexOf('\n\n', at + 1);
+    const block = at < 0 ? '' : lock.slice(at, end);
+    const key = '\'@plur-ai/core\':\n        specifier: ';
+    const from = key + old + '\n';
+    if (!block.includes(from)) {
+      console.error('pnpm-lock.yaml: no ' + old + ' specifier for @plur-ai/core under packages/' + plugin);
+      process.exit(1);
+    }
+    const to = key + 'workspace:' + range + '\n';
+    fs.writeFileSync('pnpm-lock.yaml', lock.slice(0, at) + block.replace(from, to) + lock.slice(end));
+  "
+  echo "  ✓ packages/$plugin @plur-ai/core floor → >=$VERSION <1 (package.json + pnpm-lock.yaml)"
+}
+
 # Claw is on an independent version track — only bump if --claw was provided
 if [ -n "$CLAW_VERSION" ]; then
   echo "  --- claw bumps (independent track: $CLAW_VERSION) ---"
@@ -643,6 +682,7 @@ if [ -n "$CLAW_VERSION" ]; then
 
   sed -i '' "s/toBe('[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*')/toBe('$CLAW_VERSION')/g" packages/claw/test/hello.test.ts
   echo "  ✓ packages/claw/test/hello.test.ts"
+  set_plugin_core_floor claw
 else
   CURRENT_CLAW=$(node -e "console.log(require('./packages/claw/package.json').version)")
   echo "  (claw stays at $CURRENT_CLAW — pass --claw <version> to bump and publish)"
@@ -665,6 +705,7 @@ if [ -n "$DSH_VERSION" ]; then
 
   sed -i '' "s/export const VERSION = '.*'/export const VERSION = '$DSH_VERSION'/" packages/dsh/src/index.ts
   echo "  ✓ packages/dsh/src/index.ts"
+  set_plugin_core_floor dsh
 else
   CURRENT_DSH=$(node -e "console.log(require('./packages/dsh/package.json').version)")
   echo "  (dsh stays at $CURRENT_DSH — pass --dsh <version> to bump and publish)"
@@ -688,9 +729,17 @@ if [ -n "$OPENCODE_VERSION" ]; then
   # opencode/test/version-parity.test.ts guards the pair.
   sed -i '' "s/export const OPENCODE_PLUGIN_VERSION = '.*'/export const OPENCODE_PLUGIN_VERSION = '$OPENCODE_VERSION'/" packages/opencode/src/version.ts
   echo "  ✓ packages/opencode/src/version.ts"
+  set_plugin_core_floor opencode
 else
   CURRENT_OPENCODE=$(node -e "console.log(require('./packages/opencode/package.json').version)")
   echo "  (opencode stays at $CURRENT_OPENCODE — pass --opencode <version> to bump and publish)"
+fi
+
+# The lockfile now names the new floors; prove it still installs as committed,
+# from the local store, before anything is built from it.
+if [ -n "$CLAW_VERSION$DSH_VERSION$OPENCODE_VERSION" ]; then
+  pnpm install --frozen-lockfile --offline >/dev/null
+  echo "  ✓ pnpm install --frozen-lockfile accepts the new plugin floors"
 fi
 
 # MCP Registry / ClawHub listing — both the top-level version and the package
@@ -1650,7 +1699,7 @@ fi
 # Every plugin's published `latest`, released in this run or not, must accept
 # the core just shipped. Exit 1 = it does not; exit 2 = could not check.
 POST_RANGE_STATUS=0
-node "$REPO_ROOT/scripts/check-plugin-core-range.mjs" --core "$VERSION" --post || POST_RANGE_STATUS=$?
+node "$REPO_ROOT/scripts/check-plugin-core-range.mjs" --core "$VERSION" --post --releasing "${RELEASING_PLUGINS#,}" || POST_RANGE_STATUS=$?
 if [ "$POST_RANGE_STATUS" -ne 0 ]; then
   echo "  ! plugin core-range check exited $POST_RANGE_STATUS (above) — a follow-up, not a failed release."
   PIN_PROBLEMS=$((PIN_PROBLEMS+1))

@@ -15,8 +15,11 @@
 //   - every plugin NOT being released must have a published `latest` whose core
 //     requirement includes <version>. A plugin being released is judged on its
 //     workspace manifest, because that is what will be published.
-// With --post (release.sh Step 9b, after publishing): only the published
-// `latest` of every plugin is checked.
+// With --post (release.sh Step 9b, after publishing): the published `latest`
+// of every plugin is checked, and every plugin in --releasing must have a
+// workspace floor (the lowest core its range admits) equal to <version>:
+// release.sh Step 1 sets it, because a published plugin is built and tested
+// against exactly the core it is released with.
 //
 // Exit codes: 0 every requirement includes <version>; 1 at least one does not;
 // 2 could not check (npm missing or unreachable, package not found, answer not
@@ -109,6 +112,30 @@ function judge(semver, requirement, core) {
     : `requires ${CORE} "${requirement}", which excludes ${core}`
 }
 
+/** Problems with the floor of a released plugin's workspace ranges: each must start at `core`. */
+function checkReleasedFloor(semver, root, plugin, core) {
+  const path = join(root, 'packages', plugin, 'package.json')
+  let pkg
+  try {
+    pkg = JSON.parse(readFileSync(path, 'utf8'))
+  } catch (error) {
+    throw new CouldNotCheck(`packages/${plugin}/package.json: ${error.message}`)
+  }
+  const ranges = {
+    dependency: pkg.dependencies?.[CORE]?.replace(/^workspace:/, ''),
+    peer: pkg.peerDependencies?.[CORE],
+  }
+  const problems = []
+  for (const [kind, range] of Object.entries(ranges)) {
+    if (range === undefined && kind === 'peer') continue
+    const floor = range && semver.validRange(range) ? semver.minVersion(range)?.version : undefined
+    if (floor !== core) {
+      problems.push(`workspace @plur-ai/${plugin} ${kind} ${CORE} "${range ?? '(none)'}" has floor ${floor ?? '(none)'}, not the released core ${core} (release.sh Step 1 sets it)`)
+    }
+  }
+  return problems
+}
+
 /** Problems with a plugin's workspace manifest: the range shape, and whether it includes `core`. */
 function checkWorkspace(semver, root, plugin, core) {
   const path = join(root, 'packages', plugin, 'package.json')
@@ -170,6 +197,10 @@ export async function main(argv = process.argv.slice(2)) {
         failures.push(...problems)
         if (problems.length === 0) console.log(`  ✓ workspace ${name} declares a ${CORE} range that includes ${args.core}`)
         if (args.releasing.has(plugin)) continue
+      } else if (args.releasing.has(plugin)) {
+        const problems = checkReleasedFloor(semver, root, plugin, args.core)
+        failures.push(...problems)
+        if (problems.length === 0) console.log(`  ✓ workspace ${name} floor is the released ${CORE} ${args.core}`)
       }
       const manifest = publishedLatest(name)
       const requirement = manifest.peerDependencies?.[CORE] ?? manifest.dependencies?.[CORE]

@@ -1,8 +1,10 @@
 // The real repository's side of #1831: the three plugin manifests declare
 // @plur-ai/core as a range, and release.sh runs the range check before it
 // changes or publishes anything, and again after publishing.
-import { readFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
@@ -101,9 +103,74 @@ describe('release.sh runs the plugin core-range check', () => {
     }
   })
 
-  it('after publishing in --post mode, and verify_pins no longer expects an exact core from a plugin', () => {
-    const post = at(/check-plugin-core-range\.mjs" --core "\$VERSION" --post/)
+  it('after publishing in --post mode, with the released plugins, and verify_pins no longer expects an exact core from a plugin', () => {
+    const post = at(/check-plugin-core-range\.mjs" --core "\$VERSION" --post --releasing "\$\{RELEASING_PLUGINS#,\}"/)
     expect(post).toBeGreaterThan(at(/^# --- 9b\. Post-release pin verification ---/))
     expect(script).toContain('@plur-ai/core|@plur-ai/claw|@plur-ai/dsh|@plur-ai/opencode) want_core_pin=false')
+  })
+})
+
+describe('release.sh Step 1 moves a released plugin core floor to the released core', () => {
+  const script = read('scripts/release.sh')
+  const lines = script.split('\n')
+  const at = (pattern: RegExp, from = 0) => lines.findIndex((line, i) => i >= from && pattern.test(line))
+  const step1 = at(/^# --- 1\. Version bump ---/)
+  const step2 = at(/^# --- 2\. Build ---/)
+
+  it.each(['claw', 'dsh', 'opencode'])('only inside the --%s block, once', (plugin) => {
+    const calls = lines.flatMap((line, i) => (line.trim() === `set_plugin_core_floor ${plugin}` ? [i] : []))
+    expect(calls).toHaveLength(1)
+    const open = at(new RegExp(`^if \\[ -n "\\$${plugin.toUpperCase()}_VERSION" \\]; then$`), step1)
+    const close = at(/^(else|fi)$/, open)
+    expect(open).toBeGreaterThan(step1)
+    expect(calls[0]).toBeGreaterThan(open)
+    expect(calls[0]).toBeLessThan(close)
+    expect(close).toBeLessThan(step2)
+  })
+
+  it('and proves the lockfile still installs frozen when any plugin flag is given', () => {
+    const verify = at(/^\s+pnpm install --frozen-lockfile --offline/, step1)
+    expect(verify).toBeGreaterThan(at(/^\s+set_plugin_core_floor opencode$/))
+    expect(verify).toBeLessThan(step2)
+    expect(lines[verify - 1]).toBe('if [ -n "$CLAW_VERSION$DSH_VERSION$OPENCODE_VERSION" ]; then')
+  })
+
+  it('rewrites the plugin dependency, its peer and its lockfile specifier, and nothing for other plugins', () => {
+    const fn = script.slice(script.indexOf('set_plugin_core_floor() {'), script.indexOf('\n}\n', script.indexOf('set_plugin_core_floor() {')) + 3)
+    const root = mkdtempSync(join(tmpdir(), 'plur-floor-'))
+    try {
+      const range = '>=0.23.0 <1'
+      const plugins = {
+        opencode: { dependencies: { [CORE]: `workspace:${range}` }, peerDependencies: { [CORE]: range, '@opencode-ai/plugin': '>=1.18.0' } },
+        claw: { dependencies: { [CORE]: `workspace:${range}` }, peerDependencies: { [CORE]: range } },
+        dsh: { dependencies: { [CORE]: `workspace:${range}`, 'js-yaml': '^4.3.1' } },
+      }
+      let lock = 'lockfileVersion: \'9.0\'\n\nimporters:\n'
+      for (const [plugin, pkg] of Object.entries(plugins)) {
+        mkdirSync(join(root, 'packages', plugin), { recursive: true })
+        writeFileSync(join(root, 'packages', plugin, 'package.json'), JSON.stringify({ name: `@plur-ai/${plugin}`, ...pkg }, null, 2) + '\n')
+        lock += `\n  packages/${plugin}:\n    dependencies:\n      '@plur-ai/core':\n        specifier: workspace:${range}\n        version: link:../core\n`
+      }
+      lock += '\npackages:\n'
+      writeFileSync(join(root, 'pnpm-lock.yaml'), lock)
+      writeFileSync(join(root, 'run.sh'), `set -euo pipefail\nVERSION=0.24.0\n${fn}\nset_plugin_core_floor opencode\nset_plugin_core_floor dsh\n`)
+      const r = spawnSync('bash', ['run.sh'], { cwd: root, encoding: 'utf8' })
+      expect(r.status, r.stderr).toBe(0)
+      const pkg = (plugin: string) => JSON.parse(readFileSync(join(root, 'packages', plugin, 'package.json'), 'utf8'))
+      expect(pkg('opencode').dependencies[CORE]).toBe('workspace:>=0.24.0 <1')
+      expect(pkg('opencode').peerDependencies[CORE]).toBe('>=0.24.0 <1')
+      expect(pkg('opencode').peerDependencies['@opencode-ai/plugin']).toBe('>=1.18.0')
+      expect(pkg('dsh').dependencies[CORE]).toBe('workspace:>=0.24.0 <1')
+      expect(pkg('dsh').peerDependencies).toBeUndefined()
+      expect(pkg('claw').dependencies[CORE]).toBe(`workspace:${range}`)
+      expect(pkg('claw').peerDependencies[CORE]).toBe(range)
+      const after = readFileSync(join(root, 'pnpm-lock.yaml'), 'utf8')
+      const specifier = (plugin: string) => after.split(`  packages/${plugin}:\n`)[1].split('\n\n')[0]
+      expect(specifier('opencode')).toContain('specifier: workspace:>=0.24.0 <1')
+      expect(specifier('dsh')).toContain('specifier: workspace:>=0.24.0 <1')
+      expect(specifier('claw')).toContain(`specifier: workspace:${range}`)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 })

@@ -296,11 +296,47 @@ describe('check-plugin-core-range: dsh declares core as a dependency only', () =
 })
 
 describe('check-plugin-core-range --post', () => {
-  it('reads npm for every plugin and skips the workspace manifests', () => {
+  it('reads npm for every plugin and skips the range checks on workspace manifests', () => {
     const tight = workspaceManifest('^0.23.0', 'workspace:^0.23.0')
-    const r = run(['--core', '0.24.0', '--post', '--releasing', 'claw'], CURRENT, { claw: tight })
+    const r = run(['--core', '0.24.0', '--post'], CURRENT, { claw: tight })
     expect(r.status, r.out).toBe(0)
     expect(r.asked).toHaveLength(3)
+  })
+
+  // A plugin released in the run is built and tested against exactly that core,
+  // so release.sh Step 1 moves its floor there; --post proves the move happened.
+  const floor = (version: string, peer = true) =>
+    workspaceManifest(peer ? `>=${version} <1` : undefined, `workspace:>=${version} <1`)
+
+  it('passes when every released plugin floor equals the released core', () => {
+    const r = run(['--core', '0.24.0', '--post', '--releasing', 'opencode,claw,dsh'], CURRENT, {
+      opencode: floor('0.24.0'),
+      claw: floor('0.24.0'),
+      dsh: floor('0.24.0', false),
+    })
+    expect(r.status, r.out).toBe(0)
+    expect(r.out).toContain('✓ workspace @plur-ai/dsh floor is the released @plur-ai/core 0.24.0')
+  })
+
+  it('fails a released plugin whose floor is behind the released core', () => {
+    const r = run(['--core', '0.24.0', '--post', '--releasing', 'opencode'], CURRENT, { opencode: floor('0.23.0') })
+    expect(r.status, r.out).toBe(1)
+    expect(r.out).toContain('workspace @plur-ai/opencode dependency @plur-ai/core ">=0.23.0 <1" has floor 0.23.0, not the released core 0.24.0')
+    expect(r.out).toContain('workspace @plur-ai/opencode peer @plur-ai/core ">=0.23.0 <1" has floor 0.23.0')
+  })
+
+  it('fails a released plugin whose peer floor was left behind its dependency floor', () => {
+    const r = run(['--core', '0.24.0', '--post', '--releasing', 'claw'], CURRENT, {
+      claw: workspaceManifest('>=0.23.0 <1', 'workspace:>=0.24.0 <1'),
+    })
+    expect(r.status, r.out).toBe(1)
+    expect(r.out).toContain('workspace @plur-ai/claw peer')
+    expect(r.out).not.toContain('workspace @plur-ai/claw dependency')
+  })
+
+  it('does not hold a plugin that was not released to the new floor', () => {
+    const r = run(['--core', '0.24.0', '--post', '--releasing', 'dsh'], CURRENT, { dsh: floor('0.24.0', false) })
+    expect(r.status, r.out).toBe(0)
   })
 
   it('keeps the exit codes, and tells the operator how to realign', () => {
