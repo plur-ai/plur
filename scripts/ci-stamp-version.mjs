@@ -17,6 +17,14 @@
  * that fell back to `npx @plur-ai/...@<version>` cannot resolve and fails
  * loudly, and a server that answers with the stamped version is this build.
  *
+ * The plugins (opencode, claw, dsh) declare core as `workspace:<range>` (#1831).
+ * pnpm matches that range without prereleases (semver loose, no
+ * includePrerelease), so it does not match the stamped `<version>-<suffix>`:
+ * pnpm then leaves the plugin→core edge out of the build graph and builds the
+ * plugin before core. So the stamp also points each plugin's core dependency
+ * and peer at `workspace:*`, which matches any workspace version and packs as
+ * the stamped one, the shape every plugin had before #1831.
+ *
  * Prints `PLUR_CI_VERSION=...` and `PLUR_CI_OPENCODE_VERSION=...`, for
  * $GITHUB_ENV.
  */
@@ -53,6 +61,16 @@ for (const p of ['mcp', 'cli', 'migrate']) {
 }
 stampConst('packages/mcp/src/version.ts', 'VERSION', version)
 stampConst('packages/cli/src/version.ts', 'CLI_VERSION', version)
+// pnpm's resolveWorkspaceRange: `*`, `^` and `~` match with includePrerelease,
+// any other range only with { loose: true }; a stamped core is a prerelease.
+for (const p of ['opencode', 'claw', 'dsh']) {
+  const file = join(repo, 'packages', p, 'package.json')
+  const pkg = JSON.parse(readFileSync(file, 'utf8'))
+  for (const field of ['dependencies', 'peerDependencies']) {
+    if (pkg[field]?.['@plur-ai/core']) pkg[field]['@plur-ai/core'] = 'workspace:*'
+  }
+  writeFileSync(file, JSON.stringify(pkg, null, 2) + '\n')
+}
 const opencode = stampPackage('opencode')
 stampConst('packages/opencode/src/version.ts', 'OPENCODE_PLUGIN_VERSION', opencode)
 

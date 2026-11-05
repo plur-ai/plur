@@ -36,6 +36,16 @@ export default defineConfig({
       'packages/migrate',
       {
         test: {
+          // Release tooling: the plugin core-range check, the plugin manifests
+          // it guards, and where release.sh runs it (#1831).
+          name: 'release-scripts',
+          root: 'scripts',
+          include: ['test/*.test.ts'],
+          testTimeout: 60000,
+        },
+      },
+      {
+        test: {
           // Same shape as core-pglite, same reason: contention, not defects.
           // These four spawn real CLI processes and wait on their exit against
           // fixed 5s/30s budgets. In the fully-parallel pool the spawns starve
