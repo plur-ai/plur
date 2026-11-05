@@ -173,6 +173,60 @@ passed:
 Each track's files are listed in `CLAUDE.md` under "Version bumps". A partial bump
 is caught by that package's own manifest test, not at publish time.
 
+### Plugins depend on core by range (#1831)
+
+Because the plugins are not republished with every core, they do not pin the core
+they were built with. Each declares `@plur-ai/core` with the range `>=0.23.0 <1`;
+in the workspace the dependency is `workspace:>=0.23.0 <1`, which `pnpm publish`
+writes out as `>=0.23.0 <1`.
+
+| Plugin | `@plur-ai/core` declared as | Why |
+|---|---|---|
+| `opencode` | peer and regular dependency, same range | opencode installs plugins with @npmcli/arborist, which installs peers, unless the user's npm config sets `legacy-peer-deps` |
+| `claw` | peer and regular dependency, same range | OpenClaw installs with `npm install --omit=peer`; from 2026.6.5 it adds non-host peers to the plugin's project, before that it does not |
+| `dsh` | regular dependency only | DeepSeek Harness profiles use pnpm with `nodeLinker: hoisted` and `autoInstallPeers: false`; pnpm 11 does not link a package declared as both peer and dependency there |
+
+Measured 2026-11-05 with a test package that depends on another, installed with
+`autoInstallPeers: false` (does the dependency resolve from the installed package?):
+
+| pnpm | `nodeLinker` | peer and dependency | peer only | dependency only |
+|---|---|---|---|---|
+| 9.15.9 | hoisted | yes | no | yes |
+| 10 | hoisted | yes | not measured | yes |
+| 11.28.11 | hoisted | **no** (in the lockfile, not in `node_modules`) | no | yes |
+| 11.28.11 | isolated | yes | no | yes |
+
+The packed `@plur-ai/dsh` behaves the same way: in a profile built from the
+DeepSeek Harness template, pnpm 11 links core 0.23.0 only when dsh declares it as
+a dependency alone. npm (11.5.1, also with `--omit=peer --legacy-peer-deps`) and
+OpenClaw 2026.7.1 install the peer-and-dependency form.
+
+`release.sh` Step 0.5 runs `scripts/check-plugin-core-range.mjs` before it changes
+anything, in `--dry-run` too. It fails (exit 1) when a plugin's workspace range, or
+the core requirement of a published plugin that this run does not republish,
+excludes the release version, and it stops (exit 2) when it cannot check, for
+example when npm is unreachable. Step 9b runs it again in `--post` mode as a
+warning. A 1.0 core fails the range on purpose: that release has to decide, per
+plugin, whether to widen the range and republish.
+
+**The first release after #1831 must republish all three plugins:**
+
+```sh
+./scripts/release.sh <version> --opencode <v> --claw <v> --dsh <v>
+```
+
+Until then, the published plugins still pin one exact, older core (on 2026-11-05:
+opencode 0.21.5 pinned core 0.21.5, claw 0.20.0 pinned 0.20.0, dsh 0.1.0 pinned
+0.17.2), so Step 0.5 fails for any release without the three flags. Republishing ships
+everything on `main` for each plugin since its last publish; review that before
+choosing the versions.
+
+The range has a cost: a published plugin can run on a core release it was never
+tested against. Within 0.x a core minor may remove or change an export a plugin
+uses. When that happens, raise the plugin's lower bound and republish it. A smoke
+test that installs the published plugins against the packed new core is tracked
+in [#1844](https://github.com/plur-ai/plur/issues/1844).
+
 ## Manual publish (one package)
 
 When `main` has a version bump that hasn't reached npm yet — e.g. `@plur-ai/claw@0.9.10` is on
@@ -217,8 +271,10 @@ git push origin "$TAG"
 ## Consumer-side bump after a `core` (or other dependency) fix
 
 When a fix lands in a workspace package that other packages depend on — most often `core`,
-which `cli`, `mcp`, and `claw` all consume — bumping and publishing the dep alone is **not
-enough** to ship the fix to users.
+which `cli` and `mcp` consume — bumping and publishing the dep alone is **not
+enough** to ship the fix to users. (The plugins `opencode`, `claw` and `dsh` depend on core
+by range, so a fresh install picks up the fixed core without a republish; raise a plugin's
+lower bound and republish it only when it must not run on the broken versions.)
 
 `workspace:*` pins are concretized at **publish time**, not at install time. So a consumer
 that was published before the fix carries a hard pin to the broken dep version, even after
@@ -233,10 +289,10 @@ until `cli@0.9.3` was bumped (#64) and republished.
 
 ### Recipe — after publishing a `core` fix
 
-1. For each workspace consumer of `core` (`cli`, `mcp`, `claw`), check the `core` pin baked
-   into the latest published artifact:
+1. For each workspace consumer of `core` that pins it exactly (`cli`, `mcp`), check the
+   `core` pin baked into the latest published artifact:
    ```sh
-   for pkg in cli mcp claw; do
+   for pkg in cli mcp; do
      printf "%-20s -> " "@plur-ai/$pkg"
      npm view "@plur-ai/$pkg@latest" dependencies.@plur-ai/core
    done

@@ -36,11 +36,13 @@ pnpm test
 ## Package dependency
 
 ```
-@plur-ai/core  ←  @plur-ai/mcp
-               ←  @plur-ai/claw
+@plur-ai/core  ←  @plur-ai/mcp, @plur-ai/cli          (workspace:*, published as the exact core)
+               ←  @plur-ai/claw, @plur-ai/opencode    (peer + dependency, workspace:>=0.23.0 <1,
+                                                        published as the range >=0.23.0 <1)
+               ←  @plur-ai/dsh                         (dependency only, same range)
 ```
 
-MCP and Claw depend on core via `workspace:*`. **Claw imports from core's built dist, not source** — after changing core, rebuild before running claw tests:
+MCP and CLI depend on core via `workspace:*`. The plugins are on their own version tracks, so they depend on core by range, and `release.sh` checks that range against every core release (#1831; see RELEASING.md). **Claw imports from core's built dist, not source** — after changing core, rebuild before running claw tests:
 
 ```
 pnpm --filter @plur-ai/core build

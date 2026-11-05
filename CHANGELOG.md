@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Fixes
+
+- The opencode, OpenClaw and DeepSeek Harness plugins no longer pin the exact
+  `@plur-ai/core` they were built with. Each depends on core 0.23.0 or later
+  (below 1.0), so installing a plugin at `latest` gets the current core
+  instead of an older one opening the same `~/.plur` store. The release script
+  now refuses to ship a core that a published plugin does not accept, and says
+  which plugins to release with it. (#1831)
+
 ## 0.23.0
 
 Memory you can prove. (#1790, #1799)
