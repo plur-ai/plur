@@ -39,8 +39,16 @@ export const MAX_REMOTE_QUERY_CHARS = 1000
 export const MAX_REMOTE_RESPONSE_BYTES = 128 * 1024
 
 /** Default per-call budget. MCP recall keeps this; the hook passes 1500 ms,
- *  session_start warm passes 5000 ms. `PLUR_REMOTE_RECALL_TIMEOUT_MS` wins. */
+ *  session_start warm passes {@link WARM_REMOTE_RECALL_TIMEOUT_MS}.
+ *  `PLUR_REMOTE_RECALL_TIMEOUT_MS` wins. */
 export const DEFAULT_REMOTE_RECALL_TIMEOUT_MS = 2000
+
+/** Warm-up budget for the first remote call a process makes: client
+ *  cold-start work can push it past the normal budget while the server
+ *  answers in milliseconds. Passed by MCP session_start and by the first
+ *  remote recall in a `plur recall` process.
+ *  `PLUR_REMOTE_RECALL_TIMEOUT_MS` wins. */
+export const WARM_REMOTE_RECALL_TIMEOUT_MS = 5000
 
 /** Consecutive network-class failures (timeout/unreachable/5xx/bad body)
  *  before the circuit breaker opens for {@link BREAKER_COOLDOWN_MS}. */
