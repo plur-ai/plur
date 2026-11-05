@@ -11,7 +11,7 @@
  * moment a tool is added or renamed, and a stale inventory an agent trusts is
  * worse than none.
  */
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
@@ -74,9 +74,8 @@ describe('plur_admin { action: "help" } — the runtime discovery surface (#761)
 
   beforeEach(async () => {
     dir = mkdtempSync(join(tmpdir(), 'plur-admin-help-'))
-    // Hermetic per the server.test.ts pattern: temp-dir Plur, stubbed fetch so
-    // createServer's fire-and-forget version check never leaves the process.
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, json: () => Promise.resolve({}) }))
+    // Hermetic: temp-dir Plur; createServer's fire-and-forget version check
+    // asks npm, which test/npm-registry-setup.ts points at a refused local port.
     const server = await createServer(new Plur({ path: dir }), { profile: 'lean' })
     await settleVersionChecks()
     clearVersionCache()
@@ -87,7 +86,6 @@ describe('plur_admin { action: "help" } — the runtime discovery surface (#761)
   })
 
   afterEach(() => {
-    vi.unstubAllGlobals()
     _resetActiveToolProfile()
     rmSync(dir, { recursive: true })
   })

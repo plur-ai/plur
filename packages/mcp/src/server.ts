@@ -3,7 +3,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/server/stdio'
 import { existsSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
-import { Plur, checkForUpdate, VERSION_CHECK_SUCCESS_TTL_MS, allowBackgroundModelLoad, type FolderPolicy } from '@plur-ai/core'
+import { Plur, checkForUpdate, formatUpdateCheckFailure, VERSION_CHECK_SUCCESS_TTL_MS, allowBackgroundModelLoad, type FolderPolicy } from '@plur-ai/core'
 import { FOLDER_SCOPE, type FolderScopeContext, getToolDefinitions, mcpCanary, validateToolArgs, CURSOR_CORE_TOOL_NAMES, type ToolProfile, resolveToolProfile, setActiveToolProfile } from './tools.js'
 import { payloadDropLogPath, recordPayloadDrop } from './drop-log.js'
 import { FOLDER_GATED_TOOLS, createFolderGate, createWorkspaceDirs, folderOffAnswer, workspaceUnknownAnswer, workspaceWriteScope, workspaceKey } from './folder-gate.js'
@@ -235,10 +235,22 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
       console.error(`[plur] Update available: ${r.current} → ${r.latest}. Run: npm i -g @plur-ai/cli@latest @plur-ai/mcp@latest && plur init (tool configs record the exact version)`)
     }
   }
-  checkForUpdate('@plur-ai/mcp', VERSION, announceUpdate)
+  // The registry could not be reached: say which one and why, advertise nothing.
+  // The answer is kept in the store so a restart within its TTL asks npm nothing,
+  // but only where memory is on: in an off or undecided folder startup must not
+  // touch the PLUR home, so the cache file is neither read nor written there.
+  const onCheck = (r: Parameters<typeof announceUpdate>[0] & Parameters<typeof formatUpdateCheckFailure>[0]) => {
+    announceUpdate(r)
+    const failure = formatUpdateCheckFailure(r)
+    if (failure) console.error(`[plur] ${failure}`)
+  }
+  let memoryOnHere = false
+  try { memoryOnHere = instance.resolveFolderPolicy(folder, { readOnly: true }).mode === 'on' } catch { /* treat as not on */ }
+  const checkOptions = { cacheFile: memoryOnHere ? join(instance.storageRoot, 'cache', 'update-check.json') : undefined }
+  checkForUpdate('@plur-ai/mcp', VERSION, onCheck, checkOptions)
   if (!versionRecheckTimer) {
     versionRecheckTimer = setInterval(() => {
-      checkForUpdate('@plur-ai/mcp', VERSION, announceUpdate)
+      checkForUpdate('@plur-ai/mcp', VERSION, onCheck, checkOptions)
     }, VERSION_CHECK_SUCCESS_TTL_MS)
     versionRecheckTimer.unref?.()
   }

@@ -98,6 +98,15 @@ plur doctor
 
 Restart the editor so it launches the updated MCP server.
 
+PLUR asks your own npm what `latest` is, so the update notice uses the same
+registry, scoped `@plur-ai:registry` mirror, proxy, certificate and token as
+`npm install`. Behind a company mirror the notice reports the mirror's
+`latest`, not npmjs.org's. When that registry cannot be reached, PLUR says
+`Could not reach <host> to check for updates (<reason>). No update is
+advertised.` and runs normally. The answer is kept in
+`~/.plur/cache/update-check.json` (6 hours, or 30 minutes after a failure).
+`PLUR_NO_UPDATE_CHECK=1` or `NO_UPDATE_NOTIFIER=1` turns the check off.
+
 ### Cursor
 
 From your project root:

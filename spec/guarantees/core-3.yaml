@@ -1391,3 +1391,19 @@ anchors:
         packages/core/test/version-check.test.ts::getCachedUpdateCheck serves stale synchronously and refreshes in
         background
       - packages/core/test/version-check.test.ts::while offline, a stale read starts no refresh
+  packages/core/src/version-check.ts#runCheck:
+    kind: guarantee
+    rule: >-
+      the check never throws; a failed lookup reports the registry and reason with latest null, and a failure read from
+      the disk cache never marks this process offline
+    tests:
+      - "packages/core/test/version-check.test.ts::reports the registry and reason, never a version, and advertises nothing"
+      - "packages/core/test/version-check.test.ts::a failure after a success replaces the earlier version (never shown as current)"
+      - "packages/core/test/version-check.test.ts::a failure on disk is reported, not retried within its TTL, and does not mark offline"
+      - "packages/mcp/test/update-check-at-start.test.ts::a failure kept in the store is reported on restart without a lookup and without going offline"
+  packages/core/src/version-check.ts#writeDisk:
+    kind: guarantee
+    rule: the disk cache is replaced by one rename, so a reader never sees half a file; an unreadable file is ignored
+    tests:
+      - "packages/core/test/version-check.test.ts::a corrupt cache file is ignored and rewritten"
+      - "packages/core/test/version-check.test.ts::a fresh answer on disk is used by a new process without a lookup"

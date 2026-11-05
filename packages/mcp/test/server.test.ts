@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll } from 'vitest'
 import { mkdtempSync, readFileSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
@@ -7,23 +7,33 @@ import { InMemoryTransport } from '@modelcontextprotocol/server'
 import { Plur, checkForUpdate, clearVersionCache, settleVersionChecks, VERSION_CHECK_SUCCESS_TTL_MS } from '@plur-ai/core'
 import { createServer } from '../src/server.js'
 import { payloadDropLogPath, readPayloadDropLog } from '../src/drop-log.js'
+import { startMirror, npmSandbox, type Mirror, type NpmSandbox } from '../../core/test/npm-mirror.js'
 
 describe('MCP server (wire protocol)', () => {
   let client: Client
   let dir: string
   let plurInstance: Plur
-  const realFetch = globalThis.fetch
+  // `createServer` fires a fire-and-forget npm version check. Left alone it
+  // reaches the user's real registry and lands in a module-level cache at an
+  // unpredictable moment. npm is pointed at a local mirror for the whole file
+  // (answering HTTP 500 unless a test serves a version); each test drains the
+  // check and resets the cache so it starts from a known-empty one.
+  const versions: Record<string, string> = {}
+  let mirror: Mirror
+  let box: NpmSandbox
+  let restoreEnv: () => void
+  const serve = (version: string) => { versions['@plur-ai/mcp'] = version; mirror.setMode('ok') }
+
+  beforeAll(async () => {
+    mirror = await startMirror(versions, '500')
+    box = npmSandbox(`@plur-ai:registry=${mirror.url}\n`)
+    restoreEnv = box.apply()
+  })
+  afterAll(async () => { restoreEnv(); box.cleanup(); await mirror.close() })
 
   beforeEach(async () => {
     dir = mkdtempSync(join(tmpdir(), 'plur-mcp-server-'))
-
-    // `createServer` fires a fire-and-forget npm version check. Left alone it
-    // reaches the real registry — 32 live requests per run of this file — and,
-    // worse, lands in a module-level cache at an unpredictable moment, which is
-    // what made the staleness assertions below fail under parallel load while
-    // passing in isolation. Stub the network for the whole file, then drain the
-    // check and reset the cache so each test starts from a known-empty one.
-    globalThis.fetch = vi.fn().mockResolvedValue({ ok: false, json: () => Promise.resolve({}) }) as any
+    mirror.setMode('500')
 
     const plur = new Plur({ path: dir })
     plurInstance = plur
@@ -39,7 +49,6 @@ describe('MCP server (wire protocol)', () => {
   })
 
   afterEach(() => {
-    globalThis.fetch = realFetch
     rmSync(dir, { recursive: true })
   })
 
@@ -591,26 +600,21 @@ describe('MCP server (wire protocol)', () => {
   // --- Version staleness warnings (issue #151) ---
 
   describe('version staleness warnings', () => {
-    const originalFetch = globalThis.fetch
-
     beforeEach(() => {
       // createServer() fires checkForUpdate() fire-and-forget in beforeEach.
-      // That async call can populate the cache before the test body mocks fetch,
+      // That async call can populate the cache before the test body serves a version,
       // causing the test's checkForUpdate() to return the stale cache entry.
-      // Clear eagerly to guarantee the test body's mock is the first writer.
+      // Clear eagerly to guarantee the test body's check is the first writer.
       clearVersionCache()
     })
 
-    afterEach(() => {
-      globalThis.fetch = originalFetch
+    afterEach(async () => {
+      await settleVersionChecks()
       clearVersionCache()
     })
 
     it('session_start includes version_warning when update available', async () => {
-      globalThis.fetch = vi.fn().mockResolvedValue({
-        ok: true,
-        json: () => Promise.resolve({ version: '99.0.0' }),
-      }) as any
+      serve('99.0.0')
       await checkForUpdate('@plur-ai/mcp', '0.9.8')
 
       const result = await client.callTool({
@@ -627,10 +631,7 @@ describe('MCP server (wire protocol)', () => {
     })
 
     it('session_start prepends hard warning to guide when critically stale', async () => {
-      globalThis.fetch = vi.fn().mockResolvedValue({
-        ok: true,
-        json: () => Promise.resolve({ version: '1.5.0' }),
-      }) as any
+      serve('1.5.0')
       await checkForUpdate('@plur-ai/mcp', '0.9.8')
 
       const result = await client.callTool({
@@ -655,10 +656,7 @@ describe('MCP server (wire protocol)', () => {
     })
 
     it('session_start omits version_warning when version is current', async () => {
-      globalThis.fetch = vi.fn().mockResolvedValue({
-        ok: true,
-        json: () => Promise.resolve({ version: '0.9.8' }),
-      }) as any
+      serve('0.9.8')
       await checkForUpdate('@plur-ai/mcp', '0.9.8')
 
       const result = await client.callTool({
@@ -670,10 +668,7 @@ describe('MCP server (wire protocol)', () => {
     })
 
     it('plur_status includes update_available when newer version exists', async () => {
-      globalThis.fetch = vi.fn().mockResolvedValue({
-        ok: true,
-        json: () => Promise.resolve({ version: '99.0.0' }),
-      }) as any
+      serve('99.0.0')
       await checkForUpdate('@plur-ai/mcp', '0.9.8')
 
       const result = await client.callTool({ name: 'plur_status', arguments: {} })
@@ -684,10 +679,7 @@ describe('MCP server (wire protocol)', () => {
     })
 
     it('plur_status omits update_available when version is current', async () => {
-      globalThis.fetch = vi.fn().mockResolvedValue({
-        ok: true,
-        json: () => Promise.resolve({ version: '0.9.8' }),
-      }) as any
+      serve('0.9.8')
       await checkForUpdate('@plur-ai/mcp', '0.9.8')
 
       const result = await client.callTool({ name: 'plur_status', arguments: {} })
@@ -701,10 +693,7 @@ describe('MCP server (wire protocol)', () => {
     // installs never surfaced 0.15/0.16.
     it('surfaces a release published after a long-lived process started (#760)', async () => {
       // Startup: current version IS the latest — check caches "no update"
-      globalThis.fetch = vi.fn().mockResolvedValue({
-        ok: true,
-        json: () => Promise.resolve({ version: '0.9.8' }),
-      }) as any
+      serve('0.9.8')
       await checkForUpdate('@plur-ai/mcp', '0.9.8')
 
       let result = await client.callTool({ name: 'plur_status', arguments: {} })
@@ -713,10 +702,7 @@ describe('MCP server (wire protocol)', () => {
 
       // A newer version is published while the process keeps running,
       // and the success TTL elapses
-      globalThis.fetch = vi.fn().mockResolvedValue({
-        ok: true,
-        json: () => Promise.resolve({ version: '99.0.0' }),
-      }) as any
+      serve('99.0.0')
       const base = Date.now()
       const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => base + VERSION_CHECK_SUCCESS_TTL_MS + 1)
       try {

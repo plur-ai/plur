@@ -125,6 +125,13 @@ Custom storage path:
 
 Default: `~/.plur/`. Everything is plain YAML — open it, read it, edit it.
 
+Update notice: at start the server asks your own npm which version `latest`
+names, through your registry settings (a scoped `@plur-ai:registry` mirror,
+proxy, certificate, token). Behind a mirror it reports the mirror's `latest`.
+When the registry cannot be reached it prints `Could not reach <host> to check
+for updates (<reason>). No update is advertised.` and `plur_status` reports the
+same as `update_check`. Turn the check off with `PLUR_NO_UPDATE_CHECK=1`.
+
 ## Benchmark
 
 **Retrieval** (LongMemEval R@5): **76.7%** out-of-the-box · **97.0%** with openai-3-large embeddings

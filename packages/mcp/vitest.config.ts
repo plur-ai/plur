@@ -20,6 +20,8 @@ export default defineConfig({
       '../cli/test/setup/isolate-home.ts',
       'test/helpers/reset-remote-breaker-setup.ts',
       'test/helpers/folder-on-cwd-setup.ts',
+      // npm pointed at a refused local port, so no test reaches a real registry.
+      'test/npm-registry-setup.ts',
     ],
   },
 })
