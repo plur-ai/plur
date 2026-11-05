@@ -64,6 +64,8 @@
 # action.
 #
 # Step order:
+#   0.5 Plugin core-range check: every plugin's @plur-ai/core requirement must
+#       include <version> (#1831; scripts/check-plugin-core-range.mjs)
 #   1.  Version bumps (10 places, claw separate if --claw)
 #   2.  Build all packages
 #   3.  Run tests
@@ -535,6 +537,38 @@ if [ "$DRY_RUN" = false ]; then
   echo "  ✓ on main, clean tree, in sync with origin/main"
   echo ""
 fi
+
+# --- Step 0.5: Plugin core-range check (#1831) ---
+# opencode, claw and dsh are on their own version tracks, so this release does
+# not republish them unless their flag is passed. A user who installs
+# everything at `latest` gets each plugin's `latest`, and its @plur-ai/core
+# requirement must include the core this release ships. Each plugin declares
+# core as a range; a plugin published before that change pins one exact core.
+# The check reads every plugin's workspace manifest, and the published `latest`
+# of each plugin that is not released in this run. It runs before any file is
+# changed, in --dry-run too. Exit 1 = a requirement excludes $VERSION; exit 2 =
+# could not check (npm unreachable, package not found). Neither is a pass.
+echo "--- Step 0.5: Plugin core-range check ---"
+RELEASING_PLUGINS=""
+[ -n "$OPENCODE_VERSION" ] && RELEASING_PLUGINS="$RELEASING_PLUGINS,opencode"
+[ -n "$CLAW_VERSION" ] && RELEASING_PLUGINS="$RELEASING_PLUGINS,claw"
+[ -n "$DSH_VERSION" ] && RELEASING_PLUGINS="$RELEASING_PLUGINS,dsh"
+CORE_RANGE_STATUS=0
+node "$REPO_ROOT/scripts/check-plugin-core-range.mjs" --core "$VERSION" --releasing "${RELEASING_PLUGINS#,}" || CORE_RANGE_STATUS=$?
+if [ "$CORE_RANGE_STATUS" -eq 1 ]; then
+  echo ""
+  echo "✗ A plugin's @plur-ai/core requirement excludes $VERSION (above). Nothing has been changed."
+  echo "  Pass that plugin's flag so this release republishes it, or widen its range in"
+  echo "  packages/<plugin>/package.json. The first release after #1831 needs all three:"
+  echo "      ./scripts/release.sh $VERSION --opencode <ver> --claw <ver> --dsh <ver>"
+  exit 1
+elif [ "$CORE_RANGE_STATUS" -ne 0 ]; then
+  echo ""
+  echo "✗ Could not check the plugins' @plur-ai/core requirements (exit $CORE_RANGE_STATUS, above)."
+  echo "  This is not a pass. Nothing has been changed; restore npm access and re-run."
+  exit 1
+fi
+echo ""
 
 # --- 1. Version bump ---
 echo "--- Step 1: Version bump ---"
@@ -1561,7 +1595,11 @@ fi
 #     that is NOT republished keeps pointing at whatever core it was last built
 #     against. claw@0.10.0 depended on @plur-ai/core@0.10.0, which meant every
 #     OpenClaw user ran a core without any of the protections this release
-#     exists to ship. Nothing anywhere flagged it.
+#     exists to ship. Nothing anywhere flagged it. mcp, cli and migrate still
+#     pin the exact core; the plugins (opencode, claw, dsh) declare a range
+#     since #1831, so their published requirement is checked against $VERSION
+#     by scripts/check-plugin-core-range.mjs --post, for all three, released
+#     in this run or not.
 #
 # Warn-only by design: the release has already happened by this point, so
 # failing hard would report a disaster that is not one. The point is to say
@@ -1572,7 +1610,7 @@ echo "--- Step 9b: Post-release pin verification ---"
 PIN_PROBLEMS=0
 verify_pins() {
   local pkg="$1" want="$2"
-  local tags latest next deps
+  local tags latest next deps want_core_pin
   tags=$(npm view "$pkg" dist-tags --json 2>/dev/null) || {
     echo "  ? $pkg — could not read dist-tags (registry unreachable?)"; return
   }
@@ -1588,8 +1626,10 @@ verify_pins() {
     PIN_PROBLEMS=$((PIN_PROBLEMS+1))
   elif [ -n "$next" ]; then echo "  ✓ $pkg next=$want"; fi
 
-  # Published dependency on core must be the core we just shipped.
-  if [ "$pkg" != "@plur-ai/core" ]; then
+  # Published dependency on core must be the core we just shipped. The plugins
+  # declare a range instead; the --post check below judges them.
+  case "$pkg" in @plur-ai/core|@plur-ai/claw|@plur-ai/dsh|@plur-ai/opencode) want_core_pin=false ;; *) want_core_pin=true ;; esac
+  if [ "$want_core_pin" = true ]; then
     deps=$(npm view "$pkg@$want" dependencies --json 2>/dev/null | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const d=JSON.parse(s)||{};console.log(d["@plur-ai/core"]||"")}catch{console.log("")}})')
     if [ -n "$deps" ]; then
       case "$deps" in
@@ -1606,16 +1646,14 @@ for pkg in @plur-ai/core @plur-ai/mcp @plur-ai/cli @plur-ai/migrate; do
 done
 if [ -n "$CLAW_VERSION" ]; then
   verify_pins "@plur-ai/claw" "$CLAW_VERSION"
-else
-  # Not released this run — but if its published core dep is stale, say so.
-  claw_core=$(npm view @plur-ai/claw dependencies --json 2>/dev/null | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const d=JSON.parse(s)||{};console.log(d["@plur-ai/core"]||"")}catch{console.log("")}})')
-  claw_ver=$(npm view @plur-ai/claw version 2>/dev/null || echo "?")
-  case "$claw_core" in
-    ""|*"$VERSION"*) echo "  ✓ @plur-ai/claw@$claw_ver -> @plur-ai/core $claw_core (not released this run)" ;;
-    *) echo "  ! @plur-ai/claw@$claw_ver still depends on @plur-ai/core $claw_core"
-       echo "    OpenClaw users are on that core, not $VERSION. Re-run with --claw <ver> to realign."
-       PIN_PROBLEMS=$((PIN_PROBLEMS+1)) ;;
-  esac
+fi
+# Every plugin's published `latest`, released in this run or not, must accept
+# the core just shipped. Exit 1 = it does not; exit 2 = could not check.
+POST_RANGE_STATUS=0
+node "$REPO_ROOT/scripts/check-plugin-core-range.mjs" --core "$VERSION" --post || POST_RANGE_STATUS=$?
+if [ "$POST_RANGE_STATUS" -ne 0 ]; then
+  echo "  ! plugin core-range check exited $POST_RANGE_STATUS (above) — a follow-up, not a failed release."
+  PIN_PROBLEMS=$((PIN_PROBLEMS+1))
 fi
 
 if [ "$PIN_PROBLEMS" -gt 0 ]; then
