@@ -68,7 +68,8 @@ export async function startMirror(latest: Record<string, string>, mode: MirrorMo
 /** A port on 127.0.0.1 that nothing listens on (connection refused). */
 export async function refusedPort(): Promise<number> {
   const s = net.createServer()
-  await new Promise<void>((r) => s.listen(0, '127.0.0.1', () => r()))
+  // No host: listening on all interfaces needs no DNS lookup (some tests stub it).
+  await new Promise<void>((r) => s.listen(0, () => r()))
   const port = (s.address() as net.AddressInfo).port
   await new Promise<void>((r) => s.close(() => r()))
   return port

@@ -18,6 +18,7 @@ import * as emb from '../src/embeddings.js'
 import { getEmbedder } from '../src/embedders/index.js'
 import { _resetTransformersPipelineCache, _setDefaultModelCacheDir } from '../src/embedders/transformers-base.js'
 import { checkForUpdate, clearVersionCache, settleVersionChecks, updateCheckOffline } from '../src/version-check.js'
+import { npmSandbox, refusedPort } from './npm-mirror.js'
 
 const VARS = ['PLUR_OFFLINE', 'HF_HUB_OFFLINE', 'TRANSFORMERS_OFFLINE', 'PLUR_NO_UPDATE_CHECK', 'NO_UPDATE_NOTIFIER', 'PLUR_MODEL_DOWNLOAD', 'PLUR_MODEL_CACHE_DIR', 'HF_HOME'] as const
 
@@ -89,9 +90,16 @@ describe('after a failed update check, no automatic model download', () => {
   }
 
   async function failedRegistryCheck(): Promise<number> {
-    await checkForUpdate('@plur-ai/example', '1.0.0')
+    // The check asks npm in a child process (the in-process traps cannot see
+    // it), pointed at a port nothing listens on: it cannot connect.
+    const box = npmSandbox(`registry=http://127.0.0.1:${await refusedPort()}/
+`)
+    const restore = box.apply()
+    try {
+      const r = await checkForUpdate('@plur-ai/example', '1.0.0')
+      expect(r.failure?.reason).toBe('connection refused')
+    } finally { restore(); box.cleanup() }
     expect(updateCheckOffline(), 'the failed check should mark the process offline').toBe(true)
-    expect(attempts.length).toBeGreaterThan(0)
     return attempts.length
   }
 
