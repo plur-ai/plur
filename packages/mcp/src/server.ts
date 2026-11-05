@@ -236,13 +236,17 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
     }
   }
   // The registry could not be reached: say which one and why, advertise nothing.
-  // The answer is kept in the store so a restart within its TTL asks npm nothing.
+  // The answer is kept in the store so a restart within its TTL asks npm nothing,
+  // but only where memory is on: in an off or undecided folder startup must not
+  // touch the PLUR home, so the cache file is neither read nor written there.
   const onCheck = (r: Parameters<typeof announceUpdate>[0] & Parameters<typeof formatUpdateCheckFailure>[0]) => {
     announceUpdate(r)
     const failure = formatUpdateCheckFailure(r)
     if (failure) console.error(`[plur] ${failure}`)
   }
-  const checkOptions = { cacheFile: join(instance.storageRoot, 'cache', 'update-check.json') }
+  let memoryOnHere = false
+  try { memoryOnHere = instance.resolveFolderPolicy(folder, { readOnly: true }).mode === 'on' } catch { /* treat as not on */ }
+  const checkOptions = { cacheFile: memoryOnHere ? join(instance.storageRoot, 'cache', 'update-check.json') : undefined }
   checkForUpdate('@plur-ai/mcp', VERSION, onCheck, checkOptions)
   if (!versionRecheckTimer) {
     versionRecheckTimer = setInterval(() => {

@@ -34,7 +34,8 @@ export interface VersionCheckResult {
 }
 
 export interface CheckForUpdateOptions {
-  /** Also keep the answer in this JSON file, shared across processes. */
+  /** Also keep the answer in this JSON file, shared across processes. Passing
+   *  options without it stops any earlier file from being read or written. */
   cacheFile?: string
 }
 
@@ -143,7 +144,10 @@ export function checkForUpdate(
   onResult?: (result: VersionCheckResult) => void,
   options?: CheckForUpdateOptions,
 ): Promise<VersionCheckResult> {
-  if (options?.cacheFile) cacheFileByPackage.set(packageName, options.cacheFile)
+  if (options) {
+    if (options.cacheFile) cacheFileByPackage.set(packageName, options.cacheFile)
+    else cacheFileByPackage.delete(packageName)
+  }
   // Piggyback on an already-running check for the same package instead of
   // issuing a duplicate fetch (refresh-on-read, the periodic re-check and an
   // explicit request can otherwise race each other).

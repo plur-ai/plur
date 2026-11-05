@@ -259,6 +259,15 @@ anchors:
     tests:
       - packages/mcp/test/server-survival-1070.test.ts::survives a background unhandled rejection and still answers
       - packages/mcp/test/server-survival-1070.test.ts::an uncaught EXCEPTION exits code 1
+  packages/mcp/src/server.ts#onCheck:
+    kind: guarantee
+    rule: >-
+      the update-check cache in the PLUR home is read and written only when memory is on in the folder the server
+      starts in; in an off or undecided folder startup leaves the PLUR home untouched
+    tests:
+      - "packages/mcp/test/update-check-at-start.test.ts::started in an off folder: no cache file is written and a cached answer is not read"
+    promises:
+      - OFF-2
   packages/mcp/src/server.ts#runStdio:
     kind: guarantee
     rule: After stdin ends, a request already in flight still gets its answer.

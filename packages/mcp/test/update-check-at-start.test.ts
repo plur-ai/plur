@@ -5,7 +5,7 @@
 // The check runs the real npm against a local mirror set as the user's
 // `@plur-ai:registry` (no request leaves 127.0.0.1). A mirror in `reset` mode
 // accepts and drops each connection: the check cannot connect.
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -231,5 +231,40 @@ describe('MCP server update check: once at start, then offline if it cannot conn
     expect(err.mock.calls.map(c => String(c[0]))).toContain(`[plur] Could not reach ${mirror.host} to check for updates (it answered HTTP 500). No update is advertised.`)
     const data = await status(cl)
     expect(String(data.update_check)).not.toMatch(/^offline/)
+  })
+
+  it('started in an off folder: no cache file is written and a cached answer is not read', async () => {
+    const off = realpathSync(mkdtempSync(join(tmpdir(), 'plur-mcp-off-folder-')))
+    try {
+      writeFileSync(join(dir, 'folders.yaml'), `version: 1\nfolders:\n  - path: "${off}"\n    plur: off\n`)
+      const startIn = async (folder: string) => {
+        const server = await createServer(new Plur({ path: dir }), { profile: 'full', folder })
+        const [c, s] = InMemoryTransport.createLinkedPair()
+        await server.connect(s)
+        const cl = new Client({ name: 't', version: '1' })
+        await cl.connect(c)
+        client = cl
+      }
+      newer()
+      await startIn(off)
+      await settleVersionChecks()
+      expect(registry()).toBe(1) // the check itself still runs
+      expect(existsSync(join(dir, 'cache', 'update-check.json'))).toBe(false)
+
+      // A fresh answer already in the store is not read in an off folder either.
+      await client?.close(); client = undefined
+      clearVersionCache()
+      mkdirSync(join(dir, 'cache'), { recursive: true })
+      const file = join(dir, 'cache', 'update-check.json')
+      const cached = JSON.stringify({ '@plur-ai/mcp': { latest: '42.0.0', ok: true, fetchedAt: Date.now() } })
+      writeFileSync(file, cached)
+      const err = vi.spyOn(console, 'error').mockImplementation(() => {})
+      await startIn(off)
+      await settleVersionChecks()
+      expect(registry()).toBe(2) // asked npm instead of using the file
+      expect(err.mock.calls.some(c => String(c[0]).includes('→ 99.0.0'))).toBe(true)
+      expect(err.mock.calls.some(c => String(c[0]).includes('42.0.0'))).toBe(false)
+      expect(readFileSync(file, 'utf8')).toBe(cached)
+    } finally { rmSync(off, { recursive: true, force: true }) }
   })
 })
