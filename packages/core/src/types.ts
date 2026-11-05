@@ -307,7 +307,7 @@ export interface RecallOptions {
   remote?: boolean
   /** Per-call remote budget in ms (env PLUR_REMOTE_RECALL_TIMEOUT_MS wins).
    *  Hook path passes 1500; MCP recall defaults to 2000; session_start warm
-   *  passes 5000. */
+   *  and the first remote recall of a `plur recall` process pass 5000. */
   remote_timeout_ms?: number
   /** End-to-end deadline for this recall in ms. The call returns
    *  within it with whatever is ready and reports what is missing. Default

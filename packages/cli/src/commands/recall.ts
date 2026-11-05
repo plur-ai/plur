@@ -1,3 +1,4 @@
+import { WARM_REMOTE_RECALL_TIMEOUT_MS } from '@plur-ai/core'
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { shouldOutputJson, outputJson, outputText, exit } from '../output.js'
 import { folderReadContext } from '../lib/folder-gate.js'
@@ -13,6 +14,15 @@ import { folderReadContext } from '../lib/folder-gate.js'
 export const FLAGS_WITH_VALUES = ['--limit', '--scope', '--domain']
 
 export const FLAGS = ['--limit', '--scope', '--domain']
+
+/**
+ * Whether this process has already asked for a remote recall. The
+ * first one gets the warm-up budget plur_session_start uses: on a cold client
+ * it missed the normal budget while the next calls answered in about 1 s.
+ * Later calls pass no budget and get core's default.
+ * `PLUR_REMOTE_RECALL_TIMEOUT_MS` still wins over both, in core.
+ */
+let warmUpSpent = false
 
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const plur = createPlur(flags)
@@ -44,11 +54,14 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   // undecided one (unscoped) or a broken folder map contacts no store at all;
   // local memory is read either way.
   const { session, remote } = folderReadContext(plur, scope)
+  // A call that contacts no store does not use up the warm-up.
+  const remote_timeout_ms = remote !== false && !warmUpSpent ? WARM_REMOTE_RECALL_TIMEOUT_MS : undefined
+  if (remote !== false) warmUpSpent = true
   // The *WithMeta forms: same results, plus what the server leg did on this
   // call and whether the results are complete.
   const meta = flags.fast
-    ? await plur.recallWithMeta(query, { limit, scope, domain, session, remote })
-    : await plur.recallHybridWithMeta(query, { limit, scope, domain, session, remote })
+    ? await plur.recallWithMeta(query, { limit, scope, domain, session, remote, remote_timeout_ms })
+    : await plur.recallHybridWithMeta(query, { limit, scope, domain, session, remote, remote_timeout_ms })
   // recallHybrid() slices to the limit; recall() does not.
   const engrams = flags.fast ? meta.engrams : meta.engrams.slice(0, limit ?? 20)
   const hybrid = meta as { mode?: string; degraded_reason?: string; embedderError?: string | null }
