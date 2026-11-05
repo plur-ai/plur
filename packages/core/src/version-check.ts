@@ -1,5 +1,9 @@
 /**
  * Non-blocking npm-registry version check; never throws or blocks.
+ * - `latest` comes from the user's own npm (npm-latest.ts). When the registry
+ *   gives no usable answer the result carries `failure` and `latest: null`.
+ * - With `cacheFile` the answer is also kept on disk with the same TTLs; a
+ *   failure read from disk never marks this process offline.
  * - The first attempt that cannot connect marks the process offline; then no
  *   request is made at all (an error response counts as reachable). offline.ts
  *   switches stop even the first attempt.
@@ -8,13 +12,36 @@
  *   entry is returned while a background refresh runs (unless offline).
  */
 
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs'
+import { dirname } from 'path'
 import { updateCheckDisabledByEnv, markOffline, offlineInferred, _resetInferredOffline } from './offline.js'
+import { npmLatest, UNKNOWN_REGISTRY } from './npm-latest.js'
+
+/** Why the registry gave no usable answer. */
+export interface UpdateCheckFailure {
+  /** host[:port] of the registry npm used, or a plain phrase when unknown. */
+  registry: string
+  reason: string
+}
 
 export interface VersionCheckResult {
   current: string
   latest: string | null
   updateAvailable: boolean
   checkedAt: number | null
+  /** Set when the registry could not be reached or gave no usable answer. */
+  failure?: UpdateCheckFailure
+}
+
+export interface CheckForUpdateOptions {
+  /** Also keep the answer in this JSON file, shared across processes. */
+  cacheFile?: string
+}
+
+/** The one sentence every caller prints for a failed check; null when it did not fail. */
+export function formatUpdateCheckFailure(r: { failure?: UpdateCheckFailure } | null | undefined): string | null {
+  if (!r?.failure) return null
+  return `Could not reach ${r.failure.registry} to check for updates (${r.failure.reason}). No update is advertised.`
 }
 
 /** Reuse a successful registry answer for this long before re-checking. */
@@ -47,6 +74,43 @@ export function updateCheckOffline(): boolean {
 /** In-flight check per package — concurrent refresh requests piggyback. */
 const inflightByPackage = new Map<string, Promise<VersionCheckResult>>()
 
+/** The disk cache file each package was checked with, so refreshes keep using it. */
+const cacheFileByPackage = new Map<string, string>()
+
+interface DiskEntry { latest: string | null; ok: boolean; fetchedAt: number; failure?: UpdateCheckFailure }
+
+function readDisk(file: string, packageName: string): DiskEntry | null {
+  try {
+    const e = (JSON.parse(readFileSync(file, 'utf8')) as Record<string, DiskEntry>)?.[packageName]
+    if (!e || typeof e.fetchedAt !== 'number' || typeof e.ok !== 'boolean') return null
+    if (e.ok && typeof e.latest !== 'string') return null
+    return e
+  } catch {
+    return null
+  }
+}
+
+/** Write-to-temp then rename, so a reader never sees half a file. */
+function writeDisk(file: string, packageName: string, e: DiskEntry): void {
+  try {
+    let all: Record<string, DiskEntry> = {}
+    try { all = JSON.parse(readFileSync(file, 'utf8')) ?? {} } catch { /* new file */ }
+    all[packageName] = e
+    mkdirSync(dirname(file), { recursive: true })
+    const tmp = `${file}.${process.pid}.tmp`
+    writeFileSync(tmp, JSON.stringify(all, null, 2) + '\n')
+    renameSync(tmp, file)
+  } catch {
+    // An unwritable cache only costs a lookup on the next start.
+  }
+}
+
+function resultFromDisk(e: DiskEntry, currentVersion: string): VersionCheckResult {
+  return e.ok && e.latest
+    ? { current: currentVersion, latest: e.latest, updateAvailable: isNewer(e.latest, currentVersion), checkedAt: e.fetchedAt }
+    : { current: currentVersion, latest: null, updateAvailable: false, checkedAt: null, ...(e.failure ? { failure: e.failure } : {}) }
+}
+
 /** Checks that have been started but have not yet written their result. */
 const inflight = new Set<Promise<VersionCheckResult>>()
 
@@ -77,7 +141,9 @@ export function checkForUpdate(
   packageName: string,
   currentVersion: string,
   onResult?: (result: VersionCheckResult) => void,
+  options?: CheckForUpdateOptions,
 ): Promise<VersionCheckResult> {
+  if (options?.cacheFile) cacheFileByPackage.set(packageName, options.cacheFile)
   // Piggyback on an already-running check for the same package instead of
   // issuing a duplicate fetch (refresh-on-read, the periodic re-check and an
   // explicit request can otherwise race each other).
@@ -123,31 +189,41 @@ async function runCheck(
     return entry.result
   }
 
+  // A fresh answer on disk (another process, or an earlier start) is used
+  // without a lookup; a failure read from there does not mark this process offline.
+  const cacheFile = cacheFileByPackage.get(packageName)
+  const disk = cacheFile ? readDisk(cacheFile, packageName) : null
+  if (disk && (!entry || disk.fetchedAt > entry.fetchedAt)) {
+    const fromDisk: CacheEntry = { result: resultFromDisk(disk, currentVersion), fetchedAt: disk.fetchedAt, ok: disk.ok }
+    if (!isExpired(fromDisk, Date.now())) {
+      cache.set(packageName, fromDisk)
+      if (onResult) onResult(fromDisk.result)
+      return fromDisk.result
+    }
+  }
+
   const result: VersionCheckResult = { current: currentVersion, latest: null, updateAvailable: false, checkedAt: null }
   let ok = false
   try {
-    const controller = new AbortController()
-    const timeout = setTimeout(() => controller.abort(), 3_000)
-    const res = await fetch(`https://registry.npmjs.org/${packageName}/latest`, {
-      signal: controller.signal,
-      headers: { Accept: 'application/json' },
-    })
-    clearTimeout(timeout)
-    if (res.ok) {
-      const data = await res.json() as { version?: string }
-      if (data.version) {
-        result.latest = data.version
-        result.updateAvailable = isNewer(data.version, currentVersion)
-        result.checkedAt = Date.now()
-        ok = true
-      }
+    const r = await npmLatest(packageName)
+    if (r.state === 'ok') {
+      result.latest = r.version
+      result.updateAvailable = isNewer(r.version, currentVersion)
+      result.checkedAt = Date.now()
+      ok = true
+    } else {
+      result.failure = { registry: r.registry, reason: r.reason }
+      // Could not connect: this process is offline and makes no further
+      // update-check request. A registry that answered is reachable.
+      if (r.state === 'unreachable' && r.connectFailure) markOffline()
     }
   } catch {
-    // Network error or timeout: the check could not connect, so this process
-    // is offline and makes no further update-check request.
-    markOffline()
+    // npmLatest never throws; this keeps startup safe if that ever changes.
+    result.failure = { registry: UNKNOWN_REGISTRY, reason: 'the check failed' }
   }
-  cache.set(packageName, { result, fetchedAt: Date.now(), ok })
+  const fetchedAt = Date.now()
+  cache.set(packageName, { result, fetchedAt, ok })
+  if (cacheFile) writeDisk(cacheFile, packageName, { latest: result.latest, ok, fetchedAt, ...(result.failure ? { failure: result.failure } : {}) })
   if (onResult) onResult(result)
   return result
 }
@@ -175,6 +251,7 @@ export function clearVersionCache(): void {
   cache.clear()
   _resetInferredOffline()
   inflightByPackage.clear()
+  cacheFileByPackage.clear()
 }
 
 /** Count how many minor versions behind `current` is from `latest`. Returns 0 if current >= latest. */
