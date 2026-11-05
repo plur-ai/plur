@@ -28,7 +28,7 @@ import { hasPlurCodexHooks, readCodexHooksConfig } from '../codex-hooks.js'
 import { hasPlurAgyHooks, readAgyHooksConfig } from '../antigravity-hooks.js'
 import { codexHome, missingNodeEntryPaths, readCodexPlurMcpCommand, isOwnWin32CmdShimCommand } from '../mcp-config.js'
 import { opencodeConfigDir, opencodeConfigPath, readOpencodeConfig, PLUR_OPENCODE_PLUGIN } from '../opencode-config.js'
-import { computeContentHash, detectPlurStorage, loadEngrams, resolveBackendTier, loadConfig, describeNeedsAction, describeHeld, classifyStoreDuplicates, folderMapProblem, tokenFromEnv, tokenEnvUnsetDetail, tokenEnvUnsetFix, offlineByEnv, windowsSystemRoot } from '@plur-ai/core'
+import { computeContentHash, detectPlurStorage, loadEngrams, resolveBackendTier, loadConfig, describeNeedsAction, describeHeld, classifyStoreDuplicates, folderMapProblem, tokenFromEnv, tokenEnvUnsetDetail, tokenEnvUnsetFix, offlineByEnv, windowsSystemRoot, npmLatest } from '@plur-ai/core'
 import { plurRoot } from '../lib/folder-gate.js'
 import { readHookInstalls, readHookRuns, type HookTool } from '../lib/hook-runs.js'
 import type { ServerStoreCheck } from '@plur-ai/core'
@@ -310,6 +310,14 @@ interface OpencodeReport {
   pluginResolvable: 'not-declared' | 'yes' | 'no' | 'unknown'
   /** Where a 'yes' verdict came from. `null` for every other `pluginResolvable` value. */
   resolvedVia: 'local install' | 'npm registry' | null
+  /** For a registry 'no' or 'unknown': the registry's host[:port] and why it gave no answer. */
+  registry?: { host: string; reason: string }
+}
+
+/** The registry lookup's verdict, with the registry named when it gave no answer. */
+export interface OpencodePluginLookup {
+  state: 'published' | 'not-published' | 'unknown'
+  registry?: { host: string; reason: string }
 }
 
 function hasAnyPlurHook(config: Record<string, unknown>): boolean {
@@ -977,34 +985,23 @@ function opencodePluginLocallyResolvable(pkg: string): boolean {
 }
 
 /**
- * Bounded npm-registry lookup (`registry.npmjs.org/<pkg>/latest`) for whether
- * `pkg` is published. A 404 guarantees opencode's bare-name fetch fails; a 200
- * does not guarantee success. Timeouts, DNS, 5xx and aborts map to 'unknown'.
- * Not reusing core's `checkForUpdate`: it conflates 404 with network errors.
- * 3s timeout so doctor never visibly hangs. Exported for tests.
+ * Bounded lookup, through the user's npm configuration (core's npmLatest), of
+ * whether `pkg` is published on the registry npm would install it from. A 404
+ * guarantees opencode's bare-name fetch fails; a found package does not
+ * guarantee success. Anything else is 'unknown', naming the registry and why.
+ * Exported for tests.
  */
 export async function checkOpencodePluginPublished(
   pkg: string = PLUR_OPENCODE_PLUGIN,
   timeoutMs = 3000,
-): Promise<'published' | 'not-published' | 'unknown'> {
+): Promise<OpencodePluginLookup> {
   // Declared offline (PLUR_OFFLINE, HF_HUB_OFFLINE, TRANSFORMERS_OFFLINE):
   // no request at all, and the honest answer is that we cannot tell.
-  if (offlineByEnv()) return 'unknown'
-  const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), timeoutMs)
-  try {
-    const res = await fetch(`https://registry.npmjs.org/${pkg}/latest`, {
-      signal: controller.signal,
-      headers: { Accept: 'application/json' },
-    })
-    if (res.status === 404) return 'not-published'
-    if (res.ok) return 'published'
-    return 'unknown'
-  } catch {
-    return 'unknown'
-  } finally {
-    clearTimeout(timeout)
-  }
+  if (offlineByEnv()) return { state: 'unknown' }
+  const r = await npmLatest(pkg, { timeoutMs })
+  if (r.state === 'ok') return { state: 'published' }
+  if (r.state === 'missing') return { state: 'not-published', registry: { host: r.registry, reason: r.reason } }
+  return { state: 'unknown', registry: { host: r.registry, reason: r.reason } }
 }
 
 /**
@@ -1027,6 +1024,7 @@ async function buildOpencodeReport(skipNetworkCheck: boolean): Promise<OpencodeR
 
   let pluginResolvable: OpencodeReport['pluginResolvable'] = 'not-declared'
   let resolvedVia: OpencodeReport['resolvedVia'] = null
+  let registry: OpencodeReport['registry']
 
   if (snapshot.pluginDeclared) {
     if (opencodePluginLocallyResolvable(PLUR_OPENCODE_PLUGIN)) {
@@ -1035,11 +1033,12 @@ async function buildOpencodeReport(skipNetworkCheck: boolean): Promise<OpencodeR
     } else if (skipNetworkCheck) {
       pluginResolvable = 'unknown'
     } else {
-      const registry = await checkOpencodePluginPublished(PLUR_OPENCODE_PLUGIN)
-      if (registry === 'published') {
+      const lookup = await checkOpencodePluginPublished(PLUR_OPENCODE_PLUGIN)
+      registry = lookup.registry
+      if (lookup.state === 'published') {
         pluginResolvable = 'yes'
         resolvedVia = 'npm registry'
-      } else if (registry === 'not-published') {
+      } else if (lookup.state === 'not-published') {
         pluginResolvable = 'no'
       } else {
         pluginResolvable = 'unknown'
@@ -1060,6 +1059,7 @@ async function buildOpencodeReport(skipNetworkCheck: boolean): Promise<OpencodeR
     mcpPlurMissingPaths: snapshot.mcpPlurMissingPaths,
     pluginResolvable,
     resolvedVia,
+    ...(registry ? { registry } : {}),
   }
 }
 
@@ -1513,6 +1513,30 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
  * this report IS the diagnosis the user asked for, including the ✓ lines
  * (absence of a ✓ would read as "not checked", not "healthy").
  */
+/** The text lines for whether the declared opencode plugin resolves. Exported for tests. */
+export function opencodeResolvableLines(oc: Pick<OpencodeReport, 'pluginResolvable' | 'resolvedVia' | 'registry'>): string[] {
+  if (oc.pluginResolvable === 'yes') {
+    return [`  ✓ ${PLUR_OPENCODE_PLUGIN} resolves (${oc.resolvedVia}) — package available; host loading is not verified.`]
+  }
+  if (oc.pluginResolvable === 'no') {
+    return [
+      `  ✗ ${PLUR_OPENCODE_PLUGIN} does NOT resolve — ${oc.registry?.host ?? 'the npm registry'} has no such package.`,
+      '    The configured package is unavailable. Check the version and restart OpenCode after installation.',
+    ]
+  }
+  if (oc.registry) {
+    return [
+      `  ? Could not reach ${oc.registry.host} to check whether ${PLUR_OPENCODE_PLUGIN} is published (${oc.registry.reason}).`,
+      '    This is NOT a clean bill of health — re-run doctor once that registry can be reached.',
+    ]
+  }
+  return [
+    `  ? Could not verify whether ${PLUR_OPENCODE_PLUGIN} resolves (network unreachable,`,
+    '    timed out, or the check was skipped with --no-handshake). This is NOT a clean',
+    '    bill of health — re-run doctor with network access to confirm either way.',
+  ]
+}
+
 export function printText(report: DoctorReport, flags?: GlobalFlags): void {
   const tick = (b: boolean) => (b ? '✓' : '✗')
 
@@ -1652,16 +1676,7 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
     if (oc.mcpPlurDisabled) outputText('  The PLUR MCP server is explicitly disabled in OpenCode; plur init preserves that choice.')
     if (oc.pluginDeclared) {
       outputText('  OpenCode V2 requires @plur-ai/opencode 0.21.4 or later. After upgrading, restart OpenCode and its background service.')
-      if (oc.pluginResolvable === 'yes') {
-        outputText(`  ✓ ${PLUR_OPENCODE_PLUGIN} resolves (${oc.resolvedVia}) — package available; host loading is not verified.`)
-      } else if (oc.pluginResolvable === 'no') {
-        outputText(`  ✗ ${PLUR_OPENCODE_PLUGIN} does NOT resolve — the npm registry has no such package.`)
-        outputText('    The configured package is unavailable. Check the version and restart OpenCode after installation.')
-      } else {
-        outputText(`  ? Could not verify whether ${PLUR_OPENCODE_PLUGIN} resolves (network unreachable,`)
-        outputText('    timed out, or the check was skipped with --no-handshake). This is NOT a clean')
-        outputText('    bill of health — re-run doctor with network access to confirm either way.')
-      }
+      for (const line of opencodeResolvableLines(oc)) outputText(line)
     } else if (oc.pluginDisabled) {
       outputText('  The plugin is disabled by an OpenCode removal directive; plur init preserves that choice.')
     } else if (oc.ok) {
