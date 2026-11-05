@@ -123,9 +123,11 @@ describe('upgradePlurMcpEntry ownership narrowing (0.19.1 audits)', () => {
     return { healed, entry: (config.mcpServers as Record<string, Record<string, unknown>>).plur }
   }
 
-  it('preserves a deliberate old-version pin — only @latest/bare carries the #1069 race', () => {
+  it('re-pins an older PLUR pin and keeps a newer one (#1832, the Codex rule)', () => {
     const pinned = { command: '/bin/sh', args: ['-lc', 'exec npx -y @plur-ai/mcp@0.18.2'] }
-    expect(heal(pinned).healed).toBe(false)
+    expect(heal(pinned).healed).toBe(true)
+    const newer = { command: '/bin/sh', args: ['-lc', 'exec npx -y @plur-ai/mcp@999.0.0'] }
+    expect(heal(newer).healed).toBe(false)
   })
 
   it('never claims a fork or sibling package', () => {

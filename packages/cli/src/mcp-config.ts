@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
 import { CLI_VERSION } from './version.js'
+import { olderOrEqual } from './lib/semver-order.js'
 import { join, dirname } from 'path'
 import { homedir, platform } from 'os'
 
@@ -101,8 +102,9 @@ export function buildMcpServerEntry(opts?: { env?: Record<string, string> }): Mc
   // binaries (better_sqlite3.node) in place, and macOS kills any process that
   // pages in a rewritten signed binary (SIGKILL "CODESIGNING Invalid Page").
   // A pinned version's cache is immutable; upgrades happen when `plur init`
-  // rewrites the config to a new pin. Same convention as the hermes/python
-  // bridges' _NPX_CLI_VERSION pin.
+  // rewrites the config to a new pin: every run moves an older-or-equal PLUR
+  // pin to this CLI's version (see plurNpxPin). Same convention as the
+  // hermes/python bridges' _NPX_CLI_VERSION pin.
   // The constant is compile-time, but it reaches a /bin/sh -lc string, so a
   // version that is not release-shaped is refused: it can be neither pinned
   // safely nor replaced by @latest.
@@ -378,9 +380,13 @@ export function mergePlurMcp(config: Record<string, unknown>, opts?: { env?: Rec
 
 /**
  * Heal an EXISTING plur entry that init itself wrote: only when it is recognizably
- * ours (an npx invocation of @plur-ai/mcp — custom commands are never touched) and
- * differs from what we would write today. On Windows also heals the `plur-mcp.cmd`
- * entry and a node-form entry whose node binary or js entry is gone or changed.
+ * ours (an npx invocation of @plur-ai/mcp at `@latest`, untagged, or pinned to a
+ * version older than or equal to this CLI — a newer pin and custom commands are
+ * never touched) and differs from what we would write today (the shim, or this
+ * CLI's pin). Re-pinning older pins is what makes a global upgrade reach every
+ * tool config on the next `plur init`, the rule the Codex writer applies
+ * (codexLaunchKind). On Windows also heals the `plur-mcp.cmd` entry and a
+ * node-form entry whose node binary or js entry is gone or changed.
  * The existing env is kept when the caller supplies none.
  * Returns true when the entry was rewritten (caller persists the config).
  */
@@ -391,6 +397,8 @@ export function upgradePlurMcpEntry(config: Record<string, unknown>, opts?: { en
 /**
  * `upgradePlurMcpEntry`, returning init's status line for what was healed, or null:
  *   - `upgraded stale npx entry` — the @latest/bare npx entry;
+ *   - `updated the npx pin <old> → <new>` / `replaced the pinned npx entry (<old>)
+ *     with the installed MCP server` — an older PLUR pin;
  *   - `healed the old plur-mcp.cmd entry …` — Windows;
  *   - `repaired the node.exe entry …` — Windows, node binary or js entry gone/changed.
  * Windows lines also name what was written (node.exe launcher or pinned npx fallback).
@@ -400,9 +408,11 @@ export function healPlurMcpEntry(config: Record<string, unknown>, opts?: { env?:
   const existing = servers.plur
   if (!existing) return null
   const ownNodeEntry = isOwnWin32NodeEntry(existing)
-  const racey = isRaceyPlurNpxEntry(existing)
+  const npxPin = plurNpxPin(existing)
+  const racey = npxPin === 'latest'
+  const oldPin = npxPin !== null && npxPin !== 'latest' && olderOrEqual(npxPin, CLI_VERSION) ? npxPin : null
   const cmdShim = isOwnWin32CmdShimEntry(existing)
-  if (!racey && !cmdShim && !ownNodeEntry) return null
+  if (!racey && !oldPin && !cmdShim && !ownNodeEntry) return null
   if (ownNodeEntry && !nodeEntryNeedsHealing(existing)) return null
   const effectiveOpts = opts ?? (existing.env ? { env: existing.env } : undefined)
   const recommended = buildMcpServerEntry(effectiveOpts)
@@ -422,6 +432,12 @@ export function healPlurMcpEntry(config: Record<string, unknown>, opts?: { env?:
   }
   config.mcpServers = servers as Record<string, unknown>
   if (racey) return 'upgraded stale npx entry'
+  if (oldPin) {
+    const newPin = plurNpxPin(recommended)
+    return newPin !== null && newPin !== 'latest'
+      ? `updated the npx pin ${oldPin} → ${newPin}`
+      : `replaced the pinned npx entry (${oldPin}) with the installed MCP server`
+  }
   const now = recommended.command.toLowerCase() === 'cmd.exe'
     ? 'the pinned cmd.exe /c npx fallback (@plur-ai/mcp\'s js entry could not be resolved)'
     : 'node.exe + @plur-ai/mcp'
@@ -574,25 +590,37 @@ function nodeEntryNeedsHealing(entry: McpServerEntry): boolean {
 }
 
 /**
- * Is this entry one of the RACEY shapes init has written — npx of exactly
- * `@plur-ai/mcp` at `@latest` or untagged? Deliberately narrow:
- *   - only `npx`, `cmd.exe /c npx`, `/bin/sh -lc 'exec npx …'` command forms;
- *   - anchored package spec, so forks and mentions never match;
- *   - an explicit version pin is the user's decision and is NEVER healed.
+ * The @plur-ai/mcp version an npx entry PLUR wrote launches: `'latest'` for the
+ * RACEY shapes (exactly `@plur-ai/mcp` at `@latest` or untagged), the version for
+ * an exact SemVer pin, or null for anything that is not PLUR's npx entry.
+ * Deliberately narrow:
+ *   - only the exact argv PLUR writes, with nothing else in it:
+ *     `npx [-y|--yes] <spec>`, `cmd.exe /c npx -y <spec>`, `/bin/sh -lc 'exec npx -y <spec>'`;
+ *   - anchored package spec, so forks, tags, ranges and mentions never match.
+ * The caller decides what a pin means: the healer re-pins one older than or equal
+ * to this CLI and keeps a newer one (the Codex rule).
  */
-function isRaceyPlurNpxEntry(entry: McpServerEntry): boolean {
-  const RACEY_SPEC = /^@plur-ai\/mcp(@latest)?$/
+export function plurNpxPin(entry: McpServerEntry): string | null {
+  const SPEC = /^@plur-ai\/mcp(?:@(.+))?$/
   const args = entry.args ?? []
-  // Shell-string forms: /bin/sh -lc '<script>' (init's own POSIX shape).
+  // Only the exact argv shapes PLUR writes, as codexLaunchKind matches them:
+  // anything more (an extra argument, `-p <pkg> <bin>`, `--package`) is a
+  // custom entry whose arguments a rewrite would drop.
+  let spec: string | undefined
   if (entry.command === '/bin/sh') {
-    const script = args[args.length - 1] ?? ''
-    const m = /^\s*(?:exec\s+)?npx\s+(?:-y\s+)?(\S+)\s*$/.exec(script)
-    return m !== null && RACEY_SPEC.test(m[1])
+    // init's POSIX shape: /bin/sh -lc 'exec npx -y <spec>'.
+    if (args.length === 2 && args[0] === '-lc') spec = /^\s*(?:exec\s+)?npx\s+(?:-y\s+)?(\S+)\s*$/.exec(args[1])?.[1]
+  } else if (entry.command === 'npx') {
+    // A user's or plur-mcp init's argv: npx [-y|--yes] <spec>.
+    if (args.length === 1) spec = args[0]
+    else if (args.length === 2 && (args[0] === '-y' || args[0] === '--yes')) spec = args[1]
+  } else if (entry.command === 'cmd.exe') {
+    // init's win32 shape: cmd.exe /c npx -y <spec>.
+    if (args.length === 4 && args[0] === '/c' && args[1] === 'npx' && args[2] === '-y') spec = args[3]
   }
-  // Argv forms: `npx …` directly, or `cmd.exe /c npx …` (init's win32 shape).
-  const argv = entry.command === 'cmd.exe' ? args.filter(a => a !== '/c') :
-    entry.command === 'npx' ? ['npx', ...args] : null
-  if (!argv || argv[0] !== 'npx') return false
-  const spec = argv.filter(a => a !== 'npx' && !a.startsWith('-'))[0] ?? ''
-  return RACEY_SPEC.test(spec)
+  const m = spec ? SPEC.exec(spec) : null
+  if (!m) return null
+  const tag = m[1]
+  if (tag === undefined || tag === 'latest') return 'latest'
+  return /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(tag) ? tag : null
 }

@@ -193,10 +193,16 @@ anchors:
     rule: A hook without a command (prompt or agent type) is never treated as PLUR's and never makes init throw.
     tests:
       - packages/mcp/test/init-hooks.test.ts::hooks without a command (type prompt / agent) do not make init throw
-  packages/mcp/src/index.ts#MCP_SERVER_CONFIG:
+  packages/mcp/src/index.ts#mcpServerConfig:
     kind: guarantee
-    rule: The installed server entry is pinned to this build's version, never @latest.
-    none: no test checks the version pin in the installed entry
+    rule: >-
+      The registered server is the installed shim ~/.plur/bin/plur-mcp when it exists (not on Windows), otherwise npx
+      pinned to this build's version, never @latest.
+    tests:
+      - "packages/mcp/test/init-follows-global-1832.test.ts::the installed server (shim) is registered when it exists"
+      - "packages/mcp/test/init-follows-global-1832.test.ts::no installed server: a fresh entry is the pinned npx"
+      - "packages/mcp/test/init-follows-global-1832.test.ts::an older pin is re-pinned to this version, env kept"
+      - "packages/mcp/test/init-follows-global-1832.test.ts::@latest is still healed"
   packages/mcp/src/index.ts#stripPlurHooks:
     kind: guarantee
     rule: Removing PLUR's hooks never removes a user's hook.

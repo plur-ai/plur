@@ -1738,7 +1738,9 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
     outputText('⚠  plur MCP still launched via npx — vulnerable to ENOTEMPTY cache corruption on version bumps.')
     outputText('   Hooks had the same problem and were fixed. Symptom: Claude Code')
     outputText('   sessions silently lose PLUR memory after a new @plur-ai/mcp publish.')
-    outputText('   Fix: run `plur init` to migrate to the local MCP binary (no npx, no race).')
+    outputText('   Fix: install @plur-ai/mcp@latest globally next to the CLI')
+    outputText('   (npm i -g @plur-ai/cli@latest @plur-ai/mcp@latest), then run `plur init` to')
+    outputText('   switch to the local MCP binary (no npx, no race).')
   }
 
   if (report.pgliteGemmaReembedNeeded) {

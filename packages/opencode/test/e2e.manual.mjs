@@ -30,6 +30,7 @@ import { tmpdir, homedir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { randomBytes } from 'node:crypto'
+import semver from 'semver'
 
 const MODEL = process.env.PLUR_E2E_MODEL || 'openai/gpt-5.5'
 const REPO_ROOT = fileURLToPath(new URL('../../../', import.meta.url))
@@ -115,24 +116,39 @@ async function main() {
     console.log(`core tarball: ${coreTarball}`)
     console.log(`opencode tarball: ${opencodeTarball}`)
 
-    step('Step 3: Assert workspace:* was rewritten to a concrete version')
+    step('Step 3: Assert the packed core requirement is a published range that includes the packed core')
     const pkgJsonRaw = runCapture(
       'publish-safety',
       'tar', ['-xOzf', opencodeTarball, 'package/package.json'],
       {},
     )
     const packedPkg = JSON.parse(pkgJsonRaw)
-    const coreDepVersion = packedPkg.dependencies && packedPkg.dependencies['@plur-ai/core']
-    console.log(`packed @plur-ai/opencode package.json dependencies["@plur-ai/core"] = ${JSON.stringify(coreDepVersion)}`)
-    if (!coreDepVersion || !/^\d/.test(coreDepVersion)) {
+    const packedCoreVersion = JSON.parse(runCapture(
+      'publish-safety',
+      'tar', ['-xOzf', coreTarball, 'package/package.json'],
+      {},
+    )).version
+    if (pkgJsonRaw.includes('workspace:')) {
       fail(
         'publish-safety',
-        `packed @plur-ai/opencode declares @plur-ai/core as ${JSON.stringify(coreDepVersion)} — ` +
-        `"workspace:*" was NOT rewritten to a concrete version. This tarball cannot resolve its own ` +
-        `dependency if published as-is.`,
+        'packed @plur-ai/opencode package.json still contains a "workspace:" specifier — pnpm did not ' +
+        'rewrite it, so this tarball cannot resolve its own dependencies if published as-is.',
       )
     }
-    console.log(`PASS: workspace:* rewritten to concrete version ${coreDepVersion}`)
+    // #1831: core is a range (dependency, and a peer on the same range), not an exact pin.
+    // Matched the way npm and pnpm match it: semver loose, no prereleases.
+    for (const field of ['dependencies', 'peerDependencies']) {
+      const range = packedPkg[field] && packedPkg[field]['@plur-ai/core']
+      console.log(`packed @plur-ai/opencode ${field}["@plur-ai/core"] = ${JSON.stringify(range)}`)
+      if (field === 'peerDependencies' && range === undefined) continue
+      if (!range || !semver.validRange(range, { loose: true })) {
+        fail('publish-safety', `packed @plur-ai/opencode ${field}["@plur-ai/core"] is ${JSON.stringify(range)}, not a valid semver range`)
+      }
+      if (!semver.satisfies(packedCoreVersion, range, { loose: true })) {
+        fail('publish-safety', `packed @plur-ai/opencode ${field}["@plur-ai/core"] ${JSON.stringify(range)} excludes the packed core ${packedCoreVersion}`)
+      }
+    }
+    console.log(`PASS: no workspace: specifier; @plur-ai/core range ${JSON.stringify(packedPkg.dependencies['@plur-ai/core'])} includes the packed core ${packedCoreVersion}`)
 
     step('Step 4: Write package.json, install tarballs')
     writeFileSync(

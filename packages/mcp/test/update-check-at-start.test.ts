@@ -89,6 +89,8 @@ describe('MCP server update check: once at start, then offline if it cannot conn
     const cl = await start()
     await settleVersionChecks()
     expect(err.mock.calls.some(c => String(c[0]).includes('Update available') && String(c[0]).includes('99.0.0'))).toBe(true)
+    // #1832: the notice ends with plur init, which moves the tool configs.
+    expect(err.mock.calls.some(c => String(c[0]).includes('&& plur init (tool configs record the exact version)'))).toBe(true)
     expect((await status(cl)).update_available?.latest).toBe('99.0.0')
   })
 

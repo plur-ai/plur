@@ -6,6 +6,8 @@ import { parseTOML, getStaticTOMLValue, type AST } from 'toml-eslint-parser'
 import yaml from 'js-yaml'
 import { writeWithBackup } from '@plur-ai/core'
 import { codexConfigTomlPath, findMcpJsEntry, isOwnWin32CmdShimCommand, type McpServerEntry } from './mcp-config.js'
+import { olderOrEqual, version } from './lib/semver-order.js'
+export { olderOrEqual }
 
 export interface CodexEntry extends McpServerEntry {
   env_vars?: Array<string | { name: string; source?: string }>
@@ -53,27 +55,6 @@ export function readCodexEntry(text: string): CodexEntry | null {
   return { ...raw, args: raw.args ?? [] } as unknown as CodexEntry
 }
 
-function version(v: string): { parts: number[]; pre?: string } | null {
-  const m = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/.exec(v)
-  return m ? { parts: m.slice(1, 4).map(Number), pre: m[4] } : null
-}
-export function olderOrEqual(a: string, b: string): boolean {
-  const av = version(a), bv = version(b)
-  if (!av || !bv) return false
-  for (let i = 0; i < 3; i++) if (av.parts[i] !== bv.parts[i]) return av.parts[i] < bv.parts[i]
-  if (av.pre === bv.pre) return true
-  if (!av.pre) return false
-  if (!bv.pre) return true
-  const ap = av.pre.split('.'), bp = bv.pre.split('.')
-  for (let i = 0; i < Math.max(ap.length, bp.length); i++) {
-    if (ap[i] === undefined) return true
-    if (bp[i] === undefined) return false
-    if (ap[i] === bp[i]) continue
-    const an = /^\d+$/.test(ap[i]), bn = /^\d+$/.test(bp[i])
-    return an && bn ? Number(ap[i]) < Number(bp[i]) : an !== bn ? an : ap[i] < bp[i]
-  }
-  return true
-}
 
 /** Only launch forms PLUR has shipped; no arbitrary shell scripts or forks. */
 export function codexLaunchKind(entry: CodexEntry, cliVersion: string): 'upgrade' | 'current' | 'newer' | 'custom' {

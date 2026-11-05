@@ -40,8 +40,11 @@ dsh plugin --profile web add @plur-ai/dsh
 
 That's it. Restart `dsh` and your agent has memory.
 
-Requires [`@plur-ai/core`](https://www.npmjs.com/package/@plur-ai/core), which
-installs alongside it.
+Requires [`@plur-ai/core`](https://www.npmjs.com/package/@plur-ai/core): the core
+this plugin was last published with, or later (below 1.0; the release sets the
+floor). It is a regular dependency, not a peer, so it installs
+alongside the plugin: DeepSeek Harness profiles do not install peer dependencies,
+and pnpm 11 in a profile does not link a package declared as both.
 
 ## Quick start
 
