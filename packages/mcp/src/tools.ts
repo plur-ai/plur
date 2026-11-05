@@ -3248,12 +3248,22 @@ function getAllToolDefinitions(): ToolDefinition[] {
         // reports. status().engram_count also holds whatever the remote stores
         // have cached in this process, which is 0 or the whole team corpus
         // depending on what ran before — those rows get their own line.
+        const urlStores = (status.config?.stores ?? []).filter(s => !!s.url)
+        const hasUrlStore = urlStores.length > 0
+        const urlScopes = [...new Set(urlStores.map(s => (s.scope ?? '').trim()).filter(Boolean))]
         checks.push({
           check: 'engram store',
-          ok: status.local_engram_count > 0,
-          detail: `${status.local_engram_count} engrams across ${status.pack_count} packs at ${status.storage_root}`,
+          // A team-only install (#1828): a url store is configured and nothing
+          // is stored here yet. That is healthy — team memory lives on the
+          // server. Scopes come from config; reachability is the job of the
+          // remote store and server checks below, so no network call here.
+          ok: status.local_engram_count > 0 || hasUrlStore,
+          detail: `${status.local_engram_count} engrams across ${status.pack_count} packs at ${status.storage_root}`
+            + (status.local_engram_count === 0 && hasUrlStore
+              ? `; no local engrams yet, team memory is on the server${urlScopes.length > 0 ? ` (${urlScopes.join(', ')})` : ''}`
+              : ''),
         })
-        if ((status.config?.stores ?? []).some(s => !!s.url)) {
+        if (hasUrlStore) {
           checks.push({
             check: 'remote store cache',
             ok: true,
