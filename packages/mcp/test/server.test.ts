@@ -620,6 +620,9 @@ describe('MCP server (wire protocol)', () => {
       const data = JSON.parse((result.content as any)[0].text)
       expect(data.version_warning).toBeDefined()
       expect(data.version_warning).toContain('99.0.0')
+      // #1832: install latest globally, then plur init moves the tool configs.
+      expect(data.version_warning).toContain('npm i -g @plur-ai/cli@latest @plur-ai/mcp@latest && plur init')
+      expect(data.version_warning).toContain('tool configs record the exact version')
       expect(data.version).toBeDefined()
     })
 
@@ -636,6 +639,8 @@ describe('MCP server (wire protocol)', () => {
       })
       const data = JSON.parse((result.content as any)[0].text)
       expect(data.version_warning).toContain('CRITICAL')
+      expect(data.version_warning).toContain('install the latest version globally; tool configs record the exact version')
+      expect(data.version_warning).not.toContain('no longer updates')
       expect(data.guide).toContain('CRITICAL')
     })
 

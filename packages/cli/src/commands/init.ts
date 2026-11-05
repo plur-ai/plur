@@ -214,11 +214,13 @@ function installHookBinary(): { shimPath: string; status: string } {
 
 // ─── MCP shim — closes #234 (npx ENOTEMPTY race on MCP server launch) ──────
 //
-// Same problem as #178 (hooks), same fix pattern. The MCP server is launched
-// by Claude Code via `npx -y @plur-ai/mcp@latest` on every session start.
-// When a new MCP version publishes, the npx cache update races with concurrent
-// MCP launches → ENOTEMPTY → the user's Claude Code session can't reach PLUR
-// memory until the cache is manually wiped.
+// Same problem as #178 (hooks), same fix pattern. The MCP server used to be
+// launched by Claude Code via `npx -y @plur-ai/mcp@latest` on every session
+// start. When a new MCP version publishes, the npx cache update races with
+// concurrent MCP launches → ENOTEMPTY → the user's Claude Code session can't
+// reach PLUR memory until the cache is manually wiped. Tool configs now
+// record the shim, which follows a global upgrade at the same path, or an
+// exact npx pin that every `plur init` moves to its own version (#1832).
 //
 // Fix: write a local shim at ~/.plur/bin/plur-mcp that calls
 // `node <resolved-mcp-entry>` directly. Same path resolution strategy as
@@ -1927,7 +1929,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     if (bareCmd.startsWith('/') || /^[A-Za-z]:[\\/]/.test(bareCmd)) {
       outputInfo('  Committing .cursor/mcp.json / .cursor/hooks.json? Their command is this machine\'s local', flags)
       outputInfo(`  path (${cursorCmd}) — it won't exist on a teammate's machine or a fresh Background Agent VM.`, flags)
-      outputInfo('  Run `plur init --cursor` there too (it pins the right version — avoid @latest, #1069).', flags)
+      outputInfo('  Run `plur init --cursor` there too: install the latest version globally; tool configs record the exact version.', flags)
     }
   }
   outputInfo(`CLAUDE.md:        ${claudeMdStatus}`, flags)
