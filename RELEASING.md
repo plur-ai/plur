@@ -244,9 +244,11 @@ Substitute the package name as needed (`@plur-ai/core`, `@plur-ai/mcp`, `@plur-a
 
 ### Why `pnpm publish`, not `npm publish`
 
-- `packages/claw/package.json` declares dependencies like `"@plur-ai/core": "workspace:*"`.
-  `pnpm publish` rewrites those to the concrete published version on the way out;
-  `npm publish` would ship the literal `workspace:*` string and break the installed tarball.
+- The workspace packages depend on each other through `workspace:` specifiers, and
+  `pnpm publish` rewrites them on the way out: claw's `"@plur-ai/core": "workspace:>=0.23.0 <1"`
+  becomes `>=0.23.0 <1`, and mcp's and cli's `workspace:*` becomes the exact version of the
+  workspace core. `npm publish` would ship the literal `workspace:` string and break the
+  installed tarball.
 - `--no-git-checks` skips pnpm's clean-tree assertion so local build artifacts don't block the
   publish.
 
