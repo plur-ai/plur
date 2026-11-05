@@ -1,18 +1,8 @@
 /**
- * `plur outbox` — see what the remote-write queue is holding (#667).
- *
- * The outbox is not a file or a queue directory. It is
- * `structured_data._outbox` nested inside ordinary engrams in `engrams.yaml`,
- * which is why it worked and was invisible: a user whose team store was
- * unreachable had queued writes with no supported way to see them, and the
- * only prose describing the mechanism lived inside an engram.
- *
- * Read-only by default. `--flush` is the explicit action, mirroring the
- * `plur_outbox` MCP tool so the two surfaces cannot drift.
- *
- * The target URL is never printed — `listOutbox` does not return it. It is the
- * one field here that names a credentialed endpoint, and `target_scope`
- * already answers "which store is behind?", which is the question being asked.
+ * `plur outbox` — see what the remote-write queue (`structured_data._outbox` inside
+ * engrams in `engrams.yaml`) is holding. Read-only by default; `--flush` mirrors the
+ * `plur_outbox` MCP tool. The target URL (a credentialed endpoint) is never printed;
+ * `target_scope` identifies the store.
  */
 import { summarizeOutbox, describeNeedsAction, describeHeld } from '@plur-ai/core'
 import { createPlur, type GlobalFlags } from '../plur.js'
@@ -68,7 +58,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   }
 
   // Explicit: retries needs_action entries too — the user may just have
-  // fixed the cause, and should not wait out the daily back-off (#1299).
+  // fixed the cause, and should not wait out the daily back-off.
   const result = await plur.flushOutbox({ force: true })
   const stillPending = await plur.outboxCount()
 

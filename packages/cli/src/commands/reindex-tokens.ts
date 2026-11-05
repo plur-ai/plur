@@ -1,19 +1,9 @@
 /**
  * `plur reindex-tokens` — re-derive BM25 tokens on a Postgres-backed store
- * after a tokenizer change (#840).
- *
- * The adapter kicks this in the background the first time it notices stale
- * rows, so most deployments never need to run it. It exists for the cases
- * where "eventually, in the background" is not good enough:
- *
- *   - an operator upgrading deliberately, who wants the pushdown back before
- *     the first user query rather than after it,
- *   - a store that is read rarely, where "on the next recall" could be days,
- *   - anyone who wants a count rather than a log line.
- *
- * Only Postgres persists tokens. Every other tier re-derives them per query,
- * so there is nothing to reindex and this reports that rather than pretending
- * to work.
+ * after a tokenizer change. The adapter already does this in the background on
+ * first noticing stale rows; this is for operators who want it done now (before
+ * the first query, on a rarely-read store) or want a count. Only Postgres
+ * persists tokens; other tiers report there is nothing to reindex.
  */
 import type { GlobalFlags } from '../plur.js'
 import { PostgresAdapter, detectPlurStorage, loadConfig } from '@plur-ai/core'
@@ -32,10 +22,8 @@ function usage(): never {
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   if (args.includes('--help') || args.includes('-h')) usage()
 
-  // Resolve EXACTLY as the engine does (index.ts `_postgresUrl`): environment
-  // first, then config.yaml. Reading only the env var made this command report
-  // "no Postgres store configured" for a deployment that had one — a false
-  // negative on the very question it exists to answer.
+  // Resolve exactly as the engine does (index.ts `_postgresUrl`): environment
+  // first, then config.yaml, so a store configured only in config.yaml is found.
   const paths = detectPlurStorage(flags.path || process.env.PLUR_PATH || undefined)
   const config = loadConfig(paths.config) as { postgres?: { url?: string, schema?: string } }
   const url = process.env.PLUR_POSTGRES_URL || config.postgres?.url
@@ -52,11 +40,10 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     return
   }
 
-  // The schema MUST come from config too. Omitting it does not fail loudly —
+  // The schema must come from config too. Omitting it fails silently:
   // `initSchema` runs CREATE SCHEMA IF NOT EXISTS, so a store on a custom
-  // schema would get a spurious empty default schema created, find zero stale
-  // rows in it, and print "Tokens are already current". A false all-clear is
-  // worse than no command at all.
+  // schema would get an empty default schema, find zero stale rows, and
+  // report a false all-clear.
   const adapter = new PostgresAdapter({
     connectionString: url,
     ...(config.postgres?.schema ? { schema: config.postgres.schema } : {}),

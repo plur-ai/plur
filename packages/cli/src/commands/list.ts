@@ -1,11 +1,7 @@
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { shouldOutputJson, outputJson, outputText, outputInfo } from '../output.js'
 
-/**
- * Flags this command accepts (#986). `--tags` was declared here and never
- * parsed, so `list --tags x` listed everything; with no tag filter to apply,
- * it is no longer declared and the argv check refuses it.
- */
+/** Flags this command accepts; the argv check refuses any other. */
 export const FLAGS_WITH_VALUES = ['--scope', '--domain', '--type', '--limit']
 
 export const FLAGS = ['--scope', '--domain', '--type', '--limit', '--meta']
@@ -13,14 +9,9 @@ export const FLAGS = ['--scope', '--domain', '--type', '--limit', '--meta']
 /**
  * Shorten a statement to a display WIDTH, never splitting a character.
  *
- * Slicing by code unit cut an emoji in half and printed a replacement
- * character in its place: any astral character landing on the boundary was
- * destroyed. Counting characters fixes that but still misaligns the column,
- * because a Chinese, Japanese or Korean character occupies two terminal cells
- * while a Latin letter occupies one — a tester measured a Latin row at 60 cells
- * and a Japanese one at 85.
- *
- * So: iterate by character, and count wide ones as two.
+ * Iterates by code point so astral characters (emoji) are never cut in half,
+ * and counts East Asian wide characters as two terminal cells so the column
+ * stays aligned.
  */
 export function clipToWidth(text: string, maxWidth: number): string {
   const wide = (ch: string) => {
@@ -70,17 +61,14 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
 
   let engrams = await plur.list({ scope, domain })
 
-  // Post-filter by type
   if (type) {
     engrams = engrams.filter(e => e.type === type)
   }
 
-  // Post-filter by meta (IDs starting with META-)
   if (meta) {
     engrams = engrams.filter(e => e.id.startsWith('META-'))
   }
 
-  // Apply limit
   if (limit !== undefined) {
     engrams = engrams.slice(0, limit)
   }

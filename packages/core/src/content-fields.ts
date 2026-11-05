@@ -1,33 +1,10 @@
 /**
- * What the leak guard scans, defined once.
- *
- * There used to be two lists that had to agree and nothing making them.
- * `LearnContext` said what a caller may supply on a write; a hand-kept list in
- * `_engramContextFields` said what the reconstruct-from-engram guards — explicit
- * update, rescope, outbox flush, meta save — look at. The pair drifted three
- * times (#381, #405, and the review of #1002): the provenance work added
- * `attribution`, `claim_class` and `license` to the first and not the second,
- * so an AWS key written into `attribution.asserted_by` at a local scope
- * rescoped cleanly into `project:acme`, while the same key in `tags` was
- * refused.
- *
- * Two rules now, and a test that holds them:
- *
- *  - The write-time HARD scan (`detectSecrets`, throws) covers every
- *    `LearnContext` field classified `content` in the table below. The table
- *    is checked against the interface by the compiler, so a field added to
- *    `LearnContext` without a row here is a type error, not a silent gap.
- *
- *  - The engram-side scans do not enumerate at all. `engramContentFields`
- *    serialises EVERYTHING on the engram except the statement (which every
- *    caller scans separately) and PLUR's own `_`-prefixed bookkeeping keys in
- *    `structured_data`, so a field that reaches the engram by any route is
- *    scanned by construction — the same reasoning `scanPrivacy` applied to
- *    pack export after #389.
- *
- * `test/leak-surface.test.ts` walks the table with a canary in each content
- * field and checks that both engram constructors (`learn()` and
- * `_buildEngramShape`) put it where `engramContentFields` can see it.
+ * What the leak guard scans, defined once so write-time and engram-side scans cannot drift apart:
+ *  - The write-time HARD scan (`detectSecrets`) covers every `LearnContext` field classified `content` below; the
+ *    compiler checks the table against the interface, so a missing row is a type error.
+ *  - Engram-side scans do not enumerate: `engramContentFields` serialises everything except the statement (scanned
+ *    separately) and PLUR's `_`-prefixed `structured_data` keys.
+ * `test/leak-surface.test.ts` checks both engram constructors with a canary per content field.
  */
 import type { LearnContext } from './types.js'
 import type { Engram } from './schemas/engram.js'
@@ -56,7 +33,7 @@ export const LEARN_CONTEXT_FIELD_ROLES = {
   valid_from: 'control',
   valid_until: 'control',
   session: 'control',
-  // Persisted in sources[].session_id (#1048), so it is text on the engram.
+  // Persisted in sources[].session_id, so it is text on the engram.
   session_id: 'content',
   domain: 'content',
   source: 'content',
@@ -75,8 +52,8 @@ export const LEARN_CONTEXT_FIELD_ROLES = {
   // Engram ids written to `relations.related` (batch never-overwrite link).
   related: 'content',
   measured_under: 'content',
-  // #1002: who said it, what kind of claim it is, and the licence, which lands
-  // in `provenance.license`.
+  // Who said it, what kind of claim it is, and the licence, which lands in
+  // `provenance.license`.
   attribution: 'content',
   claim_class: 'content',
   license: 'content',
@@ -112,7 +89,7 @@ export function learnContextContent(context: LearnContext | undefined): Record<s
  */
 export const PLUR_BOOKKEEPING_KEYS: ReadonlySet<string> = new Set([
   '_outbox', '_routed', '_demoted', '_rescoped_from', '_expiry_extracted',
-  // Decision D1: the queued "retire on remote" entry (server id + target url/scope).
+  // The queued "retire on remote" entry (server id + target url/scope).
   '_retireRemote',
 ])
 

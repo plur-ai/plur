@@ -1,5 +1,3 @@
-// packages/core/src/meta/platitudes.ts
-
 /** Patterns that are too generic to be useful as meta-engrams */
 export const PLATITUDE_PATTERNS: string[] = [
   'always be careful',

@@ -3,13 +3,13 @@ import { shouldOutputJson, outputJson, outputText, exit } from '../output.js'
 import { summariseProvenance, renderProvenanceSummary } from '@plur-ai/core'
 
 /**
- * Where a memory came from (#980).
+ * Where a memory came from.
  *
  * Follows `plur receipt`: readable prose by default, `--json` for machines, and
  * never a blank where something was simply not recorded. A blank reads as zero;
  * an explicit "not recorded" reads as the truth.
  */
-/** Flags this command accepts (#986). */
+/** Flags this command accepts. */
 export const FLAGS = ['--record', '--write']
 
 /** Trim to a length in CHARACTERS, so an emoji is never cut in half. */
@@ -54,9 +54,9 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   let matched: string | undefined
   if (!id) {
     // Ask for more than we list, so the count reported is the true one.
-    // remote:false (#776): the engram whose provenance we can show is one in
-    // our own store, so the phrase is not sent to every configured host — and
-    // a remote top hit would only fail `provenanceFor` below.
+    // remote:false: the engram whose provenance we can show is one in our own
+    // store, so the phrase is not sent to every configured host — and a remote
+    // top hit would only fail `provenanceFor` below.
     const matches = await plur.recall(query, { limit: 25, remote: false })
     if (!matches.length) {
       fail(`Nothing matched "${query}". Try different words, or pass an exact id.`, { query })
@@ -75,15 +75,15 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
 
   const summary = summariseProvenance(record as any)
   const saved = write ? await plur.writeProvenance(id) : undefined
-  // The story of this memory (0.23 explainer, scene 4): the sessions that
-  // saved it, and what its history records since. Ids and event names only.
+  // The story of this memory: the sessions that saved it, and what its
+  // history records since. Ids and event names only.
   const engram = await plur.getById(id)
   const sessions = [...new Set(((engram as { sources?: Array<{ session_id?: unknown }> } | null)?.sources ?? [])
     .map(s => s?.session_id).filter((s): s is string => typeof s === 'string' && s.length > 0))]
   let history: Array<{ event: string; at: string }> = []
   try {
     // getEngramHistory, not the raw log: it withholds history in remote-only
-    // folders and includes a team engram's old-form ids (code review of 0.23, R6).
+    // folders and includes a team engram's old-form ids.
     history = plur.getEngramHistory(id).map(e => ({ event: e.event, at: e.timestamp }))
   } catch { /* no readable history: reported as an empty list */ }
 

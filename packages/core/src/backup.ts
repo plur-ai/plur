@@ -1,50 +1,12 @@
 /**
- * Validity-gated daily backups of the engram store (audit #794, issue #799).
- *
- * ## Why this exists
- *
- * Every finding in #794 that ends "the corpus is gone" ends there because there
- * was nothing to restore from. The guards added in #795/#796 are refusals: they
- * stop PLUR making a bad situation worse. They cannot recover bytes that a
- * truncation already destroyed. Only a backup can.
- *
- * ## Why the gate is the feature
- *
- * Backing up an already-corrupt file is worse than not backing up at all: it
- * costs the same, and it quietly replaces the last good copy with a bad one, so
- * the user discovers at restore time that their safety net was cut days ago.
- * A snapshot is therefore only taken when the current file passes every check
- * in {@link validateStore}.
- *
- * ## Why the hook is where it is
- *
- * The snapshot is taken from inside `_withStoreLock(paths.engrams, …)`, before
- * `store.load()`, on the first such acquisition per process per day. Both halves
- * of that ordering are load-bearing:
- *
- *   - INSIDE the lock, so it cannot copy a half-written file
- *   - BEFORE the load, so it copies the on-disk bytes before any write path can
- *     replace them
- *
- * Constructor time would be wrong: read-only instances and `plur status` would
- * trigger it, and #731 forbids write side effects there.
- *
- * ## What it costs, and the one interaction to watch
- *
- * Measured on a 50,000-engram / 39 MB store: **1.4 s** for the first write of
- * the day (validate + copy + fsync), and **0 ms** for every write after it —
- * short-circuited in-process, and by the state file for a second process the
- * same day. So a normal day costs one copy, not one per write.
- *
- * That 1.4 s lands INSIDE the store lock, which is the trade this ordering
- * buys. It matters because it narrows the margin on the still-open stale-lock
- * finding (#804 / audit F9): the audit measured a 50k store already holding the
- * lock ~4.9 s (2.4 s save + 2.4 s load) against a 10 s stale threshold, and this
- * takes that to ~6.3 s once per day. Still under the threshold, but the headroom
- * drops by roughly a quarter on the largest stores — which is an argument for
- * fixing F9's liveness check rather than a reason to move the backup out from
- * under the lock, since moving it there would reintroduce the half-written-file
- * race this ordering exists to prevent.
+ * Validity-gated daily backups of the engram store — the only way to recover bytes
+ * a truncation already destroyed.
+ * - Gate: a snapshot is taken only when the file passes {@link validateStore};
+ *   backing up a corrupt file would replace the last good copy.
+ * - Taken INSIDE `_withStoreLock(paths.engrams, …)` (never a half-written file) and
+ *   BEFORE `store.load()`, on the first acquisition per process per day; never at
+ *   construction (read-only instances and `plur status` must not write).
+ * - Cost: ~1.4 s once a day on a 39 MB store, under the lock; keep it there anyway.
  */
 import * as fs from 'fs'
 import * as path from 'path'
@@ -52,26 +14,16 @@ import { createHash, randomUUID } from 'crypto'
 import * as yaml from 'js-yaml'
 import { parseEngramEntry } from './engrams.js'
 import { logger } from './logger.js'
-import { atomicWrite, withLock } from './sync.js'
+import { atomicWrite } from './atomic-write.js'
+import { withLock } from './file-lock.js'
 
 /** Directory under the plur root holding snapshots and their state. */
 export const BACKUP_DIR = 'backups'
 
 /**
- * Keep this many day-granularity snapshots.
- *
- * ## Disk cost
- *
- * Snapshots are uncompressed copies of the whole store, so the retained set
- * costs up to `(KEEP_DAILY + KEEP_WEEKLY) x store size`. Measured against real
- * stores: a 10 MB store (~5,000 engrams) retains ~113 MB; a 39 MB store
- * (50,000 engrams) retains ~431 MB.
- *
- * Uncompressed is the deliberate choice at these sizes: a backup you can read,
- * diff and hand to `git` beats one that needs tooling to inspect, and the whole
- * point of the validity gate is that a human can check what was kept. If the
- * footprint becomes a problem it is the WEEKLY tier to shorten first — the
- * daily window is what actually gets restored from.
+ * Keep this many day-granularity snapshots. Snapshots are uncompressed (human-
+ * diffable) full copies, costing up to `(KEEP_DAILY + KEEP_WEEKLY) x store size`;
+ * if that is too much, shorten the WEEKLY tier first.
  */
 const KEEP_DAILY = 7
 
@@ -122,10 +74,10 @@ function writeState(root: string, state: BackupState): void {
 }
 
 /**
- * Where the count PLUR last wrote to a store file is recorded (owner decision
- * P2, formal run 2026-09-26): `backups/.last-written.json` in the STORE FILE's
- * directory — for the default layout that is the plur root, whose `backups/`
- * is machine-local and git-ignored. Derived from the store path alone, so the
+ * Where the count PLUR last wrote to a store file is recorded:
+ * `backups/.last-written.json` in the STORE FILE's directory — for the default
+ * layout that is the plur root, whose `backups/` is machine-local and
+ * git-ignored. Derived from the store path alone, so the
  * writer ({@link recordLastWritten}, called by `saveEngrams`) and the reader
  * ({@link maybeDailyBackup}) agree without being told the root.
  */
@@ -140,8 +92,7 @@ function lastWrittenPath(storePath: string): string {
  * Written only where a backup directory already exists next to the store — the
  * first snapshot creates it — so a pack's or a migration's scratch store file
  * never grows a `backups/` directory. Best-effort and never throws: a missing
- * record only means the gate falls back to the last good snapshot's count, as
- * before.
+ * record only means the gate falls back to the last good snapshot's count.
  */
 export function recordLastWritten(storePath: string, count: number): void {
   try {
@@ -170,21 +121,11 @@ export function sha256(content: string | Buffer): string {
 }
 
 /**
- * Decide whether a store file is fit to be backed up (or restored from).
- *
- * The checks map 1:1 onto the audit's protection design:
- *
- *   (a) parses
- *   (b) no schema-invalid entries — catches the F2 silent-delete case
- *   (c) count is not far below the last known-good — catches the F1 truncation
- *       case, and is the ONLY check that can, since a truncated file is
- *       perfectly valid YAML describing a smaller corpus
- *   (d) ids non-empty (a repeated id is resolved by the loader, owner decision P1)
- *   (e) non-zero size, and the file ends with a newline as PLUR's writer always
- *       does — a cheap tell for a write cut short
- *
- * `lastGoodCount` is optional because the first ever snapshot has no baseline;
- * (c) is skipped in that case rather than guessed at.
+ * Decide whether a store file is fit to be backed up (or restored from):
+ *   (a) parses; (b) no schema-invalid entries (the loader would drop them);
+ *   (c) count not far below `lastGoodCount` — the ONLY truncation check, skipped
+ *       when there is no baseline; (d) ids non-empty;
+ *   (e) non-zero size and ends with a newline, as PLUR's writer always does.
  */
 export function validateStore(filePath: string, lastGoodCount?: number): StoreValidity {
 
@@ -229,10 +170,8 @@ function validateStoreBytes(raw: Buffer, lastGoodCount?: number): StoreValidity 
   const entries: unknown[] = doc.engrams
   const count = entries.length
 
-  // (b) — every entry typechecks
-  // The loader's per-entry rule (formal round
-  // 2, core-persistence#11): the gate must not judge entries by a different rule
-  // from the one that loads them.
+  // (b) — every entry typechecks, using the loader's per-entry rule: the gate
+  // must not judge entries by a different rule from the one that loads them.
   let invalid = 0
   let missingIds = 0
   for (const entry of entries) {
@@ -240,11 +179,9 @@ function validateStoreBytes(raw: Buffer, lastGoodCount?: number): StoreValidity 
     const id = (entry as any)?.id
     if (typeof id !== 'string' || id.length === 0) missingIds++
   }
-  // (d) — ids non-empty. A REPEATED id is no longer a failure (owner decision
-  // P1, 2026-09-27, "keep both, rename one"): the loader resolves it without
-  // loss — the later, different copy is read under a fresh id, an exact copy
-  // once — so a snapshot of such a file restores to the same engrams. Refusing
-  // it only left the store without a daily backup until the next write.
+  // (d) — ids non-empty. A REPEATED id is not a failure: the loader resolves it
+  // without loss (a later, different copy is read under a fresh id, an exact
+  // copy once), so a snapshot of such a file restores to the same engrams.
   if (invalid > 0) {
     failures.push('invalid-entries')
     reasons.push(`${invalid} entry/entries fail schema validation`)
@@ -312,7 +249,7 @@ export function maybeDailyBackup(root: string, storePath: string, now = new Date
     }
 
     const existing = listBackups(root)
-    // A same-day snapshot outlives its state hint (#1178, F04): if the hint is
+    // A same-day snapshot outlives its state hint: if the hint is
     // lost, the snapshot on disk still answers "done today", and it is never
     // overwritten. Settle that BEFORE validating the live store, which is the
     // expensive part — and remember the answer, in this process and in the
@@ -343,26 +280,20 @@ export function maybeDailyBackup(root: string, storePath: string, now = new Date
       setAside = sameDay
       logger.warning(`[plur:backup] today's snapshot did not match its checksum; moved it to ${aside} and taking a fresh one`)
     }
-    // A corrupt or missing .state.json used to mean "no baseline", so the shrink
-    // gate silently stopped applying and a same-day snapshot could be replaced
-    // by a weaker one (#813, audit finding 14): valid 100-row snapshot, crash
-    // leaves partial state, live corpus becomes a valid 1-row file, restart
-    // overwrites the 100-row backup with 1 row. Fall back to the strongest
-    // existing snapshot's own count, which is on disk in its sidecar and does
-    // not depend on the state file at all.
+    // A corrupt or missing .state.json must not mean "no baseline", or the
+    // shrink gate stops applying and a good snapshot can be replaced by a
+    // truncated one. Fall back to the strongest existing snapshot's own count,
+    // which is in its sidecar and does not depend on the state file.
     const strongest = existing.filter(b => b !== setAside).reduce<number | undefined>(
       (max, b) => (typeof b.count === 'number' && (max === undefined || b.count > max) ? b.count : max),
       undefined,
     )
-    // LAST-WRITTEN first (owner decision P2, formal run 2026-09-26). The gate
-    // exists to catch a file that shrank WITHOUT PLUR writing it (a
-    // truncation). Compared against the last good SNAPSHOT, a legitimate
-    // >10% forget was indistinguishable from one, the baseline could never
-    // move, and backups stopped for good (replayed: days 2–40 refused).
-    // `saveEngrams` records the count it wrote, so a shrink PLUR made itself
-    // re-baselines, while a file smaller than what PLUR last wrote is still
-    // refused. No record yet (first run after upgrade, or a store whose
-    // directory has no backups/): the snapshot baseline, as before.
+    // LAST-WRITTEN first. The gate exists to catch a file that shrank WITHOUT
+    // PLUR writing it (a truncation). Against the last good snapshot alone, a
+    // legitimate >10% forget would look like one and the baseline could never
+    // move. `saveEngrams` records the count it wrote, so a shrink PLUR made
+    // itself re-baselines, while a file smaller than what PLUR last wrote is
+    // still refused. No record yet: fall back to the snapshot baseline.
     const baseline = readLastWritten(storePath) ?? state.last_good_count ?? strongest
     // The bytes validated are the bytes snapshotted (byte-exact backup).
     const bytes = fs.readFileSync(storePath)
@@ -411,8 +342,7 @@ export function maybeDailyBackup(root: string, storePath: string, now = new Date
 
 /**
  * Atomic, durable publication: temp file, fsync, rename, directory fsync.
- * Not a permission change: a new snapshot gets the process default mode
- * (0644 under umask 022), exactly as the previous open-write-fsync did.
+ * A new snapshot gets the process default mode (0644 under umask 022).
  */
 function writeFileDurable(dest: string, bytes: Buffer): void {
   atomicWrite(dest, bytes)
@@ -505,9 +435,8 @@ export interface RestorePlan {
 /**
  * Work out what restoring a given snapshot would actually do, without doing it.
  *
- * A restore is itself a whole-corpus overwrite, so it is exactly the operation
- * the rest of this audit is about. It must therefore be at least as careful as
- * a write: verify the backup independently, and NAME what the user is about to
+ * A restore is itself a whole-corpus overwrite, so it must be at least as
+ * careful as a write: verify the backup independently, and NAME what the user is about to
  * lose rather than rolling them back silently.
  */
 export function planRestore(root: string, storePath: string, stamp?: string): RestorePlan {
@@ -537,9 +466,9 @@ function readRestoreSnapshot(root: string, storePath: string, stamp?: string): {
     actualSha256,
     integrityOk,
     wouldLose,
-    // Compare against the snapshot's INSTANT where we have it. Falling back to
-    // the end of its day is the conservative direction when a sidecar predates
-    // this field: it under-reports rather than inventing losses.
+    // Compare against the snapshot's INSTANT where known. Falling back to the
+    // end of its day (sidecar without `taken_at`) under-reports rather than
+    // inventing losses.
     unrecoverable: idsCreatedAfter(root, backup.takenAt ?? `${backup.stamp}T23:59:59.999Z`)
       .filter(id => !backupIds.has(id)),
   } }
@@ -562,18 +491,9 @@ function idsFromBytes(bytes: Buffer): string[] {
 }
 
 /**
- * Engram ids the append-only history records as created (`engram_created`)
- * after `since` and not retired (`engram_retired`) since (a full ISO instant,
- * compared lexically — ISO-8601 UTC sorts correctly).
- *
- * History is JSONL under `history/`, which the audit confirmed is the one
- * append-only artifact that survived every concurrency probe (P09C: 240/240
- * lines). That makes it the right source for "what existed that the backup does
- * not have" — the difference between a restore and a second data-loss event.
- *
- * This matters most for same-day losses. Snapshots are daily, so everything
- * learned after the morning's snapshot is unprotected by it; naming those
- * engrams is the only way the user learns what a restore costs them.
+ * Engram ids the append-only history records as created (`engram_created`) after
+ * `since` (full ISO instant, compared lexically) and not retired since. History
+ * JSONL loses no lines under concurrency, so it names what a same-day restore loses.
  */
 /** Canonical engram id shape (schemas/engram.ts: `^(ENG|ABS|META)-[A-Za-z0-9-]+$`). */
 const ENGRAM_ID = /^(?:ENG|ABS|META)-[A-Za-z0-9-]+$/
@@ -594,13 +514,11 @@ function idsCreatedAfter(root: string, since: string): string[] {
       try {
         const ev = JSON.parse(line)
         if (typeof ev?.timestamp !== 'string' || ev.timestamp <= since) continue
-        // Engram ids only (formal-verification finding, persistence.md candidate 6):
-        // every history event carries `engram_id`, but co_injection rows put an
-        // injection id (INJ-…) there and session-level events put ''. Naming
-        // those as "engrams this restore loses" is a false alarm in the one
-        // warning a user reads before overwriting their store.
+        // Engram ids only: co_injection rows put an injection id (INJ-…) in
+        // `engram_id` and session-level events put ''. Naming those as
+        // "engrams this restore loses" would be a false alarm.
         if (typeof ev?.engram_id !== 'string' || !ENGRAM_ID.test(ev.engram_id)) continue
-        // CREATED only, minus later retirements (owner decision P3, 2026-09-26).
+        // CREATED only, minus later retirements.
         // Feedback, updates or injections of an engram that predates the
         // snapshot do not make it "created after" it, and an engram created and
         // then retired after the snapshot is not something a restore loses.
@@ -630,29 +548,10 @@ export function restoreBackup(
   storePath: string,
   opts: { stamp?: string; force?: boolean } = {},
 ): RestoreResult {
-  // Under the store lock, and atomic (#811 audit, finding 10).
-  //
-  // Restoring is a whole-corpus overwrite — the exact operation the rest of
-  // this audit constrains — and it was doing it unlocked, through a truncating
-  // open on the LIVE file. Two consequences:
-  //
-  //   - a writer committing between the superseded copy and the overwrite left
-  //     its engram in NEITHER file, with both calls reporting success
-  //   - a crash mid-write left the live corpus partial, which is precisely the
-  //     input the loader now refuses
-  //
-  // `withLock` here is the synchronous variant, which shares the `<path>.lock`
-  // file protocol with `withAsyncLock` — so a restore run from the CLI waits
-  // for an MCP server mid-write, which is the case that matters.
-  //
-  // PLANNING happens inside the lock too (audit 2026-08-03, finding 12). Read
-  // outside it, `wouldLose` and `unrecoverable` describe a corpus that may have
-  // changed before the overwrite lands: an engram learned in between is copied
-  // aside and then replaced, while the result — whose entire contract is to
-  // NAME what it removes — never mentions it. The data is still recoverable
-  // from the superseded copy, but the operator was told it was not at risk.
-  // The refusal checks move in with it, so a plan can never be validated
-  // against one state and applied to another.
+  // Under the store lock (a concurrent commit would land in NEITHER file) and atomic
+  // (a partial corpus is refused). `withLock` shares the `<path>.lock` protocol with
+  // `withAsyncLock`, so a CLI restore waits for an MCP server. Planning and refusal
+  // checks run inside the lock too, against the exact corpus being replaced.
   let plan!: RestorePlan
   const superseded = `${storePath}.superseded-${Date.now()}-${randomUUID()}`
   withLock(storePath, () => {
@@ -678,14 +577,14 @@ export function restoreBackup(
       }
     }
     if (fs.existsSync(storePath)) {
-      // Same mode as the store it copies (copyFileSync did this before): it
-      // holds the whole corpus, including scope:local engrams.
+      // Same mode as the store it copies: it holds the whole corpus,
+      // including scope:local engrams.
       atomicWrite(superseded, fs.readFileSync(storePath), { mode: fs.statSync(storePath).mode & 0o777 })
     }
     // tmp + fsync + rename, rather than truncating the live file in place.
     atomicWrite(storePath, snapshot.bytes)
     // A restore is a PLUR write: record its count so the backup gate does not
-    // read the (often smaller) restored corpus as a truncation (decision P2).
+    // read the (often smaller) restored corpus as a truncation.
     if (typeof plan.validity.count === 'number') recordLastWritten(storePath, plan.validity.count)
   })
 

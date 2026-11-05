@@ -1,14 +1,8 @@
 /**
- * Remove a known secret from text that is about to be shown (#1265, audit of
- * #1272). A server that answers with an error body can hand the caller's own
- * token back, and not always verbatim: a URL-encoded query echo, a JSON-escaped
- * field, or a base64 Basic-auth style blob all carry it. An exact-string scrub
- * misses every one of those, so each encoding is removed too.
- *
- * Forms covered: raw; percent-encoded (encodeURIComponent and encodeURI,
- * either hex case); JSON-escaped; base64 with and without padding; base64url.
- * Not covered: a PREFIX or fragment of the token, or its base64 when it sits
- * at an offset inside a larger base64 blob — those do not have a fixed form.
+ * Remove a known secret from text about to be shown, in every fixed encoding a server may
+ * echo it in: raw; percent-encoded (encodeURIComponent and encodeURI, either hex case);
+ * JSON-escaped; base64 with and without padding; base64url.
+ * Not covered: a prefix or fragment of the token, or its base64 at an offset in a larger blob.
  */
 const REDACTED = '[redacted]'
 

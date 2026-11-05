@@ -1,0 +1,44 @@
+anchors:
+  packages/claw/src/context-engine.ts#MAX_TRACKED_SESSIONS:
+    kind: guarantee
+    rule: "Per-session state (scope, message buffer, learned set) stays bounded in a long-lived gateway; the least recently used sessions are dropped first."
+    lean: ["PlurSpec/R2Integrations.lean:lru_bounded"]
+    tests: ["packages/claw/test/formal-r2-integrations-claw.test.ts::per-session state stays bounded across many top-level sessions"]
+  packages/claw/src/index.ts#plugin.register:
+    kind: guarantee
+    rule: "The setup run at plugin registration is idempotent: an already configured install is left as it is."
+    tests: ["packages/claw/test/setup.test.ts::is idempotent when fully configured"]
+  packages/claw/src/setup.ts#configShapeProblem:
+    kind: guarantee
+    rule: "Setup and repair refuse to write rather than replace a config value that is not an object, and name the key to fix."
+    lean: ["PlurSpec/R2Integrations.lean:user_value_never_discarded"]
+    tests: ["packages/claw/test/formal-r2-integrations-claw.test.ts::setup leaves the file untouched when plugins is", "packages/claw/test/formal-r2-integrations-claw.test.ts::repair leaves the file untouched when plugins is"]
+  packages/claw/src/setup.ts#currentEntry:
+    kind: guarantee
+    rule: "Repair never re-grants conversation access the user explicitly turned off."
+    none: "no repair-mode test sets allowConversationAccess to false and checks it is kept"
+  packages/claw/src/setup.ts#existing:
+    kind: guarantee
+    rule: "Setup only adds or updates its own plugin entry and never removes or rewrites another plugin's entry."
+    tests: ["packages/claw/test/setup.test.ts::preserves a third-party entry (and its credentials) when its extension dir is absent"]
+  packages/claw/src/setup.ts#existingHooks:
+    kind: guarantee
+    rule: "Setup grants conversation access only when the user has not set it, and never overrides an explicit false."
+    tests: ["packages/claw/test/setup.test.ts::does not re-grant allowConversationAccess when the user set it false"]
+  packages/claw/src/setup.ts#hooksMissing:
+    kind: guarantee
+    rule: "Repair treats only an absent conversation-access setting as missing, so an explicit false is never re-granted."
+    none: "no repair-mode test covers an explicit false"
+  packages/claw/src/setup.ts#orphanedEntriesStep:
+    kind: guarantee
+    rule: "The orphaned-entries check only warns and never deletes or changes config, and runs only from doctor."
+    tests: ["packages/claw/test/setup.test.ts::warns (does NOT delete) a genuinely-orphaned third-party entry and its API key"]
+  packages/claw/src/setup.ts#runRepair:
+    kind: guarantee
+    rule: "Repair never discards a config value it cannot read as an object; the file is left untouched."
+    lean: ["PlurSpec/R2Integrations.lean:user_value_never_discarded"]
+    tests: ["packages/claw/test/formal-r2-integrations-claw.test.ts::repair leaves the file untouched when plugins is"]
+  packages/claw/src/setup.ts#tmp:
+    kind: guarantee
+    rule: "The config is written atomically through a temp file and rename, so a crash never leaves it truncated."
+    none: "no test interrupts a config write"

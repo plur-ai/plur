@@ -15,8 +15,8 @@ export interface AutoSearchResult {
  * The label a hybrid run earns. `hybridSearchWithMeta` degrades instead of
  * throwing when the embedder is unavailable (mode 'hybrid-degraded') or the
  * user disabled it ('bm25-only'); either way the fused list is lexical only,
- * so reporting 'hybrid' would claim a semantic leg that never ran
- * (formal R2, core-retrieval#9). Labels only — the routing below is unchanged.
+ * so reporting 'hybrid' would claim a semantic leg that never ran. Labels
+ * only — the routing below is unchanged.
  */
 async function runHybrid(
   engrams: Engram[], query: string, limit: number, storagePath?: string,

@@ -2,21 +2,12 @@ import { z } from 'zod'
 import { logger } from '../logger.js'
 
 /**
- * Self-describing scope metadata (#345, Stage 2). A scope can declare what it is
- * for, what it covers, and — crucially — its own sensitivity policy, so the
- * write-time leak guard can make a per-scope decision instead of the blanket
- * "any shared scope rejects all sensitive content" rule from Stage 1.
- *
- * Metadata is OPTIONAL everywhere. A scope with no metadata falls back to the
- * Stage 1 behavior exactly (isSharedScope + detectSensitive → demote). The
- * `sensitivity` default (`forbid: ['secrets','infra']`) reproduces that behavior
- * for a shared scope that declares metadata but no explicit policy, so adding
- * metadata is non-breaking.
- *
- * In Stage 2 this metadata is carried locally on a config `stores` entry
- * (packages/core/src/schemas/config.ts). The enterprise `scopes` table /
- * `/api/v1/scopes` API / admin UI that would serve it centrally are a separate
- * track and intentionally NOT built here.
+ * Self-describing scope metadata: a scope can declare its purpose, coverage and
+ * sensitivity policy, so the write-time leak guard decides per scope. Metadata
+ * is OPTIONAL; without it a shared scope gets the blanket rule (isSharedScope +
+ * detectSensitive → demote), and the `sensitivity` default reproduces that, so
+ * adding metadata is non-breaking. Locally carried on a config `stores` entry
+ * (packages/core/src/schemas/config.ts).
  */
 
 /** Categories of sensitive content a scope can forbid or explicitly allow.
@@ -27,46 +18,27 @@ import { logger } from '../logger.js'
  *
  *  PII detection is deliberately OUT OF SCOPE: no detector maps to a 'pii'
  *  category, so a scope declaring `forbid: ['pii']` would silently protect
- *  nothing (false protection). The category is therefore omitted entirely
- *  rather than shipped as a no-op. It can be reintroduced — added back here AND
- *  to sensitivityCategory()'s return type in secrets.ts — once a real,
- *  low-false-positive PII detector exists. */
+ *  nothing. Add it back here AND to sensitivityCategory()'s return type in
+ *  secrets.ts only once a real, low-false-positive PII detector exists. */
 export const SENSITIVITY_CATEGORIES = ['secrets', 'infra'] as const
 export type SensitivityCategory = (typeof SENSITIVITY_CATEGORIES)[number]
 
 /**
- * TRUST RULE (scope-audit 2026-07-24): remote-served sensitivity may only
- * TIGHTEN the write-time leak guard, never loosen it. The guard consults
- * `allow` BEFORE `forbid`, and `allow` accepts arbitrary strings — so a
- * hostile/compromised enterprise `/me` serving `allow:['secrets','infra']`
- * would silently disarm the guard for that scope at the next session_start.
- * persistScopeMetadata therefore NEVER persists a remote `allow` (it is
- * dropped) and persists only `forbid`, sanitized to SENSITIVITY_CATEGORIES.
- * A hand-edited `allow` in local config.yaml remains honored by the guard —
- * that is a deliberate LOCAL decision, made on the machine the data lives on,
- * not one a remote endpoint can make for you.
+ * TRUST RULE: remote-served sensitivity may only TIGHTEN the leak guard, never
+ * loosen it (the guard consults `allow` before `forbid`). persistScopeMetadata
+ * NEVER persists a remote `allow` and persists only `forbid`, sanitized to
+ * SENSITIVITY_CATEGORIES. A hand-edited local `allow` is still honored: that is
+ * a local decision a remote endpoint cannot make for you.
  */
 export const ScopeSensitivitySchema = z.object({
   /**
-   * Sensitive categories that must NOT be written to this scope (PR-3, #353
-   * HIGH-17/18). A bare `z.enum(...)` array used to be FATAL on an unknown
-   * category: a single hand-edited / forward-compat `forbid: ['pii']` failed the
-   * whole StoreEntry safeParse, so loadConfig dropped the entry — including its
-   * `url`/`token`. We now preprocess element-wise: unknown categories are
-   * dropped (named in a warning), valid ones survive, and only an empty result
-   * falls to the safe default. The whole StoreEntry NO LONGER fails on a bad
-   * `forbid` CATEGORY or a scalar `forbid`. (R2-D #7) Malformations of the
-   * ENCLOSING shape — a scalar `sensitivity`, a non-array `allow`, or a
-   * non-array `covers` — are tolerated separately: `allow` coerces non-arrays
-   * to `[]` here, and `sensitivity`/`covers` shape-coerce in config.ts's
-   * StoreEntrySchema. So url/token survive ANY metadata malformation, not just
-   * a bad `forbid` category.
-   *   `['secrets','pii']` → `['secrets']` (warn: pii)
-   *   `['pii']`           → `['secrets','infra']` (warn: pii)
-   *   scalar `'secrets'`  → `['secrets','infra']` (non-array → safe default, no Zod throw)
-   * The preprocess can't name the scope (it runs inside the field schema), so
-   * loadConfig adds a post-parse pass that diffs raw vs parsed `forbid` per entry
-   * and logs `scope=<s>` for the naming.
+   * Sensitive categories that must NOT be written to this scope. Preprocessed
+   * element-wise so a bad value never fails the whole StoreEntry parse (which
+   * would drop its `url`/`token`): unknown categories are dropped with a
+   * warning, and only an empty or non-array result falls to the safe default
+   * (`['pii']` → `['secrets','infra']`). Enclosing-shape malformations are
+   * coerced too (`allow` here, `sensitivity`/`covers` in config.ts), so
+   * url/token survive ANY metadata malformation. loadConfig logs `scope=<s>`.
    */
   forbid: z.preprocess((val) => {
     if (Array.isArray(val)) {
@@ -80,82 +52,66 @@ export const ScopeSensitivitySchema = z.object({
     return ['secrets', 'infra'] // non-array (e.g. hand-edited scalar) → safe default, NOT a re-thrown Zod error
   }, z.array(z.enum(SENSITIVITY_CATEGORIES)).default(['secrets', 'infra']))
     .describe('Sensitive categories that must NOT be written to this scope. A write that trips one of these is demoted to local/private. Default reproduces Stage 1: secrets + infra are forbidden on shared scopes. Unknown categories are dropped (not fatal) so a forward/hand-edited category never drops the whole store entry.'),
-  // `allow` is shape-tolerant for the same reason `forbid` is (R2-D #7): a
-  // hand-edited / forward-compat scalar (`allow: 'infra'`) or any non-array
-  // shape must NOT fail the whole StoreEntry safeParse — otherwise loadConfig
-  // drops the entry incl. its url/token. A non-array coerces to the safe
-  // default `[]` (allow nothing) rather than throwing.
+  // `allow` is shape-tolerant for the same reason as `forbid`: a hand-edited
+  // or forward-compat scalar (`allow: 'infra'`) or any non-array shape must
+  // NOT fail the whole StoreEntry safeParse, or loadConfig drops the entry
+  // incl. its url/token. A non-array coerces to the safe default `[]` (allow
+  // nothing) rather than throwing.
   allow: z.preprocess((val) => (Array.isArray(val) ? val.filter((x) => typeof x === 'string') : []), z.array(z.string()).default([]))
     .describe('Detector pattern names or category names explicitly permitted on this scope, overriding `forbid`. A match whose categories are ALL allowed is not demoted (e.g. a scope that legitimately holds infra topology can allow "infra"). A non-array shape coerces to [] (not fatal) so it never drops the whole store entry.'),
 })
-  // PR-3 (#353): preserve unknown NESTED fields inside `sensitivity` on a
-  // successful parse, so a future sub-schema field survives the persistStores
-  // writeback (which merges parsed deltas onto the raw entry). Without this the
-  // typed parse would strip nested unknowns and the merge could never see them.
+  // Preserve unknown NESTED fields inside `sensitivity` on a successful parse,
+  // so a future sub-schema field survives the persistStores writeback (which
+  // merges parsed deltas onto the raw entry). Without this the typed parse
+  // would strip nested unknowns and the merge could never see them.
   .passthrough()
   .describe('Per-scope sensitivity policy consumed by the write-time leak guard.')
 
 export type ScopeSensitivity = z.infer<typeof ScopeSensitivitySchema>
 
 /**
- * Prompt-injection hardening for the directive surface (#345). A scope's
- * `description` and `covers[]` are surfaced VERBATIM to the agent via
- * `plur_scopes_discover` — they are part of the agent's directive surface,
- * exactly like scope NAMES, which were hardened in RemoteStore.me() for the
- * same reason (#426/#427). A hostile or MITM'd store's `/api/v1/me` can return
- * a 10KB, newline-laden, or control-char "IGNORE ALL PREVIOUS INSTRUCTIONS…"
- * description to smuggle instructions into the agent.
- *
- * We bound these fields HERE in the schema rather than only at the trust
- * boundary, because the remote `/me` path validates every `scope_metadata`
- * entry through this schema and DROPS any entry that fails `safeParse`
- * (remote-store.ts). So these bounds make the remote path reject hostile
- * metadata — the same "drop the malformed entry" defense the sibling `scopes`
- * array already applies. The local config path (getScopeMetadata) is
- * user-authored and trusted, so it is unaffected.
+ * Prompt-injection hardening: a scope's `description` and `covers[]` reach the
+ * agent VERBATIM via `plur_scopes_discover`, so a hostile store's
+ * `/api/v1/me` could smuggle instructions in. The bounds live in the schema
+ * because the remote `/me` path DROPS any `scope_metadata` entry failing
+ * `safeParse` (remote-store.ts). Local config is user-authored and unaffected.
  */
 const MAX_DESCRIPTION_LEN = 500
 const MAX_COVER_LEN = 120
 const MAX_COVERS = 32
 // Forbid C0 control chars (U+0000–U+001F — includes \n, \r, \t), DEL (U+007F),
-// and C1 control chars (U+0080–U+009F): the newline / control-char channel a
-// prompt-injection payload needs to fake a new instruction block. ECMA-262 defines exactly four LineTerminators (LF, CR, U+2028 LS, U+2029 PS) and all four are excluded here, so a payload cannot break the directive onto a fake new line on any Unicode-aware renderer. Ordinary
-// printable text (incl. unicode punctuation and emoji) passes untouched.
+// C1 control chars (U+0080–U+009F) and U+2028/U+2029: the newline /
+// control-char channel a prompt-injection payload needs to fake a new
+// instruction block. All four ECMA-262 LineTerminators (LF, CR, LS, PS) are
+// excluded. Ordinary printable text (incl. unicode punctuation and emoji)
+// passes untouched.
 const NO_CONTROL_CHARS = /^[^\u0000-\u001F\u007F-\u009F\u2028\u2029]*$/
-const NO_CONTROL_MSG = 'must not contain control characters or newlines (directive-surface hardening, #345)'
+const NO_CONTROL_MSG = 'must not contain control characters or newlines (directive-surface hardening)'
 
 export const ScopeMetadataSchema = z.object({
   scope: z.string()
     .describe('The scope this metadata describes (e.g. "group:plur/engineering", "project:plur").'),
-  // null-tolerant (#843). A server serialising an unset nullable column as JSON
-  // `null` used to fail this field outright, and because RemoteStore.me() drops
-  // failures inside a flatMap, EVERY ordinary scope row vanished — silently
-  // disabling covers-based auto-routing on a live deployment. Coerced to '' so
-  // the OUTPUT type stays `string` and no consumer has to learn about null.
-  // `=== null` deliberately, NOT `== null`: an explicit null is a server
-  // serialising an unset column, but an ABSENT description is a malformed row
-  // and must still be rejected. Coercing undefined too would quietly turn a
-  // required field optional.
+  // null-tolerant: a server serialises an unset nullable column as JSON
+  // `null`, and RemoteStore.me() silently drops rows that fail to parse.
+  // Coerced to '' so the OUTPUT type stays `string`.
+  // `=== null` deliberately, NOT `== null`: an ABSENT description is a
+  // malformed row and must still be rejected. Coercing undefined too would
+  // quietly turn a required field optional.
   description: z.preprocess(
     v => (v === null ? '' : v),
     z.string().max(MAX_DESCRIPTION_LEN).regex(NO_CONTROL_CHARS, NO_CONTROL_MSG),
   )
-    .describe('Human-readable explanation of what this scope is for. Surfaced VERBATIM in scope/store discovery — bounded in length and free of control chars/newlines so a hostile remote cannot inject instructions (#345). An explicit null reads as empty, so a server serialising an unset column does not fail the row; the key itself is still required (#843).'),
+    .describe('Human-readable explanation of what this scope is for. Surfaced VERBATIM in scope/store discovery — bounded in length and free of control chars/newlines so a hostile remote cannot inject instructions. An explicit null reads as empty, so a server serialising an unset column does not fail the row; the key itself is still required.'),
   covers: z.array(z.string().max(MAX_COVER_LEN).regex(NO_CONTROL_CHARS, NO_CONTROL_MSG)).max(MAX_COVERS).default([])
-    .describe('Topics, domains, or areas this scope is the home for. Advisory; helps an agent pick the right scope and is surfaced in discovery. Each entry is length-bounded and control-char-free, and the list is capped, for the same directive-surface reason as `description` (#345).'),
-  // null -> undefined at the trust boundary (#843): Zod's .optional()
-  // REJECTS null, and an unset nullable column is exactly what a server
-  // sends as null.
+    .describe('Topics, domains, or areas this scope is the home for. Advisory; helps an agent pick the right scope and is surfaced in discovery. Each entry is length-bounded and control-char-free, and the list is capped, for the same directive-surface reason as `description`.'),
+  // null -> undefined at the trust boundary: Zod's .optional() REJECTS null,
+  // and an unset nullable column is exactly what a server sends as null.
   sensitivity: z.preprocess(v => (v === null ? undefined : v), ScopeSensitivitySchema.optional())
     .describe('Per-scope sensitivity policy. When present, the leak guard uses it; when absent, the guard falls back to the default shared-scope behavior.'),
-  // null -> undefined at the trust boundary (#843): Zod's .optional()
-  // REJECTS null, and an unset nullable column is exactly what a server
-  // sends as null.
+  // null -> undefined at the trust boundary (see `sensitivity`).
   injection_policy: z.preprocess(v => (v === null ? undefined : v), z.enum(['on_match', 'on_request', 'always']).optional())
     .describe("When the loader may inject this scope's engrams. Mirrors pack injection_policy semantics."),
-  // null -> undefined at the trust boundary (#843): Zod's .optional()
-  // REJECTS null, and an unset nullable column is exactly what a server
-  // sends as null.
+  // null -> undefined at the trust boundary (see `sensitivity`).
   owner: z.preprocess(v => (v === null ? undefined : v), z.string().optional())
     .describe('Owner of the scope (person or team). Advisory.'),
 }).describe('Self-describing metadata for an engram scope (Open Engram Standard, scope layer).')

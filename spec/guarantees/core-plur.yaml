@@ -1,0 +1,1663 @@
+anchors:
+  packages/core/src/plur/config-stores.ts#after:
+    kind: guarantee
+    rule: >-
+      Saving the stores list replaces config.yaml atomically, so a crash mid-write leaves the previous complete config
+      rather than a truncated one.
+    none: no test crashes a stores write mid-way; the atomic-write helper is tested on its own, not through this writer
+  packages/core/src/plur/config-stores.ts#canonicalStorePath:
+    kind: guarantee
+    rule: >-
+      The primary store file is never registered as a secondary store under any spelling, and another spelling of a
+      registered store counts as the same store.
+    tests:
+      - >-
+        packages/core/test/duplicate-primary-store.test.ts::addStore refuses a path that canonicalises to the primary
+        store
+      - >-
+        packages/core/test/duplicate-primary-store.test.ts::addStore treats another spelling of a registered store as
+        already registered
+  packages/core/src/plur/config-stores.ts#ConfigStoresMethods:
+    kind: guarantee
+    rule: >-
+      A new key for a server entry is written only onto the one entry it came from, and is refused with nothing written
+      when no entry or more than one matches; an entry read from an environment variable stores the variable name, never
+      the token.
+    tests:
+      - >-
+        packages/core/test/server-entry-writeback-identity.test.ts::a scope that two server entries on one url both list
+        is refused and nothing changes
+      - packages/core/test/config-token-env-1561.test.ts::addStore with tokenEnv writes the reference, not the token
+  packages/core/src/plur/config-stores.ts#configStoresMethods._loadConfig:
+    kind: guarantee
+    rule: When two configured scopes share one id prefix, every action by a namespaced id for them is refused.
+    tests:
+      - >-
+        packages/core/test/team-id-prefix-followups.test.ts::two configured scopes sharing a prefix: an action by
+        namespaced id is refused and changes nothing
+  packages/core/src/plur/config-stores.ts#configStoresMethods.addRemoteStore:
+    kind: guarantee
+    rule: >-
+      Registering a remote store for a scope another store already holds is refused unless the caller explicitly asks to
+      overwrite, and the overwrite happens only after the server verified the token.
+    tests:
+      - >-
+        packages/core/test/add-remote-store.test.ts::refuses without overwriteScope, naming the option, and writes
+        nothing
+      - >-
+        packages/core/test/add-remote-store.test.ts::with overwriteScope but a rejected token, the existing entry is
+        untouched
+  packages/core/src/plur/config-stores.ts#configStoresMethods.addStore:
+    kind: guarantee
+    rule: >-
+      One scope of a server entry cannot be replaced on its own; adding a store with a token taken from an environment
+      variable stores only the variable name; re-adding an existing store is idempotent.
+    tests:
+      - >-
+        packages/core/test/multi-scope-store-entry.test.ts::replacing one scope of a server entry with another store is
+        refused and changes nothing
+      - packages/core/test/config-token-env-1561.test.ts::addStore with tokenEnv writes the reference, not the token
+  packages/core/src/plur/config-stores.ts#configStoresMethods.persistStores:
+    kind: guarantee
+    rule: >-
+      Saving the stores list never truncates a live config.yaml when it cannot be read, and a key update that matches no
+      entry or several is refused with nothing written.
+    lean:
+      - PlurSpec/StoreEntry.lean:mistarget_impossible
+    tests:
+      - >-
+        packages/core/test/pr3-config-robustness.test.ts::aborts the write (does not discard auto_learn/embeddings/etc)
+        when the config read fails transiently
+      - >-
+        packages/core/test/server-entry-writeback-identity.test.ts::a scope that two server entries on one url both list
+        is refused and nothing changes
+  packages/core/src/plur/config-stores.ts#configStoresMethods.registerEnterpriseServer:
+    kind: guarantee
+    rule: >-
+      Registering a company server refuses to replace a sign-in config.yaml already holds when asked to keep it, and a
+      credential write that cannot be made owner-only is refused without the key appearing in the error.
+    lean:
+      - PlurSpec/Persistence.lean:every_config_writer_protected
+    tests:
+      - >-
+        packages/core/test/register-enterprise-server-stale.test.ts::keepSignIn: a sign-in config.yaml holds for the
+        server is never replaced; nothing is written
+  packages/core/src/plur/config-stores.ts#configStoresMethods.verifyRemoteStore:
+    kind: guarantee
+    rule: >-
+      Verifying a remote store refuses a scope held by a different store unless overwrite was asked, and never allows
+      overwriting one scope of a server entry.
+    tests:
+      - >-
+        packages/core/test/multi-scope-store-entry.test.ts::verifyRemoteStore refuses the same replacement before
+        anything is written
+      - packages/core/test/add-remote-store.test.ts::refuses what addRemoteStore refuses, with the same codes
+  packages/core/src/plur/config-stores.ts#driver:
+    kind: guarantee
+    rule: A token that has not yet been verified is never cached as the server's driver.
+    none: no test checks that a rejected token leaves no cached driver
+  packages/core/src/plur/config-stores.ts#keyOf:
+    kind: guarantee
+    rule: >-
+      The stores write-back matches entries by url plus scope (or path plus scope), never by url alone, so changing one
+      scope of a server leaves its other scopes untouched.
+    tests:
+      - >-
+        packages/core/test/pr3-config-robustness.test.ts::rotating one of two same-url/different-scope stores leaves the
+        other untouched (url+scope key)
+  packages/core/src/plur/config-stores.ts#localMatches:
+    kind: guarantee
+    rule: A store entry ignored at load is never reported as the registration that covers a path.
+    tests:
+      - packages/core/test/duplicate-primary-store.test.ts::addStore on the path of an ignored duplicate says so
+  packages/core/src/plur/config-stores.ts#outbox:
+    kind: guarantee
+    rule: >-
+      Registering a company server reads the outbox before writing the key, so an unreadable outbox fails the
+      registration with nothing written.
+    tests:
+      - >-
+        packages/core/test/register-enterprise-server.test.ts::an unreadable outbox fails the registration before
+        anything is written
+  packages/core/src/plur/config-stores.ts#rawArray:
+    kind: guarantee
+    rule: >-
+      A write-back keeps a token_env reference and never writes the resolved token, and lands each entry on its own
+      on-disk entry by identity, never by position.
+    lean:
+      - PlurSpec/StoreEntry.lean:identity_stable
+      - PlurSpec/StoreEntry.lean:mistarget_impossible
+    tests:
+      - >-
+        packages/core/test/multi-scope-store-entry.test.ts::token_env on a server entry is never written back as a
+        resolved token
+      - >-
+        packages/core/test/server-entry-writeback-identity.test.ts::metadata computed before another process inserted a
+        server entry at index 0 lands on its own entry
+  packages/core/src/plur/discovery.ts#coversMatch:
+    kind: guarantee
+    rule: >-
+      Syncing server scope metadata writes config.yaml only when the value it would persist differs, so repeated syncs
+      of the same answer converge to no writes.
+    tests:
+      - packages/core/test/scope-metadata-trust.test.ts::two consecutive syncs with identical server metadata
+      - >-
+        packages/core/test/scope-metadata-sync.test.ts::is a no-op when metadata matches existing covers (no spurious
+        write)
+  packages/core/src/plur/discovery.ts#DiscoveryMethods:
+    kind: guarantee
+    rule: >-
+      A failed or degraded server answer never replaces a non-empty cached scope list, and a server can only tighten the
+      local leak guard, never loosen it with an allow list.
+    lean:
+      - PlurSpec/RoutingDiscovery.lean:nonempty_cache_replaced_only_by_ok
+      - PlurSpec/RoutingDiscovery.lean:malformed_keeps_cache
+    tests:
+      - >-
+        packages/core/test/refresh-server-scopes.test.ts::a later 503 leaves scope, scopes and discovery.discovered_at
+        byte-identical and reports failed
+      - >-
+        packages/core/test/scope-metadata-trust.test.ts::drops a hostile remote allow; the guard still demotes sensitive
+        content
+  packages/core/src/plur/discovery.ts#discoveryMethods.checkServerStores:
+    kind: guarantee
+    rule: The server check reports a malformed server entry instead of silently treating it as nothing to check.
+    tests:
+      - >-
+        packages/core/test/check-server-stores.test.ts::reports a malformed enterprise entry instead of silently
+        dropping its server
+  packages/core/src/plur/discovery.ts#discoveryMethods.persistDismissedScopes:
+    kind: guarantee
+    rule: Saving dismissed scopes replaces config.yaml atomically, so a crash mid-write leaves the previous complete config.
+    none: no test crashes a dismissed-scopes write mid-way
+  packages/core/src/plur/discovery.ts#discoveryMethods.refreshServerScopes:
+    kind: guarantee
+    rule: When two server entries share a url, a server answer is written to neither of them.
+    lean:
+      - PlurSpec/RoutingDiscovery.lean:answer_lands_on_its_entry
+    tests:
+      - packages/core/test/formal-routing-discovery.test.ts::neither entry is written and both outcomes are failed
+  packages/core/src/plur/discovery.ts#dismissed:
+    kind: guarantee
+    rule: Batch registration of discovered scopes never registers a scope the user dismissed.
+    tests:
+      - >-
+        packages/core/test/scope-discovery.test.ts::batch register respects dismissals: a dismissed scope is NOT
+        registered and stays dismissed
+  packages/core/src/plur/discovery.ts#dismissedSet:
+    kind: guarantee
+    rule: A dismissed scope is not offered again when the server re-advertises it in different letter case.
+    tests:
+      - packages/core/test/scope-discovery.test.ts::dismissed-scope matching is case-insensitive
+  packages/core/src/plur/discovery.ts#results:
+    kind: guarantee
+    rule: >-
+      Batch registration never auto-registers a personal-family scope a server lists, skips dismissed scopes, and one
+      failing scope does not abort the rest of the batch.
+    tests:
+      - packages/core/test/scope-discovery.test.ts::#382 refuses to auto-register personal-family scopes returned by /me
+      - packages/core/test/scope-discovery.test.ts::batch register respects dismissals
+  packages/core/src/plur/discovery.ts#timeoutHandle:
+    kind: guarantee
+    rule: Listing stores with remote counts never hangs on an unresponsive remote; its load is cut off by a timeout.
+    none: no test lists stores against a hanging remote
+  packages/core/src/plur/feedback-pin.ts#entry:
+    kind: guarantee
+    rule: Rating a memory under an explicit scope that two servers claim is refused before either server is asked.
+    lean:
+      - PlurSpec/RoutingDiscovery.lean:lookup_refuses_conflict
+    tests:
+      - packages/core/test/project-scope-routing.test.ts::feedback is refused and no server is rated
+  packages/core/src/plur/feedback-pin.ts#FeedbackPinMethods:
+    kind: guarantee
+    rule: >-
+      An automatic rating moves ranking only and never changes a memory's commitment; the hard pinned tier can never
+      grow past its share of the pinned quota.
+    tests:
+      - >-
+        packages/core/test/feedback-auto-source.test.ts::moves retrieval_strength and never commitment, however many
+        times it fires
+      - packages/core/test/pinned-two-tier-safety.test.ts::is a fraction of the pinned quota and never exceeds it
+      - >-
+        packages/core/test/pinned-two-tier-safety.test.ts::holds under concurrent writes (committed total never exceeds
+        it)
+    promises:
+      - FDB-2
+  packages/core/src/plur/feedback-pin.ts#feedbackPinMethods._assertHardTierFits:
+    kind: guarantee
+    rule: Editing or retiring a memory that is no longer active is never refused because the hard pinned tier is full.
+    tests:
+      - packages/core/test/pinned-two-tier-safety.test.ts::editing an already-retired hard engram succeeds
+      - >-
+        packages/core/test/pinned-two-tier-safety.test.ts::retiring a hard engram via updateEngram succeeds even when
+        the statement grows
+  packages/core/src/plur/feedback-pin.ts#feedbackPinMethods._reconcileQueuedScope:
+    kind: guarantee
+    rule: >-
+      A save queued from a remote-only folder is never turned into a local row by an update that changes its scope; such
+      an update is refused.
+    tests:
+      - >-
+        packages/core/test/folder-remote-only-guard.test.ts::a queued remote-only save cannot be rescoped or updated to
+        a local scope, bound or not
+  packages/core/src/plur/feedback-pin.ts#feedbackPinMethods.feedback:
+    kind: guarantee
+    rule: >-
+      Rating with scope primary never rates a remote memory, and an explicit scope only ever rates a row of a store that
+      claims exactly that scope.
+    lean:
+      - PlurSpec/RoutingDiscovery.lean:walk_exact
+    tests:
+      - >-
+        packages/core/test/project-scope-routing.test.ts::feedback with a personal scope a local store keeps does not
+        rate a row of another url store
+      - >-
+        packages/core/test/project-scope-routing.test.ts::feedback with a project scope the company server withholds is
+        refused, nothing rated
+  packages/core/src/plur/feedback-pin.ts#feedbackPinMethods.pinnedQuota:
+    kind: guarantee
+    rule: Pricing a pin does not charge an engram that is already pinned, so a re-pin is never refused by its own cost.
+    tests:
+      - packages/core/test/pinned-quota.test.ts::does not charge a re-pin of something already pinned
+  packages/core/src/plur/feedback-pin.ts#feedbackPinMethods.setPinned:
+    kind: guarantee
+    rule: >-
+      A namespaced id is pinned only in the store it names, a readonly store's row is never pinned through a bare id,
+      and re-pinning an already pinned memory is never refused.
+    tests:
+      - >-
+        packages/core/test/pinned-two-tier-safety.test.ts::re-pinning an engram that was already pinned is not refused
+        and not reverted
+      - >-
+        packages/core/test/project-scope-routing.test.ts::setPinned keeps the selection of a readonly local store: no
+        PATCH to the url store
+  packages/core/src/plur/feedback-pin.ts#found:
+    kind: guarantee
+    rule: Rating by a bare id with no scope is refused when the same id also exists in a remote store.
+    lean:
+      - PlurSpec/R2CoreA.lean:fresh_cache_answers
+    tests:
+      - >-
+        packages/core/test/formal-r2-corea-guard-cache.test.ts::feedback: after a cold-cache push, an id that also lives
+        remotely is refused as ambiguous
+  packages/core/src/plur/feedback-pin.ts#probedOutsideLock:
+    kind: guarantee
+    rule: An automatic rating never waits on the network, and moves strength one step but never commitment.
+    tests:
+      - >-
+        packages/core/test/feedback-auto-source.test.ts::moves retrieval_strength and never commitment, however many
+        times it fires
+  packages/core/src/plur/feedback-pin.ts#quotaScope:
+    kind: guarantee
+    rule: The pin quota does not price a candidate in a scope two servers claim, and asks no server for it.
+    tests:
+      - >-
+        packages/core/test/project-scope-routing.test.ts::pinnedQuota does not cost a candidate on whichever server is
+        listed first
+  packages/core/src/plur/feedback-pin.ts#reverted:
+    kind: note
+    why: >-
+      Explains that a revert always restores "not pinned" because a memory pinned before the call never reaches this
+      branch; the re-pin rule itself is anchored on setPinned.
+  packages/core/src/plur/feedback-pin.ts#scopedEntry:
+    kind: guarantee
+    rule: >-
+      A pin under an explicit scope never sends a PATCH to a readonly store, and a scope two writable servers claim is
+      refused before either is asked.
+    lean:
+      - PlurSpec/RoutingDiscovery.lean:lookup_refuses_conflict
+    tests:
+      - packages/core/test/project-scope-routing.test.ts::setPinned is refused and no server is patched
+  packages/core/src/plur/feedback-pin.ts#scopeMoveChecked:
+    kind: guarantee
+    rule: The live probe for a scope-move id collision runs before the store lock is taken, never while holding it.
+    none: no test checks that this probe runs outside the store lock
+  packages/core/src/plur/feedback-pin.ts#target:
+    kind: guarantee
+    rule: >-
+      An update to a queued row goes to the one store the resolver names for its scope, never to a parent-scope server,
+      and a scope two servers claim refuses the whole update before anything is saved.
+    lean:
+      - PlurSpec/RoutingDiscovery.lean:retarget_is_router
+      - PlurSpec/RoutingDiscovery.lean:retarget_refuses_conflict
+    tests:
+      - >-
+        packages/core/test/folder-remote-only-gate1663.test.ts::a bare-id update goes only to the store the resolver
+        names, not to a parent-scope server
+      - >-
+        packages/core/test/formal-routing-discovery.test.ts::is refused, and the row stays queued for its old server and
+        scope
+  packages/core/src/plur/feedback-pin.ts#walk:
+    kind: guarantee
+    rule: >-
+      In a remote-only folder, an update by bare id is sent only to the store serving the row's own scope, never to
+      another team server.
+    tests:
+      - >-
+        packages/core/test/folder-remote-only-gate1663.test.ts::a bare-id update of a row in the folder scope is never
+        sent to another team server
+  packages/core/src/plur/feedback-pin.ts#writableRemotes:
+    kind: guarantee
+    rule: >-
+      A remote update is awaited and its result reported; a failure never reads as success and a 404 is not reported as
+      done.
+    none: no test asserts that a failed remote update is reported rather than read as success
+  packages/core/src/plur/folders-policy.ts#FoldersPolicyMethods:
+    kind: guarantee
+    rule: >-
+      When a folder's decision cannot be resolved, memory fails closed and nothing is read or written; in a remote-only
+      folder, lookups never answer from personal rows and operations on personal rows are refused.
+    tests:
+      - >-
+        packages/core/test/folder-remote-only-every-method.test.ts::returns no personal statement and creates or changes
+        no permanent row
+    promises:
+      - OFF-3
+  packages/core/src/plur/folders-policy.ts#foldersPolicyMethods._discoveryCandidates:
+    kind: guarantee
+    rule: Project store discovery never walks into the home folder or above it.
+    tests:
+      - packages/core/test/folder-safety-1588.test.ts::a working folder outside any repository does not walk above HOME
+      - >-
+        packages/core/test/folder-safety-1588.test.ts::PLUR_PATH and the working folder under HOME, no .git: ~/.plur is
+        never registered
+  packages/core/src/plur/folders-policy.ts#foldersPolicyMethods.autoDiscoverStores:
+    kind: guarantee
+    rule: >-
+      Store discovery reads the folder map but never performs the one-time import of a legacy trust.yaml, while still
+      honouring a legacy grant.
+    tests:
+      - >-
+        packages/core/test/folder-safety-1588.test.ts::P17 / R3-L2: discovery never imports a legacy trust.yaml, and
+        still honours it
+  packages/core/src/plur/folders-policy.ts#foldersPolicyMethods.setFolder:
+    kind: guarantee
+    rule: Setting a folder to a project scope that a company server withholds is refused, naming the server.
+    tests:
+      - >-
+        packages/core/test/project-scope-routing.test.ts::Plur.setFolder threads the configured stores: an ungranted
+        project scope is refused through the public method
+  packages/core/src/plur/folders-policy.ts#home:
+    kind: guarantee
+    rule: The user's main store under ~/.plur is never registered as a project store, whichever store is active.
+    tests:
+      - >-
+        packages/core/test/folder-safety-1588.test.ts::PLUR_PATH and the working folder under HOME, no .git: ~/.plur is
+        never registered
+      - packages/core/test/folder-safety-1588.test.ts::the active store is never registered as a project store
+  packages/core/src/plur/folders-policy.ts#ownership:
+    kind: guarantee
+    rule: In a remote-only folder, an operation on a team-host row whose ownership cannot be determined is refused.
+    tests:
+      - >-
+        packages/core/test/folder-remote-only-gate1663.test.ts::an ownership check that cannot tell refuses: a 503 then
+        a personal row is never deleted
+  packages/core/src/plur/folders-policy.ts#policy:
+    kind: guarantee
+    rule: Binding to a folder only reads the folder map and never imports a legacy trust.yaml.
+    tests:
+      - >-
+        packages/core/test/formal-folder-rules-writes.test.ts::bindFolder honours the legacy grant and writes no
+        folders.yaml
+  packages/core/src/plur/folders-policy.ts#remoteScopes:
+    kind: guarantee
+    rule: A personal url store never qualifies as the destination of a remote-only folder.
+    tests:
+      - >-
+        packages/core/test/folder-remote-only-gate1663.test.ts::a personal url scope cannot be a remote-only scope, and
+        a hand-written one dials nothing
+  packages/core/src/plur/folders-policy.ts#target:
+    kind: guarantee
+    rule: >-
+      In a remote-only folder, a row on the team host must be in the folder's team scope; a lookup that fails refuses
+      the operation.
+    tests:
+      - >-
+        packages/core/test/folder-remote-only-gate1663.test.ts::a personal row on the team host is neither returned by
+        id nor updated
+      - packages/core/test/folder-remote-only-gate1663.test.ts::an ownership check that cannot tell refuses
+  packages/core/src/plur/forget-rescope.ts#engrams:
+    kind: guarantee
+    rule: >-
+      Rescope only moves a memory held in the local primary store; a namespaced secondary or remote row gets an error
+      instead of a half-move.
+    none: no test rescopes a namespaced secondary or remote id and checks it is refused unchanged
+  packages/core/src/plur/forget-rescope.ts#entry:
+    kind: guarantee
+    rule: Forgetting under an explicit scope that two servers claim is refused before either server is asked to delete.
+    lean:
+      - PlurSpec/RoutingDiscovery.lean:lookup_refuses_conflict
+    tests:
+      - packages/core/test/project-scope-routing.test.ts::forget is refused and no server is asked to delete
+  packages/core/src/plur/forget-rescope.ts#ForgetRescopeMethods:
+    kind: guarantee
+    rule: >-
+      A rescope dry run changes nothing, and a remote rescope whose push fails leaves the source untouched with no
+      outbox fallback.
+    lean:
+      - PlurSpec/WritePath.lean:rescope_one_reports
+    tests:
+      - packages/core/test/rescope.test.ts::dry_run mutates nothing on the remote route
+      - packages/core/test/rescope.test.ts::authorization denied (401) fails loud and leaves the source untouched
+    promises:
+      - PRV-7
+  packages/core/src/plur/forget-rescope.ts#forgetRescopeMethods.forget:
+    kind: guarantee
+    rule: >-
+      Forget refuses ambiguous or unverifiable targets instead of guessing, only retires a row of the store an explicit
+      scope names, and never reports a refused or unreachable store as the memory being absent.
+    lean:
+      - PlurSpec/RoutingDiscovery.lean:walk_exact
+    tests:
+      - >-
+        packages/core/test/project-scope-routing.test.ts::forget with a personal scope a local store keeps does not
+        retire a row of another url store
+      - >-
+        packages/core/test/walk-cannot-tell.test.ts::forget records an unreachable store instead of claiming plain
+        absence
+      - >-
+        packages/core/test/folder-remote-only-guard.test.ts::forgetting a queued remote-only save deletes it; nothing
+        stays local
+    promises:
+      - FGT-3
+  packages/core/src/plur/forget-rescope.ts#forgetRescopeMethods.rescope:
+    kind: guarantee
+    rule: >-
+      A save queued from a remote-only folder is never moved by rescope, and a rescope to a scope whose store is
+      readonly for this client is refused up front.
+    tests:
+      - >-
+        packages/core/test/folder-remote-only-guard.test.ts::a queued remote-only save cannot be rescoped or updated to
+        a local scope, bound or not
+      - packages/core/test/rescope.test.ts::readonly store entry is refused up-front
+  packages/core/src/plur/forget-rescope.ts#foundInPrimary:
+    kind: guarantee
+    rule: >-
+      Forgetting an already retired memory writes no second retirement to history, a cold cache never downgrades the
+      ambiguity guard to first-match, and a forgotten memory's queued push is cancelled so it cannot be resurrected
+      remotely.
+    lean:
+      - PlurSpec/WritePath.lean:merge_honours_cancellation
+    tests:
+      - >-
+        packages/core/test/formal-r2-corea-guard-cache.test.ts::forget: after a cold-cache push, an id that also lives
+        remotely is refused as ambiguous
+      - >-
+        packages/core/test/formal-writepath-outbox.test.ts::B: a forget() landing while the flush POST is in flight is
+        not erased
+    promises:
+      - FGT-1
+  packages/core/src/plur/forget-rescope.ts#hash:
+    kind: guarantee
+    rule: >-
+      Rescoping a memory whose identical content already exists at the target scope succeeds without creating a
+      duplicate.
+    tests:
+      - >-
+        packages/core/test/rescope.test.ts::dedup on target (constraint 5): identical engram already at the target is
+        idempotent success
+  packages/core/src/plur/forget-rescope.ts#isLocalFamily:
+    kind: note
+    why: >-
+      Explains that the local-family check on a rescope target is case-sensitive as typo protection, because the target
+      is written verbatim; no rule beyond that choice.
+  packages/core/src/plur/forget-rescope.ts#msg:
+    kind: guarantee
+    rule: When a remote rescope push does not land, the source stays exactly as it was and no outbox retry is queued.
+    tests:
+      - packages/core/test/rescope.test.ts::authorization denied (401) fails loud and leaves the source untouched
+  packages/core/src/plur/forget-rescope.ts#ownership:
+    kind: guarantee
+    rule: >-
+      The forget walk never claims a store that did not answer holds no such memory; for a bare id it continues past it
+      and names it in the result.
+    tests:
+      - >-
+        packages/core/test/walk-cannot-tell.test.ts::forget records an unreachable store instead of claiming plain
+        absence
+      - packages/core/test/remote-routing.test.ts::forget(namespaced-id) with unreachable remote throws actionable error
+  packages/core/src/plur/forget-rescope.ts#retired:
+    kind: guarantee
+    rule: A rescope whose source vanished or was already retired during the push records no retirement in history.
+    lean:
+      - PlurSpec/WritePath.lean:rescope_one_reports
+    tests:
+      - >-
+        packages/core/test/formal-writepath-rescope.test.ts::a source that vanished during the push gets no
+        engram_retired history event
+  packages/core/src/plur/forget-rescope.ts#unreachedStores:
+    kind: guarantee
+    rule: >-
+      A forget that could not reach some stores never reports plain absence, and an unreachable store does not stop the
+      retire elsewhere.
+    tests:
+      - >-
+        packages/core/test/walk-cannot-tell.test.ts::forget records an unreachable store instead of claiming plain
+        absence
+      - >-
+        packages/core/test/forget-namespaced-walk-order.test.ts::retires from the reachable store when the first
+        (unreachable) store shares the prefix
+  packages/core/src/plur/helpers.ts#AddRemoteStoreError:
+    kind: guarantee
+    rule: A refusal to register a remote store never contains the token in its message.
+    tests:
+      - packages/core/test/add-remote-store.test.ts::never puts the token in an error message
+      - >-
+        packages/core/test/add-remote-store.test.ts::a 401 body echoing every encoding of the token is fully scrubbed
+        from the error
+  packages/core/src/plur/helpers.ts#buildAttribution:
+    kind: guarantee
+    rule: >-
+      A new memory's attribution never invents a runtime and never takes an identity from the operating system account;
+      what software wrote it is always recorded.
+    tests:
+      - packages/core/test/attribution.test.ts::never takes the identity from the operating system account
+      - packages/core/test/attribution.test.ts::records the two things it knows, and invents nothing else
+      - packages/core/test/attribution.test.ts::always records what software wrote the memory
+  packages/core/src/plur/helpers.ts#DISCOVERY_TIMESTAMP_REFRESH_MS:
+    kind: note
+    why: >-
+      Explains the chosen refresh interval (a day, inside the 7-day stale limit); the at-most-daily write rule is
+      anchored on discoveryChanged.
+  packages/core/src/plur/helpers.ts#discoveryChanged:
+    kind: guarantee
+    rule: >-
+      An unchanged server discovery answer rewrites config.yaml only to refresh a timestamp that is over a day old, in
+      the future or unreadable, so at most once a day.
+    lean:
+      - PlurSpec/RoutingDiscovery.lean:unchanged_fresh_writes_nothing
+      - PlurSpec/RoutingDiscovery.lean:same_answer_within_a_day
+    tests:
+      - >-
+        packages/core/test/refresh-server-scopes.test.ts::an unchanged answer less than 24 h after the last write leaves
+        the timestamps alone
+      - >-
+        packages/core/test/refresh-server-scopes.test.ts::an unchanged answer refreshes discovered_at once it is more
+        than 24 h old
+      - >-
+        packages/core/test/refresh-server-scopes.test.ts::a future or unparsable discovered_at is refreshed even when
+        the answer is unchanged
+  packages/core/src/plur/helpers.ts#OUTBOX_CLAIM_LEASE_MS:
+    kind: note
+    why: Explains the lease length for a push claim held on another host; a sizing choice, not a rule of its own.
+  packages/core/src/plur/helpers.ts#OUTBOX_CLAIM_MAX_AGE_MS:
+    kind: note
+    why: >-
+      Explains why the same-host claim cap is far above a push's worst case yet finite; a sizing rationale for the
+      constant.
+  packages/core/src/plur/helpers.ts#PUSHDOWN_MAX_ROUNDS:
+    kind: note
+    why: >-
+      Explains the widening budget for recall pushdown; the bound is the constant itself, so the comment states no
+      further rule.
+  packages/core/src/plur/helpers.ts#REMOTE_GUARD_BUDGET_MS:
+    kind: note
+    why: >-
+      Explains why the ambiguity guard's total probe budget is 45s, well under the store-lock budget; a sizing
+      rationale.
+  packages/core/src/plur/helpers.ts#serverCredential:
+    kind: guarantee
+    rule: >-
+      A server's discovery answer is applied only to an entry whose key is still the one it was requested with, and the
+      recorded revision holds a fingerprint, never the key.
+    lean:
+      - PlurSpec/RoutingDiscovery.lean:answer_lands_on_its_entry
+    tests:
+      - >-
+        packages/core/test/codex2-refresh-server-scopes.test.ts::the key is replaced while /me is pending: the answer is
+        discarded, the new key keeps its scopes
+      - >-
+        packages/core/test/codex2-refresh-server-scopes.test.ts::the token_env value changes while /me is pending: the
+        answer is discarded
+  packages/core/src/plur/helpers.ts#serverEntryScopeRefusal:
+    kind: note
+    why: >-
+      Builds the refusal message for replacing one scope of a server entry; the refusal itself is anchored on addStore
+      and verifyRemoteStore.
+  packages/core/src/plur/injection.ts#allEngrams:
+    kind: guarantee
+    rule: >-
+      In a remote-only folder, injection draws only on the team store's rows and installed packs, never on the personal
+      store.
+    tests:
+      - >-
+        packages/core/test/folder-remote-only-every-method.test.ts::returns no personal statement and creates or changes
+        no permanent row
+    promises:
+      - OFF-1
+  packages/core/src/plur/injection.ts#InjectionMethods:
+    kind: guarantee
+    rule: >-
+      When a remote-only folder's team server did not serve a read, the session has no memory and says so; it never
+      silently falls back to the personal store.
+    tests:
+      - >-
+        packages/core/test/formal-inject-budget-injection.test.ts::not dialled, failed or missing outcomes are reported
+        as not served
+      - packages/core/test/formal-inject-budget-injection.test.ts::a folder with no scope is never reported as served
+  packages/core/src/plur/injection.ts#injectionMethods._formatInjection:
+    kind: guarantee
+    rule: >-
+      The co-injection history record carries ids and a query hash only, never statements; a history write failure never
+      breaks injection; and the injection counter moves only when the history event is written.
+    tests:
+      - packages/core/test/injection-dedup.test.ts::a deduped injection does not increment the counter either
+      - packages/core/test/injection-dedup.test.ts::leaves injection_count at 0 when the month file cannot be written
+      - packages/core/test/injection-dedup.test.ts::four concurrent processes write ONE event, not four
+    promises:
+      - PROOF-2
+  packages/core/src/plur/injection.ts#modelMissing:
+    kind: guarantee
+    rule: When the embedding model is not on disk, injection runs keyword-only and never starts a download.
+    tests:
+      - >-
+        packages/core/test/recall-model-missing-1587.test.ts::keyword results at once, with the reason and the next
+        step; no process spawned, no download
+  packages/core/src/plur/injection.ts#recordedSessionId:
+    kind: guarantee
+    rule: The no-session marker is never recorded as a session id in injection history.
+    tests:
+      - >-
+        packages/core/test/formal-inject-budget-injection.test.ts::an inject with the no-session marker records no
+        session id
+  packages/core/src/plur/injection.ts#remotePromise.session:
+    kind: guarantee
+    rule: The workspace dial scope used for a read with no session default is never recorded as a session.
+    tests:
+      - >-
+        packages/core/test/formal-inject-budget-injection.test.ts::the workspace dial scope is never recorded as a
+        session
+  packages/core/src/plur/injection.ts#result.grantedScopes:
+    kind: guarantee
+    rule: Mounted-store visibility grants never widen the caller's scope authorization list during injection.
+    tests:
+      - "packages/core/test/scope-pushdown.test.ts::#775 SECURITY: grants never widen the scopes authorization allow-list"
+    promises:
+      - PRV-3
+  packages/core/src/plur/injection.ts#st:
+    kind: guarantee
+    rule: Embeddings the user turned off are never flagged as a degraded injection.
+    tests:
+      - >-
+        packages/core/test/formal-inject-budget-injection.test.ts::injectHybrid with embeddings disabled reports
+        bm25-only and no degradation
+  packages/core/src/plur/injection.ts#withoutPacks:
+    kind: guarantee
+    rule: A pack memory is scored once in injection, by the pack rules, never a second time under the personal rules.
+    tests:
+      - packages/core/test/pack-double-injection.test.ts::one pack engram, no personal engrams → exactly one injection
+  packages/core/src/plur/learn-dedup.ts#applyMutation:
+    kind: guarantee
+    rule: The recurrence ladder never widens a memory bound for a team store (including one still queued) to global.
+    lean:
+      - PlurSpec/WritePath.lean:ops_preserve_inv
+    tests:
+      - >-
+        packages/core/test/formal-apply-core-queued-scope.test.ts::D3: a second cross-scope hit records the recurrence
+        but does not widen the queued row
+      - >-
+        packages/core/test/cross-scope-recurrence-shared.test.ts::an engram in a scope served by a url store: team
+        engram untouched, global copy made
+  packages/core/src/plur/learn-dedup.ts#LearnDedupMethods:
+    kind: guarantee
+    rule: >-
+      A save to a team scope is never absorbed into a memory of another scope (the match is only credited and the team
+      copy is written), and the commitment ladder never climbs past its configured maximum or into locked while the
+      memory is in an unresolved contradiction.
+    lean:
+      - PlurSpec/WritePath.lean:lock_only_when_known_clean
+      - PlurSpec/R2CoreA.lean:team_write_delivered
+    tests:
+      - packages/core/test/cross-scope-recurrence-shared.test.ts::a graduated global engram is not absorbed either
+      - >-
+        packages/core/test/formal-writepath-tension.test.ts::good case: a READABLE unresolved tension blocks lock
+        escalation
+  packages/core/src/plur/learn-dedup.ts#learnDedupMethods._recordCrossScopeRecurrence:
+    kind: note
+    why: >-
+      Explains that the readonly-or-remote branch is a defensive fallback because the learn paths never send such hits
+      here; the rule itself is on the learn paths.
+  packages/core/src/plur/learn-dedup.ts#lockBlockedByTension:
+    kind: guarantee
+    rule: >-
+      A memory in an unresolved contradiction never escalates into locked; escalation stops at decided until the
+      contradiction is resolved.
+    lean:
+      - PlurSpec/WritePath.lean:lock_only_when_known_clean
+    tests:
+      - >-
+        packages/core/test/formal-writepath-tension.test.ts::good case: a READABLE unresolved tension blocks lock
+        escalation
+      - >-
+        packages/core/test/formal-writepath-tension.test.ts::an UNREADABLE tensions.yaml does not let the engram lock
+        (fail closed)
+  packages/core/src/plur/learn-dedup.ts#sharedWrite:
+    kind: guarantee
+    rule: A team save is never absorbed into an existing memory, not even another team's; the match is only credited.
+    lean:
+      - PlurSpec/R2CoreA.lean:team_write_delivered
+    tests:
+      - >-
+        packages/core/test/cross-scope-recurrence-shared.test.ts::shared↔shared: the second team save writes its own
+        engram; the first is credited
+  packages/core/src/plur/learn-dedup.ts#storeInfo:
+    kind: note
+    why: >-
+      Explains why a secondary store's reference count is persisted there and which hits can reach this branch; the
+      refcount rule is backed elsewhere.
+  packages/core/src/plur/learn-dedup.ts#syncHitFrom:
+    kind: note
+    why: Loose use of "guarantees" about fields the mutation always sets; states no rule of its own.
+  packages/core/src/plur/learn.ts#canDelegate:
+    kind: guarantee
+    rule: In a remote-only folder, a save never uses the store's own hash lookup, which would answer from personal rows.
+    none: no test saves in a remote-only folder over a delegating store and checks the hash lookup is skipped
+  packages/core/src/plur/learn.ts#corpusInHand:
+    kind: note
+    why: >-
+      Explains which hash matches can reach this point (only rows the writer can persist); the rule is enforced in the
+      dedup lookup.
+  packages/core/src/plur/learn.ts#LearnMethods:
+    kind: guarantee
+    rule: >-
+      Reporting near-duplicates never suppresses a write and never throws; and a shared-scope save that lands in the
+      local store instead of a team server is reported with a warning, never silently.
+    tests:
+      - packages/core/test/learn-delivery.test.ts::learn() reports local and warns, naming the scope
+      - packages/core/test/learn-delivery.test.ts::learnRouted() reports local and warns
+    promises:
+      - LRN-2
+      - EFI-2
+  packages/core/src/plur/learn.ts#learnMethods._commitRemoteRouted:
+    kind: guarantee
+    rule: >-
+      A history write that fails after the server stored a memory is never treated as a failed remote write, so it
+      cannot create a second local copy and a duplicate push.
+    none: no test fails the history write after a successful remote save
+  packages/core/src/plur/learn.ts#learnMethods._deliveryDetails:
+    kind: guarantee
+    rule: Where a dedup hit lives is decided by the store that served it, never by the first store listed for its scope.
+    tests:
+      - >-
+        packages/core/test/learn-delivery.test.ts::a dedup hit on a local path-store row is not reported remote (url
+        store listed first)
+      - packages/core/test/learn-delivery.test.ts::the same with the path store listed first
+  packages/core/src/plur/learn.ts#learnMethods._outbox:
+    kind: guarantee
+    rule: >-
+      A save queued from a remote-only folder is marked so that it can only be delivered or deleted, never made a local
+      row.
+    tests:
+      - >-
+        packages/core/test/folder-remote-only-every-method.test.ts::stays a well-formed queued save after every mutator,
+        unless it is deleted
+  packages/core/src/plur/learn.ts#learnMethods.learn:
+    kind: guarantee
+    rule: >-
+      A save's background push is claimed so a flush running at the same time never posts it a second time, a cleanup
+      failure is never recorded as a failed push, and a re-learn that folds into an existing memory is not charged
+      against the pinned cap.
+    lean:
+      - PlurSpec/WritePath.lean:claimed_at_most_once_across_processes
+    tests:
+      - >-
+        packages/core/test/outbox-idempotency.test.ts::M6: a flush does not push an entry while learn()'s background
+        push of it is in flight
+      - >-
+        packages/core/test/pinned-two-tier-safety.test.ts::a re-learn that dedups into an existing hard-tier engram is
+        not refused near the cap
+    promises:
+      - TEAM-3
+  packages/core/src/plur/learn.ts#learnMethods.learnAsync:
+    kind: guarantee
+    rule: In a remote-only folder, the AI duplicate check only compares against and merges into the folder's team scope.
+    none: no test runs learnAsync in a remote-only folder against a personal duplicate
+  packages/core/src/plur/learn.ts#learnMethods.learnBatch:
+    kind: guarantee
+    rule: >-
+      In a remote-only folder, every batch item is checked before any is written, so a refused item never leaves the
+      batch half-applied.
+    none: no test refuses one item of a remote-only batch and checks nothing was written
+  packages/core/src/plur/learn.ts#pushKey:
+    kind: guarantee
+    rule: >-
+      Each queued write's idempotency key is random, minted once and persisted, never derived from an id, so every retry
+      sends the same key.
+    lean:
+      - PlurSpec/Outbox.lean:retry_same_key
+    tests:
+      - >-
+        packages/core/test/outbox-idempotency.test.ts::the key is minted once per write and reused on every retry of
+        that write
+      - "packages/core/test/outbox-idempotency.test.ts::F2: two machines sharing one token do not collide on the key"
+  packages/core/src/plur/learn.ts#remoteTimeoutMs:
+    kind: guarantee
+    rule: >-
+      The save deadline bounds only the server request; local work is never raced, and a server that misses the deadline
+      gets the outbox fallback so the memory is always stored somewhere.
+    tests:
+      - >-
+        packages/core/test/save-deadline-probe.test.ts::learnRouted: a hanging server is cut at the caller deadline and
+        the save is queued
+      - >-
+        packages/core/test/save-deadline-round2.test.ts::F3: learnRouted with no explicit deadline is bounded and falls
+        through to the outbox
+    promises:
+      - TEAM-1
+  packages/core/src/plur/learn.ts#secondarySupersedes:
+    kind: guarantee
+    rule: >-
+      A supersede proposed by the duplicate checker never lands on a locked memory, and the new memory is then saved as
+      a draft in the same write, so it is never deliverable even after a crash.
+    tests:
+      - >-
+        packages/core/test/learn-update-supersede-stores.test.ts::secondary target locked between the read and the
+        write: not superseded, the new one is a draft, review opened
+      - >-
+        packages/core/test/learn-update-supersede-stores.test.ts::a process that dies right after the first save leaves
+        a draft, not an active replacement
+    promises:
+      - LRN-9
+  packages/core/src/plur/learn.ts#shape.visibility:
+    kind: guarantee
+    rule: A memory saved without a visibility is private; a domain never makes it public.
+    lean:
+      - PlurSpec/WritePath.lean:default_private_diverges
+    tests:
+      - >-
+        packages/core/test/plur.test.ts::_buildEngramShape (the learnRouted remote constructor) defaults visibility
+        private with a domain
+  packages/core/src/plur/learn.ts#signal:
+    kind: note
+    why: >-
+      States a property of the platform's AbortSignal.timeout (it does not keep the process alive); an assumption about
+      the runtime, not a rule of this code.
+  packages/core/src/plur/learn.ts#storeEntry:
+    kind: guarantee
+    rule: >-
+      A queued write's target is the server the router dialled for its scope, never merely the first listed, and the
+      fallback lookup never throws.
+    lean:
+      - PlurSpec/RoutingDiscovery.lean:flush_agrees_with_router
+    tests:
+      - >-
+        packages/core/test/routing-shared-resolver.test.ts::a queued save whose scope a second server now claims is not
+        flushed to either
+  packages/core/src/plur/learn.ts#supersededTargets:
+    kind: guarantee
+    rule: >-
+      The reverse superseded-by edge is written on every superseded target in the primary store, including when the
+      store reads targets by id.
+    tests:
+      - "packages/core/test/learn-update-supersede-stores.test.ts::primary target: both edges, old one no longer given"
+    promises:
+      - COR-3
+  packages/core/src/plur/learn.ts#undoSecondary:
+    kind: guarantee
+    rule: A superseded-by edge written in a secondary store is undone when the new memory cannot be written.
+    none: no test fails the new row's write after a secondary edge landed
+  packages/core/src/plur/learn.ts#writeKey:
+    kind: guarantee
+    rule: >-
+      Every direct team write gets its own random idempotency key, so a key-honouring server keeps each write rather
+      than collapsing them.
+    tests:
+      - >-
+        packages/core/test/outbox-idempotency.test.ts::F1: direct team writes each carry their own key, so a
+        key-honouring server keeps them all
+  packages/core/src/plur/maintenance.ts#active:
+    kind: guarantee
+    rule: A save queued from a remote-only folder is never embedded on this machine.
+    tests:
+      - >-
+        packages/core/test/remote-only-derived-copies.test.ts::fillEmbeddingCache and embeddingSearch skip it, and the
+        cache holds no entry for it
+  packages/core/src/plur/maintenance.ts#MaintenanceMethods:
+    kind: guarantee
+    rule: >-
+      The background embedding pass is never awaited by a write or a semantic recall, and waiting for the index never
+      throws; a background failure is reported through the last index error instead.
+    none: >-
+      no test checks that a write returns before the embedding pass or that a failed pass surfaces only as the index
+      error
+  packages/core/src/plur/maintenance.ts#maintenanceMethods._autoEmbedPrimaryStore:
+    kind: note
+    why: >-
+      Explains why the batch loop terminates (each upsert shrinks the next answer); a termination argument, not a rule a
+      caller relies on.
+  packages/core/src/plur/maintenance.ts#maintenanceMethods._feedbackPack:
+    kind: guarantee
+    rule: >-
+      Rating a pack memory that is not found never claims absence when a store could not be reached; the message names
+      the unreached store.
+    none: no test rates a missing pack id with an unreachable store
+  packages/core/src/plur/maintenance.ts#primary:
+    kind: guarantee
+    rule: A write never waits for the background embedding pass it starts.
+    none: no test checks that a write returns before the embedding pass completes
+  packages/core/src/plur/maintenance.ts#queuedRow:
+    kind: guarantee
+    rule: A pack export refuses a save queued from a remote-only folder, whether or not the folder is bound.
+    tests:
+      - >-
+        packages/core/test/remote-only-derived-copies.test.ts::a pack export refuses a queued remote-only save, unbound
+        too
+  packages/core/src/plur/maintenance.ts#skippedRemoteOnly:
+    kind: guarantee
+    rule: The primary-store embedding pass never embeds a queued remote-only save and does not stop on a batch of them.
+    tests:
+      - >-
+        packages/core/test/remote-only-derived-copies.test.ts::the primary-store embedding pass pages past queued saves
+        instead of stopping
+  packages/core/src/plur/maintenance.ts#want:
+    kind: guarantee
+    rule: A run of queued remote-only saves never hides the rows behind them from the embedding pass.
+    tests:
+      - >-
+        packages/core/test/remote-only-derived-copies.test.ts::the primary-store embedding pass pages past queued saves
+        instead of stopping
+  packages/core/src/plur/outbox.ts#leftToOthers:
+    kind: guarantee
+    rule: >-
+      A queued row that another writer delivered or re-queued during this flush is left out of the merge-back, so a
+      stale snapshot is never written over the current row.
+    lean:
+      - PlurSpec/Outbox.lean:requeued_write_preserved
+  packages/core/src/plur/outbox.ts#merged:
+    kind: guarantee
+    rule: >-
+      Failure bookkeeping from a flush attempt never restores an old key onto a row that was re-queued as a different
+      write in the meantime.
+    lean:
+      - PlurSpec/Outbox.lean:new_write_keeps_bookkeeping
+  packages/core/src/plur/outbox.ts#OutboxMethods:
+    kind: guarantee
+    rule: >-
+      A queued write has at most one pusher at a time across processes (claims are decided by exclusive file creation),
+      and the local-to-server id map is best-effort and never throws.
+    lean:
+      - PlurSpec/WritePath.lean:claimed_at_most_once_across_processes
+    tests:
+      - "packages/core/test/outbox-claim-races.test.ts::two flushers, the second finishing first: one POST per engram"
+      - >-
+        packages/core/test/outbox-claim-races.test.ts::processes racing for one stale claim: exactly one winner in each
+        of
+    promises:
+      - TEAM-3
+  packages/core/src/plur/outbox.ts#outboxMethods._claimOutboxEntry:
+    kind: note
+    why: >-
+      Explains that a takeover marker which cannot be removed is harmless once the process exits; best-effort cleanup,
+      not a rule.
+  packages/core/src/plur/outbox.ts#outboxMethods._flushOutboxClaimed:
+    kind: guarantee
+    rule: >-
+      A flush never posts a row without its idempotency key already saved, holds a remote-only save rather than sending
+      it elsewhere or demoting it, and writes back by merging into a fresh read so concurrent changes survive.
+    lean:
+      - PlurSpec/Outbox.lean:no_keyless_post
+      - PlurSpec/WritePath.lean:merge_honours_cancellation
+    tests:
+      - >-
+        packages/core/test/outbox-retry-decisions.test.ts::C4: a row queued by an older client gets its key persisted
+        BEFORE the first POST
+      - >-
+        packages/core/test/folder-remote-only-guard.test.ts::a flush under a tightened policy keeps a remote-only save
+        queued; it is never demoted to local
+      - >-
+        packages/core/test/inject-counter-and-flush-merge.test.ts::does not revert a change made to a queued engram
+        while the flush ran
+  packages/core/src/plur/outbox.ts#outboxMethods._releaseOutboxClaim:
+    kind: guarantee
+    rule: Only the writer that took a push claim can release it; another instance in the same process cannot remove it.
+    tests:
+      - packages/core/test/outbox-claim-ownership.test.ts::another instance in the same process cannot remove the claim
+  packages/core/src/plur/outbox.ts#patterns:
+    kind: guarantee
+    rule: >-
+      A save from a remote-only folder whose content the target scope forbids is never demoted to a local row; it stays
+      queued, unsent, with the reason.
+    tests:
+      - >-
+        packages/core/test/folder-remote-only-guard.test.ts::a flush under a tightened policy keeps a remote-only save
+        queued; it is never demoted to local
+  packages/core/src/plur/outbox.ts#pending:
+    kind: guarantee
+    rule: The flush never pushes a retired memory, even when its outbox marker is still present.
+    tests:
+      - packages/core/test/outbox.test.ts::flushOutbox() skips retired engrams even when _outbox is present
+  packages/core/src/plur/outbox.ts#removeQuietly:
+    kind: note
+    why: Describes best-effort cleanup that runs after the outcome is decided; states no rule a caller depends on.
+  packages/core/src/plur/outbox.ts#routeFor:
+    kind: guarantee
+    rule: A queued row whose scope no longer matches its target is held, never delivered under its scope to another store.
+    lean:
+      - PlurSpec/WritePath.lean:deliverC_scope_matches_store
+    tests:
+      - >-
+        packages/core/test/formal-writepath-outbox-scope.test.ts::updateEngram moving a queued row to another scope: the
+        flush does not POST it to the old store
+      - packages/core/test/formal-writepath-outbox-scope.test.ts::cross-scope recurrence broadening a queued row
+  packages/core/src/plur/outbox.ts#storeEntry:
+    kind: guarantee
+    rule: Outbox entries never store a token; the driver is resolved from the current config at flush time.
+    none: no test inspects an outbox entry for a stored token
+  packages/core/src/plur/outbox.ts#target:
+    kind: guarantee
+    rule: A queued save whose scope two servers now claim is held, never pushed to whichever is listed first.
+    lean:
+      - PlurSpec/WritePath.lean:deliverC_never_conflicted
+      - PlurSpec/Outbox.lean:conflict_untouched
+    tests:
+      - >-
+        packages/core/test/routing-shared-resolver.test.ts::a queued save whose scope a second server now claims is not
+        flushed to either
+  packages/core/src/plur/outbox.ts#targets:
+    kind: guarantee
+    rule: >-
+      A queued correction whose superseded target cannot be resolved is refused rather than pushed as a half-record; an
+      edge to a purely local memory is dropped with a warning.
+    tests:
+      - >-
+        packages/core/test/supersedes-flush-remap.test.ts::REFUSES rather than pushing a half-record when a target
+        cannot be resolved
+      - packages/core/test/supersedes-flush-remap.test.ts::an edge to a purely local engram rather than blocking forever
+  packages/core/src/plur/provenance-identity.ts#present:
+    kind: guarantee
+    rule: An empty session id never wins over a genuine session episode id in a memory's provenance.
+    tests:
+      - packages/core/test/provenance-origin.test.ts::an empty session_id does not beat a real session_episode_id
+  packages/core/src/plur/provenance-identity.ts#ProvenanceIdentityMethods:
+    kind: guarantee
+    rule: >-
+      Every history event is stamped with who caused it, kept distinct from who asserted the memory; the configured
+      identity never falls back to the operating system account; and failing to write provenance or to find an ancestor
+      never fails the save.
+    tests:
+      - packages/core/test/attribution.test.ts::stamps an actor on events written through any path
+      - packages/core/test/attribution.test.ts::never takes the identity from the operating system account
+      - packages/core/test/attribution.test.ts::does not attribute a correction to the person it corrected
+  packages/core/src/plur/provenance-identity.ts#provenanceIdentityMethods._appendHistory:
+    kind: guarantee
+    rule: >-
+      While bound to a remote-only folder, local history never holds free text such as a statement, preview, reason or
+      message.
+    tests:
+      - packages/core/test/remote-only-derived-copies.test.ts::forgetting a queued save keeps no reason text in history
+      - packages/core/test/folder-remote-only-gate1663.test.ts::a forget reason is not recorded
+  packages/core/src/plur/provenance-identity.ts#provenanceIdentityMethods.setIdentity:
+    kind: guarantee
+    rule: >-
+      Setting the identity rewrites config.yaml under the config lock and atomically, so a crash mid-write cannot erase
+      other settings.
+    none: no test crashes the identity write mid-way
+  packages/core/src/plur/provenance-identity.ts#sessionId:
+    kind: guarantee
+    rule: The scope-selecting session key is never recorded as a memory's session id; only an explicit session id is.
+    tests:
+      - packages/core/test/provenance-origin.test.ts::selects a scope and is never recorded as the session id
+  packages/core/src/plur/recall.ts#adapter:
+    kind: guarantee
+    rule: In a remote-only folder, recall never queries the personal primary store.
+    tests:
+      - >-
+        packages/core/test/folder-remote-only-every-method.test.ts::returns no personal statement and creates or changes
+        no permanent row
+    promises:
+      - OFF-1
+  packages/core/src/plur/recall.ts#allowed:
+    kind: guarantee
+    rule: >-
+      The in-memory recall path applies the permitted-scope list exactly as the database pushdown does; an empty list
+      matches nothing.
+    tests:
+      - "packages/core/test/scope-pushdown.test.ts::SECURITY: an empty permitted-scope list matches NOTHING"
+      - packages/core/test/scope-pushdown.test.ts::restricts to exactly the listed scopes
+    promises:
+      - PRV-3
+  packages/core/src/plur/recall.ts#candidates:
+    kind: guarantee
+    rule: When the recall deadline passes, the local results gathered so far are returned, never an empty answer.
+    tests:
+      - >-
+        packages/core/test/recall-deadline-1586.test.ts::hybrid recall returns within the deadline with a
+        never-answering server and a store lock held in-process
+    promises:
+      - REC-7
+  packages/core/src/plur/recall.ts#localLeg:
+    kind: guarantee
+    rule: >-
+      A recall never downloads the embedding model; when it is missing, it answers by keyword and says how to get the
+      model.
+    tests:
+      - >-
+        packages/core/test/recall-model-missing-1587.test.ts::keyword results at once, with the reason and the next
+        step; no process spawned, no download
+    promises:
+      - REC-3
+  packages/core/src/plur/recall.ts#locked:
+    kind: note
+    why: >-
+      Explains a defensive default for rows written without the schema so a read cannot crash on them; uses "guarantee"
+      loosely about the schema.
+  packages/core/src/plur/recall.ts#ns:
+    kind: guarantee
+    rule: >-
+      A lookup by a namespaced reference to a primary row never returns a save queued from a remote-only folder, and
+      returns nothing in remote-only mode.
+    tests:
+      - >-
+        packages/core/test/remote-only-derived-copies.test.ts::getById by the primary-qualified id hides a queued save
+        too, and still finds an ordinary row
+  packages/core/src/plur/recall.ts#oneLeg:
+    kind: guarantee
+    rule: >-
+      The recall miss signal carries a query fingerprint, never the raw query, is off by default, and never disturbs the
+      recall.
+    tests:
+      - packages/core/test/telemetry-miss-signal.test.ts::never raw query or scope path
+  packages/core/src/plur/recall.ts#out:
+    kind: guarantee
+    rule: Results from a query adapter never include a save queued from a remote-only folder.
+    tests:
+      - >-
+        packages/core/test/remote-only-derived-copies.test.ts::getByIds and the residual filter of the query-adapter
+        path never return a queued save unbound
+  packages/core/src/plur/recall.ts#primaryRows:
+    kind: note
+    why: Explains why a guard that cannot be false by construction is kept as defence; no rule of its own.
+  packages/core/src/plur/recall.ts#pushdownFilter.visibilityGrants:
+    kind: guarantee
+    rule: >-
+      Visibility grants in the recall pushdown widen only the scope visibility clause, never the scope authorization
+      clause.
+    tests:
+      - packages/core/test/scope-pushdown.test.ts::grants never touch the scopes authorization clause
+      - "packages/core/test/scope-pushdown.test.ts::#775 SECURITY: grants never widen the scopes authorization allow-list"
+  packages/core/src/plur/recall.ts#queryTokens:
+    kind: guarantee
+    rule: >-
+      Primary and team results are ranked together as one union, so the best team memory is not crowded out when the
+      primary store fills the limit.
+    none: no test fills the primary store to the limit and checks a better team memory still ranks
+  packages/core/src/plur/recall.ts#RecallMethods:
+    kind: guarantee
+    rule: >-
+      Visibility grants are never folded into the scope authorization list; post-recall bookkeeping never makes a read
+      queue behind a writer past its deadline; and an id one of my memories holds never resolves to a pack row.
+    tests:
+      - "packages/core/test/scope-pushdown.test.ts::#775 SECURITY: grants never widen the scopes authorization allow-list"
+      - >-
+        packages/core/test/recall-deadline-1586.test.ts::hybrid recall returns within the deadline with a
+        never-answering server and a store lock held in-process
+      - >-
+        packages/core/test/pack-id-distinct-from-own.test.ts::feedback and lookup by the pack id reach the pack row; my
+        id never does
+  packages/core/src/plur/recall.ts#recallMethods._filterEngrams:
+    kind: guarantee
+    rule: >-
+      In a remote-only folder, recall filtering reads only team rows and packs, never the personal store; unbound, a
+      queued remote-only save is never a result.
+    tests:
+      - packages/core/test/remote-only-derived-copies.test.ts::an unbound read never sees a queued remote-only save
+    promises:
+      - OFF-1
+  packages/core/src/plur/recall.ts#recallMethods._primarySemanticRecall:
+    kind: note
+    why: >-
+      States a fact about the embedding search helper (it returns an empty list without an embedder); explains the
+      fallback branch.
+  packages/core/src/plur/recall.ts#recallMethods.visibilityGrants:
+    kind: guarantee
+    rule: >-
+      Visibility grants widen only the scope visibility clause, are a no-op without a scope, and never touch the scope
+      authorization pushdown.
+    tests:
+      - "packages/core/test/scope-pushdown.test.ts::#775: grants are inert without a scope filter"
+      - packages/core/test/scope-pushdown.test.ts::grants never touch the scopes authorization clause
+  packages/core/src/plur/recall.ts#remaining:
+    kind: guarantee
+    rule: The post-recall refresh never takes the store lock after the reply; with no time left it is skipped.
+    tests:
+      - >-
+        packages/core/test/recall-deadline-1586.test.ts::hybrid recall returns within the deadline with a
+        never-answering server and a store lock held in-process
+  packages/core/src/plur/recall.ts#store:
+    kind: note
+    why: Explains why only the touched rows are re-read under the lock; uses "only ever" descriptively about the lookups.
+  packages/core/src/plur/remote-results.ts#personalScope:
+    kind: guarantee
+    rule: >-
+      A personal store is dialled for recall only for a scope the caller passed or the session registered itself, never
+      through the process default an unregistered session inherits.
+    tests:
+      - >-
+        packages/core/test/user-scope-remote-recall.test.ts::an unregistered session does not dial a personal store
+        through the process default
+  packages/core/src/plur/remote-results.ts#RemoteResultsMethods:
+    kind: guarantee
+    rule: >-
+      Remote recall dials only stores relevant to the request's scope (never widening a matched host to its other
+      scopes), sends nothing when the caller opted out, and its background bookkeeping never fails or blocks a write or
+      a recall.
+    tests:
+      - >-
+        packages/core/test/user-scope-remote-recall.test.ts::never widens: the matched host is dialed with the user
+        scope only, not its other entries
+      - >-
+        packages/core/test/user-scope-remote-recall.test.ts::options.scopes bounds the dialed set: [] or another scope
+        dials nothing
+    promises:
+      - TEAM-4
+  packages/core/src/plur/remote-results.ts#remoteResultsMethods._remoteRecallHosts:
+    kind: guarantee
+    rule: Remote recall never dials a store with an empty bearer token because its token variable is unset.
+    tests:
+      - packages/core/test/config-token-env-1561.test.ts::remote recall does not dial that host
+  packages/core/src/plur/remote-results.ts#remoteResultsMethods._startRemoteRecall:
+    kind: guarantee
+    rule: >-
+      A folder whose git origin yields a local or unknown default dials no remote store for recall, not even an
+      always-dial one, unless a scope was chosen explicitly.
+    lean:
+      - PlurSpec/GitFolder.lean:adapter_local_never_dials
+      - PlurSpec/RemoteHealth.lean:complete_means_reached
+      - PlurSpec/RemoteHealth.lean:new_catch_incomplete
+    tests:
+      - packages/core/test/git-folder-binding.test.ts::local and unknown bindings never dial even always-dial stores
+      - >-
+        packages/core/test/formal-remote-health-results.test.ts::recallWithMeta: results_complete is false and the host
+        is named
+  packages/core/src/plur/remote-results.ts#scope:
+    kind: guarantee
+    rule: >-
+      In a remote-only folder, recall dials exactly the stores serving the folder's team scope, for that scope only,
+      never a project-file remote, and a personal scope dials nothing.
+    tests:
+      - >-
+        packages/core/test/folder-remote-only-gate1663.test.ts::a personal url scope cannot be a remote-only scope, and
+        a hand-written one dials nothing
+      - >-
+        packages/core/test/folder-remote-only-gate1663.test.ts::a scopes allow-list must hold the folder scope exactly
+        before it is dialled
+  packages/core/src/plur/remote-results.ts#selectedPersonal:
+    kind: guarantee
+    rule: >-
+      When the selected personal store is path-backed or set never to dial, recall makes no personal dial and never
+      falls through to a case-variant twin.
+    tests:
+      - >-
+        packages/core/test/user-scope-remote-recall.test.ts::dial: never on the selected store means no dial, not a
+        fall-through to a case twin
+      - >-
+        packages/core/test/user-scope-remote-recall.test.ts::a path-backed store with the exact scope wins the read too:
+        its url case twin is not dialed
+  packages/core/src/plur/routing.ts#RoutingMethods:
+    kind: guarantee
+    rule: >-
+      A write to a scope two servers claim is refused before anything is saved; an auto-routed write never leaves the
+      machine to a personal namespace that is not the user's own; and a retired or unhashable statement never
+      deduplicates a new save.
+    lean:
+      - PlurSpec/WritePath.lean:conflict_refused
+      - PlurSpec/WritePath.lean:refused_foreign_remote_personal
+    tests:
+      - packages/core/test/routing-shared-resolver.test.ts::learn is refused, nothing sent, nothing saved
+      - packages/core/test/formal-apply-core-me-only.test.ts::unknown /me identity (never fetched)
+      - packages/core/test/reference-count.test.ts::retired engrams are excluded from dedup
+      - >-
+        packages/core/test/non-latin-content-hash.test.ts::a statement with no hashable content never dedups against
+        another
+    promises:
+      - LRN-4
+  packages/core/src/plur/routing.ts#routingMethods._resolveNamespacedId:
+    kind: guarantee
+    rule: >-
+      When a store says it holds a row but cannot hand it over, the id lookup treats it as cannot-tell, never as not
+      holding it; in a remote-only folder only the folder's team store is asked.
+    none: no test makes an owning store fail to return the row during namespaced id resolution
+  packages/core/src/plur/routing.ts#routingMethods._scopedUrlEntry:
+    kind: guarantee
+    rule: >-
+      An explicit-scope action on a scope a company server does not grant is refused, and the remote walk never acts on
+      a row of another store instead.
+    lean:
+      - PlurSpec/RoutingDiscovery.lean:lookup_refuses_unauthorized
+      - PlurSpec/RoutingDiscovery.lean:lookup_refuses_conflict
+    tests:
+      - >-
+        packages/core/test/project-scope-routing.test.ts::forget with a project scope the company server withholds is
+        refused, nothing deleted
+  packages/core/src/plur/routing.ts#scopes:
+    kind: guarantee
+    rule: A namespaced id whose prefix two different configured scopes share is refused before anything is asked or changed.
+    tests:
+      - >-
+        packages/core/test/team-id-prefix-followups.test.ts::two configured scopes sharing a prefix: an action by
+        namespaced id is refused and changes nothing
+  packages/core/src/plur/routing.ts#target:
+    kind: guarantee
+    rule: >-
+      A write to a scope two servers claim is refused, never sent to whichever is listed first, and such a scope is
+      never treated as the user's own namespace.
+    lean:
+      - PlurSpec/WritePath.lean:conflict_refused
+      - PlurSpec/RoutingDiscovery.lean:conflict_iff
+    tests:
+      - packages/core/test/routing-shared-resolver.test.ts::learnRouted is refused, nothing sent, nothing saved
+  packages/core/src/plur/routing.ts#tokenEnv:
+    kind: guarantee
+    rule: A store whose token variable is unset gets a driver that refuses every request, naming the variable.
+    tests:
+      - >-
+        packages/core/test/config-token-env-1561.test.ts::a team save sends nothing and queues with a reason that names
+        the variable
+  packages/core/src/plur/scope-guards.ts#canonical:
+    kind: guarantee
+    rule: >-
+      A scope that exactly names a local store is never redirected to a remote store whose scope differs only in letter
+      case.
+    tests:
+      - >-
+        packages/core/test/user-scope-remote-recall.test.ts::learn naming a path-backed personal store stays local
+        despite a url case twin (N1)
+      - >-
+        packages/core/test/user-scope-remote-recall.test.ts::an auto-routed write to a path-backed personal store is not
+        redirected to its url case twin (N1)
+  packages/core/src/plur/scope-guards.ts#decision:
+    kind: guarantee
+    rule: >-
+      An unscoped write is never auto-routed to a shared scope unless the install opted in, nor to a url-backed personal
+      scope that is not the user's own; the next eligible personal candidate wins.
+    lean:
+      - PlurSpec/WritePath.lean:refused_foreign_remote_personal
+      - PlurSpec/ScopeInject.lean:autoRoute_me_only
+    tests:
+      - >-
+        packages/core/test/route-unscoped.test.ts::refuses a confident SHARED domain match and falls to the unscoped
+        default
+      - packages/core/test/formal-apply-core-me-only.test.ts::unknown /me identity (never fetched)
+    promises:
+      - PRV-4
+  packages/core/src/plur/scope-guards.ts#forbid:
+    kind: guarantee
+    rule: An explicit empty forbid list never switches a scope's sensitivity scan off; it gets the default set.
+    tests:
+      - >-
+        packages/core/test/empty-forbid-scan.test.ts::still demotes when the policy reaches the guard with an EMPTY
+        forbid
+      - packages/core/test/empty-forbid-scan.test.ts::coerces an explicit empty forbid to the full default set
+  packages/core/src/plur/scope-guards.ts#ScopeGuardsMethods:
+    kind: guarantee
+    rule: >-
+      Every save passes one input gate before touching a store (line breaks collapsed, known type, no secret in any
+      content field unless allowed), and content going to a shared or remote-backed scope is checked against that
+      scope's sensitivity policy.
+    lean:
+      - PlurSpec/WritePath.lean:no_offending_egress
+    tests:
+      - packages/core/test/plur.test.ts::learn strips line terminators from statements (#952)
+      - >-
+        packages/core/test/route-unscoped.test.ts::an EXPLICIT shared scope with sensitive content is still DEMOTED to
+        local (guard unchanged)
+  packages/core/src/plur/scope-guards.ts#scopeGuardsMethods._guardSensitiveScope:
+    kind: guarantee
+    rule: >-
+      In a remote-only folder, a save that would stay on this machine (including sensitive content the guard would
+      demote) is refused rather than written locally; and a case-folded rewrite of an auto-routed scope is re-checked
+      and dropped if refused.
+    none: no test saves sensitive content in a remote-only folder and checks it is refused rather than demoted
+  packages/core/src/plur/scope-guards.ts#scopeGuardsMethods._hitHolder:
+    kind: guarantee
+    rule: >-
+      A cached remote row absorbs a duplicate save only when a write to that scope actually goes to that remote store,
+      not when a local store is selected for the scope.
+    lean:
+      - PlurSpec/R2CoreA.lean:cache_row_yields_to_local_store
+    tests:
+      - >-
+        packages/core/test/user-scope-remote-recall.test.ts::L2: a cached remote row does not swallow a write that the
+        selection keeps local
+  packages/core/src/plur/scope-guards.ts#scopeGuardsMethods._learnHashMatch:
+    kind: guarantee
+    rule: A save queued from a remote-only folder never absorbs a new write as a duplicate.
+    tests:
+      - >-
+        packages/core/test/remote-only-derived-copies.test.ts::a delegating primary never deduplicates a write into a
+        queued save of a secondary store
+  packages/core/src/plur/scope-guards.ts#scopeGuardsMethods._offendingHitsForScope:
+    kind: guarantee
+    rule: A truncated sensitivity scan always counts as offending, and no scope policy can allow it.
+    none: no test passes a truncated scan through a scope with an allow list
+  packages/core/src/plur/scope-guards.ts#scopeGuardsMethods._resolveUnscopedScope:
+    kind: note
+    why: >-
+      Explains that a refused shared match and no match both fall to the default while the refusal is reported
+      separately; the refusal rule is anchored on decision.
+  packages/core/src/plur/scope-guards.ts#scopeGuardsMethods._validateLearnInput:
+    kind: guarantee
+    rule: An automatically harvested save carrying a prompt-injection pattern is refused, while human saves are untouched.
+    tests:
+      - packages/core/test/plur.test.ts::rejects an injection pattern in the statement when claim_class is inferred
+      - >-
+        packages/core/test/plur.test.ts::rejects an injection pattern hidden in caller-supplied context (rationale) when
+        claim_class is inferred
+  packages/core/src/plur/scope-guards.ts#scopeGuardsMethods.dedupScopeFor:
+    kind: guarantee
+    rule: >-
+      For a shared save, import duplicates are keyed by content and scope, so it is never absorbed by another scope's
+      row.
+    none: no test imports one statement under two shared scopes and checks both are kept
+  packages/core/src/plur/scope-guards.ts#scopeRoutingCfg:
+    kind: guarantee
+    rule: >-
+      The domain weight in auto-routing is fixed and not configurable, so a lone domain match always clears the routing
+      threshold.
+    tests:
+      - packages/core/test/route-unscoped.test.ts::a LONE domain-prefix match auto-routes (confidence 0.50)
+  packages/core/src/plur/scope-guards.ts#writableScopeMetadata:
+    kind: guarantee
+    rule: A clean unscoped write is never reported as routed to a readonly scope.
+    tests:
+      - packages/core/test/route-unscoped.test.ts::excludes a readonly URL-based store from auto-route targets
+      - packages/core/test/route-unscoped.test.ts::excludes a readonly PATH-based store from auto-route targets (MED-12)
+  packages/core/src/plur/status-report.ts#remoteOffending:
+    kind: guarantee
+    rule: >-
+      A failure report whose improved statement carries content the remote scope forbids skips the remote update
+      entirely and warns, without throwing.
+    tests:
+      - >-
+        packages/core/test/guard-remote-boundary.test.ts::(b) reportFailure with a sensitive improved statement does not
+        PATCH the remote
+      - >-
+        packages/core/test/adversarial/guard-fuzz.test.ts::reportFailure() with a sensitive improved statement never
+        PATCHes the remote
+  packages/core/src/plur/status-report.ts#statements:
+    kind: guarantee
+    rule: >-
+      The status report's most-relied-on list shows statements only from local memories and installed packs, never from
+      team stores.
+    none: no test checks that team-store statements are kept out of the status report
+  packages/core/src/plur/status-report.ts#statusReportMethods.reportFailure:
+    kind: guarantee
+    rule: A store failure during a failure report is logged, never swallowed as if the model had declined.
+    none: no test fails the store write during reportFailure and checks it is logged
+  packages/core/src/plur/status-report.ts#storeErrors:
+    kind: guarantee
+    rule: The status diagnostic reports every broken store artifact instead of failing on the first one.
+    tests:
+      - packages/core/test/audit-821-blockers.test.ts::reports EVERY broken artifact, not just the first
+      - packages/core/test/audit-821-blockers.test.ts::survives a corrupt corpus
+  packages/core/src/plur/store-io.ts#exists:
+    kind: guarantee
+    rule: >-
+      The collision probe uses an existence check that fails loudly on a network error, so a dead network is never read
+      as the id being absent.
+    tests:
+      - packages/core/test/remote-exists-by-id.test.ts::THROWS on a transport failure rather than reporting absence
+      - packages/core/test/remote-exists-by-id.test.ts::reports a timeout as "cannot tell", never as absence
+  packages/core/src/plur/store-io.ts#queued:
+    kind: guarantee
+    rule: >-
+      In a remote-only folder, a team save is never absorbed into a personal primary row that merely carries the team
+      scope; only queued saves of that scope count.
+    none: no test saves into a remote-only folder over a personal row carrying the team scope
+  packages/core/src/plur/store-io.ts#StoreIoMethods:
+    kind: guarantee
+    rule: >-
+      Instances opened read-only refuse every mutator before any routing; recall records carry ids and a query hash,
+      never query text; pack rows are read under their pack id, never the author's id; and in a remote-only folder the
+      read corpus never includes the personal store.
+    tests:
+      - packages/core/test/readonly.test.ts::learnRouted throws ReadonlyStoreError BEFORE any remote routing
+      - packages/core/test/readonly.test.ts::the remaining mutators throw it too
+      - >-
+        packages/core/test/pack-id-distinct-from-own.test.ts::feedback and lookup by the pack id reach the pack row; my
+        id never does
+    promises:
+      - PROOF-2
+  packages/core/src/plur/store-io.ts#storeIoMethods._autoPurgeLegacyTensions:
+    kind: guarantee
+    rule: A read-only instance never runs the legacy tension purge nor marks it done, and a remote-only binding refuses it.
+    tests:
+      - >-
+        packages/core/test/readonly.test.ts::the startup tension migration is skipped: no write, and no sentinel
+        claiming it ran
+      - >-
+        packages/core/test/remote-only-derived-copies.test.ts::the legacy tension purge does not rewrite personal rows
+        of an instance bound right after construction
+  packages/core/src/plur/store-io.ts#storeIoMethods._loadAllEngrams:
+    kind: guarantee
+    rule: >-
+      In a remote-only folder, the full corpus is the folder's queued saves plus its team read corpus, never a personal
+      url store's cache.
+    tests:
+      - >-
+        packages/core/test/folder-remote-only-every-method.test.ts::returns no personal statement and creates or changes
+        no permanent row
+  packages/core/src/plur/store-io.ts#storeIoMethods._loadSecondaryAndPacks:
+    kind: guarantee
+    rule: >-
+      A secondary store's row in a sibling scope that merely shares a string prefix is never loaded, and a queued
+      remote-only save held in a secondary store is never a candidate.
+    tests:
+      - >-
+        packages/core/test/remote-only-derived-copies.test.ts::the SQLite index leaves a queued save of a secondary
+        store out too
+  packages/core/src/plur/store-io.ts#storeIoMethods._mintedTodayIds:
+    kind: note
+    why: >-
+      Explains why missing another process's minted ids is safe (the fresh corpus scan still sees them); the id-reuse
+      rule is backed elsewhere.
+  packages/core/src/plur/store-io.ts#storeIoMethods._writeEngrams:
+    kind: guarantee
+    rule: An undeclared empty whole-corpus save is refused on every backend.
+    promises:
+      - DUR-4
+  packages/core/src/plur/tensions.ts#edgeId:
+    kind: guarantee
+    rule: >-
+      A superseded-by edge written into another store names the replacement by its primary-qualified id, never its bare
+      id, so it cannot point at an unrelated row there.
+    tests:
+      - >-
+        packages/core/test/learn-update-supersede-stores.test.ts::independently minted same-day ids: each store resolves
+        the edge to the replacement or to nothing
+  packages/core/src/plur/tensions.ts#fires:
+    kind: guarantee
+    rule: >-
+      In a remote-only folder, a contradiction warning fires only when both memories were injected, so it never carries
+      a statement the session could not see.
+    tests:
+      - >-
+        packages/core/test/folder-remote-only-guard.test.ts::a confirmed tension between a team row and a personal row
+        does not print the personal side
+  packages/core/src/plur/tensions.ts#foundInPrimary:
+    kind: guarantee
+    rule: >-
+      A save queued from a remote-only folder is never retired into a permanent local row by a tension resolution; it is
+      refused.
+    tests:
+      - >-
+        packages/core/test/folder-remote-only-reaudit2.test.ts::tension resolve against a personal winner is refused;
+        the save is still delivered
+  packages/core/src/plur/tensions.ts#loserId:
+    kind: guarantee
+    rule: >-
+      Resolving a contradiction claims the resolution atomically before retiring anything, so two concurrent resolutions
+      with opposite winners cannot both retire.
+    tests:
+      - >-
+        packages/core/test/tension-lifecycle.test.ts::lets exactly one opposite-winner resolution win, and the winner
+        stays active
+    promises:
+      - COR-5
+  packages/core/src/plur/tensions.ts#prev:
+    kind: note
+    why: Explains a type cast needed because the compiler narrows a variable to never; no runtime rule.
+  packages/core/src/plur/tensions.ts#probe:
+    kind: note
+    why: Explains why the startup legacy-tension check reads without the lock and writes under it; a performance rationale.
+  packages/core/src/plur/tensions.ts#promoted:
+    kind: guarantee
+    rule: >-
+      When resolving a contradiction, a held-back winner is promoted before the loser is retired, so the user is never
+      left with neither memory given; the promotion is undone if the retirement fails.
+    none: no test fails the loser's retirement and checks the winner's promotion is undone
+  packages/core/src/plur/tensions.ts#TensionsMethods:
+    kind: guarantee
+    rule: >-
+      A scan never duplicates or resurrects a recorded contradiction, a dismissed pair is never flagged again, and
+      dismissing leaves both memories unchanged.
+    tests:
+      - packages/core/test/tension-lifecycle.test.ts::does not duplicate an already-recorded pair (either direction)
+      - packages/core/test/tension-lifecycle.test.ts::dismissed pairs stay suppressed
+      - packages/core/test/tension-lifecycle.test.ts::recorded pairs are excluded from future scans (no LLM call)
+  packages/core/src/plur/tensions.ts#tensionsMethods.hasUnresolvedTension:
+    kind: guarantee
+    rule: An unreadable tensions file is never read as "no contradiction"; the check fails closed so the memory cannot lock.
+    lean:
+      - PlurSpec/WritePath.lean:lock_only_when_known_clean
+    tests:
+      - >-
+        packages/core/test/formal-writepath-tension.test.ts::an UNREADABLE tensions.yaml does not let the engram lock
+        (fail closed)
+  packages/core/src/plur/tensions.ts#tensionsMethods.recordTensions:
+    kind: guarantee
+    rule: A contradiction involving a save queued from a remote-only folder is never recorded on this machine.
+    tests:
+      - >-
+        packages/core/test/remote-only-derived-copies.test.ts::provenance, tensions and dedup history for a queued save
+        held in a secondary store or the primary
+  packages/core/src/plur/tensions.ts#tensionsMethods.resolveTension:
+    kind: guarantee
+    rule: A read-only instance refuses to resolve a contradiction before writing anything to the tensions file.
+    lean:
+      - PlurSpec/WritePath.lean:batch_new_complete
+    tests:
+      - >-
+        packages/core/test/formal-writepath-tension.test.ts::readonly: tension mutators throw ReadonlyStoreError and
+        leave tensions.yaml untouched
+  packages/core/src/plur/types.ts#LearnRoutedOptions:
+    kind: guarantee
+    rule: >-
+      A routed save never fails because the server is slow; past the deadline it is saved locally and queued, and local
+      work is never raced.
+    tests:
+      - >-
+        packages/core/test/save-deadline-probe.test.ts::learnRouted: a hanging server is cut at the caller deadline and
+        the save is queued
+    promises:
+      - TEAM-1
+  packages/core/src/plur/types.ts#MutationOutcome:
+    kind: note
+    why: Describes the warnings field returned by forget and feedback; uses "refuse" descriptively, states no rule.
+  packages/core/src/plur/types.ts#RescopeResult:
+    kind: guarantee
+    rule: A rescope to a scope that already holds identical content succeeds without pushing a duplicate.
+    tests:
+      - >-
+        packages/core/test/rescope.test.ts::dedup on target (constraint 5): identical engram already at the target is
+        idempotent success

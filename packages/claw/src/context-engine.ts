@@ -15,9 +15,9 @@ function sessionDigest(sessionKey: string): string {
   return 'oc:' + createHash('sha256').update(sessionKey).digest('hex').slice(0, 16)
 }
 
-// #128: if recordEvent rolled the day, ship yesterday's pending snapshot now
-// (rather than waiting for process exit — long-lived plugin sessions might
-// span multiple days otherwise). Fire-and-forget; flushIfNeeded swallows.
+// If recordEvent rolled the day, ship yesterday's pending snapshot now rather
+// than waiting for process exit — long-lived plugin sessions can span
+// multiple days. Fire-and-forget; flushIfNeeded swallows errors.
 // Telemetry is core's module; `packageVersion` keeps the heartbeat reporting
 // the claw version.
 function maybeFlushAfter(rolledOver: boolean): void {
@@ -27,11 +27,10 @@ function maybeFlushAfter(rolledOver: boolean): void {
 /**
  * Extract text from message content — handles string and array-of-blocks formats.
  *
- * Kept local (not moved to core): `assemble()` and the episodic-capture branch
- * of `afterTurn()` below still call this directly on their own messages. Core
- * also has its own private copy behind `extractSelfReportedLearnings`
- * (2026-09, opencode plugin task 6b) — see that function's docstring for why
- * it isn't shared.
+ * Kept local: `assemble()` and the episodic-capture branch of `afterTurn()`
+ * call this directly on their own messages. Core has its own private copy
+ * behind `extractSelfReportedLearnings` — see that function's docstring for
+ * why it isn't shared.
  */
 function extractMessageText(message: AgentMessage): string {
   const content = message.content
@@ -45,15 +44,11 @@ function extractMessageText(message: AgentMessage): string {
   return ''
 }
 
-// `extractSelfReportedLearnings` moved to `@plur-ai/core` (2026-09, opencode
-// plugin task 6b) so `@plur-ai/opencode` can harvest the same 🧠 I learned:
-// self-report block instead of vendoring a second copy. Imported above.
-
 /**
- * How many sessions' state the engine keeps (formal R2, mcp#11). OpenClaw's
- * ContextEngine has no session-end hook, so a top-level session's scope,
- * message buffer and learned-set were never dropped in a long-lived gateway.
- * The three maps are now LRU-bounded: every use touches the session, so only
+ * How many sessions' state the engine keeps. OpenClaw's ContextEngine has no
+ * session-end hook, so without a bound a top-level session's scope, message
+ * buffer and learned-set would never be dropped in a long-lived gateway.
+ * The three maps are LRU-bounded: every use touches the session, so only
  * sessions idle while this many others were active are evicted. An evicted
  * session loses its per-session dedup (core still dedups) and its scope
  * (it re-bootstraps, or writes take core's unscoped routing).
@@ -99,13 +94,10 @@ export class PlurContextEngine implements ContextEngine {
    *
    * `ingest()` deliberately does not block on `_learnIfNew` — a shared-scope
    * learn may touch a remote, and stalling the ingest hook on that would make
-   * every turn wait on the network. That was safe to leave unobservable while
-   * the write path completed within a tick; once it is genuinely async, "fired
-   * and forgotten" and "finished" stop being the same thing, and anything that
-   * needs to observe the result (a test, a shutdown path) has no way to wait.
-   *
-   * `settle()` is that way. It is NOT a queue or a scheduler — the writes still
-   * run concurrently and are still not awaited by `ingest()`.
+   * every turn wait on the network. Anything that needs to observe the result
+   * (a test, a shutdown path) waits via `settle()`. It is NOT a queue or a
+   * scheduler — the writes still run concurrently and are still not awaited
+   * by `ingest()`.
    */
   private inflight = new Set<Promise<unknown>>()
 
@@ -165,7 +157,7 @@ export class PlurContextEngine implements ContextEngine {
             // Fire-and-forget: learnRouted may touch a remote for shared scopes;
             // don't stall the ingest hook on it. Scope `|| undefined` (not
             // `|| 'global'`) so an unscoped session reaches the core unscoped
-            // routing path (_guardSensitiveScope sees scope == null) (#353).
+            // routing path (_guardSensitiveScope sees scope == null).
             const pending = this._learnIfNew(key, candidate.statement, {
               type: candidate.type,
               scope: this._scopeOf(params.sessionKey) || undefined,
@@ -286,7 +278,7 @@ export class PlurContextEngine implements ContextEngine {
       const newMessages = params.messages.slice(params.prePromptMessageCount)
       const key = params.sessionKey || params.sessionId
       // `|| undefined` (not `|| 'global'`) so an unscoped session reaches core's
-      // unscoped routing path (_guardSensitiveScope sees scope == null) (#353).
+      // unscoped routing path (_guardSensitiveScope sees scope == null).
       const scope = this._scopeOf(params.sessionKey) || undefined
 
       if (this.options.auto_learn && newMessages.length > 0) {
@@ -372,14 +364,9 @@ export class PlurContextEngine implements ContextEngine {
 
   /** Dispose: clean up */
   async dispose(): Promise<void> {
-    // Drain before clearing.
-    //
-    // `settle()` was added as the drain point for background learns and had no
-    // production caller — which made it decoration. `ingest()` reports success
-    // as soon as it has QUEUED a learn, so tearing the engine down without
-    // waiting drops writes the caller was already told had succeeded. Shutdown
-    // is exactly when that happens.
-    //
+    // Drain before clearing: `ingest()` reports success as soon as it has
+    // QUEUED a learn, so tearing down without waiting would drop writes the
+    // caller was already told had succeeded.
     // Failures are surfaced by the learns themselves; `settle` only waits.
     await this.settle()
     this.sessionScopes.clear()
@@ -406,7 +393,7 @@ export class PlurContextEngine implements ContextEngine {
    * Learn a statement only if it hasn't been learned in this session already
    * (prevents triple-learning). Uses learnRouted (not learn) so a shared-scope
    * engram is pushed to its remote store / outbox — learn() does no remote
-   * routing (#353, MED-4). Callers fire-and-forget this in async-friendly hooks;
+   * routing. Callers fire-and-forget this in async-friendly hooks;
    * a slow remote does not stall the agent turn.
    */
   private async _learnIfNew(sessionKey: string, statement: string, context: LearnContext): Promise<void> {
@@ -415,15 +402,13 @@ export class PlurContextEngine implements ContextEngine {
     const key = statement.toLowerCase()
     if (seen.has(key)) return
     // Claimed BEFORE the await so two concurrent occurrences do not both write;
-    // released if the write fails (formal R2, mcp#11) — otherwise a failed
-    // write (lock contention, a remote hiccup) was marked learned and never
-    // retried for the rest of the session.
+    // released if the write fails so a failed write (lock contention, a remote
+    // hiccup) can be retried later in the session.
     seen.add(key)
     try {
-      // #1048: claw already keys dedup and the session scope on this session,
-      // so the engram records it in sources[].session_id — as a digest: the
-      // OpenClaw key (`user:john:agent:helper`) names a person, and
-      // learnRouted sends the engram to team stores (0.23 audit, finding 20).
+      // The engram records the session in sources[].session_id as a digest:
+      // the OpenClaw key (`user:john:agent:helper`) names a person, and
+      // learnRouted sends the engram to team stores.
       await this.plur.learnRouted(statement, { session_id: sessionDigest(sessionKey), ...context })
     } catch (err) {
       seen.delete(key)
@@ -432,18 +417,18 @@ export class PlurContextEngine implements ContextEngine {
     maybeFlushAfter(recordEvent('learn'))
   }
 
-  /**
-   * Resolve once every background learn started so far has finished.
-   *
-   * For callers that must observe the effect of an `ingest()` — tests, and any
-   * shutdown path that should not drop a write. Does not change scheduling.
-   */
   /** Register a background write so `settle()` can wait for it. */
   private _track(p: Promise<unknown>): void {
     this.inflight.add(p)
     void p.finally(() => this.inflight.delete(p))
   }
 
+  /**
+   * Resolve once every background learn started so far has finished.
+   *
+   * For callers that must observe the effect of an `ingest()` — tests, and any
+   * shutdown path that should not drop a write. Does not change scheduling.
+   */
   async settle(): Promise<void> {
     while (this.inflight.size > 0) {
       await Promise.allSettled([...this.inflight])

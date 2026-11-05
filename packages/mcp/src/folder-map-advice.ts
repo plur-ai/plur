@@ -1,7 +1,7 @@
 import { folderRepairCommand, type FolderMapProblem } from '@plur-ai/core'
 
 /**
- * What the agent may do about a broken map (#1526), in agent form: the exact
+ * What the agent may do about a broken map, in agent form: the exact
  * repair command, to run only after the user agrees. The CLI form is the same
  * command without --yes, which shows the change and asks.
  */

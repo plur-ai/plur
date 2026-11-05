@@ -1,20 +1,11 @@
 import { z } from 'zod'
 
 /**
- * Tension record — the persisted output of a contradiction scan (#181).
- *
- * Phase 1 (#172) detection returned scan results to the caller and dropped
- * them: every scan re-paid the LLM calls, false positives were re-flagged
- * forever, and "resolved" had no representation (see the #213 audit,
- * findings C2/C5). A TensionRecord is the durable representation: one
- * record per engram pair, carried through the lifecycle
- *
+ * Tension record: the persisted output of a contradiction scan (one per engram
+ * pair), so scans do not re-pay LLM calls and false positives stay suppressed.
  *   detected → confirmed → resolved   (real conflict, winner picked)
  *   detected → dismissed              (false positive, pair suppressed)
- *
- * Records live in `tensions.yaml` next to `engrams.yaml`. Any recorded
- * pair — whatever its status — is excluded from future scans, so
- * dismissals act as a suppress-list and detections are never re-judged.
+ * Stored in `tensions.yaml`; any recorded pair, whatever its status, is excluded from future scans.
  */
 export const TensionStatusSchema = z.enum(['detected', 'confirmed', 'dismissed', 'resolved'])
 export type TensionStatus = z.infer<typeof TensionStatusSchema>
@@ -26,9 +17,8 @@ export type TensionStatus = z.infer<typeof TensionStatusSchema>
  *   likely evolution of a changing situation rather than a wrong value
  * - `factual`: everything else (same-day or undatable pairs)
  *
- * Advisory only — resolution never branches on category; the user picks the
- * action. A judge-assisted categorization can replace this later without a
- * schema change.
+ * Advisory only: resolution never branches on category; the user picks the
+ * action.
  */
 export const TensionCategorySchema = z.enum(['factual', 'temporal', 'superseded'])
 export type TensionCategory = z.infer<typeof TensionCategorySchema>

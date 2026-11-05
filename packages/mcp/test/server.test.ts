@@ -170,7 +170,7 @@ describe('MCP server (wire protocol)', () => {
       expect(parsed.received_fields).toEqual(['summary'])
       expect(parsed.error).not.toContain('arguments object was empty')
       // ...but the caller must still be told what happened and how to retry.
-      expect(parsed.error).toContain('plur-ai/plur#297')
+      expect(parsed.error).toContain('Known client-side bug')
       expect(parsed.error).toContain('engram_suggestions')
       expect(parsed.error).toMatch(/JSON string|comma-separated/)
       // Size is the trigger; say so, or the caller retries an identical payload.
@@ -236,7 +236,7 @@ describe('MCP server (wire protocol)', () => {
       expect(result.isError).toBe(true)
       const parsed = JSON.parse((result.content as any)[0].text)
       expect(parsed.error).toContain('arguments object was empty')
-      expect(parsed.error).toContain('plur-ai/plur#772')
+      expect(parsed.error).toContain('Known intermittent client-side issue')
       expect(parsed.error).toMatch(/IDENTICAL call/i)
       // The payload was never evaluated — the agent must NOT be told to fix it.
       expect(parsed.error).not.toContain('Fix the field(s) named above')
@@ -248,7 +248,7 @@ describe('MCP server (wire protocol)', () => {
       expect(result.isError).toBe(true)
       const parsed = JSON.parse((result.content as any)[0].text)
       expect(parsed.error).toContain('arguments object was empty')
-      expect(parsed.error).toContain('plur-ai/plur#772')
+      expect(parsed.error).toContain('Known intermittent client-side issue')
       expect(parsed.error).not.toMatch(/JSON string|comma-separated/)
     })
   })
@@ -271,7 +271,7 @@ describe('MCP server (wire protocol)', () => {
       expect(parsed.drop).toBe('whole_payload')
       // The guidance an agent needs to recover: retry the SAME payload, alone
       // in the message — batching parallel tool calls is the observed trigger.
-      expect(parsed.error).toContain('plur-ai/plur#772')
+      expect(parsed.error).toContain('Known intermittent client-side issue')
       expect(parsed.error).toMatch(/IDENTICAL call/i)
       expect(parsed.error).toMatch(/ONLY tool call/i)
       // Nothing may be stored on this path.

@@ -108,8 +108,49 @@ theorem editor_local_survives_startup (startup : Default) :
 def refreshWrite (_previous : Default) (current : Option Default) (automatic : Nat) : Option Nat :=
   current.map (fun git => writeScope none none git automatic)
 
-theorem refreshed_local_stays_local (previous : Default) (automatic : Nat) :
-    refreshWrite previous (some .local) automatic = some 0 := rfl
+/-- What `folderContext.resolve` reads: the workspace's Git answer
+(`none` = unreadable or memory not enabled there). -/
+inductive Origin | absent | local | unknown | scope (s : Nat)
+
+/-- `bindWorkspace`'s key: local and unknown both mean local. -/
+def originDefault : Origin → Default
+  | .absent => .absent
+  | .local | .unknown => .local
+  | .scope s => .project s
+
+/-- The binding the instance holds: blocked, or bound to a default. -/
+inductive Binding | blocked | bound (d : Default)
+
+/-- One `resolve()`: an unreadable workspace binds unresolved
+(`bindFolderUnresolved`); otherwise the new answer replaces the binding. -/
+def refresh (_b : Binding) : Option Origin → Binding
+  | none => .blocked
+  | some o => .bound (originDefault o)
+
+/-- The write core admits under a binding (`none` = refused). -/
+def writeUnder (b : Binding) (automatic : Nat) : Option Nat :=
+  match b with
+  | .blocked => none
+  | .bound d => some (writeScope none none d automatic)
+
+/-- For every earlier binding (a mapped project scope included) and every
+history of re-reads: when the latest re-read comes back local or unknown the
+write is local (0), and when it is unreadable the write is refused; the
+earlier Git scope is never used. -/
+theorem refreshed_local_stays_local (start : Binding) (history : List (Option Origin))
+    (automatic : Nat) :
+    writeUnder ((history ++ [some Origin.local]).foldl refresh start) automatic = some 0 ∧
+    writeUnder ((history ++ [some Origin.unknown]).foldl refresh start) automatic = some 0 ∧
+    writeUnder ((history ++ [none]).foldl refresh start) automatic = none := by
+  simp [List.foldl_append, refresh, writeUnder, originDefault, writeScope]
+
+/-- The refresh that kept the earlier binding when the re-read failed. -/
+def refreshKeep (b : Binding) : Option Origin → Binding
+  | none => b
+  | some o => .bound (originDefault o)
+
+theorem keep_reuses_old_scope :
+    writeUnder ([some (.scope 7), none].foldl refreshKeep .blocked) 0 = some 7 := rfl
 
 theorem failed_refresh_blocks (previous : Default) (automatic : Nat) :
     refreshWrite previous none automatic = none := rfl

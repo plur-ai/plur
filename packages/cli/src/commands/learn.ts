@@ -2,14 +2,14 @@ import { createPlur, type GlobalFlags } from '../plur.js'
 import { shouldOutputJson, outputJson, outputText, outputInfo, exit } from '../output.js'
 
 /**
- * Flags this command accepts (#986). Anything else is refused rather than
- * silently dropped — `--license` used to vanish without a word.
+ * Flags this command accepts. Anything else is refused rather than silently
+ * dropped.
  */
 export const FLAGS_WITH_VALUES = ['--scope', '--type', '--domain', '--source', '--rationale', '--tags', '--visibility', '--abstract', '--derived-from', '--knowledge-anchors', '--dual-coding', '--supersedes', '--license', '--claim-class', '--asserted-by']
 
 /**
- * How long `plur learn` waits for a team server before saving to the outbox
- * (0.21.1). The save itself is never cut short; only the server leg is.
+ * How long `plur learn` waits for a team server before saving to the outbox,
+ * in ms. The save itself is never cut short; only the server leg is.
  */
 export const REMOTE_WRITE_TIMEOUT_MS = 5_000
 
@@ -23,7 +23,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const plur = createPlur(flags)
 
   let statement = ''
-  // No hardcoded scope (#353): when --scope is absent the scope key is OMITTED
+  // No hardcoded scope: when --scope is absent the scope key is OMITTED
   // from the LearnContext entirely so it flows through the unscoped-routing logic
   // (_guardSensitiveScope → _resolveUnscopedScope → auto-route or unscoped_default,
   // default global). Passing scope:'global' here would bypass that.
@@ -32,14 +32,10 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   let type: 'behavioral' | 'terminological' | 'procedural' | 'architectural' = 'behavioral'
   let domain: string | undefined
   let source: string | undefined
-  // #8: Hermes' write path is the CLI bridge, and it SENDS these fields
-  // (bridge.py learn() → --tags/--rationale/--visibility/--knowledge-anchors/
-  // --dual-coding/--abstract/--derived-from). Before this, the parser only knew
-  // --scope/--type/--domain/--source and silently dropped the rest, so
-  // Hermes-built rationale/dual-coding/tags never reached the engram — and the
-  // PR-5 context-field leak scan had nothing to scan on the CLI/Hermes path.
-  // Parse them here and forward them in the LearnContext so the CLI surface
-  // matches the MCP/Plur-class field set.
+  // Hermes writes through this CLI and sends these fields (bridge.py learn() →
+  // --tags/--rationale/--visibility/--knowledge-anchors/--dual-coding/
+  // --abstract/--derived-from). They are forwarded in the LearnContext so the
+  // CLI surface matches the MCP/Plur-class field set.
   let rationale: string | undefined
   let tags: string[] | undefined
   let visibility: 'private' | 'public' | 'template' | undefined
@@ -47,20 +43,14 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   let derivedFrom: string | undefined
   let knowledgeAnchors: Array<{ path: string; relevance?: string; snippet?: string }> | undefined
   let dualCoding: { example?: string; analogy?: string } | undefined
-  // #240: engram IDs this statement intentionally replaces (comma-separated).
+  // Engram IDs this statement intentionally replaces (comma-separated).
   let supersedes: string[] | undefined
-  // Provenance capture (#961, #963, #970). Without these the CLI can write an
-  // engram but can never say who is answerable for it, whether a person stated
-  // it or a model worked it out, or which licence governs reuse — so a complete
-  // provenance record is unreachable from the command line. Same shape of gap
-  // the #8 note above describes: the field existed and the parser never knew.
+  // Provenance: who is answerable for the engram, whether a person stated it
+  // or a model worked it out, and which licence governs reuse.
   let license: string | undefined
   let claimClass: 'observed' | 'documented' | 'structural' | 'asserted' | 'inferred' | 'revised' | undefined
   let assertedBy: string | undefined
 
-  // Parse a value as JSON, exiting 1 with a clear message on malformed input
-  // (a bad --dual-coding/--knowledge-anchors should fail loudly, not silently
-  // drop the field as before).
   /** Reject `--license --claim-class observed`, where the value is the next flag. */
   const value = (flag: string, raw: string | undefined): string => {
     if (raw === undefined || /^--[A-Za-z]/.test(raw)) {
@@ -69,6 +59,9 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     return raw
   }
 
+  // Parse a value as JSON, exiting 1 with a clear message on malformed input
+  // (a bad --dual-coding/--knowledge-anchors fails loudly rather than dropping
+  // the field).
   const parseJsonFlag = <T>(flag: string, raw: string): T => {
     try {
       return JSON.parse(raw) as T
@@ -98,12 +91,9 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     }
     else if (arg === '--visibility' && i + 1 < args.length) {
       const v = args[++i]
-      // Validate, as --claim-class and --type already do. An unknown value was
-      // written straight through, and the engram then failed schema validation
-      // on every subsequent read: quarantined, invisible to list and recall,
-      // unrecoverable — after a success message with an id. Four testers hit
-      // this with "shared", "team" and "internal", all reasonable guesses, and
-      // one lost 199 engrams to it in a single run.
+      // Validate before writing: an unknown value would fail schema validation
+      // on every later read, quarantining the engram (invisible to list and
+      // recall) after a success message.
       const allowed = ['private', 'public', 'template']
       if (!allowed.includes(v)) {
         exit(1, `Unknown --visibility "${v}". One of: ${allowed.join(', ')}.`)
@@ -123,9 +113,9 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     }
     else if (arg === '--license' && i + 1 < args.length) {
       const v = value('--license', args[++i]).trim()
-      // An empty or blank licence is a typo, not a choice. Accepting it wrote
-      // the schema default and then reported `chosen: false` — telling an
-      // operator who DID supply a value that nobody chose one.
+      // An empty or blank licence is a typo, not a choice. Accepting it would
+      // write the schema default and report `chosen: false` to an operator who
+      // did supply a value.
       if (!v) exit(1, '--license needs a licence identifier, for example cc-by-4.0.')
       license = v; i++
     }
@@ -145,7 +135,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       claimClass = v as typeof claimClass; i++
     }
     // `--` ends flag parsing: the next token is the statement, verbatim, even
-    // when it starts with `-` (decision S4). Before, `--` itself was stored.
+    // when it starts with `-`.
     else if (arg === '--') {
       if (!statement && i + 1 < args.length) statement = args[i + 1]
       break
@@ -154,7 +144,6 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     else { i++ }
   }
 
-  // Read from stdin if no positional argument
   if (!statement && !process.stdin.isTTY) {
     const chunks: Buffer[] = []
     for await (const chunk of process.stdin) chunks.push(chunk)
@@ -200,11 +189,9 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     ...(knowledgeAnchors !== undefined ? { knowledge_anchors: knowledgeAnchors } : {}),
     ...(dualCoding !== undefined ? { dual_coding: dualCoding } : {}),
     ...(supersedes !== undefined ? { supersedes } : {}),
-    // #1048: a CLI invocation is a session too. Without this every engram
-    // written by `plur learn` lands with sources[].session_id null, and the
-    // attribution the epic exists to provide is absent from the most common
-    // write path there is. PLUR_SESSION_ID lets a wrapping harness thread its
-    // own id through; otherwise the run identifies itself honestly as a CLI run.
+    // A CLI invocation is a session too, so sources[].session_id is never null.
+    // PLUR_SESSION_ID lets a wrapping harness thread its own id through;
+    // otherwise the run identifies itself as a CLI run.
     session_id: process.env.PLUR_SESSION_ID || `cli:${process.pid}`,
   }
 
@@ -213,36 +200,31 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   // explicit `--scope group:engineering` on learn() would silently drop the
   // remote push.
   //
-  // The deadline lives in CORE and covers the server request only (0.21.1).
-  // This used to race the WHOLE call against a 5 s timer and `process.exit(1)`
-  // when the timer won. That raced local work too — a save into a large store
-  // took ~6 s with no network at all and was reported as failed, and the exit
-  // landed inside the store lock and left it behind — and it exited while core
-  // was still waiting on a hanging server, before core's outbox fallback could
-  // run, so a team save was written nowhere. Now a server that does not answer
-  // in time takes the outbox, and this awaits whatever core does, however long
-  // the local write takes. Exit 1 only when nothing was stored (core threw).
+  // The deadline lives in core and covers the server request only. Do not race
+  // the whole call against a timer and exit: that would cut short local writes
+  // into large stores, leave the store lock behind, and exit before core's
+  // outbox fallback runs. A server that does not answer in time takes the
+  // outbox; this awaits whatever core does. Exit 1 only when core throws.
   const engram = await plur.learnRouted(statement, ctx, { remoteTimeoutMs: REMOTE_WRITE_TIMEOUT_MS })
 
-  // #1264: where the engram went — remote, outbox or local. A shared scope that
+  // Where the engram went — remote, outbox or local. A shared scope that
   // stayed local also carries a warning, because nothing else would tell the
   // user their team save never left this machine.
   const delivered = plur.deliveryOf(engram, scopeProvided ? scope : undefined)
-  // Item 6 of the 2026-10-02 investigation: report the id in the form the read
-  // paths hand back (#914), as the MCP plur_learn does. A server-minted id is
-  // bare (`ENG-2026-10-02-001`) and collides with ids minted on this machine
-  // the same day; the namespaced form (`ENG-GTE-…`) names the store. An outbox
-  // row keeps its local id: it sits in the local store until the retry lands.
+  // Report the id in the form the read paths hand back, as the MCP plur_learn
+  // does. A server-minted id is bare and can collide with ids minted on this
+  // machine the same day; the namespaced form (`ENG-GTE-…`) names the store. An
+  // outbox row keeps its local id: it sits in the local store until the retry lands.
   const reportedId = delivered.delivery === 'outbox' ? engram.id : plur.readIdFor(engram)
 
-  // LOW-10 (#353): surface a scope demotion instead of swallowing it silently.
+  // Surface a scope demotion instead of swallowing it silently.
   // When learnRouted demotes a sensitive shared-scope write to local/private it
   // stamps structured_data._demoted; mirror the MCP display contract (tools.ts)
   // so the CLI user sees why the engram did not land at the requested scope.
   const demoted = (engram as { structured_data?: { _demoted?: { from: string; to: string; patterns: string } } })
     .structured_data?._demoted
 
-  // Missing-domain nudge (#671), CLI surface — mirrors the MCP domain_hint
+  // Missing-domain nudge — mirrors the MCP domain_hint
   // contract in tools.ts. An engram without a `domain` cannot auto-route (the
   // domain-prefix channel is the only signal that reliably clears the
   // auto-route threshold). Fire only when routing was on the table: no
@@ -251,10 +233,8 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   let domainHint: string | undefined
   const routed = (engram as { structured_data?: { _routed?: { scope: string; confidence: number; reason: string } } })
     .structured_data?._routed
-  // #1115: both routing outcomes were read here only to decide whether to show
-  // a domain hint, so the CLI never named the destination it picked, nor the
-  // shared scope it declined. Both change where the engram ended up, which is
-  // the one thing a write command has to be able to say.
+  // Both routing outcomes are reported: each changes where the engram ended up,
+  // which a write command must be able to say.
   const routeRefused = (engram as { structured_data?: { _routeRefused?: { scope: string; confidence: number; reason: string } } })
     .structured_data?._routeRefused
   if (!domain && !scopeProvided && !routed) {
@@ -292,7 +272,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       ...(routeRefused ? { route_refused: { scope: routeRefused.scope, confidence: routeRefused.confidence, reason: routeRefused.reason } } : {}),
     })
   } else {
-    // Confirmation of a requested mutation → suppressed by --quiet (#730).
+    // Confirmation of a requested mutation → suppressed by --quiet.
     outputInfo(`Learned: "${engram.statement}"`, flags)
     outputInfo(`  ID: ${reportedId} | Scope: ${engram.scope} | Type: ${engram.type}${engram.domain ? ` | Domain: ${engram.domain}` : ''}`, flags)
     if (delivered.delivery === 'outbox') {

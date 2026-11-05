@@ -21,34 +21,31 @@ export interface CursorHookEntry {
 export interface CursorHooksConfig {
   version: number
   hooks: Record<string, CursorHookEntry[]>
-  /** Unknown top-level keys a user's hooks.json carries — preserved verbatim through read→merge→write (0.19.1 data-loss audit, finding 6). */
+  /** Unknown top-level keys a user's hooks.json carries — preserved verbatim through read→merge→write. */
   [key: string]: unknown
 }
 
 /**
  * Build the PLUR hook contribution, given the resolved shim/CLI command to
- * invoke. Every entry pins `failClosed: false` explicitly (audit fix, data
- * evaluator): Cursor's schema documents `failClosed` as a real field, which
- * implies a genuine closed-by-default failure mode exists somewhere in the
- * hook pipeline. Every "allow" path in these hooks works by the process
- * exiting 0 with empty stdout — if Cursor's actual undocumented default for
- * "hook ran, said nothing" ever turned out to be closed rather than open,
- * `plur init --cursor` would silently brick every tool call for every user.
- * Pin the field so behavior doesn't depend on an unverified assumption;
- * Task 11 still separately confirms this in practice.
+ * invoke. Every entry pins `failClosed: false` explicitly: Cursor's schema
+ * documents `failClosed` as a real field, and every "allow" path in these
+ * hooks works by the process exiting 0 with empty stdout. If Cursor's
+ * undocumented default for "hook ran, said nothing" were closed rather than
+ * open, `plur init --cursor` would silently block every tool call. Pinning
+ * the field removes the dependency on that assumption.
  */
 export function buildCursorHooks(cmd: string): Record<string, CursorHookEntry[]> {
   return {
     // 10s is generous, not tight: hook-cursor-session-start is BM25-only
-    // (PR #502 lesson — see its file-level comment), measured well under 1s
-    // against a multi-thousand-engram store. Cursor's hook schema has no
+    // (see its file-level comment), well under 1s against a
+    // multi-thousand-engram store. Cursor's hook schema has no
     // async/fire-and-forget option to fall back on if this ever needs
     // hybrid search instead — keep it BM25-only rather than raising this.
     sessionStart: [{ command: `${cmd} hook-cursor-session-start`, timeout: 10, failClosed: false }],
     preToolUse: [{ command: `${cmd} hook-cursor-guard`, timeout: 3, failClosed: false }],
     postToolUse: [{ command: `${cmd} hook-cursor-post-tool`, timeout: 10, failClosed: false }],
     stop: [{ command: `${cmd} hook-cursor-stop`, timeout: 3, failClosed: false }],
-    // Auto-rate injected engrams from the reply text (#1310): the `stop`
+    // Auto-rate injected engrams from the reply text: the `stop`
     // payload carries no reply, `afterAgentResponse` carries `text`.
     afterAgentResponse: [{ command: `${cmd} hook-auto-rate cursor`, timeout: 10, failClosed: false }],
   }
@@ -57,12 +54,11 @@ export function buildCursorHooks(cmd: string): Record<string, CursorHookEntry[]>
 /**
  * A command is PLUR-owned when PLUR's own launcher (the plur-hook shim or
  * the `@plur-ai/cli` npx fallback) runs a `hook-*` subcommand — the shared
- * matcher `plur init` uses for every editor (decision H2 "prefix"; no
- * subcommand list, so a new Cursor hook needs no update here). A user's own
+ * matcher `plur init` uses for every editor (a prefix match, no subcommand
+ * list, so a new Cursor hook needs no update here). A user's own
  * `./scripts/hook-cursor-lint.sh`, or any hook-* run by another binary, is
- * not PLUR's and survives `stripPlurCursorHooks()` (audit fix, Codex
- * adversarial review 2026-07-08: a bare `hook-cursor-` substring test once
- * deleted such hooks).
+ * not PLUR's and survives `stripPlurCursorHooks()`; a bare `hook-cursor-`
+ * substring test would delete such hooks.
  */
 function isPlurCursorHookEntry(entry: CursorHookEntry): boolean {
   return typeof entry?.command === 'string' && isPlurHookCommand(entry.command)
@@ -89,8 +85,7 @@ export function mergeCursorHooks(config: CursorHooksConfig, additions: Record<st
     hooks[event] = [...(hooks[event] ?? []), ...entries]
   }
   // Spread `clean`: unknown top-level keys readCursorHooksConfig preserved
-  // must survive the merge too — returning `{ version, hooks }` dropped them
-  // on every `plur init --cursor` (formal Adapters #4, cli#2).
+  // must survive the merge too.
   return { ...clean, version: clean.version ?? 1, hooks }
 }
 
@@ -99,8 +94,8 @@ export function readCursorHooksConfig(path: string): CursorHooksConfig {
   try {
     const parsed = JSON.parse(readFileSync(path, 'utf8'))
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return { version: 1, hooks: {} }
-    // Spread first: unknown top-level keys survive the round trip (the codex
-    // writer already did this; cursor was the odd one out — audit finding 6).
+    // Spread first: unknown top-level keys survive the round trip, as in the
+    // codex writer.
     return { ...parsed, version: parsed.version ?? 1, hooks: parsed.hooks ?? {} }
   } catch {
     return { version: 1, hooks: {} }

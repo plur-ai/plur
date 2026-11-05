@@ -5,7 +5,7 @@ Owner decisions of 2026-09-26, implemented in separate PRs stacked on `main`:
 
 * **#1229** — `sha256:v2:` hashes SKILL.md, manifest.yaml and engrams.yaml, each
   framed as name, byte length and bytes, with an absent part spelled `-`
-  (`computePackIntegrity` in packages/core/src/packs.ts).
+  (`computePackIntegrity` in packages/core/src/packs/integrity.ts).
 * **#1230** — registry rows are keyed by install directory (`dir`), with a legacy
   fallback to the manifest name; the integrity migration uses the same key.
 

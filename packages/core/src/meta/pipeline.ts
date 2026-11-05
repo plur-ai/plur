@@ -1,4 +1,3 @@
-// packages/core/src/meta/pipeline.ts
 import type { Engram } from '../schemas/engram.js'
 import type { LlmFunction } from '../types.js'
 import type { MetaField } from '../schemas/meta-engram.js'

@@ -1,4 +1,3 @@
-// packages/core/src/meta/clustering.ts
 import type { RelationalAnalysis, RelationalTriple } from './structural-analysis.js'
 import { tokenSimilarity } from './similarity.js'
 

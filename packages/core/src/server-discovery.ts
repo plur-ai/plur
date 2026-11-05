@@ -1,24 +1,12 @@
 /**
- * Server scope discovery — pure decision rules (#1631).
- *
- * `acceptDiscoveredScopes` decides, from one GET /api/v1/me answer (or the
- * error it threw), whether a server entry's cached `scopes` list is replaced
- * and with what. It never touches the network or the config file.
- *
- * Rules:
- * - A failed, unauthorised, timed-out or network answer never replaces the
- *   cache (not even an empty one).
- * - `scopes_status: 'ok'` replaces the cache with the server's list, even [].
- * - A malformed scope list (`MeResponse.scopes_malformed`: missing, null, not
- *   an array, or with an invalid member) is `degraded`: it never replaces a
- *   non-empty cache. Only an explicit, valid `[]` clears one.
- * - `scopes_status: 'not_synced'`, or an older server (no `scopes_status`)
- *   answering an empty list, replaces only an empty cache (with []).
- * - An answer with no `org_id` cannot be checked against an org, so every
- *   scope is rejected (`org-prefix`) and the answer is `degraded`: it never
- *   replaces a non-empty cache.
- * - Accepted scopes are filtered to the server's org; a scope another server
- *   entry already serves is refused.
+ * Server scope discovery — pure rules for whether one GET /api/v1/me answer (or its error) replaces a server
+ * entry's cached `scopes`. No network, no config writes.
+ * - Failed, unauthorised, timed-out or network answers never replace the cache.
+ * - `scopes_status: 'ok'` replaces it with the server's list, even [].
+ * - A malformed list (`scopes_malformed`) or an answer with no `org_id` (every scope rejected, `org-prefix`) is
+ *   `degraded` and never replaces a non-empty cache; only an explicit valid `[]` clears one.
+ * - `not_synced`, or an older server answering [] without `scopes_status`, replaces only an empty cache.
+ * - Accepted scopes are filtered to the server's org; a scope another entry already serves is refused.
  */
 import { isDeepStrictEqual } from 'node:util'
 import type { MeResponse } from './store/remote-store.js'
@@ -83,7 +71,7 @@ function filterScopes(
 }
 
 /**
- * Pure decision table for scope discovery (#1631).
+ * Pure decision table for scope discovery.
  *
  * Takes a /me answer (or an error) and the existing cache, and decides
  * whether to replace the cached scope list and which scopes to accept.
@@ -103,7 +91,7 @@ export function acceptDiscoveredScopes(input: AcceptDiscoveredScopesInput): Acce
 
   // A malformed scope list (missing, null, not an array, or a member that
   // failed the grammar) is not the server's list: whatever scopes_status
-  // says, it never clears or replaces a non-empty cache (Codex round 2).
+  // says, it never clears or replaces a non-empty cache.
   if (me.scopes_malformed) {
     return cached.length > 0 ? keep('degraded') : empty('degraded')
   }
@@ -129,7 +117,7 @@ export function acceptDiscoveredScopes(input: AcceptDiscoveredScopesInput): Acce
   }
 }
 
-// ── Registration and fold (#1631, plan B Task 5) ─────────────────────────────
+// ── Registration and fold ────────────────────────────────────────────────────
 
 /** Why a per-scope entry on the registered server was not folded into it. */
 export type FoldKeptReason =
@@ -222,8 +210,8 @@ function personalScopeHolders(stores: unknown[], si: number, scope: string): num
 }
 
 /**
- * An entry that holds the personal scope's writes, as `plur login` names it
- * (#1638): the url's origin (never a user name, password or key) or the path,
+ * An entry that holds the personal scope's writes, as `plur login` names it:
+ * the url's origin (never a user name, password or key) or the path,
  * the scope as that entry spells it, and whether it is readonly. `sameServer`
  * marks the server entry being registered itself, serving the scope in
  * another letter case; that one is not removed for the caller.
@@ -238,8 +226,8 @@ export interface ScopeHolder {
 
 /**
  * Registration refused: another entry takes the personal scope's writes and
- * registering would take them over (owner decision on B5: refuse; the
- * installer offers to remove the stale entry). `holders` names those entries;
+ * registering would take them over (the installer offers to remove the
+ * stale entry). `holders` names those entries;
  * `removable` is true when all of them are separate entries that
  * `removeStale` can remove.
  */
@@ -264,8 +252,8 @@ function describeHolder(r: Record<string, unknown>, scope: string, sameServer: b
 
 /**
  * Registration with `keepSignIn` refused: config.yaml already holds a sign-in
- * (an entry with that server's url) for the server, which is never replaced
- * (#1638: the one-time config.json move). Names the origin only.
+ * (an entry with that server's url) for the server, which is never replaced.
+ * Names the origin only.
  */
 export class SignInHeldError extends Error {
   constructor(message: string) {
@@ -296,26 +284,12 @@ function keptReason(r: Record<string, unknown>, scope: string, token: string | u
 }
 
 /**
- * Fold the per-scope entries on one server into that server's one entry (pure).
- *
- * `rawStores` must hold exactly one server entry whose url has the canonical
- * endpoint identity of `serverUrl` (otherwise this throws: which entry the
- * scopes belong to cannot be told). `token`/`tokenEnv` are that entry's key
- * as stored on disk. A per-scope url entry (no `path`, no `scopes`) on the same
- * server is folded when its stored `token_env`, `token` and `readonly` equal the
- * server entry's (and its scope passes the grammar and any explicit `shared`
- * matches the scope's): it leaves the array, its scope joins `pinned_scopes`
- * (so a later discovery that omits it cannot drop it), and its metadata (every
- * key that is not identity, credentials or routing) goes to
- * `scope_settings[scope]`, over a value already there for the same key. Every
- * other entry is returned unchanged; the input array is not modified.
- *
- * A write takes the first entry in config order that serves its scope, so the
- * fold keeps every route as it was: the server entry stays where it is (moving
- * it ahead of an entry that serves one of its scopes with another key would
- * move that scope onto this key), and an entry is folded only when no entry
- * that stays — another key, another server or a path — serves its scope
- * (`scope-served-elsewhere`).
+ * Fold the per-scope entries on one server into that server's one entry (pure; input not modified).
+ * `rawStores` must hold exactly one entry with `serverUrl`'s canonical endpoint identity, else this throws.
+ * A per-scope url entry on that server is folded when its `token_env`, `token` and `readonly` match (and its scope
+ * is valid): its scope joins `pinned_scopes` and its other metadata goes to `scope_settings[scope]`.
+ * Routes never change: the server entry keeps its position, and an entry is not folded when an entry that stays
+ * serves its scope (`scope-served-elsewhere`).
  */
 export function foldStoresIntoServerEntry(
   rawStores: unknown[], serverUrl: string, token: string | undefined, tokenEnv: string | undefined,
@@ -410,13 +384,13 @@ export interface ServerRegistration {
   /** The variable the key is read from; the entry then stores only this name. */
   tokenEnv?: string
   /** The compat `scope`: the personal scope the server's /me answer names
-   *  (owner decision O6: the caller holds that answer). */
+   *  (the caller holds that answer). */
   personalScope: string
   /** Merged into the entry's `enterprise` block. */
   enterprise?: Record<string, string>
   /** Remove the entries that hold the personal scope (the ones a
-   *  {@link PersonalScopeTakenError} names) and register, in one result
-   *  (#1638). Refused as before when one of them cannot be removed. */
+   *  {@link PersonalScopeTakenError} names) and register, in one result.
+   *  Refused when one of them cannot be removed. */
   removeStale?: boolean
   /** Refuse with {@link SignInHeldError} when any entry for this server's
    *  url already holds a key (token or token_env); judged on the file under
@@ -438,28 +412,20 @@ function legacyJwt(value: unknown): boolean {
 }
 
 /**
- * Register a server entry in a raw `stores` array (pure; #1631, plan B Task 5).
- *
- * - No server entry for the url's canonical endpoint identity: one is added,
- *   `{ url, token | token_env, scope: personalScope, enterprise, scopes: [] }`.
- * - Exactly one: it is updated in place. A different key replaces the key of
- *   that entry only (a `token_env` reference replaces an inline key and the
- *   other way round); `opts.enterprise` is merged into its `enterprise` block;
- *   a different `personalScope` becomes its compat `scope` through
- *   {@link withCompatScope} (the old compat scope's top-level metadata moves to
- *   its `scope_settings`). Every other key of the entry is kept.
- * - More than one: refused (throws), like key rotation and discovery.
- *
- * Then {@link foldStoresIntoServerEntry} folds the per-scope entries that hold
- * the entry's key. `unchanged` means the result equals the input.
+ * Register a server entry in a raw `stores` array (pure).
+ * - None for the url's endpoint identity: add `{ url, token | token_env, scope: personalScope, enterprise, scopes: [] }`.
+ * - Exactly one: update in place — replace its key, merge `opts.enterprise`, set a new compat `scope` via
+ *   {@link withCompatScope}; keep every other key.
+ * - More than one: throws.
+ * Then {@link foldStoresIntoServerEntry} folds per-scope entries with the same key. `unchanged` = result equals input.
  */
 export function registerServerEntry(rawStores: unknown[], reg: ServerRegistration): {
   stores: unknown[]; status: 'added' | 'updated' | 'unchanged'; report: Omit<FoldReport, 'queued_by_scope'>; entry: Record<string, unknown>
   removed: ScopeHolder[]; migratedLegacy: boolean
 } {
   // One object per position: YAML aliases load as the same object at several
-  // positions, and the holders are mapped back to their positions by identity
-  // (#1665 gate). A shallow copy changes no content.
+  // positions, and the holders are mapped back to their positions by identity.
+  // A shallow copy changes no content.
   rawStores = rawStores.map(r => (isPlainObj(r) ? { ...r } : r))
   const key = normalizeEndpointUrl(reg.url)
   // A sign-in: an entry for the url with a key or a key reference (token or
@@ -533,7 +499,7 @@ export function registerServerEntry(rawStores: unknown[], reg: ServerRegistratio
   const si = serverEntriesAt(folded, key)[0]
   const parsed = ServerStoreEntrySchema.safeParse(entry)
   if (!parsed.success) {
-    // Field paths only: a schema message can quote the value (#408).
+    // Field paths only: a schema message can quote the value.
     throw new Error(`the server entry for ${safeOrigin(reg.url)} in config.yaml is not valid (${parsed.error.issues.map(it => it.path.join('.') || '(root)').join(', ')}), so it would not load. Nothing was changed. Fix or remove it, then register again.`)
   }
   // Only an entry that loaded served its scopes: one the loader rejected
@@ -580,8 +546,7 @@ export function registerServerEntry(rawStores: unknown[], reg: ServerRegistratio
     }
   }
   // An entry from an older sign-in to this same server, with another key,
-  // keeps the personal writes while it serves the scope (the first real
-  // sign-in on 0.22.0): nothing is taken over, so nothing above refuses, and
+  // keeps the personal writes while it serves the scope: nothing is taken over, so nothing above refuses, and
   // `plur login` warns. `removeStale` removes it when it serves only the
   // personal scope; one that also serves other scopes is left for the user.
   if (reg.removeStale && token !== undefined) {

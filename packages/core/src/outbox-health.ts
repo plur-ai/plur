@@ -1,24 +1,9 @@
 /**
- * Outbox entry classification (#1299).
- *
- * A queued team write fails for one of two kinds of reason, and they want
- * opposite treatment:
- *
- *   - `retrying`     — the network, a 5xx, a 429, a timeout. The next flush
- *                      may well succeed, so it keeps retrying as before.
- *   - `needs_action` — 401, 403, 404, 422, an explicit "cannot write to scope"
- *                      refusal, or no writable store registered for the scope.
- *                      Retrying cannot fix any of these; a person has to.
- *
- * Observed before this existed: ten writes refused with `403 Cannot write to
- * scope ...` on every attempt for twelve days, one at 103 attempts, and no
- * surface said so. Classifying the entry is what lets session start, `plur
- * status`, `plur doctor` and `plur outbox` say it in one line.
- *
- * Pure: reads the entry's recorded failure, never the network, and never
- * changes the entry. When the evidence is ambiguous the answer is `retrying`
- * — the old behaviour — because a false `needs_action` would turn doctor red
- * and back an entry off that may be about to succeed.
+ * Outbox entry classification, so session start, status, doctor and `plur outbox` report a refused write in one line:
+ *   - `retrying`     — network, 5xx, 429, timeout: the next flush may succeed.
+ *   - `needs_action` — 401, 403, 404, 422, a scope write refusal, or no writable store: a person must act.
+ * Pure: reads the recorded failure only. Ambiguous evidence → `retrying` (a false `needs_action` turns doctor red
+ * and backs off an entry that may succeed).
  */
 
 export type OutboxState = 'retrying' | 'needs_action'
@@ -40,14 +25,15 @@ export function credentialChanged(previous: string | undefined, current: string 
 }
 
 /**
+/**
  * Text a server sends when it refuses a write to a scope outright. Matched only
- * when no status was recorded (entries queued before #1299 stored one).
+ * when no status was recorded (older entries may lack one).
  */
 const REFUSAL_TEXT = /cannot write to scope|not (?:allowed|permitted|authori[sz]ed) to write/i
 
 /**
  * Pull an HTTP status out of an error message this client wrote: `Remote
- * store append failed: 403 ...` or `HTTP 403 from ...`. Deliberately narrow —
+ * store append failed: 403 ...` or `HTTP 403 from ...`. Deliberately narrow:
  * a number elsewhere in a message is not a status.
  */
 export function statusFromErrorText(text: string | undefined): number | undefined {
@@ -72,16 +58,16 @@ export interface OutboxFailureInput {
 export interface OutboxVerdict {
   state: OutboxState
   /** One line: why retrying will not help (`needs_action`), or why a
-   *  `retrying` entry is held on this machine (its push claim, #1581 L1). */
+   *  `retrying` entry is held on this machine (its push claim). */
   reason?: string
   /** One line: a real command or change that would help. */
   next_step?: string
 }
 
 /**
- * Prefix of `last_error` when a flush could not record the entry's push claim
- * (#1581 audit L1). Not a push failure: the entry stays `retrying`, with a
- * reason and next step so the listing, doctor and status can say why.
+ * Prefix of `last_error` when a flush could not record the entry's push claim.
+ * Not a push failure: the entry stays `retrying`, with a reason and next step
+ * so the listing, doctor and status can say why.
  */
 export const OUTBOX_CLAIM_ERROR_PREFIX = 'push claim could not be recorded: '
 
@@ -108,8 +94,8 @@ export function classifyOutboxFailure(input: OutboxFailureInput): OutboxVerdict 
     }
   }
 
-  // #1564 review M2: the token's `token_env` variable is unset — nothing was
-  // sent; only setting the variable fixes it.
+  // The token's `token_env` variable is unset: nothing was sent, and only
+  // setting the variable fixes it.
   const unsetVar = /environment variable (\S+), which is unset or empty/.exec(input.last_error ?? '')?.[1]
   if (unsetVar) {
     return {
@@ -169,14 +155,13 @@ export interface OutboxSummary {
   /** One row per (scope, reason) with needs_action entries, each with that reason's next step. */
   scopes: Array<{ scope: string; count: number; reason: string; next_step: string }>
   /** `retrying` entries held on this machine for a stated reason (a push
-   *  claim that could not be recorded, #1581 audit L1), one row per reason. */
+   *  claim that could not be recorded), one row per reason. */
   held?: Array<{ count: number; reason: string; next_step: string }>
 }
 
 export function summarizeOutbox(entries: readonly OutboxEntryLike[]): OutboxSummary {
   // Keyed by scope AND reason: one scope can hold entries refused for
-  // different reasons, and each reason has its own next step. Grouping by
-  // scope alone told a 403 entry to `plur forget` itself (the 422 advice).
+  // different reasons, and each reason has its own next step.
   const rows = new Map<string, { scope: string; count: number; reason: string; next_step: string }>()
   let needs = 0
   const held = new Map<string, { count: number; reason: string; next_step: string }>()
@@ -204,7 +189,7 @@ export function summarizeOutbox(entries: readonly OutboxEntryLike[]): OutboxSumm
   }
 }
 
-/** One human line per held reason (#1581 audit L1), for outbox/doctor/status. */
+/** One human line per held reason, for outbox/doctor/status. */
 export function describeHeld(summary: OutboxSummary): string[] {
   return (summary.held ?? []).map(h =>
     `${h.count} queued write(s) are held on this machine: ${h.reason}. Next: ${h.next_step}.`)

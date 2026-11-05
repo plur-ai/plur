@@ -1,0 +1,369 @@
+anchors:
+  packages/cli/src/antigravity-hooks.ts#AGY_HOOK_SET_NAME:
+    kind: guarantee
+    rule: PLUR edits only its own named hook set in Antigravity's hooks.json and never touches anyone else's sets.
+    tests:
+      - packages/cli/test/antigravity-hooks.test.ts::hook sets through byte-identical
+  packages/cli/src/antigravity-hooks.ts#buildAgyHookSet.Stop:
+    kind: guarantee
+    rule: The Antigravity end-of-turn auto-rate hook prints nothing, so it can never block the stop.
+    tests:
+      - >-
+        packages/cli/test/hook-auto-rate.test.ts::Antigravity: PreInvocation inject, then Stop with the reply read from
+        the transcript
+  packages/cli/src/antigravity-hooks.ts#mergeAgyHooks:
+    kind: guarantee
+    rule: Merging PLUR's Antigravity hooks is idempotent and leaves every other hook set byte-identical.
+    tests:
+      - packages/cli/test/antigravity-hooks.test.ts::is idempotent
+      - packages/cli/test/antigravity-hooks.test.ts::hook sets through byte-identical
+  packages/cli/src/codex-config.ts#(module):
+    kind: guarantee
+    rule: >-
+      Editing Codex's config.toml never removes and re-adds a user's table; other tables, comments and keys stay as they
+      were.
+    tests:
+      - >-
+        packages/cli/test/codex-upgrade-1623.test.ts::upgrades an old pin without losing env, tools, cwd, comments or
+        unrelated tables
+  packages/cli/src/codex-config.ts#codexLaunchKind:
+    kind: guarantee
+    rule: >-
+      Deciding whether to replace an installed Codex MCP entry reads package metadata only and never runs the old
+      server.
+    none: no test checks that the old server is not executed
+  packages/cli/src/codex-config.ts#codexMcpEnvironment:
+    kind: note
+    why: >-
+      Explains what the function models (the environment of the invoking process, after upstream Codex); no rule of this
+      code.
+  packages/cli/src/codex-hooks.ts#buildCodexHooks:
+    kind: guarantee
+    rule: No PLUR Codex hook is ever registered as async, so its context reaches the turn that triggered it.
+    tests:
+      - packages/cli/test/codex-hooks.test.ts::never marks a hook async
+  packages/cli/src/codex-hooks.ts#buildCodexHooks.PreToolUse:
+    kind: guarantee
+    rule: The Codex session guard only ever denies a tool call or stays silent; it never emits allow or ask.
+    tests:
+      - packages/cli/test/hook-codex-guard.test.ts::never emits allow or ask
+  packages/cli/src/codex-hooks.ts#isPlurCodexHookSpec:
+    kind: guarantee
+    rule: >-
+      A user's own hook-* script, or one run by another binary, is never treated as PLUR's and never deleted by plur
+      init --codex.
+    tests:
+      - packages/cli/test/codex-hooks.test.ts::does not claim a foreign script whose name merely contains hook-codex-
+      - packages/cli/test/codex-hooks.test.ts::does not claim a PLUR-binary invocation of a non-PLUR subcommand
+  packages/cli/src/codex-hooks.ts#mergeCodexHooks:
+    kind: guarantee
+    rule: "Merging PLUR's Codex hooks is idempotent: old PLUR entries are replaced, not stacked."
+    tests:
+      - packages/cli/test/codex-hooks.test.ts::is idempotent — re-running init does not duplicate entries
+      - packages/cli/test/codex-hooks.test.ts::replaces stale PLUR entries on upgrade rather than stacking them
+  packages/cli/src/cursor-hooks.ts#mergeCursorHooks:
+    kind: guarantee
+    rule: Merging PLUR's Cursor hooks is idempotent and keeps the user's own hooks.
+    lean:
+      - PlurSpec/Adapters.lean:cursor_idempotent
+    tests:
+      - packages/cli/test/cursor-hooks.test.ts::is idempotent — merging twice does not duplicate plur entries
+      - packages/cli/test/cursor-hooks.test.ts::preserves a pre-existing non-plur hook when merging
+  packages/cli/src/index.ts#(module):
+    kind: guarantee
+    rule: >-
+      A mistyped global flag stops the CLI before any command runs; a failing hook command never prints its error to
+      stdout and exits 0.
+    tests:
+      - packages/cli/test/known-flags.test.ts::catches a near miss on --path, whatever the command
+      - >-
+        packages/cli/test/hook-dispatcher-errors.test.ts::a hook-inject whose injection throws: nothing on stdout, the
+        error on stderr, exit 0
+  packages/cli/src/index.ts#separatedArgs:
+    kind: guarantee
+    rule: >-
+      For commands that do not read `--` themselves, the separator is dropped, and a value starting with `-` after it is
+      refused rather than read as a flag.
+    lean:
+      - PlurSpec/R2CLI.lean:no_flag_like_value_after_sep
+      - PlurSpec/R2CLI.lean:fixed_dash_value_refused
+    tests:
+      - packages/cli/test/formal-audit-1228c.test.ts::`plur trust -- <dir>` trusts <dir>, not a directory named `--`
+      - >-
+        packages/cli/test/formal-audit-1228c.test.ts::a value that begins with "-" after `--` is refused, not read as a
+        flag
+  packages/cli/src/index.ts#stdoutFlushed:
+    kind: guarantee
+    rule: A command that produced correct output does not exit non-zero because background index work failed.
+    none: no test makes the index drain fail and checks the exit code
+  packages/cli/src/known-flags.ts#GLOBAL:
+    kind: guarantee
+    rule: A command that declares its flags refuses any flag it does not understand instead of silently skipping it.
+    tests:
+      - packages/cli/test/known-flags.test.ts::refuses the flag that made a tester install a pack they meant to preview
+      - packages/cli/test/known-flags.test.ts::exits non-zero on an unknown flag instead of succeeding
+  packages/cli/src/mcp-config.ts#agyConfigDir:
+    kind: guarantee
+    rule: PLUR never writes into Antigravity's runtime state folder (~/.gemini/antigravity-cli).
+    tests:
+      - >-
+        packages/cli/test/formal-secrets-install-merge.test.ts::no Antigravity config path is under the runtime state
+        folder
+      - >-
+        packages/cli/test/formal-secrets-install-merge.test.ts::plur init --antigravity, run twice, writes nothing under
+        antigravity-cli
+  packages/cli/src/mcp-config.ts#buildMcpServerEntry:
+    kind: guarantee
+    rule: >-
+      On Windows the MCP entry PLUR writes never launches the .cmd shim; it uses node.exe with the js entry, else a
+      pinned cmd.exe /c npx.
+    tests:
+      - >-
+        packages/cli/test/windows-init-1267.test.ts::falls back to cmd.exe /c npx (pinned) when the js entry cannot be
+        resolved — never the .cmd shim
+      - "packages/cli/test/windows-init-1267.test.ts::win32: launches node.exe with the @plur-ai/mcp js entry"
+  packages/cli/src/mcp-config.ts#cursorContextRulePath:
+    kind: guarantee
+    rule: >-
+      The per-session Cursor context rule is a separate file from the human-authored static rule, so rewriting it never
+      clobbers that rule.
+    tests:
+      - packages/cli/test/mcp-config-cursor.test.ts::(distinct from the static rule)
+  packages/cli/src/mcp-config.ts#cursorReminderRulePath:
+    kind: guarantee
+    rule: The Cursor reminder rule is its own file, so a reminder never overwrites the recalled memory in the context rule.
+    tests:
+      - packages/cli/test/mcp-config-cursor.test.ts::(distinct from the context rule)
+  packages/cli/src/mcp-config.ts#entrypoint:
+    kind: guarantee
+    rule: On Windows the MCP entry never names the .cmd shim as its command.
+    tests:
+      - >-
+        packages/cli/test/windows-init-1267.test.ts::falls back to cmd.exe /c npx (pinned) when the js entry cannot be
+        resolved — never the .cmd shim
+  packages/cli/src/mcp-config.ts#healPlurMcpEntry:
+    kind: guarantee
+    rule: Healing the plur MCP entry changes only the launch fields and keeps every other field the user set.
+    tests:
+      - >-
+        packages/cli/test/mcp-config-cursor.test.ts::heals the racey shapes and preserves unmodeled fields through the
+        merge
+  packages/cli/src/mcp-config.ts#isOwnWin32CmdShimEntry:
+    kind: guarantee
+    rule: Only PLUR's own Windows .cmd shim entry is healed; any other command is the user's and is never touched.
+    tests:
+      - "packages/cli/test/windows-init-1267.test.ts::win32: never touches a hand-rolled custom entry"
+  packages/cli/src/mcp-config.ts#isOwnWin32NodeEntry:
+    kind: guarantee
+    rule: >-
+      Only the exact node-form entry plur init writes is rewritten; any other Windows entry is the user's and is never
+      rewritten.
+    tests:
+      - "packages/cli/test/windows-init-1267.test.ts::win32: never touches a hand-rolled custom entry"
+  packages/cli/src/mcp-config.ts#isPathResolvedCommand:
+    kind: guarantee
+    rule: >-
+      An MCP entry that names a bare `node` is the user's and init never pins it to a versioned path or replaces it with
+      npx.
+    tests:
+      - packages/cli/test/path-resolved-node-1302.test.ts::a bare node is never rewritten
+  packages/cli/src/mcp-config.ts#isRaceyPlurNpxEntry:
+    kind: guarantee
+    rule: >-
+      Only an unpinned or @latest npx entry for @plur-ai/mcp is healed; an explicit version pin, a fork or a mention is
+      never healed.
+    tests:
+      - packages/cli/test/mcp-config-cursor.test.ts::preserves a deliberate old-version pin
+      - packages/cli/test/mcp-config-cursor.test.ts::never claims a fork or sibling package
+  packages/cli/src/mcp-config.ts#mergePlurMcp:
+    kind: guarantee
+    rule: "Adding the plur MCP entry is idempotent: an existing entry is left as it is."
+    tests:
+      - packages/cli/test/formal-secrets-install-merge.test.ts::a second merge changes nothing and reports no change
+      - packages/cli/test/formal-secrets-install-merge.test.ts::an existing plur entry is left exactly as it is
+  packages/cli/src/mcp-config.ts#nodeEntryNeedsHealing:
+    kind: guarantee
+    rule: >-
+      PLUR's node-form entry is rewritten only when its paths are gone or changed; a working entry and a PATH-resolved
+      node are never rewritten.
+    tests:
+      - packages/cli/test/path-resolved-node-1302.test.ts::a bare node is never rewritten
+  packages/cli/src/mcp-config.ts#readCodexPlurMcpCommand:
+    kind: note
+    why: "A usage constraint for maintainers: this lenient reader is for detection only, not for deciding removal."
+  packages/cli/src/mcp-config.ts#readConfigForWrite:
+    kind: guarantee
+    rule: A config file that exists but does not parse to an object is refused, never overwritten.
+    tests:
+      - >-
+        packages/cli/test/config-clobber-1059.test.ts::leaves the file byte-identical and says so, instead of clobbering
+        it
+  packages/cli/src/mcp-config.ts#upgradePlurMcpEntry:
+    kind: guarantee
+    rule: Only a plur entry that init itself wrote is upgraded; a custom command is never touched.
+    tests:
+      - packages/cli/test/mcp-config-cursor.test.ts::never touches a hand-rolled custom entry
+  packages/cli/src/mcp-config.ts#version:
+    kind: guarantee
+    rule: The npx fallback entry pins this CLI's own version, never @latest.
+    tests:
+      - packages/cli/test/mcp-config-cursor.test.ts::never writes an @latest entry
+      - >-
+        packages/cli/test/formal-secrets-install-npx-pin.test.ts::never writes @latest: a version that is not
+        release-shaped is refused
+      - packages/cli/test/formal-secrets-install-npx-pin.test.ts::pins a release-shaped version on every platform
+  packages/cli/src/opencode-config.ts#isOwnLegacyNpxEntry:
+    kind: guarantee
+    rule: >-
+      Only PLUR's exact legacy pinned npx entry is migrated; any other opencode mcp.plur entry is the user's and never
+      touched.
+    tests:
+      - >-
+        packages/cli/test/opencode-local-binary-1637.test.ts::a user's own npx entry (unpinned or other package) is left
+        alone
+  packages/cli/src/opencode-config.ts#isPlurOpencodePluginEntry:
+    kind: guarantee
+    rule: >-
+      A user's pinned or configured PLUR plugin entry is recognised, so init never adds a second bare entry that shadows
+      it.
+    tests:
+      - packages/cli/test/opencode-plugin-pin-1335.test.ts::with explicit preservation leaves %s exactly as it is
+      - >-
+        packages/cli/test/opencode-v2-config.test.ts::does not append a duplicate when either accepted plugin array
+        already declares PLUR
+  packages/cli/src/opencode-config.ts#launch:
+    kind: guarantee
+    rule: >-
+      An existing opencode mcp.plur entry is left alone; only PLUR's own old npx entry has its command upgraded, keeping
+      all other fields.
+    tests:
+      - >-
+        packages/cli/test/init-opencode.test.ts::leaves a custom local entry with environment.PLUR_PATH completely
+        untouched
+      - >-
+        packages/cli/test/init-opencode-default-1311.test.ts::replaces the command with node.exe + js entry and keeps
+        every other field
+  packages/cli/src/opencode-config.ts#mcpLocation:
+    kind: guarantee
+    rule: >-
+      An existing legacy opencode mcp.plur declaration is not shadowed by a new native one just because other native
+      servers exist.
+    none: no test has native servers alongside a legacy mcp.plur entry
+  packages/cli/src/opencode-config.ts#opencodeConfigDir:
+    kind: guarantee
+    rule: >-
+      plur init finds the opencode config folder the way opencode does (OPENCODE_CONFIG_DIR, then XDG_CONFIG_HOME, then
+      ~/.config), so a custom location is not missed.
+    tests:
+      - packages/cli/test/opencode-review-1311.test.ts::uses OPENCODE_CONFIG_DIR first
+      - packages/cli/test/opencode-review-1311.test.ts::then $XDG_CONFIG_HOME/opencode
+  packages/cli/src/opencode-config.ts#opencodeConfigPath:
+    kind: guarantee
+    rule: When the user has only an opencode.jsonc, init writes into it and never creates a competing opencode.json.
+    tests:
+      - >-
+        packages/cli/test/init-opencode-default-1311.test.ts::updates an opencode.jsonc while preserving comments and
+        unrelated text
+  packages/cli/src/opencode-config.ts#OpencodeConfigSnapshot:
+    kind: guarantee
+    rule: Reading an opencode config for doctor never changes the file.
+    tests:
+      - >-
+        packages/cli/test/doctor-opencode-jsonc.test.ts::doctor --json reports pluginDeclared and mcpPlurDeclared true,
+        and writes nothing
+  packages/cli/src/opencode-config.ts#opencodeMcpNote:
+    kind: note
+    why: Describes the init message; the matched word is a description of a fallback, not a rule.
+  packages/cli/src/opencode-config.ts#PLUR_OPENCODE_PLUGIN:
+    kind: note
+    why: Explains why the plugin name is exported (one source of truth for doctor); no runtime rule.
+  packages/cli/src/opencode-config.ts#readOpencodeConfig:
+    kind: guarantee
+    rule: Reading the opencode config never writes and never throws.
+    tests:
+      - >-
+        packages/cli/test/doctor-opencode-jsonc.test.ts::doctor --json reports pluginDeclared and mcpPlurDeclared true,
+        and writes nothing
+      - packages/cli/test/doctor-opencode-jsonc.test.ts::readOpencodeConfig reports ok:false for {,}
+  packages/cli/src/opencode-config.ts#staleOwnWin32NodeCommand:
+    kind: guarantee
+    rule: >-
+      Repairing PLUR's Windows opencode node entry never replaces a working entry with npx and never rewrites a
+      PATH-resolved node.
+    tests:
+      - >-
+        packages/cli/test/path-resolved-node-1302.test.ts::init (opencode): a bare node is left as is, never pinned or
+        downgraded
+  packages/cli/src/opencode-config.ts#writeOpencodeConfig:
+    kind: guarantee
+    rule: >-
+      An opencode config of the wrong shape, or with a plugin or mcp field of the wrong shape, is refused and left
+      untouched.
+    tests:
+      - packages/cli/test/init-opencode.test.ts::refuses a top-level-array config
+      - packages/cli/test/init-opencode.test.ts::refuses a config whose plugin field is not an array
+  packages/cli/src/opencode-config.ts#WriteOpencodeConfigResult:
+    kind: guarantee
+    rule: Writing the opencode config never replaces an existing remote or custom mcp.plur entry or its fields.
+    tests:
+      - >-
+        packages/cli/test/init-opencode.test.ts::leaves an enterprise remote entry (url + bearer headers) completely
+        untouched
+  packages/cli/src/output.ts#outputError:
+    kind: guarantee
+    rule: Error lines always reach stderr; --quiet never suppresses them.
+    tests:
+      - packages/cli/test/output.test.ts::outputError writes to stderr and ignores quiet entirely
+  packages/cli/src/output.ts#outputText:
+    kind: guarantee
+    rule: Primary command output is always written, even under --quiet.
+    tests:
+      - packages/cli/test/output.test.ts::outputText always writes, even under global quiet
+  packages/cli/src/plur.ts#cwd:
+    kind: guarantee
+    rule: >-
+      When the folder map cannot be read the CLI command stays unbound and contacts no store, and binding never imports
+      a legacy trust.yaml.
+    none: no test checks the unbound path or that binding imports nothing
+  packages/cli/src/plur.ts#parseGlobalFlags:
+    kind: guarantee
+    rule: >-
+      After `--`, a value such as "--path=/elsewhere" is passed to the command verbatim and never selects or creates a
+      store.
+    lean:
+      - PlurSpec/Adapters.lean:statement_never_selects_store
+    tests:
+      - packages/cli/test/formal-apply-surface-argv.test.ts::after `--` never selects or creates a store
+      - >-
+        packages/cli/test/formal-apply-surface-argv.test.ts::leaves every token after `--` verbatim, including
+        global-flag lookalikes
+  packages/cli/src/plur.ts#shellWord:
+    kind: guarantee
+    rule: >-
+      A path holding a line break, bidi or zero-width character, or a character a Windows shell would expand, gets no
+      printed command.
+    tests:
+      - >-
+        packages/cli/test/formal-audit-1228c.test.ts::a line-breaking, bidi or zero-width character never gets a
+        command, on any platform
+      - packages/cli/test/formal-audit-1228c.test.ts::a path a Windows shell would expand gets no command
+  packages/cli/src/plur.ts#trustCommand:
+    kind: guarantee
+    rule: >-
+      The trust command a notice prints names the store when it is not the default, so the grant lands where the hook or
+      server checks it.
+    lean:
+      - PlurSpec/Adapters.lean:notice_reaches_checked_store
+    tests:
+      - packages/cli/test/formal-audit-1228c.test.ts::any other store is named with --path, quoted when it needs it
+      - >-
+        packages/cli/test/formal-audit-1228c.test.ts::the offered command, run from a shell without PLUR_PATH, makes the
+        hook honour the directory
+  packages/cli/src/plur.ts#value:
+    kind: guarantee
+    rule: "--path with a missing value, or followed by another flag, is refused instead of falling back to the default store."
+    tests:
+      - >-
+        packages/cli/test/known-flags.test.ts::refuses --path with no value, rather than falling back to the default
+        store
+      - packages/cli/test/known-flags.test.ts::refuses --path whose value is the next flag

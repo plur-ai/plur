@@ -414,7 +414,7 @@
             "name"
           ],
           "additionalProperties": false,
-          "description": "The model behind a decision, and which prompt it ran. Prompt TEXT is never stored, only a hash (#962)."
+          "description": "The model behind a decision, and which prompt it ran. Prompt TEXT is never stored, only a hash."
         },
         "tool": {
           "type": "object",
@@ -438,7 +438,7 @@
         }
       },
       "additionalProperties": false,
-      "description": "Who is answerable for this engram (#961). All fields optional; omit rather than guess."
+      "description": "Who is answerable for this engram. All fields optional; omit rather than guess."
     },
     "claim_class": {
       "type": "string",
@@ -450,7 +450,7 @@
         "inferred",
         "revised"
       ],
-      "description": "What kind of claim this is (#963). Omitted when it genuinely cannot be determined."
+      "description": "What kind of claim this is. Omitted when it genuinely cannot be determined."
     },
     "feedback_signals": {
       "type": "object",
@@ -727,7 +727,7 @@
         "locked",
         "draft"
       ],
-      "description": "Commitment level of the asserted knowledge. `draft` marks an engram as pending human approval: core stores and RECALLS it like any other value but NEVER injects it (#1141), so an unapproved rule cannot shape an agent's behaviour before someone has agreed to it. Retrieval stays open because reviewing something requires reading it. A positive feedback signal does not advance it (see feedback.ts:nextCommitment) — relevance is not approval."
+      "description": "Commitment level of the asserted knowledge. `draft` marks an engram as pending human approval: core stores and RECALLS it like any other value but NEVER injects it, so an unapproved rule cannot shape an agent's behaviour before someone has agreed to it. Retrieval stays open because reviewing something requires reading it. A positive feedback signal does not advance it (see feedback.ts:nextCommitment) — relevance is not approval."
     },
     "locked_at": {
       "type": "string",
@@ -741,13 +741,13 @@
       "type": "integer",
       "minimum": 0,
       "default": 1,
-      "description": "Number of learn() write attempts that resolved to this engram (same-scope re-learns). Engram retires only when this reaches 0. Renamed from reference_count (#866)."
+      "description": "Number of learn() write attempts that resolved to this engram (same-scope re-learns). Engram retires only when this reaches 0. Renamed from reference_count."
     },
     "injection_count": {
       "type": "integer",
       "minimum": 0,
       "default": 0,
-      "description": "Number of times this engram was injected into session context. Distinct from activation.frequency (recall events). Use with feedback_signals for efficacy auditing (#866)."
+      "description": "Number of times this engram was injected into session context. Distinct from activation.frequency (recall events). Use with feedback_signals for efficacy auditing."
     },
     "sources": {
       "type": "array",
@@ -770,11 +770,11 @@
           },
           "validated_by": {
             "type": "string",
-            "description": "Set when this entry records a shared-scope save of the same text: the team scope that validated this engram (#1268). The team save itself is written separately."
+            "description": "Set when this entry records a shared-scope save of the same text: the team scope that validated this engram. The team save itself is written separately."
           },
           "promoted_from": {
             "type": "string",
-            "description": "Set on the first source of a global copy the recurrence ladder made of a team-store engram (#1268): the team scope it was promoted from. The team engram itself is left in its store; `derived_from` names it."
+            "description": "Set on the first source of a global copy the recurrence ladder made of a team-store engram: the team scope it was promoted from. The team engram itself is left in its store; `derived_from` names it."
           }
         },
         "required": [
@@ -865,7 +865,7 @@
         }
       },
       "additionalProperties": true,
-      "description": "Context under which a numeric or benchmark-derived measurement was taken (#869). All fields optional — absent means unknown."
+      "description": "Context under which a numeric or benchmark-derived measurement was taken. All fields optional — absent means unknown."
     }
   },
   "required": [
