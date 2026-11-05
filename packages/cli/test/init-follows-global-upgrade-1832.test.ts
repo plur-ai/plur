@@ -17,7 +17,7 @@
  * needed.
  *
  * Real spawned CLI, temp HOME (isolatedHomeEnv); the fake global install is
- * this workspace's build copied under a temp prefix (fake-global-install.ts).
+ * this workspace's build copied under a temp prefix (./fake-global-install.ts).
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs'
@@ -27,7 +27,7 @@ import { spawnSync } from 'child_process'
 import { runCli } from './helpers/spawn.js'
 import { builtCliPath } from './helpers/built-cli.js'
 import { isolatedHomeEnv } from './helpers/isolated-env.js'
-import { fakeGlobalInstall } from './helpers/fake-global-install.js'
+import { fakeGlobalInstall } from './fake-global-install.js'
 import { readCodexEntry } from '../src/codex-config.js'
 import { printText } from '../src/commands/doctor.js'
 

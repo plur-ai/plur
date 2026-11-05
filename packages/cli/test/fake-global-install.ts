@@ -11,11 +11,15 @@
  * a newer version is an in-place global upgrade: same paths, new files.
  *
  * Needs a built workspace (`pnpm build`).
+ *
+ * Kept out of test/helpers/: files there count as eval judge code
+ * (scripts/check-eval-separation.py), and this one is only a fixture for the
+ * #1832 tests.
  */
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'fs'
 import { join } from 'path'
 
-const PACKAGES = join(__dirname, '..', '..', '..')
+const PACKAGES = join(__dirname, '..', '..')
 
 function stamp(dir: string, pattern: RegExp, replacement: string): void {
   for (const name of readdirSync(dir)) {
