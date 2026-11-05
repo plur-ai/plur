@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
 import { CLI_VERSION } from './version.js'
+import { olderOrEqual } from './lib/semver-order.js'
 import { join, dirname } from 'path'
 import { homedir, platform } from 'os'
 
@@ -121,8 +122,10 @@ export function buildMcpServerEntry(opts?: { env?: Record<string, string> }): Mc
   // plur_session_start of the day dies" production signature: the first run
   // after a publish is the one that races the cache rewrite. A pinned
   // version's cache is immutable — upgrades happen when `plur init` rewrites
-  // the config to a new pin, a moment when servers restart anyway. Same
-  // convention as the hermes/python bridges' _NPX_CLI_VERSION pin.
+  // the config to a new pin, a moment when servers restart anyway: every run
+  // moves an older-or-equal PLUR pin to this CLI's version (#1832, see
+  // plurNpxPin). Same convention as the hermes/python bridges'
+  // _NPX_CLI_VERSION pin.
   // Belt-and-braces (adversarial audit): the constant is compile-time, but it
   // reaches a /bin/sh -lc string — refuse to interpolate anything that is not
   // release-shaped, falling back to a harmless pinned form.
@@ -419,10 +422,14 @@ export function mergePlurMcp(config: Record<string, unknown>, opts?: { env?: Rec
  * `hasPlurMcp`, which left the `@latest` entries older inits wrote in place
  * FOREVER: re-running `plur init` on an affected machine reported "already
  * registered" while the #1069 rewrite race stayed armed. Upgrade the entry
- * when (a) it is recognizably OURS (an npx invocation of @plur-ai/mcp — a
- * hand-rolled custom command is never touched), and (b) it differs from what
- * we would write today (shim, or the current version pin). The existing
- * entry's env is preserved when the caller doesn't supply one.
+ * when (a) it is recognizably OURS (an npx invocation of @plur-ai/mcp at
+ * `@latest`, bare, or pinned to a version older than or equal to this CLI —
+ * a newer pin or a hand-rolled custom command is never touched), and (b) it
+ * differs from what we would write today (shim, or the current version pin).
+ * Re-pinning older pins is what makes a global upgrade reach every tool
+ * config on the next `plur init` (#1832) — the rule the Codex writer already
+ * applies (codexLaunchKind). The existing entry's env is preserved when the
+ * caller doesn't supply one.
  *
  * Windows also heals PLUR's own entries of the two shapes it wrote there: the
  * `plur-mcp.cmd` shim entry, and the node-form entry when its node binary or
@@ -440,6 +447,8 @@ export function upgradePlurMcpEntry(config: Record<string, unknown>, opts?: { en
  * common but the rewrite, so the line names the one that applied (#1304):
  *
  *   - `upgraded stale npx entry` — the @latest/bare npx entry (#1069);
+ *   - `updated the npx pin <old> → <new>` / `replaced the pinned npx entry
+ *     (<old>) with the installed MCP server` — an older PLUR pin (#1832);
  *   - `healed the old plur-mcp.cmd entry …` — Windows (#1267);
  *   - `repaired the node.exe entry …` — Windows, the node binary or js entry
  *     it named is gone or differs from the one resolved now (#1267).
@@ -452,9 +461,11 @@ export function healPlurMcpEntry(config: Record<string, unknown>, opts?: { env?:
   const existing = servers.plur
   if (!existing) return null
   const ownNodeEntry = isOwnWin32NodeEntry(existing)
-  const racey = isRaceyPlurNpxEntry(existing)
+  const npxPin = plurNpxPin(existing)
+  const racey = npxPin === 'latest'
+  const oldPin = npxPin !== null && npxPin !== 'latest' && olderOrEqual(npxPin, CLI_VERSION) ? npxPin : null
   const cmdShim = isOwnWin32CmdShimEntry(existing)
-  if (!racey && !cmdShim && !ownNodeEntry) return null
+  if (!racey && !oldPin && !cmdShim && !ownNodeEntry) return null
   if (ownNodeEntry && !nodeEntryNeedsHealing(existing)) return null
   const effectiveOpts = opts ?? (existing.env ? { env: existing.env } : undefined)
   const recommended = buildMcpServerEntry(effectiveOpts)
@@ -475,6 +486,12 @@ export function healPlurMcpEntry(config: Record<string, unknown>, opts?: { env?:
   }
   config.mcpServers = servers as Record<string, unknown>
   if (racey) return 'upgraded stale npx entry'
+  if (oldPin) {
+    const newPin = plurNpxPin(recommended)
+    return newPin !== null && newPin !== 'latest'
+      ? `updated the npx pin ${oldPin} → ${newPin}`
+      : `replaced the pinned npx entry (${oldPin}) with the installed MCP server`
+  }
   const now = recommended.command.toLowerCase() === 'cmd.exe'
     ? 'the pinned cmd.exe /c npx fallback (@plur-ai/mcp\'s js entry could not be resolved)'
     : 'node.exe + @plur-ai/mcp'
@@ -636,38 +653,43 @@ function nodeEntryNeedsHealing(entry: McpServerEntry): boolean {
 }
 
 /**
- * Is this entry one of the RACEY shapes init itself has written — an npx
- * invocation of exactly `@plur-ai/mcp` at `@latest` (or with no tag, which
- * npm treats as latest)?
+ * The @plur-ai/mcp version an npx entry PLUR wrote launches: `'latest'` for
+ * the RACEY shapes (exactly `@plur-ai/mcp` at `@latest`, or with no tag,
+ * which npm treats as latest — #1069), the version for an exact SemVer pin
+ * (`@plur-ai/mcp@0.22.0`), or null for anything that is not PLUR's npx entry.
  *
  * Both 0.19.1 audits broke the first version of this predicate, which
- * flattened command+args and substring-matched: it clobbered deliberate
- * old-version pins (a user staying on 0.18 on purpose), fork packages
- * (`@plur-ai/mcp-experimental`), and even unrelated custom commands whose
+ * flattened command+args and substring-matched: it clobbered fork packages
+ * (`@plur-ai/mcp-experimental`) and even unrelated custom commands whose
  * arguments merely MENTIONED the words. The rules now:
  *
  *   - Only the exact command forms init writes (or a user's bare `npx`)
  *     qualify: `npx`, `cmd.exe /c npx`, `/bin/sh -lc 'exec npx …'`.
  *   - The package spec must be EXACTLY `@plur-ai/mcp`, `@plur-ai/mcp@latest`
- *     — anchored, so forks and mentions never match.
- *   - An explicit version pin (`@plur-ai/mcp@0.18.2`) is the user's decision
- *     and is NEVER healed; only the @latest/bare forms carry the #1069
- *     rewrite race this healer exists to disarm. (doctor's staleNpx
- *     advisory still nudges pinned-npx users toward the shim.)
+ *     or `@plur-ai/mcp@<semver>` — anchored, so forks, tags, ranges and
+ *     mentions never match.
+ *
+ * The caller decides what a pin means: the healer re-pins one older than or
+ * equal to this CLI and keeps a newer one (#1832, the Codex rule).
  */
-function isRaceyPlurNpxEntry(entry: McpServerEntry): boolean {
-  const RACEY_SPEC = /^@plur-ai\/mcp(@latest)?$/
+export function plurNpxPin(entry: McpServerEntry): string | null {
+  const SPEC = /^@plur-ai\/mcp(?:@(.+))?$/
   const args = entry.args ?? []
+  let spec: string | undefined
   // Shell-string forms: /bin/sh -lc '<script>' (init's own POSIX shape).
   if (entry.command === '/bin/sh') {
     const script = args[args.length - 1] ?? ''
-    const m = /^\s*(?:exec\s+)?npx\s+(?:-y\s+)?(\S+)\s*$/.exec(script)
-    return m !== null && RACEY_SPEC.test(m[1])
+    spec = /^\s*(?:exec\s+)?npx\s+(?:-y\s+)?(\S+)\s*$/.exec(script)?.[1]
+  } else {
+    // Argv forms: `npx …` directly, or `cmd.exe /c npx …` (init's win32 shape).
+    const argv = entry.command === 'cmd.exe' ? args.filter(a => a !== '/c') :
+      entry.command === 'npx' ? ['npx', ...args] : null
+    if (!argv || argv[0] !== 'npx') return null
+    spec = argv.filter(a => a !== 'npx' && !a.startsWith('-'))[0]
   }
-  // Argv forms: `npx …` directly, or `cmd.exe /c npx …` (init's win32 shape).
-  const argv = entry.command === 'cmd.exe' ? args.filter(a => a !== '/c') :
-    entry.command === 'npx' ? ['npx', ...args] : null
-  if (!argv || argv[0] !== 'npx') return false
-  const spec = argv.filter(a => a !== 'npx' && !a.startsWith('-'))[0] ?? ''
-  return RACEY_SPEC.test(spec)
+  const m = spec ? SPEC.exec(spec) : null
+  if (!m) return null
+  const tag = m[1]
+  if (tag === undefined || tag === 'latest') return 'latest'
+  return /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(tag) ? tag : null
 }
