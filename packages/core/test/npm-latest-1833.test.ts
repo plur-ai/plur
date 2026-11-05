@@ -166,3 +166,15 @@ describe('resolveNpmCli', () => {
     expect(resolveNpmCli({ PATH: '' }, 'linux', join(root, 'x', 'node'))).toBeNull()
   })
 })
+
+describe('npmLatest: a registry that drops the connection', () => {
+  it('is unreachable and a connect failure', async () => {
+    const m = await startMirror({}, 'reset')
+    const box = npmSandbox(`@plur-ai:registry=${m.url}\n`)
+    try {
+      const r = await npmLatest(PKG, { env: box.env })
+      expect(r).toMatchObject({ state: 'unreachable', registry: m.host, connectFailure: true })
+      expect(m.connections()).toBe(1)
+    } finally { await m.close(); box.cleanup() }
+  })
+})

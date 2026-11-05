@@ -6,7 +6,8 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-export type MirrorMode = 'ok' | '500' | 'hang'
+/** ok: serve packuments; 500: answer HTTP 500; hang: never answer; reset: close each connection at once. */
+export type MirrorMode = 'ok' | '500' | 'hang' | 'reset'
 
 export interface Mirror {
   /** Registry URL with a trailing slash. */
@@ -15,6 +16,8 @@ export interface Mirror {
   host: string
   /** Every request path the mirror received, decoded. */
   requests: string[]
+  /** TCP connections accepted (counted in every mode, also `reset`). */
+  connections: () => number
   /** Authorization headers received, in order. */
   auth: string[]
   setMode(mode: MirrorMode): void
@@ -43,13 +46,19 @@ export async function startMirror(latest: Record<string, string>, mode: MirrorMo
     res.writeHead(200, { 'content-type': 'application/json' })
     res.end(JSON.stringify({ name, 'dist-tags': { latest: version }, versions: { [version]: { name, version } } }))
   })
-  server.on('connection', (s) => { sockets.add(s); s.on('close', () => sockets.delete(s)) })
+  let connections = 0
+  server.on('connection', (s) => {
+    connections++
+    if (current === 'reset') { s.destroy(); return }
+    sockets.add(s); s.on('close', () => sockets.delete(s))
+  })
   await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()))
   const port = (server.address() as net.AddressInfo).port
   return {
     url: `http://127.0.0.1:${port}/`,
     host: `127.0.0.1:${port}`,
     requests,
+    connections: () => connections,
     auth,
     setMode: (m) => { current = m },
     close: () => new Promise<void>((r) => { for (const s of sockets) s.destroy(); server.close(() => r()) }),
