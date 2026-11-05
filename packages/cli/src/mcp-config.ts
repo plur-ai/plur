@@ -664,7 +664,8 @@ function nodeEntryNeedsHealing(entry: McpServerEntry): boolean {
  * arguments merely MENTIONED the words. The rules now:
  *
  *   - Only the exact command forms init writes (or a user's bare `npx`)
- *     qualify: `npx`, `cmd.exe /c npx`, `/bin/sh -lc 'exec npx …'`.
+ *     qualify, with nothing else in them: `npx [-y|--yes] <spec>`,
+ *     `cmd.exe /c npx -y <spec>`, `/bin/sh -lc 'exec npx -y <spec>'`.
  *   - The package spec must be EXACTLY `@plur-ai/mcp`, `@plur-ai/mcp@latest`
  *     or `@plur-ai/mcp@<semver>` — anchored, so forks, tags, ranges and
  *     mentions never match.
@@ -675,17 +676,20 @@ function nodeEntryNeedsHealing(entry: McpServerEntry): boolean {
 export function plurNpxPin(entry: McpServerEntry): string | null {
   const SPEC = /^@plur-ai\/mcp(?:@(.+))?$/
   const args = entry.args ?? []
+  // Only the exact argv shapes PLUR writes, as codexLaunchKind matches them:
+  // anything more (an extra argument, `-p <pkg> <bin>`, `--package`) is a
+  // custom entry whose arguments a rewrite would drop (#1832 review).
   let spec: string | undefined
-  // Shell-string forms: /bin/sh -lc '<script>' (init's own POSIX shape).
   if (entry.command === '/bin/sh') {
-    const script = args[args.length - 1] ?? ''
-    spec = /^\s*(?:exec\s+)?npx\s+(?:-y\s+)?(\S+)\s*$/.exec(script)?.[1]
-  } else {
-    // Argv forms: `npx …` directly, or `cmd.exe /c npx …` (init's win32 shape).
-    const argv = entry.command === 'cmd.exe' ? args.filter(a => a !== '/c') :
-      entry.command === 'npx' ? ['npx', ...args] : null
-    if (!argv || argv[0] !== 'npx') return null
-    spec = argv.filter(a => a !== 'npx' && !a.startsWith('-'))[0]
+    // init's POSIX shape: /bin/sh -lc 'exec npx -y <spec>'.
+    if (args.length === 2 && args[0] === '-lc') spec = /^\s*(?:exec\s+)?npx\s+(?:-y\s+)?(\S+)\s*$/.exec(args[1])?.[1]
+  } else if (entry.command === 'npx') {
+    // A user's or plur-mcp init's argv: npx [-y|--yes] <spec>.
+    if (args.length === 1) spec = args[0]
+    else if (args.length === 2 && (args[0] === '-y' || args[0] === '--yes')) spec = args[1]
+  } else if (entry.command === 'cmd.exe') {
+    // init's win32 shape: cmd.exe /c npx -y <spec>.
+    if (args.length === 4 && args[0] === '/c' && args[1] === 'npx' && args[2] === '-y') spec = args[3]
   }
   const m = spec ? SPEC.exec(spec) : null
   if (!m) return null

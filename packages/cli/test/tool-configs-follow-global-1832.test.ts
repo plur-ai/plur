@@ -103,6 +103,23 @@ describe.skipIf(realPlatform === 'win32')('JSON tool configs (Claude Code, Deskt
     ]) expect(heal(entry)).toEqual({ label: null, entry })
   })
 
+  it('a pinned entry with anything beyond PLUR\'s own argv stays (review: arguments would be dropped)', () => {
+    installShim()
+    for (const entry of [
+      { command: 'npx', args: ['-y', '@plur-ai/mcp@0.22.0', '--profile', 'full'] },
+      { command: 'npx', args: ['-p', '@plur-ai/mcp@0.22.0', 'my-wrapper'] },
+      { command: 'npx', args: ['--package', '@plur-ai/mcp@0.22.0', 'my-wrapper'] },
+      { command: 'npx', args: ['--package=@plur-ai/mcp@0.22.0', 'my-wrapper'] },
+      { command: 'npx', args: ['-y', '@plur-ai/mcp@latest', '--profile', 'full'] },
+      { command: '/bin/sh', args: ['-lc', 'exec npx -y @plur-ai/mcp@0.22.0 --profile full'] },
+      { command: '/bin/sh', args: ['-l', '-c', 'exec npx -y @plur-ai/mcp@0.22.0'] },
+    ]) expect(heal(entry), JSON.stringify(entry)).toEqual({ label: null, entry })
+  })
+
+  it('npx --yes <pin> is PLUR\'s shape too', () => {
+    expect(heal({ command: 'npx', args: ['--yes', '@plur-ai/mcp@0.22.0'] }).label).toBe('updated the npx pin 0.22.0 → 0.30.0')
+  })
+
   it('the re-pin keeps env and unmodeled fields', () => {
     const { entry } = heal({ command: 'npx', args: ['-y', '@plur-ai/mcp@0.22.0'], env: { PLUR_PATH: '/x' }, timeout: 30 })
     expect(entry).toEqual({ command: '/bin/sh', args: ['-lc', 'exec npx -y @plur-ai/mcp@0.30.0'], env: { PLUR_PATH: '/x' }, timeout: 30 })
@@ -121,6 +138,12 @@ describe('Windows: cmd.exe /c npx pins follow too (#1832)', () => {
     expect(label).toBe('updated the npx pin 0.22.0 → 0.30.0')
     expect(entry).toEqual({ command: 'cmd.exe', args: ['/c', 'npx', '-y', '@plur-ai/mcp@0.30.0'] })
   })
+
+  it('a cmd.exe entry with an extra argument stays', () => {
+    setPlatform('win32')
+    const entry = { command: 'cmd.exe', args: ['/c', 'npx', '-y', '@plur-ai/mcp@0.22.0', 'extra'] }
+    expect(heal(entry)).toEqual({ label: null, entry })
+  })
 })
 
 describe('plurNpxPin', () => {
@@ -132,6 +155,9 @@ describe('plurNpxPin', () => {
     [{ command: '/bin/sh', args: ['-lc', 'exec npx -y @plur-ai/mcp@0.22.0'] }, '0.22.0'],
     [{ command: '/bin/sh', args: ['-lc', 'npx -y @plur-ai/mcp@0.22.0; other'] }, null],
     [{ command: 'npx', args: ['-y', '@plur-ai/mcp@next'] }, null],
+    [{ command: 'npx', args: ['-y', '@plur-ai/mcp@0.22.0', '--profile', 'full'] }, null],
+    [{ command: 'npx', args: ['-p', '@plur-ai/mcp@0.22.0', 'my-wrapper'] }, null],
+    [{ command: 'cmd.exe', args: ['/c', 'npx', '-y', '@plur-ai/mcp@0.22.0', 'extra'] }, null],
     [{ command: '/usr/local/bin/plur-mcp', args: [] }, null],
   ])('%j → %s', (entry, expected) => expect(plurNpxPin(entry)).toBe(expected))
 })
