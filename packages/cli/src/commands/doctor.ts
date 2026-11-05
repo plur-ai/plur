@@ -1504,15 +1504,6 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
   })
 }
 
-/**
- * Render the report. Exported for tests: text mode cannot be exercised
- * through a spawned CLI (piped stdout auto-selects JSON), and calling run()
- * in-process would spawn the embedder probe against the test runner's argv.
- *
- * --quiet: only the title banner is suppressed — everything else in
- * this report IS the diagnosis the user asked for, including the ✓ lines
- * (absence of a ✓ would read as "not checked", not "healthy").
- */
 /** The text lines for whether the declared opencode plugin resolves. Exported for tests. */
 export function opencodeResolvableLines(oc: Pick<OpencodeReport, 'pluginResolvable' | 'resolvedVia' | 'registry'>): string[] {
   if (oc.pluginResolvable === 'yes') {
@@ -1537,6 +1528,15 @@ export function opencodeResolvableLines(oc: Pick<OpencodeReport, 'pluginResolvab
   ]
 }
 
+/**
+ * Render the report. Exported for tests: text mode cannot be exercised
+ * through a spawned CLI (piped stdout auto-selects JSON), and calling run()
+ * in-process would spawn the embedder probe against the test runner's argv.
+ *
+ * --quiet: only the title banner is suppressed — everything else in
+ * this report IS the diagnosis the user asked for, including the ✓ lines
+ * (absence of a ✓ would read as "not checked", not "healthy").
+ */
 export function printText(report: DoctorReport, flags?: GlobalFlags): void {
   const tick = (b: boolean) => (b ? '✓' : '✗')
 
