@@ -102,20 +102,11 @@ const ISO_TS = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{
 // for direct computeReceipt callers that bypass the reader.
 const KNOWN_SOURCES = new Set<string>(['session_start', 'inject', 'hook', 'unknown'])
 
-// Statement text can originate in third-party installed packs, so an author
-// could embed hostile characters that spoof output when the snippet prints to
-// a terminal or reaches the calling agent via the MCP result. We strip by
-// Unicode category rather than an enumerated denylist, so the whole class is
-// covered in one rule:
-//   - \p{Cc} — C0/C1 controls: ANSI/terminal escapes (ESC, BEL, CSI), and
-//     tab/LF/CR (harmless, but collapsed to a space either way);
-//   - \p{Cf} — format characters: bidi controls (Trojan-Source reordering),
-//     zero-width spacers (ZWSP, BOM), the invisible Tags block
-//     (U+E0000-E007F, an ASCII-smuggling prompt-injection channel), soft
-//     hyphen, word joiner, ALM, and friends.
-// ZWJ/ZWNJ (U+200C/D) are the sole exception — kept because they carry meaning
-// in real scripts and emoji sequences. Line/paragraph separators (U+2028/9)
-// are whitespace under \s and get collapsed below.
+// Statement text can come from third-party packs, so strip characters that
+// could spoof terminal or MCP output, by Unicode category so the whole class is covered:
+//   - \p{Cc}: C0/C1 controls (ANSI escapes; tab/LF/CR collapse to a space anyway);
+//   - \p{Cf}: format characters (bidi controls, zero-width spacers, the Tags block).
+// ZWJ/ZWNJ are kept (meaningful in real scripts and emoji); U+2028/9 collapse as \s.
 // eslint-disable-next-line no-control-regex
 const HOSTILE_CHARS = /[\p{Cc}\p{Cf}]/gu
 const KEEP_FORMAT = new Set(['\u200c', '\u200d']) // ZWNJ, ZWJ
@@ -161,16 +152,10 @@ function cmpId(a: string, b: string): number {
 }
 
 /**
- * Build a memory receipt from counted facts only.
- *
- * Deliberately contains no estimate, no counterfactual and no monetary value:
- * a retrieval's worth is not observable from this data (see the design spec
- * §2), and for subscription users marginal token cost is zero anyway.
- *
- * "Retrieval" means PLUR selected engrams for a query — one co_injection event.
- * It is NOT the number of times that text was shown to the model; the CLI hook
- * re-presents a session's injection on later prompts, which PLUR cannot observe
- * from inside.
+ * Build a memory receipt from counted facts only: no estimate, counterfactual or
+ * monetary value (a retrieval's worth is not observable here). A "retrieval" is
+ * one co_injection event, NOT how often the text was shown to the model (hooks
+ * re-present an injection, which PLUR cannot observe).
  */
 export function computeReceipt(input: ReceiptInput): Receipt {
   const { ownEngramIds, packEngramIds, events, now } = input

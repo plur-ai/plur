@@ -129,17 +129,11 @@ export interface EnsureSystemPromptResult {
 }
 
 /**
- * Append or update PLUR memory instructions in SYSTEM.md, through core's
- * `upsertInstructionSection` (the same logic as `plur init`):
- * - creates the file if it does not exist
- * - appends if no PLUR section is present
- * - replaces an older section only when it is, whitespace aside, a text PLUR
- *   shipped; a section the user wrote or edited is kept as it is and the new
- *   one is added beside it (#1520 audit B2, N5)
- * - leaves a file with a current section unchanged
- * The heading is matched as a whole line outside code fences, so a user's
- * `## PLUR Memory System Guardrails` or `### PLUR Memory System` is not it.
- * SYSTEM.md is copied to a timestamped backup before any change.
+ * Append or update PLUR memory instructions in SYSTEM.md via core's
+ * `upsertInstructionSection` (as `plur init`): creates the file, appends a missing section,
+ * replaces an older one only if it is a text PLUR shipped (user-edited sections are kept and
+ * the new one added beside), leaves a current one unchanged. The heading must be a whole line
+ * outside code fences. SYSTEM.md is backed up (timestamped) before any change.
  */
 export function ensureSystemPrompt(workspacePath: string): EnsureSystemPromptResult {
   const systemMdPath = join(workspacePath, 'SYSTEM.md')

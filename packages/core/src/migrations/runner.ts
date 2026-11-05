@@ -4,7 +4,8 @@ import * as yaml from 'js-yaml'
 import { join } from 'path'
 import { loadEngrams, saveEngrams, engramStoreEntries } from '../engrams.js'
 import { recordLastWritten } from '../backup.js'
-import { atomicWrite, withLock, fsyncDir } from '../sync.js'
+import { withLock } from '../file-lock.js'
+import { atomicWrite, fsyncDir } from '../atomic-write.js'
 import { writeConfigFile } from '../config-file.js'
 import { logger } from '../logger.js'
 import type { Migration } from './types.js'
@@ -62,21 +63,9 @@ function assertVersion(version: unknown): asserts version is number {
 }
 
 /**
- * Write schema_version to config.yaml, preserving other fields.
- *
- * Under the SAME `withLock(configPath)` every other config writer takes (#805,
- * audit F12). This was the one config write that skipped it, and skipping it is
- * not a style point: probe p09b measured `setSchemaVersion wrote while the
- * config lock was held: true`, after which the lock holder's own read-modify-
- * write — begun before this one landed — wrote back its stale copy and erased
- * `schema_version`. A store that HAS been migrated then reads as version 0, so
- * the next run re-applies every migration to already-migrated data.
- *
- * The read is no longer `catch {}`. Swallowing every error meant an EACCES or a
- * momentary failure on an EXISTING config started the merge from `{}`, writing
- * a schema-version-only file and dropping stores, auto_learn, embeddings and
- * every other top-level key. Only ENOENT is safe to treat as "start empty" —
- * matching `persistStores`, which rethrows for exactly this reason.
+ * Write schema_version to config.yaml, preserving other fields, under the same `withLock(configPath)` as every
+ * config writer (else a stale concurrent write erases it and migrations re-apply). Only ENOENT means "start
+ * empty"; other read errors throw rather than drop every other key.
  */
 export function setSchemaVersion(configPath: string, version: number): void {
   assertVersion(version)
@@ -102,12 +91,9 @@ export function setSchemaVersion(configPath: string, version: number): void {
 function createBackup(engramsPath: string, version: number): string | null {
   if (!fs.existsSync(engramsPath)) return null
   const backupPath = `${engramsPath}.bak.${version}`
-  // Do not clobber an existing backup for this version (#813, audit finding
-  // 18). The name is fixed, and it was overwritten BEFORE the live store was
-  // validated — so a second migration attempt against a store that had since
-  // become corrupt replaced a known-good backup with the corrupt copy, and the
-  // rollback target was gone. An existing backup is by definition from an
-  // earlier, better state; keep it.
+  // Do not clobber an existing backup for this version. It is from an earlier,
+  // better state; overwriting it before the live store is validated could
+  // replace a known-good backup with a corrupt copy.
   if (fs.existsSync(backupPath)) return backupPath
   // Same mode as the corpus (copyFileSync kept it): a backup is the corpus.
   atomicWrite(backupPath, fs.readFileSync(engramsPath), { mode: fs.statSync(engramsPath).mode & 0o777 })
@@ -151,23 +137,21 @@ function recoverMigration(engramsPath: string, configPath: string): void {
 }
 
 /*
- * There is deliberately no "restore from backup" on failure (formal-verification
- * finding, spec/formal/findings/persistence.md candidate 2). `up()`/`down()` run
+ * There is deliberately no "restore from backup" on failure. `up()`/`down()` run
  * on an in-memory copy and nothing is written until every one has succeeded, so
- * when one throws the live engrams.yaml is still exactly what it was. The backup,
- * by contrast, is never refreshed (the no-clobber rule above keeps the FIRST copy
- * taken for a version), so copying it back replaced the live store with an older
- * one — measured: 3 engrams -> 1 after a rollback and a failing re-run. The backup
- * stays on disk for manual recovery; the failure path simply writes nothing.
+ * when one throws the live engrams.yaml is still exactly what it was. The backup
+ * is never refreshed (the no-clobber rule above keeps the FIRST copy taken for a
+ * version), so copying it back could replace the live store with an older one.
+ * The backup stays on disk for manual recovery; the failure path writes nothing.
  */
 
 /** Stage/validate exact bytes, persist intent, replace corpus, stamp config.
  * A retry can finish stamping after a crash at any commit boundary.
  *
- * A stamp that THROWS (formal round 2, findings/r2-persist.md item 4: config
- * lock held by another process, EACCES, a full disk) puts the corpus back, so
- * both files are left as they were, like every other failure of a run. Only a
- * crash between the two writes splits them, and the journal recovers that. */
+ * A stamp that THROWS (config lock held by another process, EACCES, a full
+ * disk) puts the corpus back, so both files are left as they were, like every
+ * other failure of a run. Only a crash between the two writes splits them, and
+ * the journal recovers that. */
 function commitMigration(
   engramsPath: string,
   configPath: string,
@@ -191,8 +175,8 @@ function commitMigration(
   const journalPath = `${engramsPath}.migration.json`
   atomicWrite(journalPath, JSON.stringify({ config: configPath, before: before === null ? null : digest(before), after: digest(bytes), version }))
   atomicWrite(engramsPath, bytes)
-  // A migration is a PLUR write: keep the backup gate's baseline in step
-  // (decision P2). The staged save above recorded the staging file's name.
+  // A migration is a PLUR write: keep the backup gate's baseline in step.
+  // The staged save above recorded the staging file's name.
   recordLastWritten(engramsPath, countEntries(engramsPath, bytes))
   try {
     setSchemaVersion(configPath, version)
@@ -250,27 +234,10 @@ export function runMigrations(
   let backupPath: string | null = null
 
   /**
-   * EVERYTHING under the corpus lock — reading the version, planning, backing
-   * up, migrating, saving, and stamping the new version (#805 F12; audit
-   * 2026-08-03 finding 2).
-   *
-   * The first fix wrapped only the corpus read-modify-write, leaving the
-   * version read before it and the version stamp after it. That gap is enough:
-   * a concurrent `run` and `rollback` both read version 2, rollback strips the
-   * v1/v2 fields, and run — planned from 2 — applies only v3-v5. The store then
-   * reports schema 5 while lacking `commitment` and `content_hash`, or reports
-   * 0 over a partially upgraded corpus, depending on which stamp lands last.
-   * Nothing detects either state; the next run just migrates from a lie.
-   *
-   * LOCK ORDER is corpus -> config. `setSchemaVersion` takes the config lock
-   * itself, so this nests. That direction is safe because nothing acquires them
-   * the other way round: `addStore` materializes its store file (store lock)
-   * and only THEN calls `persistStores` (config lock), sequentially rather than
-   * nested. Anything added later must keep that order or reintroduce a deadlock.
-   *
-   * `withLock` is NOT reentrant, and `loadEngrams`/`saveEngrams` do not lock
-   * internally — their callers do — so this is the only holder of the corpus
-   * lock for the duration.
+   * EVERYTHING (read version, plan, back up, migrate, save, stamp) runs under the corpus lock, so concurrent run and
+   * rollback cannot leave a version that mismatches the contents.
+   * LOCK ORDER is corpus -> config (`setSchemaVersion` nests the config lock); nothing takes them the other way
+   * round (`addStore` takes them one after the other, never nested), and new code must keep that order. `withLock` is NOT reentrant and load/saveEngrams do not lock.
    */
   withLock(engramsPath, () => {
     if (options?.dryRun && fs.existsSync(`${engramsPath}.migration.json`)) throw new Error('Interrupted migration needs recovery before a dry run')
@@ -279,7 +246,7 @@ export function runMigrations(
     const pending = ALL_MIGRATIONS.slice(currentVersion)
     if (pending.length === 0) return
 
-    // Load engrams as raw objects (passthrough mode — we use the passthrough schema)
+    // Load engrams as raw objects (passthrough schema)
     let engrams = loadEngrams(engramsPath)
     backupPath = options?.dryRun ? null : createBackup(engramsPath, currentVersion)
 
@@ -291,8 +258,7 @@ export function runMigrations(
       } catch (err) {
         logger.error(`Migration ${migration.id} failed: ${err}`)
         // Nothing has been written yet: the live file is untouched. Do NOT copy
-        // the (possibly older) backup over it — a version backup may predate
-        // successful writes; see the note above commitMigration.
+        // the (possibly older) backup over it; see the note above commitMigration.
         throw new Error(`Migration ${migration.id} failed: ${err}. engrams.yaml was not modified.`)
       }
     }
@@ -300,9 +266,8 @@ export function runMigrations(
     if (!options?.dryRun) {
       // Migrations rewrite the entire corpus by design, and a migration that
       // legitimately drops records would otherwise trip the save-side shrink
-      // guard (#801). Declaring it here keeps the guard armed everywhere else.
-      // Inside the corpus lock: the corpus and the version it claims to be at
-      // must become visible together, or they can disagree.
+      // guard. Inside the corpus lock: the corpus and the version it claims to
+      // be at must become visible together, or they can disagree.
       commitMigration(engramsPath, configPath, engrams, currentVersion, currentVersion + applied.length)
     }
   })
@@ -334,9 +299,7 @@ export function rollbackMigrations(
 
   // Same corpus lock as runMigrations, held across the version read, the
   // rewrite and the version stamp, in the same order (corpus -> config) and for
-  // the same reasons — see the comment there (#805 F12; audit 2026-08-03
-  // finding 2). Rolling back is if anything the worse moment to lose a
-  // concurrent write, since the operator is already recovering from something.
+  // the same reasons; see the comment there.
   let backupPath: string | null = null
   withLock(engramsPath, () => {
     recoverMigration(engramsPath, configPath)

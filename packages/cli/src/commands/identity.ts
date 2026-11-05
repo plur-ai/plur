@@ -2,17 +2,9 @@ import { createPlur, type GlobalFlags } from '../plur.js'
 import { shouldOutputJson, outputJson, outputText } from '../output.js'
 
 /**
- * Who your memories are attributed to (#961).
- *
- * Three operations and no more: see it, set it, clear it. Identity is the kind
- * of setting somebody touches once, so the command exists to be discoverable
- * rather than to be powerful.
- *
- * What it deliberately does NOT do is guess. There is an obvious value sitting
- * right there — the operating system account — and using it would put a real
- * person's name into every shared record because they installed some software,
- * not because they decided to be named. Unset stays unset, and every memory
- * written meanwhile is recorded as `unidentified`, which is a truthful answer.
+ * Who your memories are attributed to: see it, set it, clear it. It never
+ * guesses from the OS account, which would put a real name into shared records
+ * without a decision; unset stays unset and memories record `unidentified`.
  */
 export const FLAGS = ['--clear']
 export const FLAGS_WITH_VALUES: string[] = []
@@ -39,8 +31,8 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     lines.push(after.stated
       ? `Memories written from now on are attributed to ${after.identity}.`
       : 'Identity cleared. Memories written from now on are recorded as "unidentified".')
-    // An email address is accepted and warned about, here, where the choice
-    // is made. Learning it at the first empty export is what #999 reports.
+    // An email address is accepted and warned about here, where the choice
+    // is made, rather than discovered at the first empty pack export.
     if (after.warning) {
       lines.push('')
       lines.push(`  Note: ${after.warning}`)
@@ -79,7 +71,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       '  Any address works. Nothing verifies it — packs are not signed — so this',
       '  is a claim about who is answerable, not proof of it. An email address',
       '  is accepted too, but the pack export privacy scan flags email addresses,',
-      '  so memories attributed to one are held back from every pack (#999).',
+      '  so memories attributed to one are held back from every pack.',
     ].join('\n'))
     return
   }

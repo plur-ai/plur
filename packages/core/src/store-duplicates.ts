@@ -2,12 +2,12 @@ import { readFileSync } from 'fs'
 import { isDeepStrictEqual } from 'util'
 import yaml from 'js-yaml'
 import { canonicalize } from './project-config.js'
-import { withLock } from './sync.js'
+import { withLock } from './file-lock.js'
 import { writeConfigFile } from './config-file.js'
 import type { StoreEntry } from './schemas/config.js'
 
 /**
- * Duplicate local store entries in config.yaml (#1319, #1356).
+ * Duplicate local store entries in config.yaml.
  *
  * A local store entry is ignored at load when it would load engrams that are
  * already loaded: its file is the primary store, or its file AND scope repeat
@@ -56,16 +56,11 @@ export function classifyStoreDuplicates(stores: StoreEntry[], primaryEngramsPath
 }
 
 /**
- * Remove every local store entry in config.yaml whose file is the primary
- * engrams file (`plur stores prune`, #1356). Returns the removed entries; an
- * empty list means nothing matched and the file was not touched.
- *
- * Only those entries are removed, and every other byte of config.yaml is kept:
- * the file is edited as text (a re-dump would drop comments and reformat), and
- * the result is re-parsed and must equal the original with exactly those
- * entries gone. If the `stores:` list is not in a shape this can edit safely
- * (flow style, anchors, …) it throws and changes nothing. The write is atomic
- * (tmp + fsync + rename) under the config lock.
+ * Remove every local store entry in config.yaml whose file is the primary engrams file
+ * (`plur stores prune`); returns the removed entries (empty → file untouched).
+ * Edited as text to keep every other byte; the result is re-parsed and must equal the
+ * original minus those entries, else (flow style, anchors, …) it throws and changes
+ * nothing. Atomic write under the config lock.
  */
 export function removePrimaryStoreEntries(configPath: string, primaryEngramsPath: string): StoreEntry[] {
   return withLock(configPath, () => {

@@ -25,30 +25,24 @@ export interface ConfigFile {
   /** Whether this config exists on disk right now. */
   exists: boolean
   /**
-   * 'claude-code': mcpServers + hooks, Claude's nested {matcher, hooks:[]} shape.
-   * 'claude-desktop' / Cursor mcp.json: mcpServers only, no hooks section.
-   * 'cursor-hooks': Cursor's separate hooks.json, flat {event: [{command,...}]} shape.
-   * 'codex-hooks': Codex's ~/.codex/hooks.json — Claude Code's nested shape,
-   *   but under a top-level `hooks` key alongside a `description`, and read
-   *   by its own parser so a future divergence doesn't silently misreport.
-   * 'codex-toml': Codex's config.toml — NOT JSON. Read-only here; doctor
-   *   only greps it for an `[mcp_servers.plur]` table.
-   * 'agy-hooks': Antigravity's hooks.json — a map of NAMED hook sets; PLUR
-   *   owns the 'plur-memory' key and nothing else.
-   * 'claude-user': Claude Code's ~/.claude.json — MCP servers at user scope
-   *   (top-level `mcpServers`) and local scope (`projects[folder].mcpServers`);
-   *   no hooks. The only user-level place Claude Code reads MCP servers (#1561).
+   * - 'claude-code': mcpServers + hooks (nested {matcher, hooks:[]} shape).
+   * - 'claude-desktop' / Cursor mcp.json: mcpServers only.
+   * - 'cursor-hooks': Cursor's hooks.json, flat {event: [{command,...}]} shape.
+   * - 'codex-hooks': ~/.codex/hooks.json — nested shape under top-level `hooks`; own parser.
+   * - 'codex-toml': Codex config.toml — read-only; doctor only greps `[mcp_servers.plur]`.
+   * - 'agy-hooks': Antigravity hooks.json; PLUR owns only the 'plur-memory' key.
+   * - 'claude-user': ~/.claude.json — user (`mcpServers`) and local
+   *   (`projects[folder].mcpServers`) MCP servers; no hooks.
    */
   kind: 'claude-code' | 'claude-desktop' | 'cursor-hooks' | 'codex-hooks' | 'codex-toml' | 'agy-hooks' | 'claude-user'
 }
 
 /**
- * Locate the local MCP shim installed by `plur init` (#234 fix).
+ * Locate the local MCP shim installed by `plur init`.
  * Returns the shim path if it exists, null otherwise.
  *
  * The shim at ~/.plur/bin/plur-mcp calls `node <mcp-dist>/index.js` directly,
- * eliminating the npx cache race that ENOTEMPTY'd Claude Code sessions
- * on @plur-ai/mcp version bumps (#234, same bug class as #178).
+ * avoiding the npx cache race (ENOTEMPTY) on @plur-ai/mcp version bumps.
  */
 export function findMcpShim(): string | null {
   const name = platform() === 'win32' ? 'plur-mcp.cmd' : 'plur-mcp'
@@ -60,7 +54,7 @@ export function findMcpShim(): string | null {
  * The @plur-ai/mcp js entry `plur init` resolved when it installed the MCP
  * shim, read from `~/.plur/bin/plur-mcp.meta.json`. Null when the metadata is
  * missing or unreadable, or the file it names no longer exists (the package
- * was moved or uninstalled since).
+ * was moved or uninstalled).
  */
 export function findMcpJsEntry(): string | null {
   const recorded = recordedMcpJsEntry()
@@ -78,29 +72,20 @@ function recordedMcpJsEntry(): string | null {
 
 /**
  * Build the MCP server entry to register for the `plur` server.
- *
- * Preferred: local shim at ~/.plur/bin/plur-mcp installed by `plur init`.
- * No npx, no cache, no race conditions (#234).
- *
- * Fallback: npx with a login-shell wrapper on macOS/Linux so that PATH
- * (nvm/brew/volta/asdf) is loaded — Claude Desktop launches GUI apps
- * without the user's shell PATH, which would cause `npx` to fail with
- * "command not found". On Windows, uses `cmd.exe /c npx ...` which
- * inherits the system PATH.
- *
- * Windows (#1267): `{ command: <node.exe>, args: [<@plur-ai/mcp js entry>] }`
- * whenever the entry is resolvable, never the `.cmd` shim; the npx form
- * above is the documented fallback when it is not.
+ * - Preferred: the local shim ~/.plur/bin/plur-mcp from `plur init` (no npx races).
+ * - Windows: `{ command: <node.exe>, args: [<@plur-ai/mcp js entry>] }` when resolvable,
+ *   never the `.cmd` shim; else `cmd.exe /c npx ...`.
+ * - Fallback elsewhere: npx via a login shell, so GUI-launched clients get the
+ *   user's PATH (nvm/brew/volta/asdf).
  */
 export function buildMcpServerEntry(opts?: { env?: Record<string, string> }): McpServerEntry {
   if (platform() === 'win32') {
-    // Windows never gets the `.cmd` shim as a command (#1267): current Node
-    // refuses to spawn a `.cmd` directly (`spawn EINVAL`, the
-    // CVE-2024-27980 hardening), and MCP clients spawn without a shell. The
-    // shim's own resolution — node binary plus @plur-ai/mcp's js entry,
-    // recorded by `plur init` in plur-mcp.meta.json — is launched directly
-    // instead. When that entry cannot be resolved, the pinned
-    // `cmd.exe /c npx` fallback below applies (cmd.exe is a real executable).
+    // Windows never gets the `.cmd` shim as a command: current Node refuses
+    // to spawn a `.cmd` directly (`spawn EINVAL`, the CVE-2024-27980
+    // hardening), and MCP clients spawn without a shell. The node binary plus
+    // @plur-ai/mcp's js entry (recorded by `plur init` in plur-mcp.meta.json)
+    // is launched directly instead. When that entry cannot be resolved, the
+    // pinned `cmd.exe /c npx` fallback below applies (cmd.exe is a real executable).
     const entrypoint = findMcpJsEntry()
     if (entrypoint) {
       return { command: process.execPath, args: [entrypoint], ...(opts?.env ? { env: opts.env } : {}) }
@@ -112,24 +97,21 @@ export function buildMcpServerEntry(opts?: { env?: Record<string, string> }): Mc
       return { command: shim, args: [], ...(opts?.env ? { env: opts.env } : {}) }
     }
   }
-  // npx fallback pins THIS CLI's version, never @latest (#1069 root cause).
-  // An @latest entry makes npx re-resolve on every publish and REWRITE the
-  // cached native binaries (better_sqlite3.node) in place — and macOS kills
-  // any process that pages in a rewritten signed binary with SIGKILL
-  // "CODESIGNING Invalid Page" (captured in Diagnostic Reports on
-  // 2026-08-28: dyld faulting exactly better-sqlite3's 1888K mapping, ~0.5s
-  // after launch, cold runs only). That was the "first cold
-  // plur_session_start of the day dies" production signature: the first run
-  // after a publish is the one that races the cache rewrite. A pinned
-  // version's cache is immutable — upgrades happen when `plur init` rewrites
-  // the config to a new pin, a moment when servers restart anyway: every run
-  // moves an older-or-equal PLUR pin to this CLI's version (#1832, see
-  // plurNpxPin). Same convention as the hermes/python bridges'
-  // _NPX_CLI_VERSION pin.
-  // Belt-and-braces (adversarial audit): the constant is compile-time, but it
-  // reaches a /bin/sh -lc string — refuse to interpolate anything that is not
-  // release-shaped, falling back to a harmless pinned form.
-  const version = /^\d+\.\d+\.\d+([.-][0-9A-Za-z.]+)?$/.test(CLI_VERSION) ? CLI_VERSION : 'latest'
+  // npx fallback pins THIS CLI's version, never @latest. An @latest entry
+  // makes npx re-resolve on every publish and rewrite the cached native
+  // binaries (better_sqlite3.node) in place, and macOS kills any process that
+  // pages in a rewritten signed binary (SIGKILL "CODESIGNING Invalid Page").
+  // A pinned version's cache is immutable; upgrades happen when `plur init`
+  // rewrites the config to a new pin: every run moves an older-or-equal PLUR
+  // pin to this CLI's version (see plurNpxPin). Same convention as the
+  // hermes/python bridges' _NPX_CLI_VERSION pin.
+  // The constant is compile-time, but it reaches a /bin/sh -lc string, so a
+  // version that is not release-shaped is refused: it can be neither pinned
+  // safely nor replaced by @latest.
+  const version = /^\d+\.\d+\.\d+([.-][0-9A-Za-z.]+)?$/.test(CLI_VERSION) ? CLI_VERSION : null
+  if (version === null) {
+    throw new Error(`plur: cannot pin the npx MCP entry to CLI version ${JSON.stringify(CLI_VERSION)} (not a release version)`)
+  }
   const spec = `@plur-ai/mcp@${version}`
   if (platform() === 'win32') {
     return {
@@ -171,9 +153,7 @@ export function claudeCodeGlobalSettingsPath(): string {
  * Claude Code's user config, `~/.claude.json` — where Claude Code reads
  * user-scoped MCP servers (`mcpServers`) and local-scoped ones
  * (`projects[<folder>].mcpServers`). It is what `claude mcp add --scope user`
- * writes. Claude Code does NOT read MCP servers from `~/.claude/settings.json`;
- * `plur init` used to register there and Claude Code never saw the server
- * (#1561).
+ * writes. Claude Code does NOT read MCP servers from `~/.claude/settings.json`.
  */
 export function claudeCodeUserConfigPath(): string {
   return join(homedir(), '.claude.json')
@@ -245,15 +225,12 @@ export function cursorRulesPath(cwd: string = process.cwd()): string {
 }
 
 /**
- * Locate the DYNAMIC rules file the hook commands rewrite every session
- * (audit fix, live-evidence version): Cursor's own team confirmed
- * `additional_context` from `sessionStart` AND `postToolUse` is dropped by a
- * race condition ("runs async before the composer handle is fully created")
- * — see Global Constraints. The community-and-team-confirmed workaround is
- * to write recalled content into a `.cursor/rules/*.mdc` file instead, since
- * Cursor's rules engine (unlike the broken hook-output channel) reliably
- * loads `alwaysApply: true` rules. Kept as a SEPARATE file from
- * `cursorRulesPath()`'s static, install-time rule so the hooks rewriting
+ * Locate the DYNAMIC rules file the hook commands rewrite every session.
+ * Cursor drops `additional_context` from `sessionStart` and `postToolUse`
+ * (a race: the hook runs before the composer handle exists), so recalled
+ * content is written into a `.cursor/rules/*.mdc` file instead, which Cursor's
+ * rules engine reliably loads as an `alwaysApply: true` rule. Kept SEPARATE
+ * from `cursorRulesPath()`'s static, install-time rule so the hooks rewriting
  * this one every session never clobber the human-authored one.
  */
 export function cursorContextRulePath(cwd: string = process.cwd()): string {
@@ -262,13 +239,9 @@ export function cursorContextRulePath(cwd: string = process.cwd()): string {
 
 /**
  * Locate the separate reminder rule file `hook-cursor-post-tool.ts` rewrites
- * on its periodic nudge (audit fix — Codex adversarial review, 2026-07-08:
- * both hooks used to call `writeContextRule()` against
- * `cursorContextRulePath()`, so the first reminder overwrote the recalled
- * engram content `hook-cursor-session-start.ts` had written there, silently
- * dropping the session's injected memory for the rest of the conversation).
- * Kept as its own file, also `alwaysApply: true` and also loaded by Cursor's
- * rules engine, so the two can never clobber each other again.
+ * on its periodic nudge. It is its own file (also `alwaysApply: true`) so a
+ * reminder never overwrites the recalled engram content
+ * `hook-cursor-session-start.ts` writes to `cursorContextRulePath()`.
  */
 export function cursorReminderRulePath(cwd: string = process.cwd()): string {
   return join(cwd, '.cursor', 'rules', 'plur-reminder.mdc')
@@ -313,7 +286,7 @@ export function knownConfigFiles(cwd: string = process.cwd()): ConfigFile[] {
  * degradation. Any caller that intends to WRITE the config back must use
  * readConfigForWrite instead: writing through this function's {} turns "one
  * trailing comma" into "every other MCP server the user had registered is
- * silently destroyed" (#1059).
+ * silently destroyed".
  */
 export function readConfig(path: string): Record<string, unknown> {
   if (!existsSync(path)) return {}
@@ -326,7 +299,7 @@ export function readConfig(path: string): Record<string, unknown> {
 
 export interface ConfigReadResult {
   config: Record<string, unknown>
-  /** false when the file EXISTS but is not a JSON object — merging into the coerced {} and writing back would destroy the user's other entries (#1059). */
+  /** false when the file EXISTS but is not a JSON object — merging into the coerced {} and writing back would destroy the user's other entries. */
   ok: boolean
 }
 
@@ -335,9 +308,8 @@ export interface ConfigReadResult {
  * A missing file is a fresh install (`ok: true`, empty config); a file that
  * exists but fails to parse — or parses to something other than an object —
  * is the user's damaged-but-recoverable data, and the only safe move is to
- * refuse the leg and tell them (`ok: false`). This is the same refusal the
- * hooks.json legs have carried since the 0.19.0 adversarial audit (ADV-F2);
- * #1059 is that finding un-propagated to the MCP legs of the same functions.
+ * refuse the leg and tell them (`ok: false`). The hooks.json legs apply the
+ * same refusal.
  */
 export function readConfigForWrite(path: string): ConfigReadResult {
   if (!existsSync(path)) return { config: {}, ok: true }
@@ -367,17 +339,9 @@ export function hasPlurMcp(config: Record<string, unknown>): boolean {
 }
 
 /**
- * The `plur` MCP entry a config file actually declares, if any.
- *
- * `hasPlurMcp` answers whether one exists; this returns the thing itself, so a
- * caller can launch what the user launches instead of a reconstruction of it
- * (#764). `buildMcpServerEntry` synthesises a *recommended* entry — the shim,
- * else npx — which is right for `plur init` writing a config and wrong for
- * doctor verifying one: an install that runs the server some other way gets
- * diagnosed on a path it never uses.
- *
- * Returns null when the entry exists but has no `command`, since there is
- * nothing runnable to probe and guessing would defeat the purpose.
+ * The `plur` MCP entry a config file actually declares, so doctor probes what the
+ * user launches rather than `buildMcpServerEntry`'s recommended reconstruction.
+ * Returns null when the entry has no `command` (nothing runnable to probe).
  */
 export function readPlurMcpEntry(config: Record<string, unknown>): McpServerEntry | null {
   const servers = (config.mcpServers ?? {}) as Record<string, unknown>
@@ -395,7 +359,7 @@ export function readPlurMcpEntry(config: Record<string, unknown>): McpServerEntr
 
 /**
  * Detect a `datacore` MCP server entry — used by doctor to surface the
- * "plur ≠ datacore" collision warning that has confused users in the wild.
+ * "plur ≠ datacore" collision warning.
  */
 export function hasDatacoreMcp(config: Record<string, unknown>): boolean {
   const servers = (config.mcpServers ?? {}) as Record<string, unknown>
@@ -415,26 +379,15 @@ export function mergePlurMcp(config: Record<string, unknown>, opts?: { env?: Rec
 }
 
 /**
- * Heal an EXISTING plur entry that init itself wrote via the npx fallback.
- *
- * "Entry exists" is not "entry is correct" — the same trap the Cursor leg's
- * PLUR_TOOL_PROFILE patch already documents. Every MCP leg used to skip on
- * `hasPlurMcp`, which left the `@latest` entries older inits wrote in place
- * FOREVER: re-running `plur init` on an affected machine reported "already
- * registered" while the #1069 rewrite race stayed armed. Upgrade the entry
- * when (a) it is recognizably OURS (an npx invocation of @plur-ai/mcp at
- * `@latest`, bare, or pinned to a version older than or equal to this CLI —
- * a newer pin or a hand-rolled custom command is never touched), and (b) it
- * differs from what we would write today (shim, or the current version pin).
- * Re-pinning older pins is what makes a global upgrade reach every tool
- * config on the next `plur init` (#1832) — the rule the Codex writer already
- * applies (codexLaunchKind). The existing entry's env is preserved when the
- * caller doesn't supply one.
- *
- * Windows also heals PLUR's own entries of the two shapes it wrote there: the
- * `plur-mcp.cmd` shim entry, and the node-form entry when its node binary or
- * js entry is gone or the js entry differs from the one resolved now (#1267).
- *
+ * Heal an EXISTING plur entry that init itself wrote: only when it is recognizably
+ * ours (an npx invocation of @plur-ai/mcp at `@latest`, untagged, or pinned to a
+ * version older than or equal to this CLI — a newer pin and custom commands are
+ * never touched) and differs from what we would write today (the shim, or this
+ * CLI's pin). Re-pinning older pins is what makes a global upgrade reach every
+ * tool config on the next `plur init`, the rule the Codex writer applies
+ * (codexLaunchKind). On Windows also heals the `plur-mcp.cmd` entry and a
+ * node-form entry whose node binary or js entry is gone or changed.
+ * The existing env is kept when the caller supplies none.
  * Returns true when the entry was rewritten (caller persists the config).
  */
 export function upgradePlurMcpEntry(config: Record<string, unknown>, opts?: { env?: Record<string, string> }): boolean {
@@ -442,19 +395,13 @@ export function upgradePlurMcpEntry(config: Record<string, unknown>, opts?: { en
 }
 
 /**
- * `upgradePlurMcpEntry`, returning what was healed for init's status line,
- * or null when nothing was rewritten. The three shapes have nothing in
- * common but the rewrite, so the line names the one that applied (#1304):
- *
- *   - `upgraded stale npx entry` — the @latest/bare npx entry (#1069);
- *   - `updated the npx pin <old> → <new>` / `replaced the pinned npx entry
- *     (<old>) with the installed MCP server` — an older PLUR pin (#1832);
- *   - `healed the old plur-mcp.cmd entry …` — Windows (#1267);
- *   - `repaired the node.exe entry …` — Windows, the node binary or js entry
- *     it named is gone or differs from the one resolved now (#1267).
- *
- * The Windows lines also name what was written: the node.exe launcher, or
- * the pinned `cmd.exe /c npx` fallback.
+ * `upgradePlurMcpEntry`, returning init's status line for what was healed, or null:
+ *   - `upgraded stale npx entry` — the @latest/bare npx entry;
+ *   - `updated the npx pin <old> → <new>` / `replaced the pinned npx entry (<old>)
+ *     with the installed MCP server` — an older PLUR pin;
+ *   - `healed the old plur-mcp.cmd entry …` — Windows;
+ *   - `repaired the node.exe entry …` — Windows, node binary or js entry gone/changed.
+ * Windows lines also name what was written (node.exe launcher or pinned npx fallback).
  */
 export function healPlurMcpEntry(config: Record<string, unknown>, opts?: { env?: Record<string, string> }): string | null {
   const servers = (config.mcpServers ?? {}) as Record<string, McpServerEntry | undefined>
@@ -471,17 +418,16 @@ export function healPlurMcpEntry(config: Record<string, unknown>, opts?: { env?:
   const recommended = buildMcpServerEntry(effectiveOpts)
   if (recommended.command === existing.command &&
       JSON.stringify(recommended.args) === JSON.stringify(existing.args ?? [])) return null
-  // Field-level MERGE, not object replacement (0.19.1 data-loss audit,
-  // finding 2): a user entry can carry keys we never modeled — type, cwd,
-  // timeout, disabled, envFile — and `servers.plur = recommended` silently
-  // destroyed them. Only the launch triple changes hands.
+  // Field-level MERGE, not object replacement: a user entry can carry keys we
+  // never modeled (type, cwd, timeout, disabled, envFile) that replacement
+  // would destroy. Only the launch triple changes hands.
   servers.plur = {
     ...existing,
     command: recommended.command,
     args: recommended.args,
     // env is MERGED too: a caller-supplied env (the Cursor leg passes
     // PLUR_TOOL_PROFILE) sets its keys, but the user's other keys —
-    // PLUR_PATH above all — are theirs (formal Adapters #4, cli#3).
+    // PLUR_PATH above all — are theirs.
     ...(recommended.env ? { env: { ...(existing.env ?? {}), ...recommended.env } } : {}),
   }
   config.mcpServers = servers as Record<string, unknown>
@@ -500,9 +446,9 @@ export function healPlurMcpEntry(config: Record<string, unknown>, opts?: { env?:
 }
 
 /**
- * Is this the Windows `.cmd` MCP shim entry an older `plur init` wrote
+ * Is this PLUR's Windows `.cmd` MCP shim entry
  * (`~/.plur/bin/plur-mcp.cmd`, no args)? Current Node cannot spawn it
- * (`spawn EINVAL`), so re-running init heals it to the node.exe form (#1267).
+ * (`spawn EINVAL`), so re-running init heals it to the node.exe form.
  * Matches only our own shim path, in either slash style; any other command is
  * the user's and is never touched.
  */
@@ -514,7 +460,7 @@ export function isOwnWin32CmdShimEntry(entry: McpServerEntry): boolean {
  * Is this command PLUR's old Windows `plur-mcp.cmd` shim? The detection half
  * of `isOwnWin32CmdShimEntry`, without the "nothing else in the entry" rule
  * that only the automatic heal needs: whatever else the entry carries, that
- * command cannot start (`spawn EINVAL`), so `plur doctor` flags it (#1366).
+ * command cannot start (`spawn EINVAL`), so `plur doctor` flags it.
  */
 export function isOwnWin32CmdShimCommand(command: string): boolean {
   if (platform() !== 'win32') return false
@@ -526,7 +472,7 @@ export function isOwnWin32CmdShimCommand(command: string): boolean {
  * null. Lenient where `readCodexPlurMcpEntry` is strict: other keys,
  * subtables and multi-line arrays in the table are ignored. For detection
  * only (doctor's `codexCmdShimMcp`, init's refusal message), never to decide
- * that an entry is safe to remove and re-add (#1366).
+ * that an entry is safe to remove and re-add.
  */
 export function readCodexPlurMcpCommand(toml: string): string | null {
   const lines = toml.split(/\r?\n/)
@@ -541,21 +487,12 @@ export function readCodexPlurMcpCommand(toml: string): string | null {
 }
 
 /**
- * The `[mcp_servers.plur]` table in Codex's config.toml, as a launch entry.
- * A narrow reader, not a TOML parser: it finds that exact table header (a
- * commented header or `[mcp_servers.plurality]` does not count), reads its
- * `command` and a single-line `args` array, and understands basic strings
- * (with `\\` and `\"` escapes) and literal strings. Anything it cannot read
- * returns null, which callers treat as "not PLUR's entry", so an unusual
- * hand-written table is left alone rather than misread (#1267).
- *
- * That includes a table carrying anything besides `command` and `args`: an
- * inline `env = {…}`, another key such as `startup_timeout_sec`, a
- * `[mcp_servers.plur.env]` (or any other `mcp_servers.plur.*`) subtable, or
- * an `args` array that does not close on its own line. Healing such an entry
- * through `codex mcp remove` + `codex mcp add` would drop those settings — a
- * lost `PLUR_PATH` silently moves the user's memory to the default store —
- * so it is not treated as PLUR's (#1366).
+ * The `[mcp_servers.plur]` table in Codex's config.toml, as a launch entry. A narrow
+ * reader, not a TOML parser: exact header only, `command` plus a single-line `args`
+ * array, basic (`\\`, `\"`) and literal strings. Anything else returns null ("not
+ * PLUR's entry") — incl. any other key, inline `env`, a `mcp_servers.plur.*`
+ * subtable, or multi-line `args` — because healing via `codex mcp remove`/`add`
+ * would drop those settings (a lost `PLUR_PATH` silently moves the user's memory).
  */
 export function readCodexPlurMcpEntry(toml: string): McpServerEntry | null {
   const lines = toml.split(/\r?\n/)
@@ -592,7 +529,7 @@ function sameWin32Path(a: string, b: string): boolean {
 }
 
 /**
- * Is this the Windows node-form MCP entry `plur init` writes (#1267):
+ * Is this the Windows node-form MCP entry `plur init` writes:
  * `{ command: <node.exe>, args: [<@plur-ai/mcp js entry>] }`? Scoped as
  * tightly as isOwnWin32CmdShimEntry: the command must be a `node`/`node.exe`
  * binary and the single argument must be an `@plur-ai/mcp/dist/index.js`
@@ -622,7 +559,7 @@ export function isOwnWin32NodeEntry(entry: McpServerEntry): boolean {
 export function missingNodeEntryPaths(entry: McpServerEntry): string[] {
   if (!isOwnWin32NodeEntry(entry)) return []
   // A bare `node` / `node.exe` is resolved through PATH at spawn time, so
-  // existsSync on it says nothing about whether it runs (#1302).
+  // existsSync on it says nothing about whether it runs.
   const paths = isPathResolvedCommand(entry.command) ? [entry.args[0]] : [entry.command, entry.args[0]]
   return paths.filter((p) => !existsSync(p))
 }
@@ -632,7 +569,7 @@ export function missingNodeEntryPaths(entry: McpServerEntry): string[] {
  * PATH when it is spawned. PLUR itself always writes an absolute node path
  * (`process.execPath`), so an entry naming a bare `node` was written by the
  * user: it keeps working across Node upgrades, and init must never pin it to
- * a version-specific path or replace it with the npx fallback (#1302, #1339).
+ * a version-specific path or replace it with the npx fallback.
  */
 export function isPathResolvedCommand(command: string): boolean {
   return !/[\\/]/.test(command)
@@ -643,7 +580,7 @@ export function isPathResolvedCommand(command: string): boolean {
  * the js entry it names is gone, or when the js entry differs from the one
  * `plur init` resolved this run (plur-mcp.meta.json). A working entry is left
  * alone when nothing resolves now. A PATH-resolved `node` is the user's own
- * choice and is never rewritten (#1302).
+ * choice and is never rewritten.
  */
 function nodeEntryNeedsHealing(entry: McpServerEntry): boolean {
   if (isPathResolvedCommand(entry.command)) return false
@@ -653,25 +590,15 @@ function nodeEntryNeedsHealing(entry: McpServerEntry): boolean {
 }
 
 /**
- * The @plur-ai/mcp version an npx entry PLUR wrote launches: `'latest'` for
- * the RACEY shapes (exactly `@plur-ai/mcp` at `@latest`, or with no tag,
- * which npm treats as latest — #1069), the version for an exact SemVer pin
- * (`@plur-ai/mcp@0.22.0`), or null for anything that is not PLUR's npx entry.
- *
- * Both 0.19.1 audits broke the first version of this predicate, which
- * flattened command+args and substring-matched: it clobbered fork packages
- * (`@plur-ai/mcp-experimental`) and even unrelated custom commands whose
- * arguments merely MENTIONED the words. The rules now:
- *
- *   - Only the exact command forms init writes (or a user's bare `npx`)
- *     qualify, with nothing else in them: `npx [-y|--yes] <spec>`,
- *     `cmd.exe /c npx -y <spec>`, `/bin/sh -lc 'exec npx -y <spec>'`.
- *   - The package spec must be EXACTLY `@plur-ai/mcp`, `@plur-ai/mcp@latest`
- *     or `@plur-ai/mcp@<semver>` — anchored, so forks, tags, ranges and
- *     mentions never match.
- *
- * The caller decides what a pin means: the healer re-pins one older than or
- * equal to this CLI and keeps a newer one (#1832, the Codex rule).
+ * The @plur-ai/mcp version an npx entry PLUR wrote launches: `'latest'` for the
+ * RACEY shapes (exactly `@plur-ai/mcp` at `@latest` or untagged), the version for
+ * an exact SemVer pin, or null for anything that is not PLUR's npx entry.
+ * Deliberately narrow:
+ *   - only the exact argv PLUR writes, with nothing else in it:
+ *     `npx [-y|--yes] <spec>`, `cmd.exe /c npx -y <spec>`, `/bin/sh -lc 'exec npx -y <spec>'`;
+ *   - anchored package spec, so forks, tags, ranges and mentions never match.
+ * The caller decides what a pin means: the healer re-pins one older than or equal
+ * to this CLI and keeps a newer one (the Codex rule).
  */
 export function plurNpxPin(entry: McpServerEntry): string | null {
   const SPEC = /^@plur-ai\/mcp(?:@(.+))?$/

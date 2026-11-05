@@ -1,17 +1,11 @@
 /**
  * Constructing the real PLUR engine.
  *
- * `@plur-ai/core` is an ES module (`"type": "module"`, and its `exports` map
- * declares only an `import` condition). `createRequire(...)('@plur-ai/core')`
- * therefore throws `ERR_PACKAGE_PATH_NOT_EXPORTED` — which an earlier version
- * of this file swallowed, so the plugin registered every tool, skill and prompt
- * section and then recalled nothing, on every install. Unit tests never saw it
- * because they inject a client through `apply`'s third parameter.
- *
- * So: `import()`, not `require()`. Cordis calls `apply` synchronously and
+ * `@plur-ai/core` is an ES module whose `exports` map declares only an
+ * `import` condition, so it must be loaded with `import()`: `require()` throws
+ * `ERR_PACKAGE_PATH_NOT_EXPORTED`. Cordis calls `apply` synchronously and
  * cannot await, so this returns a facade immediately and resolves the real
- * engine behind it on first use. Every call site already awaits, so nothing
- * downstream has to know.
+ * engine behind it on first use. Every call site already awaits.
  *
  * @module
  */
@@ -27,19 +21,16 @@ export interface Engine extends PlurClient {
   ready(): Promise<boolean>
   /**
    * Is `dir` trusted (`plur trust`)? False when the engine is unavailable or
-   * the check throws — the workspace-scope gate fails closed (decision E3).
+   * the check throws — the workspace-scope gate fails closed.
    */
   trusts(dir: string): Promise<boolean>
-  /** Can the engine answer `trusts` at all? Picks an honest remedy (audit 1228-c). */
+  /** Can the engine answer `trusts` at all? Lets callers suggest the right remedy. */
   trustSupport(): Promise<'ok' | 'no-engine' | 'no-trust'>
 }
 
 /**
- * Load `@plur-ai/core` and construct the engine.
- *
- * Deliberately not eager: core pulls in a WASM store, and a machine where that
- * fails to initialise must degrade to "no memory" rather than take down the
- * host agent at plugin-load time.
+ * Load `@plur-ai/core` and construct the engine, lazily: if core's WASM store
+ * fails to initialise, degrade to "no memory" instead of crashing the host.
  *
  * @param config - supplies the optional store path.
  * @param importCore - overridable for tests.
@@ -65,12 +56,9 @@ async function loadEngine(
 }
 
 /**
- * Build the engine facade.
- *
- * Returns synchronously so Cordis's synchronous `apply` can wire it, while the
- * real engine loads on first call. Every method mirrors {@link PlurClient} and
- * resolves to `undefined` when the engine is unavailable — the same shape the
- * call sites already handle with `?.`.
+ * Build the engine facade synchronously (for Cordis's synchronous `apply`);
+ * the real engine loads on first call. Methods mirror {@link PlurClient} and
+ * resolve to `undefined` when the engine is unavailable.
  *
  * @param config - plugin configuration.
  * @param importCore - overridable module loader, for tests.

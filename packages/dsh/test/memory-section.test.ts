@@ -125,13 +125,25 @@ describe('renderBlock', () => {
     expect(out).not.toContain('## DIRECTIVES')
   })
 
-  it('emits nothing when not even the notice fits', () => {
-    const out = renderBlock(injection({
-      directives: 'd'.repeat(4000),
-      constraints: 'c'.repeat(4000),
-      count: 2,
-    }), 5)
-    expect(out).toBe('')
+  it('shows the withheld notice alone when not even the notice fits the budget', () => {
+    // Constraints never vanish silently: the notice is emitted past a tiny
+    // budget, without the directives and without any constraint text.
+    for (const budget of [1, 5]) {
+      const out = renderBlock(injection({
+        directives: 'd'.repeat(4000),
+        constraints: 'c'.repeat(4000),
+        count: 2,
+      }), budget)
+      expect(out).toContain('## CONSTRAINTS')
+      expect(out).toContain('WITHHELD')
+      expect(out).toContain('UNREAD')
+      expect(out).not.toContain('## DIRECTIVES')
+      expect(out).not.toContain('c'.repeat(50))
+    }
+  })
+
+  it('emits nothing when a tiny budget holds no constraints to withhold', () => {
+    expect(renderBlock(injection({ directives: 'd'.repeat(4000) }), 5)).toBe('')
   })
 
   it('emits nothing rather than a truncated engram when even directives overflow', () => {

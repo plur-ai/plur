@@ -1,0 +1,46 @@
+anchors:
+  packages/migrate/src/index.ts#PREFILTER:
+    kind: guarantee
+    rule: "The migrate pre-filter never skips a file the scanner would flag, including chains split across lines."
+    none: "no test runs the pre-filter on a file whose only call is split across lines"
+  packages/migrate/src/index.ts#run:
+    kind: guarantee
+    rule: "plur migrate's pre-filter never skips a file the scanner would flag, so \"no un-awaited calls found\" is not reported falsely."
+    none: "no test compares the pre-filter against the scanner"
+  packages/migrate/src/scan.ts#applyFixes:
+    kind: guarantee
+    rule: "Applying several await fixes on one line, including one nested in another's arguments, puts every insertion in the right place; fixes that cannot be applied are returned, not counted."
+    lean: ["PlurSpec/R2Integrations.lean:fixed_nested_wrap_in_gap"]
+    tests: ["packages/migrate/test/formal-r2-integrations-codemod.test.ts::wraps the outer call around the inner await, both applied", "packages/migrate/test/formal-r2-integrations-codemod.test.ts::a site the rewrite cannot apply is returned as skipped, not counted"]
+  packages/migrate/src/scan.ts#ASI_SAFE_BEFORE_PAREN:
+    kind: guarantee
+    rule: "A line-starting paren-wrap is written only after a character that cannot let it splice onto the previous statement."
+    tests: ["packages/migrate/test/scan-asi.test.ts::refuses the audit repro: paren-wrap after a call with no semicolon", "packages/migrate/test/scan-asi.test.ts::rewrites when the previous line is terminated"]
+  packages/migrate/src/scan.ts#before:
+    kind: guarantee
+    rule: "A comment or string that mentions Promise.all( does not make the codemod refuse an ordinary call after it."
+    tests: ["packages/migrate/test/scan-lookback.test.ts::a comment mentioning Promise.all( does not poison the array after it", "packages/migrate/test/scan-lookback.test.ts::a string argument mentioning Promise.all( does not either"]
+  packages/migrate/src/scan.ts#isEsm:
+    kind: guarantee
+    rule: "A top-level await is never inserted in a CommonJS file (.cjs, .cts, or a .js without module syntax)."
+    tests: ["packages/migrate/test/scan.test.ts::allows top-level await in an ES module but not in CommonJS"]
+  packages/migrate/src/scan.ts#lineStart:
+    kind: guarantee
+    rule: "A parenthesised head that would splice onto an unterminated previous line is refused, not rewritten."
+    tests: ["packages/migrate/test/scan-multiline.test.ts::refuses a parenthesised head that ASI-splices onto the previous line"]
+  packages/migrate/src/scan.ts#NEWLY_ASYNC:
+    kind: guarantee
+    rule: "The codemod rewrites only unambiguous sites: never text inside strings, never an element of a Promise combinator array, never an ASI hazard."
+    tests: ["packages/migrate/test/scan.test.ts::ignores text inside string literals", "packages/migrate/test/scan-lookback.test.ts::covers all four combinators", "packages/migrate/test/scan-asi.test.ts::refuses the audit repro: paren-wrap after a call with no semicolon"]
+  packages/migrate/src/scan.ts#nextSignificantIndex:
+    kind: guarantee
+    rule: "A comment between a call and its consumer does not make a consumed call look bare."
+    tests: ["packages/migrate/test/scan-multiline.test.ts::a comment between the call and its consumer does not un-consume it"]
+  packages/migrate/src/scan.ts#NON_CALLEE_WORDS:
+    kind: guarantee
+    rule: "An already-awaited parenthesised receiver is recognised as awaited and never reported or rewritten."
+    tests: ["packages/migrate/test/scan-multiline.test.ts::an ALREADY-awaited call-bearing receiver is silent"]
+  packages/migrate/src/scan.ts#scanSource:
+    kind: guarantee
+    rule: "A paren-wrap at the start of a line is refused unless the previous significant character makes an ASI splice impossible; a `}` is refused too."
+    tests: ["packages/migrate/test/scan-asi.test.ts::refuses after `}`", "packages/migrate/test/scan-asi.test.ts::refuses after a line ending in an identifier"]

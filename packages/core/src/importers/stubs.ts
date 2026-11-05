@@ -1,12 +1,9 @@
 /**
- * Declared-but-stubbed import sources (issue #441).
+ * Declared-but-stubbed import sources.
  *
  * Zep and Letta are registered so `--from zep|letta` fails with a clear,
- * actionable message — and so implementing them later is a matter of
- * replacing parse(), not designing a new surface. They are intentionally NOT
- * implemented yet: both export formats churn across versions (Zep's
- * session-graph shape, Letta's agent-file memory blocks), so pinning a parser
- * today would rot quickly.
+ * actionable message, and so implementing them means replacing parse() only.
+ * Both export formats change across versions, so no parser is pinned yet.
  */
 import type { ImportSource } from './types.js'
 

@@ -1,42 +1,12 @@
 /**
- * Cross-encoder rerankers via @huggingface/transformers — one adapter factory,
- * two shipped models.
+ * Cross-encoder rerankers via @huggingface/transformers — one adapter factory, two models, shared tokenization.
+ * Uses AutoTokenizer + AutoModelForSequenceClassification directly for the sentence-pair input. The single raw logit
+ * is the score; only ordering matters, so nothing thresholds on it. Lazy-loaded and cached per model id.
  *
- * Both models drive AutoTokenizer + AutoModelForSequenceClassification directly
- * rather than pipeline('text-classification', ...): the rerank input is the
- * bert-style sentence pair ([CLS] query [SEP] document [SEP]), which the
- * text-classification pipeline does not expose first-class. The single-logit
- * output is the relevance score — a raw logit, not a probability. Higher =
- * more relevant; the absolute scale is model-specific and only the ordering
- * matters for the recall path, so nothing thresholds on the raw value.
- *
- * Lazy load: tokenizer + model are loaded on first score call and cached
- * per model id, so repeated PLUR sessions in the same process share the
- * weight memory.
- *
- * The two factories used to be two ~120-line files that differed only in the
- * model id and the adapter name (2026-09 audit). Keeping them as one module
- * means a fix to the tokenization or logit handling cannot land in one model
- * and miss the other.
- *
- * ## bge-reranker-v2-m3
- * BAAI/bge-reranker-v2-m3. Multilingual (100+ languages), state-of-the-art on
- * MTEB reranking benchmarks. MIT license. ~568M params; q8-quantized weights
- * land around 280-310 MB on disk. Seconds per query on CPU — offline/batch
- * quality tier, not the agent hot path.
- *
- * We pin to the onnx-community mirror — the Xenova mirror returns 401 as of
- * 2026-05 (gated behind a Hugging Face login). onnx-community publishes the
- * same q8-quantized weights under the Apache-2.0 license with the documented
- * `xenova/transformers.js` ONNX layout.
- *
- * ## ms-marco-minilm-l6
- * cross-encoder/ms-marco-MiniLM-L-6-v2 (Xenova ONNX conversion). The tiny-tier
- * reranker (#451, #220): ~22.7M params, 25x smaller than bge-reranker-v2-m3,
- * English-only, trained on MS MARCO passage ranking, Apache-2.0, ~23 MB on
- * disk. Reranks 10-50 candidates in tens of milliseconds on CPU while keeping
- * most of the quality lift over plain RRF fusion; benchmarked head-to-head in
- * issue #451.
+ * - bge-reranker-v2-m3: multilingual, MIT, ~568M params, ~300 MB q8; seconds per query — offline/batch tier.
+ *   Pinned to the onnx-community mirror (the Xenova mirror needs a Hugging Face login).
+ * - ms-marco-minilm-l6: Xenova ONNX of cross-encoder/ms-marco-MiniLM-L-6-v2; English, Apache-2.0, ~23 MB; tens of
+ *   milliseconds for 10-50 candidates.
  */
 import type { RerankerAdapter } from './types.js'
 import {
@@ -80,8 +50,7 @@ async function loadPipeline(modelId: string, dtype: Dtype): Promise<LoadedPipeli
         AutoTokenizer: { from_pretrained: (id: string, o?: object) => Promise<unknown> }
         AutoModelForSequenceClassification: { from_pretrained: (id: string, o?: object) => Promise<unknown> }
       }
-      // The same cache and the same download guard as the embedders (audit 6,
-      // N4): once PLUR is offline (declared, or inferred from a failed
+      // The same cache and the same download guard as the embedders: once PLUR is offline (declared, or inferred from a failed
       // connection), a reranker model missing from disk is refused before the
       // library is asked, and one on disk is loaded from disk only.
       const weights = weightsFileFor(dtype)
@@ -106,7 +75,7 @@ async function loadPipeline(modelId: string, dtype: Dtype): Promise<LoadedPipeli
 
 /**
  * Drop every cached pipeline so the next score call retries the model load
- * from scratch (e.g. after purging a corrupt HF cache, #341).
+ * from scratch (e.g. after purging a corrupt HF cache).
  */
 export function _resetCrossEncoderCaches(): void {
   pending.clear()

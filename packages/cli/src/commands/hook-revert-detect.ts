@@ -2,17 +2,10 @@ import { readSync } from 'fs'
 import { type GlobalFlags } from '../plur.js'
 
 /**
- * plur hook-revert-detect — PostToolUse hook for revert-style operations.
- *
- * Detects when the agent (or user) just executed a "revert my recent action"
- * command — git checkout, git reset --hard, git restore, git revert, rm of
- * recently-edited files, etc. Emits a system reminder asking the agent to
- * reflect on what went wrong and consider whether the lesson belongs in
+ * plur hook-revert-detect — PostToolUse hook for revert-style operations (git
+ * checkout/reset --hard/restore/revert, rm of recently edited files). Reverts
+ * are a strong mistake signal, so it reminds the agent to reflect and consider
  * plur_learn.
- *
- * Reverts are a strong behavioral signal of a mistake. They're more reliable
- * than waiting for the user to articulate a correction.
- *
  * Input: JSON on stdin (Claude Code PostToolUse hook format)
  * Output: JSON {hookSpecificOutput: {additionalContext}} when matched, else empty.
  */

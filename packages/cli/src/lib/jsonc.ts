@@ -1,15 +1,9 @@
 /**
- * Read-only JSONC support: JSON with `//` and `/* *\/` comments and trailing
- * commas, the syntax opencode accepts in its config file.
- *
- * Parsing discards comments. Writers must apply offset edits to the original
- * source instead of serializing this result (see writeOpencodeConfig).
- *
- * String-aware: `//`, `/*` and `,}` inside a string literal are content — a
- * `$schema` URL or a glob must survive. Line comments are deleted up to (not
- * including) their line break; block comments are blanked to spaces with
- * their line breaks kept. Either way a JSON.parse error still points at the
- * right line. Block comments do not nest: the first `*\/` closes one.
+ * Read-only JSONC support (comments and trailing commas, as opencode accepts). Parsing
+ * discards comments; writers must apply offset edits to the source (see
+ * writeOpencodeConfig). String-aware: `//`, `/*` and `,}` inside strings are content.
+ * Line comments are deleted up to their line break and block comments blanked with
+ * line breaks kept, so JSON.parse errors keep their line. Block comments do not nest.
  */
 export function stripJsonc(text: string): string {
   let out = ''

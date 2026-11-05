@@ -1,6 +1,6 @@
 import {
   appendFileSync, readFileSync, openSync, fstatSync, readSync, closeSync, existsSync,
-  writeSync, renameSync, unlinkSync, statSync, readdirSync,
+  renameSync, unlinkSync, readdirSync,
 } from 'fs'
 import { join, dirname, basename } from 'path'
 import { tmpdir } from 'os'
@@ -12,6 +12,9 @@ import {
   readProjectConfigFromPath,
   bareEngramId,
   FEEDBACK_SOURCE_CAPABILITY,
+  EMPTY_LOCK_GRACE_MS,
+  publishLockFileSync,
+  takeOverLockSync,
   type RatedEngram,
 } from '@plur-ai/core'
 import { createPlur, type GlobalFlags } from '../plur.js'
@@ -19,43 +22,14 @@ import { safeSessionKey } from './session-key.js'
 import { ensureSessionDir, sessionDirSafeToSweep, cleanupStaleSessionFiles } from './codex-hook-io.js'
 
 /**
- * Automatic rating of injected engrams at the end of a turn (#1310), shared by
- * every editor's end-of-turn hook (`plur hook-auto-rate --editor <name>`).
- *
- * Two halves:
- *
- * 1. The inject hooks call {@link recordInjected} with the ids they injected,
- *    keyed by (editor, the editor's own session id). Only ids are stored —
- *    never engram text — in a vetted per-user directory (the same checks the
- *    Codex/Cursor/Antigravity session dirs get, #1060).
- * 2. The end-of-turn hook calls {@link autoRateTurn} with the reply text. Ids
- *    injected this session and not yet rated are loaded, rated against the
- *    reply by core's `rateInjectedEngrams`, and every verdict at or above 0.6
- *    is sent as `source: 'auto'` feedback — ranking only, never commitment.
- *    Each engram gets at most one automatic verdict per session: a rated id is
- *    recorded and not rated again, so one engram quoted in every reply of a
- *    long session is not pushed up on every turn.
- *
- * Fast path: when nothing was injected this session (or everything injected
- * has been rated) and auto-capture is off, no store is opened at all — the
- * cost is one small file read.
- *
- * The hook never does the store work itself (#1318 audit M1). It appends the
- * turn to a per-session queue and hands it to a detached background worker
- * (`plur hook-auto-rate --worker`), then returns. On a large store the store
- * work takes seconds to tens of seconds of synchronous YAML parsing and
- * writing; done inside the hook it overran the editor's budget, was killed
- * part-way, and could leave the store lock behind. The worker is not bound
- * by the editor's timeout, runs one at a time per session, and never exits
- * while a store write is in flight.
- *
- * At most one verdict per engram per session: an id is recorded as rated
- * BEFORE its feedback is applied (write-ahead). A worker killed between the
- * two loses that one signal; it can never apply it twice.
- *
- * Switches (environment, the same convention as PLUR_REMOTE_RECALL):
- *   PLUR_AUTO_RATE=0|false|off   turns automatic rating off (on by default)
- *   PLUR_AUTO_CAPTURE=1|true|on  turns automatic capture on (off by default)
+ * Automatic rating of injected engrams at the end of a turn, shared by every editor (`plur hook-auto-rate`).
+ * 1. Inject hooks call {@link recordInjected} with ids only (never text), per (editor, session), in a vetted dir.
+ * 2. The end-of-turn hook queues the reply for a detached worker (`--worker`), which rates unrated ids with core's
+ *    `rateInjectedEngrams` and sends verdicts >= 0.6 as `source: 'auto'` feedback (ranking only). The hook never
+ *    does store work: it would overrun the editor's budget and could leave the lock behind.
+ * At most one verdict per engram per session: ids are recorded as rated BEFORE feedback (write-ahead).
+ * Fast path: nothing to rate and capture off → no store opened. Env: PLUR_AUTO_RATE=0|false|off disables rating;
+ * PLUR_AUTO_CAPTURE=1|true|on enables capture.
  */
 
 export type AutoRateEditor = 'claude' | 'codex' | 'cursor' | 'agy'
@@ -79,18 +53,18 @@ export function autoCaptureEnabled(env: NodeJS.ProcessEnv = process.env): boolea
 
 /**
  * How many end-of-turn replies an injected engram is checked against before
- * it is settled without a verdict (#1318 review). Without a cap, an engram
- * the reply never mentions stays pending all session and every turn's hook
- * opens the store; with it, the fast path returns after this many turns.
+ * it is settled without a verdict. Without a cap, an engram the reply never
+ * mentions stays pending all session and every turn's hook opens the store;
+ * with it, the fast path returns after this many turns.
  */
 export const AUTO_RATE_MAX_TURNS = 3
 
 /**
  * Server time for ALL the team saves of one hook run together — every
- * statement of every turn the run drains (#1532 review F3, re-audit R4, S5). Well inside the inline watchdog
+ * statement of every turn the run drains. Well inside the inline watchdog
  * (hook-auto-rate, 9 s): every save must have reached the server or fallen
  * through to the outbox before the watchdog can exit. One budget for the run,
- * not one per statement — three statements at 3 s each already passed the
+ * not one per statement — three statements at 3 s each would already pass the
  * watchdog. Once it is spent, the remaining statements go straight to the
  * outbox (a minimal deadline aborts their request at once).
  */
@@ -124,8 +98,8 @@ function appendIds(path: string, ids: string[]): boolean {
     return true
   } catch {
     // Fail-open for the hook — but the caller learns the record did not land.
-    // For the write-ahead "rated" record that decides whether the verdict may
-    // be applied at all (decision H2).
+    // The write-ahead "rated" record decides whether the verdict may be
+    // applied at all.
     return false
   }
 }
@@ -164,9 +138,9 @@ interface QueuedTurn {
   reply: string
   cwd?: string
   /**
-   * The scope already decided for the whole workspace (Cursor, audit M1 of
-   * #1583): a string, or null for no scope. Absent (other editors, and lines
-   * queued by an older version): decided from `cwd` alone, as before.
+   * The scope already decided for the whole workspace (Cursor): a string, or
+   * null for no scope. Absent (other editors, and lines queued by an older
+   * version): decided from `cwd` alone.
    */
   workspaceScope?: string | null
 }
@@ -188,10 +162,10 @@ export function enqueueTurn(opts: { editor: AutoRateEditor; sessionId: string; r
       ...(opts.cwd ? { cwd: opts.cwd } : {}),
       ...(opts.workspaceScope !== undefined ? { workspaceScope: opts.workspaceScope } : {}),
     } satisfies QueuedTurn) + '\n'
-    // A line carrying workspaceScope goes to its own file (N4 of the #1583
-    // re-audit): an older worker still running after an upgrade reads only
-    // `.queue` and its `.queue.<pid>` batches, ignores the field, and would
-    // re-decide the scope from one folder, which can widen it.
+    // A line carrying workspaceScope goes to its own file: an older worker
+    // still running after an upgrade reads only `.queue` and its
+    // `.queue.<pid>` batches, ignores the field, and would re-decide the scope
+    // from one folder, which can widen it.
     const kind = opts.workspaceScope !== undefined ? 'queue-ws' : 'queue'
     appendFileSync(fileFor(opts.editor, opts.sessionId, kind), line, { mode: 0o600 })
     return true
@@ -208,8 +182,8 @@ export function enqueueTurn(opts: { editor: AutoRateEditor; sessionId: string; r
 export function hasLeftoverBatches(editor: AutoRateEditor, sessionId: string): boolean {
   try {
     const prefixes = (['queue', 'queue-ws'] as const).map(k => `${basename(fileFor(editor, sessionId, k))}.`)
-    // A pending `.queue-ws` counts too (R2-2 of the #1583 re-audit): an older
-    // worker that held the lock when it was queued never reads it.
+    // A pending `.queue-ws` counts too: an older worker that held the lock
+    // when it was queued never reads it.
     if (existsSync(fileFor(editor, sessionId, 'queue-ws'))) return true
     return readdirSync(DIR).some(f => prefixes.some(p => f.startsWith(p)))
   } catch {
@@ -248,9 +222,9 @@ function pidAlive(pid: number): boolean {
 }
 
 /** This process's worker-lock token: pid first, so a reader can check liveness. */
-// The `:qws` suffix marks a worker that drains `.queue-ws` (R2-2 of the #1583
-// re-audit); a worker of an older version writes no such suffix. The leading
-// pid is what every version parses to tell a live owner from a dead one.
+// The `:qws` suffix marks a worker that drains `.queue-ws`; a worker of an
+// older version writes no such suffix. The leading pid is what every
+// version parses to tell a live owner from a dead one.
 const QWS_MARKER = ':qws'
 const WORKER_TOKEN = `${process.pid}:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 10)}${QWS_MARKER}`
 
@@ -265,60 +239,30 @@ function heldByOlderWorker(path: string): boolean {
 }
 
 /**
- * Take over a worker lock judged stale, atomically (decision H2). Mirrors
- * core's `stealLock` (store/async-lock.ts): CLAIM the file by renaming it to
- * a unique name — only one contender's rename can succeed — then check that
- * the claimed file is the one judged stale. If it is not (another contender
- * already took over, and this is now their live lock), put it back with an
- * exclusive create and report failure. A plain unlink here would delete a
- * lock another worker had created in the meantime — the pattern the formal
- * model refutes (`InjectLock.old_removes_live`).
- *
- * Returns true only when the stale lock judged by `expected` was removed.
- * Exported for tests.
+ * Is a worker lock with these contents and mtime abandoned? Its owner's pid is
+ * dead, or it is older than the worker ceiling. An empty lock (an older worker
+ * that died between create and write) gets core's short grace period.
  */
-export function takeOverStaleWorkerLock(path: string, expected: string): boolean {
-  const claim = `${path}.steal.${process.pid}.${Math.random().toString(36).slice(2, 10)}`
-  try { renameSync(path, claim) } catch { return false }
-  try {
-    const current = readFileSync(claim, 'utf8')
-    if (current === expected) {
-      unlinkSync(claim)
-      return true
-    }
-    // A live holder's lock. Put it back — never over a lock acquired since.
-    try {
-      const fd = openSync(path, 'wx', 0o600)
-      try { writeSync(fd, current) } finally { closeSync(fd) }
-    } catch { /* someone acquired meanwhile; theirs wins */ }
-    try { unlinkSync(claim) } catch { /* best effort */ }
-    return false
-  } catch {
-    try { unlinkSync(claim) } catch { /* never leave the claim behind */ }
-    return false
-  }
+export function workerLockAbandoned(holder: string, mtimeMs: number, now = Date.now()): boolean {
+  const age = now - mtimeMs
+  if (holder === '') return age > EMPTY_LOCK_GRACE_MS
+  return !pidAlive(parseInt(holder, 10)) || age > WORKER_STALE_MS
 }
 
-/** Exported for tests. Acquire this session's worker lock, taking over a stale one. */
+/**
+ * Exported for tests. Acquire this session's worker lock. The lock is published
+ * with its token already in it, and a stale one is taken over by core's guarded
+ * takeover, which re-judges the lock under its steal guard, so a live worker is
+ * never displaced.
+ */
 export function acquireWorkerLock(path: string): boolean {
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      const fd = openSync(path, 'wx', 0o600)
-      try { writeSync(fd, WORKER_TOKEN) } finally { closeSync(fd) }
+      publishLockFileSync(path, WORKER_TOKEN)
       return true
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== 'EEXIST') return false
-      let observed: string
-      let stale: boolean
-      try {
-        observed = readFileSync(path, 'utf8')
-        const owner = parseInt(observed, 10)
-        stale = !pidAlive(owner) || Date.now() - statSync(path).mtimeMs > WORKER_STALE_MS
-      } catch {
-        continue // released between the create and the read: try the create again
-      }
-      if (!stale) return false
-      takeOverStaleWorkerLock(path, observed) // win or lose, the next create decides
+      if (!takeOverLockSync(path, workerLockAbandoned)) return false
     }
   }
   return false
@@ -352,8 +296,8 @@ export async function runWorker(
   // Batches a killed worker renamed but never finished. Only ever read while
   // holding the lock, and the lock is only taken over from a dead or stale
   // owner, so no live worker is still working on them.
-  // ONE server budget for every turn this run drains (#1532 re-audit 2, S5):
-  // the inline fallback drains all queued turns under one 9 s watchdog.
+  // ONE server budget for every turn this run drains: the inline fallback
+  // drains all queued turns under one 9 s watchdog.
   const captureDeadline = Date.now() + AUTO_CAPTURE_REMOTE_TIMEOUT_MS
   const orphans = (): string[] => {
     try {
@@ -362,13 +306,13 @@ export async function runWorker(
     } catch { return [] }
   }
   const pendingQueue = (): string | undefined => queues.find(q => existsSync(q))
-  // Across an upgrade (R2-2 of the #1583 re-audit) the lock may belong to an
-  // older worker, which drains `.queue` but never `.queue-ws`. Only then, and
-  // only while a `.queue-ws` turn is pending, wait for the lock (bounded)
-  // instead of leaving: if that was the session's last turn, no later hook
-  // would start a worker for it. A current worker holding the lock drains
-  // `.queue-ws` itself, so this one leaves at once, as before: in normal use
-  // every Cursor turn queues there, and waiters would pile up.
+  // Across an upgrade the lock may belong to an older worker, which drains
+  // `.queue` but never `.queue-ws`. Only then, and only while a `.queue-ws`
+  // turn is pending, wait for the lock (bounded) instead of leaving: if that
+  // was the session's last turn, no later hook would start a worker for it. A
+  // current worker holding the lock drains `.queue-ws` itself, so this one
+  // leaves at once: in normal use every Cursor turn queues there, and waiters
+  // would pile up.
   const waitUntil = Date.now() + (opts.waitForLockMs ?? LOCK_WAIT_MS)
   const acquire = async (): Promise<boolean> => {
     for (;;) {
@@ -425,7 +369,7 @@ export async function autoRateTurn(opts: {
   /**
    * The scope the hook already decided for the whole workspace (null: none).
    * When given, a capture never uses any other scope: the folder's own scope
-   * is kept only when it is this one (audit M1 of #1583).
+   * is kept only when it is this one.
    */
   workspaceScope?: string | null
   /** Reuse an open store (the worker handles several turns with one). */
@@ -443,16 +387,16 @@ export async function autoRateTurn(opts: {
     if (pending.length === 0 && !capture) return outcome // nothing injected, nothing to do
 
     const plur = opts.plur ?? createPlur(opts.flags)
-    // Bound to the turn's folder BEFORE any lookup or rating (Codex round 3 on
-    // #1663): in a remote-only folder core then reads and rates only that
-    // folder's team rows, whatever folder this worker runs in.
+    // Bound to the turn's folder BEFORE any lookup or rating: in a remote-only
+    // folder core then reads and rates only that folder's team rows, whatever
+    // folder this worker runs in.
     const dir = opts.cwd ?? process.cwd()
     const policy = plur.bindFolder(dir)
 
     if (pending.length > 0) {
       // Remote ids are fetched by id (the remote cache is empty in a fresh
       // process), and only from servers that advertise feedback.source —
-      // a server that would not receive the verdict is never asked (#1318).
+      // a server that would not receive the verdict is never asked.
       const engrams = await plur.getByIds(pending, { remoteCapability: FEEDBACK_SOURCE_CAPABILITY })
       // One record can be injected under two ids — its own and a store-
       // namespaced alias (ENG-XYZ-…) when the same file is also mounted as a
@@ -478,11 +422,10 @@ export async function autoRateTurn(opts: {
       const withVerdict = new Set(verdicts.map(v => v.id))
       appendIds(fileFor(opts.editor, opts.sessionId, 'tries'), [...kept].filter(id => !withVerdict.has(id)))
       for (const v of verdicts) {
-        // Write-ahead (#1318 audit F5/M1): recorded as rated BEFORE the
-        // feedback is applied, so a kill between the two can lose this one
-        // signal but can never apply it twice. And only if the record landed
-        // (decision H2): a verdict whose record failed is skipped, because
-        // nothing would stop the next turn from applying it again.
+        // Write-ahead: recorded as rated BEFORE the feedback is applied, so a
+        // kill between the two can lose this one signal but can never apply it
+        // twice. And only if the record landed: a verdict whose record failed is
+        // skipped, because nothing would stop the next turn from applying it again.
         if (!appendIds(ratedFile, [v.id])) {
           process.stderr.write(`[plur] auto-rate: ${v.id} skipped (could not record it as rated)\n`)
           continue
@@ -501,17 +444,16 @@ export async function autoRateTurn(opts: {
     if (capture && (plur as unknown as { config?: { auto_learn?: boolean } }).config?.auto_learn !== false) {
       const statements = extractSelfReportedLearnings({ role: 'assistant', content: reply })
       if (statements.length > 0) {
-        // Where captured text may go (#1318 audit, adversarial M3). This is an
-        // unattended write of the agent's own reply text, so a repository must
-        // not choose its destination. A scope is used only when the user set
-        // it: a folder-map entry's scope (`plur folders`), or a `.plur.yaml`
-        // scope/domain in a trusted folder (`plur trust`). Otherwise — and
-        // whenever no scope applies — the statement goes to the local store
-        // via `learn()`, which never routes, so it can never be auto-routed
-        // into a shared scope either. A folder the map turns off gets nothing.
-        // Bound above (before the ratings): in a remote-only folder core sends
-        // every captured statement to the folder's team scope and refuses
-        // anything that would stay on this machine (owner decisions 2026-10-01).
+        // Where captured text may go. This is an unattended write of the agent's
+        // own reply text, so a repository must not choose its destination. A scope
+        // is used only when the user set it: a folder-map entry's scope (`plur
+        // folders`), or a `.plur.yaml` scope/domain in a trusted folder (`plur
+        // trust`). Otherwise — and whenever no scope applies — the statement goes
+        // to the local store via `learn()`, which never routes, so it can never be
+        // auto-routed into a shared scope either. A folder the map turns off gets
+        // nothing. Bound above (before the ratings): in a remote-only folder core
+        // sends every captured statement to the folder's team scope and refuses
+        // anything that would stay on this machine.
         const configPath = findProjectConfigPath(dir)
         const hint = configPath ? readProjectConfigFromPath(configPath) : {}
         const trusted = configPath !== null && plur.isDirectoryTrusted(dirname(configPath))
@@ -536,10 +478,10 @@ export async function autoRateTurn(opts: {
         for (const statement of statements) {
           try {
             if (project.scope) {
-              // Bounded below the inline watchdog (#1532 review F3): the POST runs
-              // outside the store lock, so to the watchdog the store looks idle
-              // mid-request, and an exit there lost the statement. Past this
-              // deadline it is saved here and queued in the outbox.
+              // Bounded below the inline watchdog: the POST runs outside the store
+              // lock, so to the watchdog the store looks idle mid-request, and an exit
+              // there would lose the statement. Past this deadline it is saved here and
+              // queued in the outbox.
               await plur.learnRouted(
                 statement,
                 { ...base, scope: project.scope, ...(project.domain ? { domain: project.domain } : {}) },

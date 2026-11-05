@@ -1,0 +1,32 @@
+anchors:
+  packages/gateway/src/claude-hooks.ts#buildEnforcementHooks:
+    kind: guarantee
+    rule: "The Claude Code session guard is installed so that plur_session_start comes before other tools; it is first among PreToolUse hooks."
+    tests: ["packages/gateway/test/claude-hooks.test.ts::puts the session guard first among PreToolUse hooks"]
+  packages/gateway/src/claude-hooks.ts#buildEnforcementHooks.SessionStart:
+    kind: guarantee
+    rule: "The session-resume hook and the SessionEnd hook are always installed together."
+    tests: ["packages/gateway/test/claude-hooks.test.ts::is exactly this set of events, matchers, commands and timeouts"]
+  packages/gateway/src/claude-hooks.ts#buildInjectionHooks.Stop:
+    kind: note
+    why: "Explains why the Claude Code Stop hook is synchronous (an async one is killed at session exit); a fact about Claude Code."
+  packages/gateway/src/client.ts#ProvenanceGateway.request:
+    kind: guarantee
+    rule: "A gateway that sends headers and then stalls the body cannot hang the caller; the timeout covers the body too."
+    tests: ["packages/gateway/test/gateway.test.ts::a gateway that sends headers and then stalls the body times out"]
+  packages/gateway/src/client.ts#stamp:
+    kind: guarantee
+    rule: "PLUR never buys a postage stamp itself; it uses the user's stamp or the gateway's free pool."
+    none: "no test checks that no stamp purchase is requested"
+  packages/gateway/src/hook-command.ts#homeShimPaths:
+    kind: guarantee
+    rule: "A hook command is claimed as PLUR's through the home shim path only when it starts with that literal path followed by a PLUR hook; anything doubtful stays the user's."
+    tests: ["packages/cli/test/hook-decisions-h2-h3.test.ts::spaced shim followed by a chained command is still the user", "packages/cli/test/hook-decisions-h2-h3.test.ts::does not claim a spaced shim path of another home (a duplicate at worst)"]
+  packages/gateway/src/hook-command.ts#nextRecordedEntries:
+    kind: guarantee
+    rule: "The recorded CLI entry list holds only entries PLUR's own init recorded, without duplicates, so a foreign checkout is never claimed."
+    tests: ["packages/cli/test/hook-decisions-h2-h3.test.ts::does not duplicate an entry already recorded (in any slash or case form)", "packages/cli/test/hook-decisions-h2-h3.test.ts::never claims a foreign checkout that was never recorded"]
+  packages/gateway/src/hook-command.ts#target:
+    kind: guarantee
+    rule: "Hooks written from any CLI location init recorded earlier are still recognised as PLUR's, so re-init replaces them instead of duplicating."
+    tests: ["packages/cli/test/hook-decisions-h2-h3.test.ts::claims an exec-form hook whose entry was recorded earlier"]

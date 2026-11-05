@@ -1,5 +1,5 @@
 /**
- * Tension persistence (#181) — load/save tension records and the pure
+ * Tension persistence — load/save tension records and the pure
  * helpers around them (pair keys, ids, categorization).
  *
  * Storage mirrors episodes.ts: a YAML array in `tensions.yaml` at the store
@@ -8,7 +8,7 @@
  */
 import { existsSync, readFileSync } from 'fs'
 import yaml from 'js-yaml'
-import { atomicWrite } from './sync.js'
+import { atomicWrite } from './atomic-write.js'
 import { parseRecordArrayFile } from './engrams.js'
 import { TensionRecordSchema, type TensionRecord, type TensionCategory } from './schemas/tension.js'
 import type { Engram } from './schemas/engram.js'
@@ -21,11 +21,9 @@ export function tensionPairKey(idA: string, idB: string): string {
 /**
  * Read tension records, or throw when the file is unreadable.
  *
- * Both halves of the engram-store defect lived here too (#794 F1/F2, still
- * live after the first remediation and re-found by the #811 audit): a corrupt
- * or wrongly-shaped file returned `[]`, and schema-invalid entries were
- * silently skipped. Since `saveTensions` rewrites the whole array, the next
- * `recordTensions` persisted only the survivors — a silent permanent delete.
+ * A corrupt or wrongly-shaped file throws, and schema-invalid entries are
+ * quarantined rather than dropped: `saveTensions` rewrites the whole array, so
+ * a skipped entry would be permanently deleted by the next write.
  */
 export function loadTensionsWithQuarantine(path: string): { valid: TensionRecord[]; quarantined: unknown[] } {
   return parseRecordArrayFile<TensionRecord>(path, entry => {
@@ -74,7 +72,7 @@ const SUPERSEDED_PATTERN = /\(\s*not\s+[^)]+\)/i
 /**
  * Recorded date of an engram: `temporal.learned_at`, falling back to the
  * date embedded in the id — canonical ENG-YYYY-MM-DD-NNN (also what servers
- * assign, #771), legacy compact ENG-YYYY-MMDD-NNN, and either form behind a
+ * assign), legacy compact ENG-YYYY-MMDD-NNN, and either form behind a
  * store prefix (ENG-{PREFIX}-...). Undefined when underivable.
  */
 function recordedDate(e: Engram): string | undefined {
@@ -86,7 +84,7 @@ function recordedDate(e: Engram): string | undefined {
 }
 
 /**
- * v1 deterministic category heuristic (#181). See TensionCategorySchema for
+ * Deterministic category heuristic. See TensionCategorySchema for
  * the contract; advisory only — resolution never branches on category.
  */
 export function categorizeTension(

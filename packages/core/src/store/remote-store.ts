@@ -8,21 +8,15 @@ import { redactToken } from '../redact-token.js'
 
 export interface WriteCheckResult { scope: string; writable: boolean; review_held: boolean; reason?: string }
 
-/** The values `scope_source` may carry on the wire (#1221); anything else is omitted. */
+/** The values `scope_source` may carry on the wire; anything else is omitted. */
 const SCOPE_SOURCES: ReadonlySet<string> = new Set<ScopeSource>(['explicit', 'session', 'default', 'routed'])
 
 /**
- * Lenient validation for semi-trusted remote rows (security audit 2026-06-10,
- * finding #3). The server may legitimately omit optional engram fields, so we
- * don't demand the full Engram shape — but we DO type-check the security-relevant
- * fields and reject structurally-broken rows. Without this, a compromised or
- * malicious remote could spread arbitrary / type-confused data (and instruction-
- * carrying `statement`s) into the local injection pool via `as unknown as Engram`.
- * `.passthrough()` keeps unmodeled fields; the point is to gate the meaningful ones.
- *
- * Exported (#776): the server-authoritative recall leg (remote-recall.ts)
- * validates /api/v1/recall rows through the SAME schema — one trust boundary,
- * not two that can drift.
+ * Lenient validation for semi-trusted remote rows: optional fields may be omitted,
+ * but security-relevant fields are type-checked and broken rows rejected, so a
+ * malicious remote cannot inject type-confused data into the injection pool.
+ * `.passthrough()` keeps unmodeled fields. Exported so remote-recall.ts validates
+ * /api/v1/recall rows through the SAME schema — one trust boundary.
  */
 export const RemoteRowSchema = z.object({
   id: z.string().regex(/^(ENG|ABS|META)-[A-Za-z0-9-]+$/),
@@ -43,111 +37,54 @@ export const RemoteRowSchema = z.object({
   domain: z.string().nullish(),
 }).passthrough()
 
-// #912: Truncate and strip control chars from server error bodies before
-// persisting them (append → _outbox.last_error) or surfacing in thrown errors.
-// Mirrors the treatment applied to server-assigned ids in append().
-//
-// CONTROL CHARACTERS ONLY (#923). The first cut used `[^\x20-\x7E]`, which is
-// every code point outside printable ASCII — so a server returning a localised
-// error produced a row of question marks in `plur outbox`, the one surface that
-// exists to answer "why is this write stuck?":
-//
-//   'エラー: 認証に失敗しました'  -> '???: ?????????'
-//   'Ошибка: неверный токен'   -> '??????: ???????? ?????'
-//   'Échec de authentification' -> '?chec de authentification'
-//
-// Both classes neutralise the escape-injection vector identically — that is
-// what \x00-\x1F and \x7F cover — so the wider class bought nothing and cost
-// the diagnostic. It was also the same ASCII-only assumption #896 had just
-// been fixed for one layer down, in `normalizeStatement`.
-//
-// Truncation is by CODE POINT, not UTF-16 unit. `String.prototype.slice` cuts
-// mid-surrogate, and a lone surrogate in this value is persisted to YAML —
-// so the bound has to respect character boundaries, and it has to run AFTER
-// the substitution so the replacement characters are counted too.
+// Truncate and strip control chars from server error bodies before persisting
+// (_outbox.last_error) or throwing them. Only \x00-\x1F and \x7F are replaced, so
+// localised text stays readable. Truncation is by CODE POINT (no lone surrogates in
+// YAML) and runs AFTER substitution.
 function sanitiseResponseBody(raw: string): string {
   const cleaned = raw.replace(/[\x00-\x1F\x7F]/g, '?')
   return Array.from(cleaned).slice(0, 200).join('')
 }
 
-/**
- * Remote engram store — speaks to a PLUR Enterprise server over its
- * public REST API (/api/v1).
- *
- * Exposes the same load/append/getById/remove shape as the file-backed
- * stores so the multi-store recall path doesn't need to know the difference.
- *
- * Caching: load() is called by `Plur._loadCached()` on every recall,
- * so we hold a per-instance TTL cache (default 60s) over the result.
- * That keeps recall fast in tight loops without going stale for long.
- *
- * Failure mode: any network error returns an empty array from load()
- * — the upstream merge sees "no engrams from this store right now"
- * rather than blowing up. Callers learn about the problem via logs.
- */
 // Timeout for each page fetch inside load(). Background loads are not on
 // the hot path — a degraded network that never delivers headers must still
-// eventually unblock the caller (#504). 30 s is generous for a healthy
+// eventually unblock the caller. 30 s is generous for a healthy
 // server while still keeping the process mortal on a blackholed route.
 export const LOAD_FETCH_TIMEOUT_MS = 30_000
 
 /**
- * Canonical endpoint identity for a configured remote URL (scope-audit
- * 2026-07-24). Users configure the SSE URL (mcp.json shape), so
- * `https://x.com`, `https://x.com/`, and `https://x.com/sse` all name the SAME
- * server — RemoteStore.apiBase has always folded them at HTTP time. Every
- * IDENTITY comparison (endpoint dedup, addStore same-URL dedup, /me metadata ↔
- * store-entry matching, registered-vs-offerable splits) must apply the same
- * fold, or the three spellings count as three distinct endpoints and a scope
- * registered under one spelling is re-offered under another.
- *
- * The form is URL-parsed: `https://X.com:443/sse` is `https://x.com` too.
- * Scheme and host are case-folded and the scheme's default port is dropped;
- * userinfo and fragment are never part of the identity; a base path is kept
- * as written (its case matters), less a trailing `/sse` and slash. A url that
- * does not parse as http(s) only gets the trailing fold.
- *
- * Comparison-time only: callers must NEVER rewrite a stored config value with
- * the normalized form — the user's spelling is preserved on disk.
- */
-/**
  * `scheme://host[:port]` of a url, without userinfo, path or query: the only
  * form of a configured url that goes into a log line or a message, since the
- * configured url can carry credentials (Codex round 4, finding 3).
+ * configured url can carry credentials.
  */
 export function safeOrigin(url: string): string {
   try { return new URL(url).origin } catch { return '<invalid url>' }
 }
 
+/**
+ * Canonical endpoint identity for a configured remote URL: `https://x.com`,
+ * `https://x.com/` and `https://x.com/sse` (and `:443`) name the same server.
+ * Every identity comparison (endpoint dedup, addStore, /me metadata matching) must
+ * use this fold. Scheme/host are lowercased, default port, userinfo and fragment
+ * dropped; a base path keeps its case, less a trailing `/sse` and slash.
+ * Comparison-time only: NEVER rewrite a stored config value with the normalized form.
+ */
 export function normalizeEndpointUrl(url: string): string {
   const foldPath = (p: string): string => p.replace(/\/sse\/?$/, '').replace(/\/$/, '')
   let u: URL
   try { u = new URL(url) } catch { return foldPath(url) }
-  // URL-parsed (Codex round 3, finding 2): scheme and host case-folded, the
+  // URL-parsed: scheme and host case-folded, the
   // scheme's default port dropped, userinfo and fragment never part of it.
   // The base path keeps its case; only a trailing /sse and slash fold.
   if (u.protocol !== 'http:' && u.protocol !== 'https:') return foldPath(url)
   return `${u.protocol}//${u.host}${foldPath(u.pathname)}${u.search}`
 }
 
-// ── Host-level failure breaker (#1069) ──────────────────────────────────────
-//
-// Process-wide memory of hosts that failed at the NETWORK level (connect
-// refused, blackholed route, fetch timeout). A real config was observed with
-// NINE store entries pointing at one unreachable host: without this, every
-// entry pays the full connect timeout on every load, in every fresh process —
-// the measured cold `plur_session_start` stall, multiplied again by the
-// concurrent hook processes that each cold-load the same config. One network
-// failure marks the ORIGIN down for a cooldown, and the PASSIVE read path
-// (load() paging) fast-fails to its prior cache while it lasts.
-//
-// Deliberately asymmetric: fetchBounded (writes, /me, explicit retries) marks
-// on failure and clears on success but NEVER fast-fails — an outbox flush the
-// user just invoked against a recovered host must probe, not be told "still
-// down" for the rest of the cooldown. Those probes are also the breaker's
-// recovery signal. HTTP responses never trip it — a 401/500 is a live host
-// talking. Per-process, not persisted: a fresh process re-probes once, which
-// is exactly the recovery behaviour a temporarily-down host wants.
+// ── Host-level failure breaker ──────────────────────────────────────────────
+// Process-wide memory of origins that failed at the NETWORK level; for a cooldown
+// the PASSIVE read path (load() paging) fast-fails to its cache. fetchBounded
+// (writes, /me, retries) marks and clears but NEVER fast-fails — its probes are the
+// recovery signal. HTTP responses never trip it. Per-process, not persisted.
 const HOST_DOWN_COOLDOWN_MS = 60_000
 const downHosts = new Map<string, number>()
 
@@ -159,7 +96,7 @@ export function markRemoteHostDown(url: string, at: number = Date.now()): void {
   const key = hostKey(url)
   if (!downHosts.has(key)) {
     logger.warning(
-      `[plur:remote-store] ${key} failed at the network level — fast-failing every store on this host for ${HOST_DOWN_COOLDOWN_MS / 1000}s (#1069)`,
+      `[plur:remote-store] ${key} failed at the network level — fast-failing every store on this host for ${HOST_DOWN_COOLDOWN_MS / 1000}s`,
     )
   }
   downHosts.set(key, at)
@@ -188,37 +125,15 @@ export function _resetRemoteHostBreaker(): void {
 }
 
 /**
- * Validate a remote row against RemoteRowSchema, salvaging schema drift.
- *
- * An enterprise server on an older (or newer) release can serve field VALUES
- * this client's stricter schema rejects — observed live 2026-08-28: ~100
- * engrams on a production store dropped wholesale over `commitment:
- * invalid_enum_value`, silently invisible to recall. A whole engram is worth
- * more than one drifted optional field, so on failure this strips exactly the
- * top-level fields the issues name and re-parses ONCE. A required field named
- * in the issues is still missing on the re-parse, so a genuinely malformed
- * row cannot be resurrected. Returns null when the row is unusable even after
- * stripping. Shared by RemoteStore.reshape and remote-recall's processHostRows
- * — the same drop existed independently at both sites.
- */
-/**
- * Fields whose ABSENCE is more permissive than any present value — stripping
- * them converts a fail-closed check somewhere else into fail-open (0.19.1
- * data-loss audit, finding 4):
- *
- *   - `visibility`: `=== 'private'` is the pack-export privacy gate. A row
- *     whose visibility this client cannot validate must DROP, not export.
- *   - `pinned`: a drifted truthy pin stripped away silently un-pins a team
- *     engram; injection's pinned bypass would stop honoring it.
- *
- * Everything else (commitment — the live #1071 case — plus the cosmetic and
- * rendered fields) only ever REMOVES content or privilege when absent, so it
- * stays strippable. Required fields need no listing: stripping one just
- * fails the re-parse.
+ * Fields whose ABSENCE is more permissive than any present value, so salvage must
+ * never strip them (that would turn a fail-closed check into fail-open):
+ *   - `visibility`: the pack-export privacy gate; an unvalidated row must DROP.
+ *   - `pinned`: stripping silently un-pins a team engram.
+ * Other optional fields only remove content or privilege when absent.
  */
 const NEVER_STRIP = new Set(['visibility', 'pinned'])
 
-/** Per-process dedupe for salvage warnings: one line per (store, field-set), on BOTH read paths (audit finding 5). */
+/** Per-process dedupe for salvage warnings: one line per (store, field-set), on BOTH read paths. */
 const warnedSalvages = new Set<string>()
 
 /**
@@ -236,7 +151,7 @@ export class RemoteTimeoutError extends Error {
 }
 
 /**
- * The CALLER's budget ran out, not the remote's (#1269).
+ * The CALLER's budget ran out, not the remote's.
  *
  * Distinct from {@link RemoteTimeoutError} on purpose: a request cut because a
  * hook had 1.5s left says nothing about whether the host is reachable, so it
@@ -250,10 +165,9 @@ export class RemoteAbortedError extends Error {
 }
 
 /**
- * The remote answered a write with a non-2xx status (#1299).
+ * The remote answered a write with a non-2xx status.
  *
- * Same message as the plain Error it replaces, so nothing that reads the text
- * changes; the status is carried as a field so the outbox can record it and
+ * The status is carried as a field so the outbox can record it and
  * tell a refusal (403) from a transient failure (503) without parsing prose.
  */
 export class RemoteHttpError extends Error {
@@ -266,9 +180,9 @@ export class RemoteHttpError extends Error {
 }
 
 /**
- * A remote store whose token comes from an environment variable (`token_env`,
- * #1561) that is unset or empty where PLUR runs. Thrown before any request is
- * made, so no unauthenticated call reaches the server (#1564 review M2). The
+ * A remote store whose token comes from an environment variable (`token_env`)
+ * that is unset or empty where PLUR runs. Thrown before any request is
+ * made, so no unauthenticated call reaches the server. The
  * message names the variable to set and never suggests writing the token into
  * config.yaml — that would undo the reference.
  */
@@ -288,7 +202,7 @@ export function tokenEnvUnsetMessage(variable: string, scope: string): string {
 
 /**
  * The doctor's check detail for a store whose `token_env` variable is unset —
- * one wording for `plur doctor` and `plur_doctor` (#1572 review M2).
+ * one wording for `plur doctor` and `plur_doctor`.
  */
 export function tokenEnvUnsetDetail(variable: string, scope: string): string {
   return `NO TOKEN — ${tokenEnvUnsetMessage(variable, scope)}. Team-scoped writes are queuing to the outbox.`
@@ -297,7 +211,7 @@ export function tokenEnvUnsetDetail(variable: string, scope: string): string {
 /**
  * The doctor's fix for that store, on both doctors. A running editor or MCP
  * server keeps the environment it started with, so it must be restarted to
- * see the variable (#1572 review L1).
+ * see the variable.
  */
 export function tokenEnvUnsetFix(url: string, variable: string): string {
   return `Remote ${url}: set the environment variable ${variable} where PLUR runs (your shell profile, or the env of the editor's MCP server), ` +
@@ -313,7 +227,7 @@ export const TOKEN_ENV_UNSET_RE = /environment variable (\S+), which is unset or
  * `json` is present only for a 2xx (and is `undefined` when the payload would
  * not parse); `text` only for a non-2xx, already sanitised. Keeping both off
  * the same object as a live `Response` is what stops a caller reading a body
- * after the deadline has been cleared (#1152).
+ * after the deadline has been cleared.
  */
 interface BoundedResponse {
   readonly ok: boolean
@@ -326,10 +240,9 @@ interface BoundedResponse {
  * Top-level `_`-prefixed keys are LOADER bookkeeping, never server data:
  * `_pack`, `_storeScope` and `_originalId` are stamped by the code that loads
  * a row and are read as the row's origin (tensions.ts `engramOrigin`, the
- * `withoutPacks` filter, injected-pack counting). `.passthrough()` used to
- * carry a server-supplied `_pack` straight through, so a remote writer could
- * give its row an installed pack's origin and defeat the measured-under gate
- * (#981; formal R2-CoreB, core-policy#6). Stripped here, at the one trust
+ * `withoutPacks` filter, injected-pack counting). Left in place, a
+ * server-supplied `_pack` would let a remote writer give its row an installed
+ * pack's origin and defeat the measured-under gate. Stripped here, at the one trust
  * boundary both remote legs share, so the loaders' own stamps are the only
  * markers a remote row can carry.
  */
@@ -339,6 +252,13 @@ function withoutLoaderMarkers(candidate: Record<string, unknown>): Record<string
   return out
 }
 
+/**
+ * Validate a remote row against RemoteRowSchema, salvaging schema drift: on failure
+ * strip exactly the top-level fields the issues name and re-parse ONCE, so an older
+ * or newer server's drifted value does not hide the whole engram. A missing required
+ * field still fails. Returns null if unusable. Shared by RemoteStore.reshape and
+ * remote-recall's processHostRows.
+ */
 export function salvageRemoteRow(
   rawCandidate: Record<string, unknown>,
   logContext?: { url: string; rowId?: unknown },
@@ -362,7 +282,7 @@ export function salvageRemoteRow(
       logger.warning(
         `[plur:remote-store] ${safeOrigin(logContext.url)} serves engrams with drifted field(s) [${salvagedFields.join(',')}] this client ` +
         `cannot validate (first seen id="${safeId}") — keeping the engrams WITHOUT those fields. ` +
-        `The server and client schemas need reconciling (#1071); recall is degraded, not blind.`,
+        `The server and client schemas need reconciling; recall is degraded, not blind.`,
       )
     }
   }
@@ -371,12 +291,11 @@ export function salvageRemoteRow(
 
 /**
  * Capability a server advertises in `GET /api/v1/me` → `capabilities[]` when it
- * honours `source` on `POST /engrams/:id/feedback` (#1310). Contract:
- * docs/specs/2026-09-29-feedback-source-contract.md.
+ * honours `source` on `POST /engrams/:id/feedback`.
  */
 export const FEEDBACK_SOURCE_CAPABILITY = 'feedback.source'
 
-/** Host grammar for server-supplied strings (#426, #408). */
+/** Host grammar for server-supplied strings. */
 const HOST_RE = /^[a-z0-9.-]+(:\d{1,5})?$/
 /** A bracketed IPv6 literal with an optional port, e.g. `[2001:db8::1]:8443`. */
 const IPV6_HOST_RE = /^(\[[0-9a-f:.]+\])(?::(\d{1,5}))?$/
@@ -397,14 +316,14 @@ export function isSafeHost(h: string): boolean {
     return false
   }
 }
-/** Path grammar for server-supplied project paths (#426, #408).
+/** Path grammar for server-supplied project paths.
  *  Each segment must start with a word char to prevent path traversal (e.g. `..`). */
 const PATH_RE = /^[\w][\w.-]*(\/[\w][\w.-]*)*$/
 /** ISO-8601 date or date-time. `Date.parse` alone also accepts '1', '2026' and 'March 7, 2026'. */
 const ISO_8601_RE = /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d{1,9})?)?(Z|[+-]\d{2}:?\d{2})?)?$/
 
 /**
- * The resolved fields returned by GET /api/v1/me (contract C1, #1631).
+ * The resolved fields returned by GET /api/v1/me.
  * Older servers omit some fields; see per-field comments for the absent values.
  */
 export interface MeResponse {
@@ -434,8 +353,8 @@ export interface MeResponse {
 }
 
 /**
- * Advertised capabilities per (url, token), for the life of the process
- * (#1310). Filled by every successful `me()` — session start already calls it
+ * Advertised capabilities per (url, token), for the life of the process.
+ * Filled by every successful `me()` — session start already calls it
  * — and consulted by `hasCapability()`, which calls `/me` at most once per
  * (url, token) when nothing has filled it yet. Never one call per rating.
  */
@@ -446,24 +365,30 @@ export function _resetRemoteCapabilityCache(): void {
   CAPABILITY_CACHE.clear()
 }
 
+/**
+ * Remote engram store — speaks to a PLUR Enterprise server over its REST API
+ * (/api/v1), with the same load/append/getById/remove shape as file-backed stores.
+ * load() holds a per-instance TTL cache (default 60s), since recall calls it every
+ * time. Any network error makes load() return an empty array (logged), not throw.
+ */
 export class RemoteStore {
   private cache: { ts: number; engrams: Engram[] } | null = null
   private inFlight: Promise<Engram[]> | null = null
 
   constructor(
-    private readonly url: string,    // e.g. https://plur.datafund.io/sse — but we hit /api/v1
+    private readonly url: string,    // e.g. https://plur.example.com/sse — but we hit /api/v1
     private readonly token: string,
     private readonly scope: string,  // narrow listing on the server side
     private readonly opts: { ttlMs?: number; tokenEnv?: string } = {},
   ) {}
 
   /** The configured endpoint url — the key the per-host health state uses
-   *  (normalized by its readers). Read-only; #1586. */
+   *  (normalized by its readers). Read-only. */
   get endpointUrl(): string {
     return this.url
   }
 
-  /** #1564 review M2: never send a request without the token a `token_env` names. */
+  /** Never send a request without the token a `token_env` names. */
   private assertToken(): void {
     if (!this.token && this.opts.tokenEnv) throw new TokenEnvUnsetError(this.opts.tokenEnv, this.scope)
   }
@@ -472,38 +397,18 @@ export class RemoteStore {
     // The user configures the SSE URL (consistent with mcp.json shape);
     // /api/v1 is rooted at the same host. Strip /sse if present, then
     // append /api/v1. Shares normalizeEndpointUrl so HTTP-time and
-    // identity-time normalization can never drift (scope-audit 2026-07-24).
+    // identity-time normalization can never drift.
     return normalizeEndpointUrl(this.url) + '/api/v1'
   }
 
   private get ttlMs(): number { return this.opts.ttlMs ?? 60_000 }
 
   /**
-   * Every request this class makes, bounded (#907 investigation).
-   *
-   * `load()` has been bounded since #504 and `existsById` since the 2026-08-13
-   * data-loss audit — but `/me`, `append`, `getById`, `remove`, `feedback` and
-   * `patch` were all bare `fetch`, inheriting undici's 300s `headersTimeout`.
-   * That is not a slow request, it is a hang: `forget()` and `feedback()` walk
-   * every configured store calling `getById`, several of those paths hold the
-   * primary store lock, and `DEFAULT_ACQUIRE_TIMEOUT` is 180s — so one stalled
-   * host blocks every other writer until they throw "Failed to acquire lock"
-   * and their engram is silently never stored.
-   *
-   * Reproduced while investigating #907: a single `feedback()` against a store
-   * with an unreachable host did not return in 120 seconds.
-   *
-   * One helper rather than six call-site fixes, for the reason this codebase
-   * keeps relearning: a rule enforced by convention at N sites is a rule that
-   * holds at N-1 of them. A seventh endpoint added later inherits the bound.
-   */
-  /**
    * A response whose body has ALREADY been read, inside the request deadline.
    *
    * Returned instead of a `Response` so that no caller can be handed a live
-   * body to read after the timer has been cleared — which is the shape of
-   * #1152. Callers branch on `ok`/`status` exactly as before; the payload is
-   * simply already here.
+   * body to read after the timer has been cleared. Callers branch on
+   * `ok`/`status`; the payload is already here.
    */
   private static async readBounded(res: Response): Promise<BoundedResponse> {
     // 2xx carries the payload; anything else carries an error body that gets
@@ -514,20 +419,10 @@ export class RemoteStore {
   }
 
   /**
-   * Run a request AND read its body under ONE deadline.
-   *
-   * `fetch()` resolves when response HEADERS arrive, so the timer this used to
-   * clear on return stopped guarding the part that actually streams. Callers
-   * then awaited `r.json()` or `r.text()` with no bound at all: a peer that
-   * sent headers and stalled the body held `me()` open indefinitely against a
-   * 30s limit — measured at 31s, settling only once the body was released
-   * (#1152).
-   *
-   * #525 fixed this same shape in `load()`, by giving that one method's body
-   * read its own timer. That closed the instance; every other caller of the
-   * shared helper kept the gap, and it resurfaced in six of them. Owning the
-   * read is what makes the bound structural rather than a rule each new caller
-   * has to remember — so this takes a reader instead of returning a `Response`.
+   * Run a request AND read its body under ONE deadline; every request in this class
+   * goes through here. Unbounded requests inherit undici's 300s timeout while some
+   * callers hold the primary store lock (180s budget), and `fetch()` resolves on
+   * headers, so the body read must be inside the bound too.
    *
    * @param consume - reads the body. Runs INSIDE the deadline, and the abort
    *   signal is wired to the response stream, so a stalled read rejects.
@@ -536,11 +431,11 @@ export class RemoteStore {
     url: string,
     init: RequestInit,
     consume: (res: Response) => Promise<T>,
-    /** The caller's own budget (#1269). Aborting it cuts the request with a
+    /** The caller's own budget. Aborting it cuts the request with a
      *  {@link RemoteAbortedError}, which does not mark the host down. */
     callerSignal?: AbortSignal,
   ): Promise<T> {
-    // #1069: a network-level failure here MARKS the host down (so the passive
+    // A network-level failure here MARKS the host down (so the passive
     // read path fast-fails), but this method never fast-fails itself. It
     // carries writes, /me and explicit retries — an outbox flush the user just
     // invoked against a host that recovered must be allowed to probe, not be
@@ -560,7 +455,7 @@ export class RemoteStore {
       try {
         res = await fetch(url, { ...init, signal: ctrl.signal })
       } catch (err) {
-        // A cut at the CALLER's budget says nothing about the host (#1269).
+        // A cut at the CALLER's budget says nothing about the host.
         if (callerSignal?.aborted) throw new RemoteAbortedError(url)
         // fetch only throws on network-level failures (and our abort) — an HTTP
         // error status resolves normally — so any throw here marks the host.
@@ -574,8 +469,7 @@ export class RemoteStore {
         // shape of what came back. A reader that tolerates a malformed payload
         // — `readBounded` returns `json: undefined` rather than throwing — will
         // otherwise swallow an abort and hand back an empty body as if the
-        // request had succeeded. That failure mode is worse than the one this
-        // method exists to fix: a stalled `/me` would return zero scopes,
+        // request had succeeded: a stalled `/me` would return zero scopes,
         // silently, instead of timing out.
         if (ctrl.signal.aborted) throw timedOut()
         return out
@@ -597,20 +491,19 @@ export class RemoteStore {
   /**
    * Reshape a DB row {id, scope, status, data} into an Engram and validate it.
    * Authoritative columns (id/scope/status) win over anything in `data`. Returns
-   * null (and logs) for malformed rows so callers can drop them. (finding #3)
+   * null (and logs) for malformed rows so callers can drop them.
    */
   private reshape(raw: { id?: unknown; scope?: unknown; status?: unknown; data?: unknown; created_at?: unknown }): Engram | null {
     const d = raw.data && typeof raw.data === 'object' ? raw.data as Record<string, unknown> : {}
-    // Same field-compat rules as the YAML and Postgres loaders (#877). Without
-    // this, a server row still carrying a pre-#866 `reference_count` arrived
-    // with the old key and no `write_count`, and every read site had to know to
-    // fall back — which two of the three did not.
+    // Same field-compat rules as the YAML and Postgres loaders, so a row with
+    // a legacy `reference_count` arrives as `write_count` and read sites need
+    // no fallback.
     const candidate = normalizeEngramInput({ ...d, id: raw.id, scope: raw.scope, status: raw.status })
     // Schema-drift salvage (see salvageRemoteRow): keep an engram whose only
     // problem is a drifted optional field, dropping just that field.
     const salvaged = salvageRemoteRow(candidate as Record<string, unknown>, { url: this.url, rowId: raw.id })
     if (!salvaged) {
-      // #408: do NOT echo server-controlled VALUES into the log. Zod messages can
+      // Do NOT echo server-controlled VALUES into the log. Zod messages can
       // embed the received value, and a crafted id could carry newlines/control
       // chars to forge log lines (log injection) or leak data. Log only the field
       // PATHS + failure CODES, plus a sanitized, bounded id.
@@ -622,8 +515,8 @@ export class RemoteStore {
       return null
     }
     const parsed = { data: salvaged.data }
-    // #768 round-trip: the server stores the validity window FLAT in row data
-    // (valid_from / valid_until — enterprise#627), while every local consumer
+    // The server stores the validity window FLAT in row data
+    // (valid_from / valid_until), while every local consumer
     // reads the nested `temporal` block (inject's expiry gate, decay). Map
     // flat → nested on ingest so remote validity windows actually drive local
     // expiry. Nested values win; only well-typed strings are mapped.
@@ -647,10 +540,10 @@ export class RemoteStore {
         ...(mapUntil ? { valid_until: flatUntil } : {}),
       }
     }
-    // Rows stored without `tags` or `activation` (#1563 review, T1) get what
-    // a local engram gets by default: inject walks `tags`, recall reads
-    // `activation`, and one such row used to fail session start, inject and
-    // recall for every user of the scope.
+    // Rows stored without `tags` or `activation` get what a local engram gets
+    // by default: inject walks `tags` and recall reads `activation`, so one
+    // such row would otherwise fail session start, inject and recall for
+    // every user of the scope.
     if (!Array.isArray(out.tags) || !(out.tags as unknown[]).every(t => typeof t === 'string')) out.tags = []
     if (!ActivationSchema.safeParse(out.activation).success) {
       out.activation = {
@@ -694,19 +587,12 @@ export class RemoteStore {
   }
 
   /**
-   * Resolve the identity behind this token — `GET /api/v1/me`. Returns the
-   * full authorized scope set the server resolved from group memberships, so
-   * the client can discover scopes a token can access without registering them
-   * out-of-band (#292). Scope-independent: `/me` is keyed on the token alone,
-   * so the driver's `scope` is irrelevant here.
-   *
-   * Extended to read enterprise C1 fields (#1631): `scopes_status`,
-   * `scope_metadata_status`, `gitlab_host`, `project_paths`, `key_expires_at`.
-   * Server-supplied strings are validated at this trust boundary (#426, #408).
-   *
-   * Throws {@link RemoteHttpError} on a non-2xx response (caller decides whether
-   * to swallow per URL). The message keeps the `Remote /me failed: <status>`
-   * pattern so the `/\b40[13]\b/` auth-expired checks in callers still match.
+   * Resolve the identity behind this token — `GET /api/v1/me`: the full authorized
+   * scope set plus `scopes_status`, `scope_metadata_status`, `gitlab_host`,
+   * `project_paths` and `key_expires_at`, validated at this trust boundary.
+   * Scope-independent (keyed on the token alone).
+   * Throws {@link RemoteHttpError} on non-2xx; keeps the `Remote /me failed: <status>`
+   * message so callers' `/\b40[13]\b/` auth-expired checks still match.
    */
   async me(signal?: AbortSignal): Promise<MeResponse> {
     const r = await this.fetchBounded(`${this.apiBase}/me`, { headers: this.headers() }, RemoteStore.readBounded, signal)
@@ -719,9 +605,9 @@ export class RemoteStore {
     // read as an older server that sent no fields — never a TypeError from `in`.
     const body = (r.json !== null && typeof r.json === 'object' && !Array.isArray(r.json)
       ? r.json : {}) as Record<string, unknown>
-    // C1 values dropped at this boundary, as `field: reason` — never the value (#408).
+    // Values dropped at this boundary, as `field: reason` — never the value.
     const dropped: string[] = []
-    // #1310: optional, additive. Older servers omit it → []. Same safe-grammar
+    // Optional, additive. Older servers omit it → []. Same safe-grammar
     // filter as scope names: nothing malformed enters from a hostile remote.
     const capabilities = Array.isArray(body['capabilities'])
       ? (body['capabilities'] as unknown[]).filter((c): c is string => typeof c === 'string' && /^[\w.:-]{1,64}$/.test(c))
@@ -730,9 +616,9 @@ export class RemoteStore {
     const rawScopes = body['scopes']
     const scopes = Array.isArray(rawScopes)
       // Validate every /me scope to a safe grammar at the trust boundary:
-      //  - #427: a non-string element would later throw in isSharedScope's
+      //  - a non-string element would later throw in isSharedScope's
       //    `scope.startsWith(...)` BEFORE the per-scope try/catch — drop non-strings.
-      //  - #426: scope names render verbatim into the session-start guide (the
+      //  - scope names render verbatim into the session-start guide (the
       //    agent's directive surface); a name carrying newlines/control chars is a
       //    prompt-injection channel — require `[\w:./-]+` (allows group:org/team,
       //    user:*, etc.) so nothing malformed enters from a hostile/MITM remote.
@@ -740,22 +626,22 @@ export class RemoteStore {
       : []
     // Only an explicit array whose every member passed is the server's list.
     // Missing/null/non-array or a dropped member must not read as an
-    // authoritative [] that clears a cache (Codex round 2, finding 2).
+    // authoritative [] that clears a cache.
     const scopes_malformed = !Array.isArray(rawScopes) || scopes.length !== (rawScopes as unknown[]).length
     if (scopes_malformed && rawScopes !== undefined) dropped.push(Array.isArray(rawScopes) ? `scopes: ${(rawScopes as unknown[]).length - scopes.length} invalid` : 'scopes: not a list')
 
-    // C1: scopes_status — unknown values → 'absent' (forward-compat) (#1631)
+    // scopes_status — unknown values → 'absent' (forward-compat)
     const rawScopesStatus = body['scopes_status']
     const scopes_status: MeResponse['scopes_status'] =
       rawScopesStatus === 'ok' || rawScopesStatus === 'not_synced' ? rawScopesStatus : 'absent'
 
-    // C1: scope_metadata_status — unknown values → 'absent' (#1631)
+    // scope_metadata_status — unknown values → 'absent'
     const rawScopeMetadataStatus = body['scope_metadata_status']
     const scope_metadata_status: MeResponse['scope_metadata_status'] =
       rawScopeMetadataStatus === 'ok' || rawScopeMetadataStatus === 'unavailable'
         ? rawScopeMetadataStatus : 'absent'
 
-    // C1: gitlab_host — must pass host grammar; null stays null; absent → undefined (#1631, #426)
+    // gitlab_host — must pass host grammar; null stays null; absent → undefined
     const rawGitlabHost = body['gitlab_host']
     const gitlab_host: MeResponse['gitlab_host'] =
       rawGitlabHost === null ? null
@@ -763,8 +649,8 @@ export class RemoteStore {
       : undefined
     if (rawGitlabHost !== undefined && gitlab_host === undefined) dropped.push('gitlab_host: invalid')
 
-    // C1: project_paths — only entries whose key is in scopes AND whose value
-    // passes the path grammar; an absent field yields {} (#1631, #426)
+    // project_paths — only entries whose key is in scopes AND whose value
+    // passes the path grammar; an absent field yields {}
     const project_paths: Record<string, string> = {}
     const rawPaths = body['project_paths']
     if (rawPaths !== null && typeof rawPaths === 'object') {
@@ -779,8 +665,8 @@ export class RemoteStore {
       if (badPath) dropped.push(`project_paths: ${badPath} invalid`)
     }
 
-    // C1: key_expires_at — absent → undefined (unknown); null → null (no expiry);
-    // a string that is not valid ISO-8601 → undefined (#1631)
+    // key_expires_at — absent → undefined (unknown); null → null (no expiry);
+    // a string that is not valid ISO-8601 → undefined
     const rawKeyExpiry = body['key_expires_at']
     const key_expires_at: MeResponse['key_expires_at'] =
       !('key_expires_at' in body) ? undefined
@@ -789,7 +675,7 @@ export class RemoteStore {
       : undefined
     if (rawKeyExpiry !== undefined && key_expires_at === undefined) dropped.push('key_expires_at: invalid')
     if (dropped.length) {
-      logger.warning(`[plur:remote-store] ${safeOrigin(this.url)} sent /me fields that do not conform (${dropped.join('; ')}) — DROPPED (#426).`)
+      logger.warning(`[plur:remote-store] ${safeOrigin(this.url)} sent /me fields that do not conform (${dropped.join('; ')}) — DROPPED.`)
     }
 
     return {
@@ -804,29 +690,22 @@ export class RemoteStore {
       project_paths,
       key_expires_at,
       ...(scopes_malformed ? { scopes_malformed: true } : {}),
-      // #345 D2: self-describing scope metadata served by the enterprise
+      // Self-describing scope metadata served by the enterprise
       // `scopes` table. Validate each entry through the SAME ScopeMetadataSchema
       // the local config path uses — a hostile/old remote can send anything, so
       // drop entries that don't parse (and any whose `scope` isn't in the
       // authorized set, so a remote can't smuggle metadata for an unrelated
       // scope into discovery). Absent/empty → [] (older servers).
-      // #843: a dropped entry must SAY SO. A server/client shape mismatch here
-      // disabled covers-based auto-routing on a live deployment and produced no
-      // signal anywhere — no warning, no log line, no degraded-mode flag. It was
-      // found only by diffing plur_scopes_discover against the admin UI, because
-      // `rankScopes` skips entries with empty covers, so an empty metadata list
-      // means zero candidates and every unscoped write falls to the personal
-      // `unscoped_default`. Team knowledge silently stopped reaching team scopes
-      // while the admin dashboard rendered all five scopes as fine.
-      //
-      // One warning on the first connection would have caught it. The authorized-
-      // set drop stays quiet: that one is a deliberate refusal (a remote must not
-      // smuggle metadata for a scope it did not grant), not an unexpected shape.
+      // A dropped entry must SAY SO: `rankScopes` skips entries with empty
+      // covers, so a server/client shape mismatch would silently disable
+      // covers-based auto-routing and send every unscoped write to the
+      // personal `unscoped_default`. The authorized-set drop stays quiet: that
+      // one is a deliberate refusal, not an unexpected shape.
       scope_metadata: Array.isArray(body['scope_metadata'])
         ? (body['scope_metadata'] as unknown[]).flatMap((m) => {
             const parsed = ScopeMetadataSchema.safeParse(m)
             if (!parsed.success) {
-              // Log PATHS and CODES only, never server-controlled values (#408):
+              // Log PATHS and CODES only, never server-controlled values:
               // a Zod message can embed the received value, and a crafted one
               // could carry control chars to forge log lines.
               const why = parsed.error.issues
@@ -834,7 +713,7 @@ export class RemoteStore {
                 .join('; ')
               // Named only when it is a scope this answer granted: any other
               // text is the server's and could carry anything, the bearer key
-              // included (#1665 gate: a key reflected here reached the log).
+              // included.
               const rawScope = (m as { scope?: unknown } | null)?.scope
               const safeScope = typeof rawScope === 'string' && scopes.includes(rawScope)
                 ? rawScope.replace(/[^\w:./-]/g, '?').slice(0, 64)
@@ -842,7 +721,7 @@ export class RemoteStore {
               logger.warning(
                 `[plur:remote-store] ${safeOrigin(this.url)} sent scope metadata for "${safeScope}" that does not conform ` +
                 `(${why}) — DROPPED. That scope cannot participate in covers-based auto-routing until the ` +
-                `server sends a conforming shape, so unscoped writes may fall back to the personal default (#843).`,
+                `server sends a conforming shape, so unscoped writes may fall back to the personal default.`,
               )
               return []
             }
@@ -867,20 +746,18 @@ export class RemoteStore {
 
     this.inFlight = (async () => {
       try {
-        // Page through results — the server caps at 200/page; for a pilot
-        // that's plenty per scope, but we walk pages defensively.
+        // Page through results — the server caps at 200/page.
         const all: Engram[] = []
         let offset = 0
         const limit = 200
         const maxPages = 50  // hard cap to avoid runaway loops
-        // #550: only cache a result set from a clean (complete) pagination run.
-        // A mid-pagination abort/error must not overwrite a prior good cache with
-        // a partial view — that's the "cache poisoning" class fixed in #130 for
-        // cold-cache appends, and reintroduced by #531 for page-fetch errors.
+        // Only cache a result set from a clean (complete) pagination run.
+        // A mid-pagination abort/error must not overwrite a prior good cache
+        // with a partial view.
         let paginationComplete = false
         for (let i = 0; i < maxPages; i++) {
-          // #1069: nine entries on one dead host must cost ONE timeout per
-          // process, not nine — fast-fail to the prior cache during cooldown.
+          // Several entries on one dead host must cost ONE timeout per
+          // process, not one each — fast-fail to the prior cache during cooldown.
           if (remoteHostDownRemainingMs(this.url) > 0) break
           const u = `${this.apiBase}/engrams?scope=${encodeURIComponent(this.scope)}&limit=${limit}&offset=${offset}`
           const ctrl = new AbortController()
@@ -891,7 +768,7 @@ export class RemoteStore {
               r = await fetch(u, { headers: this.headers(), signal: ctrl.signal })
             } catch (err) {
               // Network-level failure (fetch only throws on those + our abort):
-              // mark the host so sibling stores skip their own timeouts (#1069).
+              // mark the host so sibling stores skip their own timeouts.
               markRemoteHostDown(this.url)
               const msg = (err as Error).name === 'AbortError'
                 ? `page fetch timed out after ${LOAD_FETCH_TIMEOUT_MS}ms`
@@ -913,14 +790,11 @@ export class RemoteStore {
               }
               break
             }
-            // The host ANSWERED. From here on nothing marks it down — "HTTP
-            // responses never trip it" (formal R2-CoreB, core-policy#10). An
-            // unreadable or malformed body used to throw into the network
-            // catch, open the breaker for every store on the host and log a
-            // network failure; it now ends pagination as incomplete (prior
-            // cache kept), the same as fetchBounded treats a bad body. A body
-            // stalled past the deadline is reported as the timeout it is,
-            // still without a mark (fetchBounded's rule too).
+            // The host ANSWERED. From here on nothing marks it down: HTTP
+            // responses never trip the breaker. An unreadable or malformed
+            // body ends pagination as incomplete (prior cache kept), the same
+            // as fetchBounded treats a bad body. A body stalled past the
+            // deadline is reported as a timeout, still without a mark.
             let body: unknown
             try {
               body = await r.json()
@@ -976,7 +850,7 @@ export class RemoteStore {
    * Append a single engram to the remote store. POST /api/v1/engrams
    * carries the core four (statement + scope + domain + type) plus every
    * optional field that is set — pinned, rationale, tags, commitment,
-   * validity window, supersedes, locked_reason (#768). The server handles
+   * validity window, supersedes, locked_reason. The server handles
    * ID assignment, content_hash, status.
    *
    * Returns void. Callers that need the server-assigned ID (e.g. so the
@@ -999,16 +873,14 @@ export class RemoteStore {
     engram: Engram,
     opts?: { signal?: AbortSignal; idempotencyKey?: string },
   ): Promise<{ id: string; review_required?: true; deduplicated?: true }> {
-    // #768: transmit the full engram, not just the core four — pinned,
-    // rationale, tags, commitment, validity windows and supersedes were
-    // silently dropped, so team-scope pins never round-tripped. Optional
-    // fields are included only when set, so older servers that ignore
-    // unknown keys see no behavioral change.
+    // Transmit the full engram, not just the core four, so pins, validity
+    // windows, supersedes etc. round-trip. Optional fields are included only
+    // when set, so older servers that ignore unknown keys see no change.
     const e = engram as any
     // Canonical engrams carry the validity window nested under `temporal`
-    // (temporal.valid_from / temporal.valid_until, #347) and supersession
-    // under `relations.supersedes` (#240) — the wire contract
-    // (POST /api/v1/engrams, enterprise#627) takes them as FLAT top-level
+    // (temporal.valid_from / temporal.valid_until) and supersession
+    // under `relations.supersedes` — the wire contract
+    // (POST /api/v1/engrams) takes them as FLAT top-level
     // keys, so flatten here. Top-level reads are kept as a fallback for
     // non-canonical shapes; they are always undefined on production engrams.
     const valid_from  = e.temporal?.valid_from  ?? e.valid_from
@@ -1016,16 +888,15 @@ export class RemoteStore {
     const supersedes  = Array.isArray(e.relations?.supersedes) && e.relations.supersedes.length > 0
       ? e.relations.supersedes
       : e.supersedes
-    // #1221: who chose the scope. Stamped by learnRouted on the shape that
-    // crosses the wire; `structured_data` itself is not transmitted, so without
-    // this the server sees a scope string with no way to tell a scope the user
-    // typed from one the router picked out of `covers`. Omitted when absent, so
-    // an engram written by an older path, or replayed from an outbox predating
-    // this, sends nothing rather than claiming `explicit` it cannot vouch for.
+    // Who chose the scope. Stamped by learnRouted on the shape that crosses
+    // the wire; `structured_data` itself is not transmitted, so without this
+    // the server could not tell a scope the user typed from one the router
+    // picked out of `covers`. Omitted when absent rather than claiming
+    // `explicit` it cannot vouch for.
     //
     // `structured_data` is caller-settable on update, so the value is checked
     // against the four `ScopeSource` values rather than trusted: anything else
-    // is omitted, the same answer as an engram written before #1221.
+    // is omitted.
     const rawScopeSource: unknown = e.structured_data?._scopeSource
     const scope_source = typeof rawScopeSource === 'string' && SCOPE_SOURCES.has(rawScopeSource)
       ? rawScopeSource
@@ -1048,38 +919,25 @@ export class RemoteStore {
       ...(valid_until != null               ? { valid_until }                  : {}),
       ...(Array.isArray(supersedes) && supersedes.length > 0 ? { supersedes } : {}),
       ...(e.locked_reason != null           ? { locked_reason: e.locked_reason } : {}),
-      // Provenance rides the wire when present (#676 rescope: the pushed copy
-      // carries "rescoped from <original id>" in `source`). Additive — servers
-      // that don't model `source` ignore the field, and it is omitted entirely
-      // when unset so the historical body is byte-identical without it.
+      // Provenance rides the wire when present (e.g. a rescoped copy carries
+      // "rescoped from <original id>" in `source`). Additive — servers that
+      // don't model `source` ignore the field, and it is omitted when unset.
       ...(e.source != null                  ? { source: e.source }             : {}),
-      // #983: carry provenance records so the receiving store can answer
+      // Carry provenance records so the receiving store can answer
       // origin/chain/licence questions. Omitted when unset.
       ...(e.provenance != null              ? { provenance: e.provenance }     : {}),
-      // #1151: the conditions a measurement was taken under, the material that
-      // supports it, and its worked example. All three were accepted by
-      // `learnRouted()`, returned to the caller, and never sent.
-      //
-      // `measured_under` is the one that does real damage. It exists (#869) so
-      // a measured claim carries what makes it true — hardware, dataset,
-      // source, date. Dropping it on the way to a SHARED store is the worst
-      // case for that field: a result that held on one machine, one dataset,
-      // one day arrives at a teammate as an unconditional fact. The immediate
-      // return value hid it, because `learnRouted()` answers from the local
-      // shape plus the server-assigned id rather than from a persisted record.
+      // The conditions a measurement was taken under, the material that
+      // supports it, and its worked example. `measured_under` matters most: a
+      // measured claim carries what makes it true (hardware, dataset, source,
+      // date); without it, a result that held on one machine arrives at a
+      // teammate as an unconditional fact.
       ...(e.measured_under != null          ? { measured_under: e.measured_under } : {}),
       ...(Array.isArray(e.knowledge_anchors) && e.knowledge_anchors.length > 0
         ? { knowledge_anchors: e.knowledge_anchors } : {}),
       ...(e.dual_coding != null             ? { dual_coding: e.dual_coding }   : {}),
-      // #1172: who is answerable for the claim, and what kind of claim it is.
-      //
-      // Without these a team push arrives with no record of who asserted the
-      // memory, and with no distinction between something a person stated and
-      // something a model worked out. `inject.ts` marks `claim_class:
-      // 'inferred'` at layers 1 and 2 precisely because "a model's conclusion
-      // and a user's flat statement render identically" was reported as a live
-      // failure — a marker that cannot fire on the receiving side if the field
-      // never crosses.
+      // Who is answerable for the claim, and what kind of claim it is, so the
+      // receiving side can tell a person's statement from a model's inference
+      // (`inject.ts` marks `claim_class: 'inferred'` at layers 1 and 2).
       //
       // `license` needs no line here: it lands in `provenance.license`, and
       // `provenance` is already above.
@@ -1092,7 +950,7 @@ export class RemoteStore {
       // random UUID the caller mints once and persists (docs/remote-store-
       // contract.md). NEVER derived from the engram id: that is `__pending__`
       // on every direct write and a per-day sequence that collides across
-      // machines (2026-09-29 audits). No key, no header.
+      // machines. No key, no header.
       headers: this.headers({
         'Content-Type': 'application/json',
         ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}),
@@ -1101,7 +959,7 @@ export class RemoteStore {
     }, RemoteStore.readBounded, opts?.signal)
     if (!r.ok) throw new RemoteHttpError(r.status, `Remote store append failed: ${r.status} ${r.text}`)
     const data = (r.json ?? {}) as { id?: unknown; review_required?: unknown; deduplicated?: unknown }
-    // #404: validate the server-assigned id's SHAPE, not just truthiness. It
+    // Validate the server-assigned id's SHAPE, not just truthiness. It
     // becomes this engram's id (cached, rendered, used as a key), so a non-string,
     // empty, over-long, or control-char-bearing id from a buggy/hostile endpoint
     // must be rejected rather than trusted.
@@ -1110,7 +968,7 @@ export class RemoteStore {
       const shown = typeof id === 'string' ? `"${id.slice(0, 64).replace(/[^\w:./-]/g, '?')}"` : typeof id
       throw new Error(`Remote store append: server returned an invalid id (${shown})`)
     }
-    // Optimistic cache insert (issue #89): the POST succeeded so the server
+    // Optimistic cache insert: the POST succeeded so the server
     // has the engram. Insert with the server-assigned id so the very next
     // recall sees it without waiting for a background refresh. If the server
     // transformed other fields, the next refresh corrects them.
@@ -1144,8 +1002,7 @@ export class RemoteStore {
       const r = await this.fetchBounded(`${this.apiBase}/engrams/${encodeURIComponent(id)}`, { headers: this.headers() }, RemoteStore.readBounded)
       if (r.status === 404) return null
       if (!r.ok) return null
-      // An unparseable 2xx body arrives as `undefined` rather than throwing;
-      // same outcome as before, where the throw was swallowed by the catch.
+      // An unparseable 2xx body arrives as `undefined` rather than throwing.
       if (r.json === undefined) return null
       return this.reshape(r.json as any)
     } catch {
@@ -1154,41 +1011,15 @@ export class RemoteStore {
   }
 
   /**
-   * Existence probe that distinguishes "definitely absent" from "cannot tell".
-   *
-   * `getById` collapses both onto `null` — a 404 and a dead network return the
-   * same value — which is safe for the read paths that only want the engram,
-   * and unsafe for anything deciding whether it is free to act. `forget()`
-   * needs the distinction: treating an unreachable store as "not there" is how
-   * an id collision goes unnoticed and the wrong engram gets retired (#831).
-   *
-   * Returns false ONLY on an authoritative 404. Anything else — transport
-   * failure, 5xx, auth rejection — throws, so the caller must decide what an
-   * unknown means rather than inheriting a silent "no".
-   *
-   * BOUNDED, and that is not a nicety (2026-08-13 data-loss audit, F2). Both
-   * callers — `forget()` and `feedback()` — run this INSIDE the primary store
-   * lock, one probe per configured remote. An unbounded `fetch` inherits
-   * undici's 300s `headersTimeout`, so a host that completes its handshake and
-   * then stalls holds the lock every other write path needs for five minutes,
-   * past the 180s `DEFAULT_ACQUIRE_TIMEOUT` — waiting `plur_learn` calls throw
-   * "Failed to acquire lock" and the engram is silently never stored. The
-   * budget is the same one `load()` uses, for the same reason.
+   * Existence probe that distinguishes "definitely absent" from "cannot tell"
+   * (`getById` returns `null` for both). Returns false ONLY on an authoritative 404;
+   * transport failure, 5xx or auth rejection throw, so `forget()` never mistakes an
+   * unreachable store for absence. BOUNDED: `forget()`/`feedback()` call it inside the
+   * primary store lock, and a stalled host must not outlast the lock acquire timeout.
    */
   async existsById(id: string, opts?: { signal?: AbortSignal }): Promise<boolean> {
-    // Uses the shared helper (#1155). It carried its OWN AbortController with
-    // `clearTimeout` in a `finally` around only the `fetch`, so `await
-    // r.json()` ran after the deadline was gone — the exact defect #1152 fixed
-    // everywhere else, surviving in the one method that had opted out of the
-    // helper. With headers delivered and the body stalled it had still not
-    // settled 120 seconds past its 30-second bound.
-    //
-    // That matters more here than anywhere else: both callers run this INSIDE
-    // the primary store lock, one probe per configured remote. Unbounded, it
-    // inherits undici's 300s `headersTimeout`, which exceeds the 180s
-    // `DEFAULT_ACQUIRE_TIMEOUT` — so every waiting `plur_learn` throws "Failed
-    // to acquire lock" and the engram is silently never stored. A hang here is
-    // not slow, it is lost writes.
+    // Uses the shared helper so the body read is bounded too (see the method
+    // doc: an unbounded probe here, inside the store lock, loses writes).
     let r: BoundedResponse
     try {
       r = await this.fetchBounded(`${this.apiBase}/engrams/${encodeURIComponent(id)}`, {
@@ -1198,8 +1029,8 @@ export class RemoteStore {
       // An abort is "cannot tell", not "absent" — the whole point of this
       // method — so it must surface as a throw like any other transport
       // failure, with a message that says which it was. A cut at the
-      // CALLER's budget (0.21.1: the collision probe is bounded well below
-      // the 30 s request deadline) is a timeout too.
+      // CALLER's budget (the collision probe is bounded well below the 30 s
+      // request deadline) is a timeout too.
       throw new Error(
         err instanceof RemoteTimeoutError
           ? `existence probe for ${id} timed out after ${LOAD_FETCH_TIMEOUT_MS}ms against ${this.apiBase}`
@@ -1209,8 +1040,8 @@ export class RemoteStore {
       )
     }
     if (r.status === 404) return false
-    // Same message as before; the status rides along so a caller can tell a
-    // rejected token (401/403) from a server it could not reach (0.21.1).
+    // The status rides along so a caller can tell a rejected token (401/403)
+    // from a server it could not reach.
     if (!r.ok) throw new RemoteHttpError(r.status, `HTTP ${r.status} from ${this.apiBase}`)
     // A 200 is not on its own proof of existence — confirm the body actually
     // describes THIS engram. Servers and proxies return 200 with collection or
@@ -1222,19 +1053,9 @@ export class RemoteStore {
   }
 
   /**
-   * Ownership probe with a THIRD state: `unknown` (#907).
-   *
-   * `getById` collapses "not here" and "could not look" onto `null`, so a walk
-   * using it cannot tell a store that answered 404 from one that never
-   * answered. `existsById` separates them but answers a STRICTER question —
-   * it refuses to treat a bare 200 as proof, because proxies answer 200 with
-   * envelope payloads on unrecognised routes. Swapping it in as an ownership
-   * test broke five tests including "a successful remote retire still
-   * succeeds".
-   *
-   * So ownership here is decided by `reshape`, exactly as `getById` decides
-   * it — same acceptance, no behaviour change for reachable stores — and only
-   * the failure modes are split out.
+   * Ownership probe with a THIRD state, `unknown`. Ownership is decided by `reshape`
+   * exactly as in `getById`; only "absent" (404) and "could not look" are split.
+   * Not `existsById`, which rejects a bare 200 (proxy envelopes) — too strict here.
    */
   async probeById(id: string, opts?: { signal?: AbortSignal }): Promise<'owned' | 'absent' | 'unknown'> {
     let r: BoundedResponse
@@ -1254,10 +1075,9 @@ export class RemoteStore {
       ? 'owned' : 'absent'
   }
 
-  /** Remove → DELETE /api/v1/engrams/:id (server soft-retires). */
   /**
-   * Retire `id` on the server, idempotently (decision D1, the queued
-   * "retire on remote" entry). `'removed'` on 2xx; `'absent'` on 404/410 —
+   * Retire `id` on the server, idempotently (used by the queued "retire on
+   * remote" entry). `'removed'` on 2xx; `'absent'` on 404/410 —
    * the row is already gone, which is the goal, so the entry is done. Any
    * other status throws (the caller keeps the entry queued and retries);
    * a network failure throws from `fetchBounded` as usual.
@@ -1272,6 +1092,7 @@ export class RemoteStore {
     throw new Error(`Remote delete failed: ${r.status} ${r.text}`)
   }
 
+  /** Remove → DELETE /api/v1/engrams/:id (server soft-retires). */
   async remove(id: string): Promise<boolean> {
     const r = await this.fetchBounded(`${this.apiBase}/engrams/${encodeURIComponent(id)}`, {
       method: 'DELETE',
@@ -1287,16 +1108,15 @@ export class RemoteStore {
    * sends the raw signal; the server owns the mutation logic (strength
    * adjustment, commitment promotion, counter increment).
    *
-   * RemoteStore-specific — no file-backed counterpart.
-   * Requires server support: see https://github.com/plur-ai/plur/issues/85
+   * RemoteStore-specific — no file-backed counterpart; requires server support.
    */
   async feedback(
     id: string,
     signal: 'positive' | 'negative' | 'neutral',
     options?: { source?: 'auto' },
   ): Promise<void> {
-    // #1310: `source` is sent only when set, so an explicit rating's request
-    // body is byte-identical to before. Callers send `source: 'auto'` only to
+    // `source` is sent only when set, so an explicit rating's request body
+    // is unchanged. Callers send `source: 'auto'` only to
     // a server that advertises FEEDBACK_SOURCE_CAPABILITY.
     const payload = options?.source === 'auto' ? { signal, source: 'auto' } : { signal }
     const r = await this.fetchBounded(`${this.apiBase}/engrams/${encodeURIComponent(id)}/feedback`, {
@@ -1328,9 +1148,7 @@ export class RemoteStore {
   }
 
   async count(filter?: { status?: string }): Promise<number> {
-    // Cheap-ish: load (cached) and filter client-side. The server has
-    // a count column we could add an endpoint for, but at pilot scale
-    // this is fine.
+    // Cheap-ish: load (cached) and filter client-side.
     const all = await this.load()
     if (filter?.status) return all.filter(e => e.status === filter.status).length
     return all.length
@@ -1341,10 +1159,8 @@ export class RemoteStore {
    * any subset of {pinned, status, statement, ...}. The server applies
    * the diff atomically; unsupplied fields are unchanged.
    *
-   * RemoteStore-specific — no file-backed counterpart.
-   * Requires server support: enterprise PR #111 (merged 2026-05-21).
-   * Used by setPinned, promote, reportFailure for remote routing
-   * (closes the pin/promote/reportFailure remainder of issue #86).
+   * RemoteStore-specific — no file-backed counterpart; requires server support.
+   * Used by setPinned, promote, reportFailure for remote routing.
    */
   async patch(id: string, updates: Partial<Engram>): Promise<Engram | null> {
     const r = await this.fetchBounded(`${this.apiBase}/engrams/${encodeURIComponent(id)}`, {
@@ -1354,7 +1170,7 @@ export class RemoteStore {
     }, RemoteStore.readBounded)
     if (r.status === 404) return null
     if (!r.ok) throw new Error(`Remote patch failed: ${r.status} ${r.text}`)
-    // #327: the server confirmed the write (2xx). Capture the pre-write row
+    // The server confirmed the write (2xx). Capture the pre-write row
     // from the cache BEFORE invalidating so the fallback below can merge it.
     const prev = this.cache?.engrams.find(e => e.id === id) ?? null
     this.cache = null
@@ -1363,13 +1179,13 @@ export class RemoteStore {
     const body = (r.json ?? null) as { engram?: { id: string; scope: string; status: string; data?: any } } | null
     const reshaped = body?.engram ? this.reshape(body.engram) : null
     if (reshaped) return reshaped
-    // #327: 2xx but the echoed row was missing or failed validation. Returning
+    // 2xx but the echoed row was missing or failed validation. Returning
     // null here would be indistinguishable from the 404 above — callers would
     // misreport a successful write as not-found, or retry it. Return the
     // optimistically-merged engram (pre-write cached row + the acknowledged
     // updates); the next load() observes the server's authoritative state.
     // Only defined update values are applied, mirroring what JSON.stringify
-    // actually sent to the server. Same #408 id sanitization as reshape().
+    // actually sent to the server. Same id sanitization as reshape().
     const safeId = id.replace(/[^\w:./-]/g, '?').slice(0, 64)
     logger.warning(`[plur:remote-store] ${safeOrigin(this.url)} PATCH ${safeId} succeeded but the echoed row was unusable — returning optimistic merge`)
     const merged: Record<string, unknown> = prev ? { ...(prev as unknown as Record<string, unknown>) } : {}

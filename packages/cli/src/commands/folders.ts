@@ -17,45 +17,25 @@ const USAGE =
   '--trusted covers the .plur.yaml files in every folder below it. A repository\'s own memory store is still added only after plur folders set <repo> --on, or plur trust <repo>.'
 
 /**
- * Whether a `folders set`/`rm` or `trust` must carry a `--nonce`.
- *
- * Only a person at a terminal may write the map without one. When stdin or
- * stdout is not a TTY, the caller is a script or an agent (the ask flow runs
- * the command from a tool call), and without this an agent could skip the
- * nonce check simply by omitting `--nonce`, and write any folder, `--trusted`
- * included. Since #1378 `plur trust` (a grant) goes through here too;
- * `plur untrust` does not, because a revocation only removes trust.
- *
- * What this does NOT stop (#1378): a process that runs the CLI under a
- * pseudo-terminal (python's pty module, script(1), expect) passes this check
- * as if it were a person, and anything that can write files as this user can
- * edit folders.yaml directly. The nonce binds a write to one folder and one
- * offered answer; it does not prove that a person chose that answer.
+ * Whether a `folders set`/`rm` or `trust` must carry a `--nonce`: unless both
+ * stdin and stdout are TTYs, the caller is a script or agent, which must not
+ * skip the nonce check by omitting `--nonce`. `plur untrust` is exempt (it
+ * only removes trust). Does NOT stop a pty-wrapped process or direct edits of
+ * folders.yaml; the nonce binds a write to one folder and answer, not a person.
  */
 export function nonceRequired(stdinIsTTY: boolean | undefined, stdoutIsTTY: boolean | undefined): boolean {
   return !(stdinIsTTY === true && stdoutIsTTY === true)
 }
 
 /**
- * `plur folders` (#1347) — the only way to write the folder map
- * (`<PLUR home>/folders.yaml`): your on / off / ask decision, default write
- * scope and trust grant per folder. A repo cannot write it; `.plur.yaml`
- * stays the repo's request.
- *
+ * `plur folders` — the only way to write the folder map (`<PLUR home>/folders.yaml`):
+ * on/off/ask, default write scope and trust per folder. A repo cannot write it.
  *   plur folders list
  *   plur folders set <folder> --scope <s> | --on | --off | --ask | --remote-only --scope <s>
  *                             [--trusted|--no-trusted] [--nonce <n>]
  *   plur folders rm <folder>
- *
- * `--nonce` is what the ask flow passes: it must be the nonce issued for this
- * folder in this session, and it works once. Without `--nonce`, `set` and `rm`
- * are accepted only from an interactive terminal (see nonceRequired). A team
- * `--scope` must name a store already configured in config.yaml.
- *
- * `--remote-only --scope <s>` (owner decisions 2026-10-01): the folder's memory
- * lives only on the team server, in scope <s>, which must be served by a url
- * store. Unscoped writes there go to <s>; personal and local scopes are
- * refused; recall reads <s> and installed packs, never the personal store.
+ * `--nonce` must be this folder's single-use session nonce; without it, writes need an interactive terminal.
+ * A team `--scope` must name a configured store. `--remote-only`: memory lives only in team scope <s> (url store).
  */
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const json = shouldOutputJson(flags)
@@ -63,7 +43,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
 
   if (!sub || sub === 'list') {
     const plur = createPlur(flags, { readonly: true })
-    // A broken map is not "no decisions" (#1526): say where and what, and
+    // A broken map is not "no decisions": say where and what, and
     // offer the repair, instead of an empty list.
     const problem = folderMapProblem(plur.storageRoot)
     if (problem) return brokenMap(problem, flags, json)
@@ -141,7 +121,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   if (modes > 1) exit(1, `Pass only one of --scope, --on, --off, --ask, --not-now, --remote-only --scope <s>.\n${USAGE}`)
   if (modes === 0 && change.trusted === undefined) exit(1, `Nothing to set.\n${USAGE}`)
 
-  // "Not now" (the MCP folder question, #1525): consume the nonce issued for
+  // "Not now" (the MCP folder question): consume the nonce issued for
   // that answer and write nothing. It means nothing without its nonce.
   if (notNow) {
     if (change.trusted !== undefined) exit(1, `--not-now takes no --trusted / --no-trusted.\n${USAGE}`)
@@ -168,17 +148,11 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
 }
 
 /**
- * The agent session this command runs in, when its host says so (audit F5 of
- * #1517). The opencode plugin sets PLUR_FOLDER_SESSION for every shell its
- * agent runs, and binds the nonces it issues to that session; a nonce is then
- * checked only against the named session's nonces. The editor hooks' hosts
- * set nothing, and their unbound nonces work as before.
- *
- * `flag` is `--session <id>` (#1525): the MCP server cannot set the agent's
- * shell environment, so its commands name the session themselves. When the
- * environment names a session too, the two must agree; otherwise the command
- * is refused, so a host's PLUR_FOLDER_SESSION binding cannot be overridden
- * from the command line.
+ * The agent session this command runs in, when its host says so. The opencode
+ * plugin sets PLUR_FOLDER_SESSION and binds its nonces to that session; editor
+ * hooks leave nonces unbound. `--session <id>` lets the MCP server name the
+ * session; if the environment names one too they must agree, so a host's
+ * binding cannot be overridden from the command line.
  */
 export function nonceSession(flag?: string, json = false): { session?: string } {
   const env = process.env.PLUR_FOLDER_SESSION
@@ -216,11 +190,10 @@ export function fail(err: unknown, json: boolean): never {
   exit(1, msg)
 }
 
-/** `plur folders repair` as the user types it: with `--path` when they gave one. */
 /**
  * `plur folders repair` as the user types it, with `--path` when they gave
- * one — quoted by core's rules, the same as the agent form (#1530 review F4):
- * POSIX single quotes, so a pasted command never runs what a path holds.
+ * one — quoted by core's rules, the same as the agent form: POSIX single
+ * quotes, so a pasted command never runs what a path holds.
  */
 export function repairCommandFor(flags: GlobalFlags): string {
   if (!flags.path) return 'plur folders repair'
@@ -268,18 +241,11 @@ async function confirm(question: string): Promise<boolean> {
 }
 
 /**
- * `plur folders repair [--yes]` (#1526): fix what is unambiguous in a broken
- * folders.yaml — indentation, tabs, a misspelled top-level key, a mode with
- * the wrong case or a one-letter typo, an empty file — keeping every comment.
- *
- * Shows a unified diff, then asks (in a terminal). `--yes` skips the question;
- * without it, a run that is not an interactive terminal is a dry run and exits
- * nonzero. Before writing, a backup `folders.yaml.plur-backup-<UTC>` is saved
- * next to the file; the write is atomic; the result is checked again. When
- * something cannot be fixed automatically it says where and changes nothing.
- *
- * No nonce: the repair cannot change a decision, only the spelling of one the
- * file already holds, and the agent form runs it only after the user agrees.
+ * `plur folders repair [--yes]`: fix unambiguous breakage in folders.yaml
+ * (indentation, tabs, key/mode typos, empty file), keeping comments. Shows a
+ * diff and asks; without `--yes` a non-interactive run is a dry run exiting
+ * nonzero. Backs up to `folders.yaml.plur-backup-<UTC>`, writes atomically and
+ * re-checks. No nonce: it only respells decisions the file already holds.
  */
 async function repair(rest: string[], flags: GlobalFlags, json: boolean): Promise<void> {
   let yes = false

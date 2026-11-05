@@ -1,5 +1,5 @@
 // INS-2: Setting up PLUR keeps my other client settings, and the doctor
-// reports a memory connection it could not verify as a failure.
+// never reports a memory connection it could not verify as healthy.
 //
 // Setup: each installer (`plur init` and `plur-mcp init`, run from source into
 // a throwaway HOME) meets a Claude Code that is already customised: other MCP
@@ -59,7 +59,7 @@ function install(h: HookHome, which: Installer): void {
 const readJson = (p: string) => JSON.parse(readFileSync(p, 'utf8'))
 const hasPlurHook = (settings: any) => JSON.stringify(settings.hooks ?? {}).includes('hook-')
 
-describe('INS-2 setup keeps my other client settings; the doctor calls an unverified memory connection a failure', () => {
+describe('INS-2 setup keeps my other client settings; the doctor never calls an unverified memory connection healthy', () => {
   const homes: HookHome[] = []
   afterEach(() => { while (homes.length) homes.pop()!.cleanup() })
   const fresh = () => { const h = hookHome(); homes.push(h); return h }

@@ -2,22 +2,22 @@ import { accessSync, constants } from 'node:fs'
 import { delimiter, join } from 'node:path'
 
 /**
- * The folder question stays actionable until the folder is decided (audit F2
- * of #1517). opencode rebuilds the system prompt for every request and keeps
- * none of it in history, so a question shown once is gone on the turn the
- * user answers it. The next turn of an undecided session therefore carries
- * a reminder with the SAME commands and nonces (none is issued again), told
- * not to ask again and to run one only for an answer to that question; after
- * it the session carries nothing (re-audit R4). It is built only from the
- * question's own lines, so it holds nothing the question did not.
+ * The folder question stays actionable until the folder is decided.
+ * opencode rebuilds the system prompt for every request and keeps none of it
+ * in history, so a question shown once is gone on the turn the user answers
+ * it. The next turn of an undecided session therefore carries a reminder with
+ * the SAME commands and nonces (none is issued again), told not to ask again
+ * and to run one only for an answer to that question; after it the session
+ * carries nothing. It is built only from the question's own lines, so it holds
+ * nothing the question did not.
  */
 export function folderAskReminder(question: string): string {
   const lines = question.split('\n')
   const header = /^\[PLUR Memory — [^\]]*\]/.exec(lines[0] ?? '')?.[0] ?? '[PLUR Memory — no decision for this folder yet, so no memories were loaded]'
   const commands = lines.filter(l => l.startsWith('- ') || l.startsWith('Other team scopes configured here:'))
   const offersCommands = commands.some(l => l.includes('--nonce '))
-  // The broken-map notice's repair offer (#1526): its one command, kept for
-  // the turn the user answers in, like the question's.
+  // The broken-map notice's repair offer: its one command, kept for the turn
+  // the user answers in, like the question's.
   const repair = commands.find(l => l.includes(' folders repair --yes'))
   if (!offersCommands && repair) {
     return [
@@ -41,9 +41,9 @@ export function folderAskReminder(question: string): string {
 }
 
 /**
- * True when a `plur` executable is on PATH (audit F8 of #1517). The offered
- * commands run in the agent's shell, which gets this process's PATH; without
- * the CLI they would all fail, so the question is not offered.
+ * True when a `plur` executable is on PATH. The offered commands run in the
+ * agent's shell, which gets this process's PATH; without the CLI they would
+ * all fail, so the question is not offered.
  */
 export function plurOnPath(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): boolean {
   const dirs = (env.PATH ?? env.Path ?? '').split(delimiter).filter(Boolean)

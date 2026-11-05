@@ -1,98 +1,24 @@
 /**
- * StorageAdapter — shared interface for query backends.
- *
- * ## Roles (convergence Phase 1)
- *
- * An adapter declares a `role` saying what it is relative to the source of
- * truth:
- *
- *   - `'index'`   — a DERIVED index. Something else owns the data (today: a
- *                   `PrimaryStore`, by default YAML on disk). Everything the
- *                   adapter holds must be rebuildable by calling `reindex()`
- *                   with no observable change in query results (ADR-0001 /
- *                   #226 / Sprint 0 PR 1). `syncFromYaml()` and `reindex()` are
- *                   REQUIRED for this role — see `DerivedIndexAdapter`.
- *
- *   - `'primary'` — the adapter is backed by the same engine that IS the source
- *                   of truth, so there is no external delta to apply. It MUST
- *                   NOT implement `syncFromYaml()` / `reindex()`; a caller that
- *                   invokes them would be asking a store to rebuild itself from
- *                   a file it does not have. (Reserved for Phase 5's
- *                   `PostgresAdapter`; no in-repo implementation yet.)
- *
- * `syncFromYaml()` and `reindex()` are therefore OPTIONAL on the base
- * interface. Call them through `asDerivedIndex()` / `requiresIndexSync()`
- * rather than assuming they exist — that assumption is exactly what made this
- * interface an index-only contract.
- *
- * ## Why the write path is not here
- *
- * `StorageAdapter` has no `save` / `append` / `remove`. It never did. A
- * capability flag alone could not promote it to a primary store, because there
- * is nothing to promote — the write half does not exist on this interface.
- * Persistence lives on `PrimaryStore` (`store/primary-store.ts`); this
- * interface stays about *querying*. A Phase 5 Postgres backend implements both,
- * and declares `role: 'primary'` here to say "my query index and my store are
- * the same engine".
- *
- * ## Why the vector-index strategy is on the interface
- *
- * Core has always answered `searchVector()` exactly — a brute-force cosine
- * scan over every candidate, so recall was 1.0 by construction and nobody had
- * to ask. A server-scale backend cannot do that; it needs an approximate index
- * whose recall is a tuning outcome. `vectorIndex` makes that a DECLARED
- * property of the adapter rather than a silent difference between deployments:
- * a caller can ask what it is getting. See ADR-0005.
- *
- * Backends today:
- *   - IndexedStorage   (legacy, better-sqlite3, in-process WAL — synchronous,
- *                       does not implement this interface)
- *   - PGLiteAdapter    (PGLite WASM, pgvector + AGE — ADR-0001, `role: 'index'`,
- *                       exact vector search)
- *   - PostgresAdapter  (server Postgres + pgvector — ADR-0005,
- *                       `role: 'primary'`, exact or HNSW)
- *
- * The PGLite path adds `searchBM25`, `searchVector`, and `upsertEmbedding` to
- * support the Wave 1 retrieval upgrades; the legacy SQLite path leaves those
- * undefined and the caller falls back to the in-memory `fts`/`embeddings`
- * modules.
+ * StorageAdapter — query backends only; persistence lives on `PrimaryStore`.
+ * - `role: 'index'` — a DERIVED index; must be rebuildable by `reindex()` with no
+ *   observable change (ADR-0001). `syncFromYaml()`/`reindex()` are REQUIRED (`DerivedIndexAdapter`).
+ * - `role: 'primary'` — backed by the source-of-truth engine (`PostgresAdapter`); MUST NOT
+ *   implement `syncFromYaml()`/`reindex()`. Call them via `asDerivedIndex()`/`requiresIndexSync()`.
+ * - `vectorIndex` declares exact vs approximate vector search (ADR-0005).
+ * Backends: PGLiteAdapter (index, exact), PostgresAdapter (primary, exact or HNSW);
+ * without `searchBM25`/`searchVector` the caller falls back to in-memory `fts`/`embeddings`.
  */
 import type { Engram } from './schemas/engram.js'
 import type { CorpusStats } from './fts.js'
 
 /**
- * Permitted-scope allow-list — the authorization filter (Phase 3, scope
- * pushdown).
- *
- * This exists so a caller that has ALREADY resolved an identity to a concrete
- * set of permitted scopes — typically in an identity/permission layer sitting
- * above core — can push that decision INTO the query, instead of filtering the
- * result set afterwards.
- *
- * Post-filtering an unrestricted nearest-neighbour list is the dilution bug
- * this type exists to prevent: `LIMIT` counts rows the caller may not be
- * allowed to see, so with a fixed overfetch factor a caller whose permitted
- * scopes are a small share of the corpus asks for N results and silently gets
- * far fewer, while relevant permitted rows sit just below the cut.
- *
- * Semantics — all three cases are load-bearing:
- *   - `undefined` (absent) → NO scope restriction. Identical behaviour to
- *     before this field existed.
- *   - `[]` (empty array)   → matches NOTHING. A principal with zero permitted
- *     scopes must see zero engrams. An empty list is never widened to
- *     "unrestricted"; that would be a privilege-escalation bug.
- *   - non-empty            → EXACT set membership (`scope = ANY(list)`).
- *
- * Exactness is deliberate. Unlike `StorageFilter.scope` (a *visibility* filter
- * that is hierarchy-aware and passes personal-family scopes through), `scopes`
- * is an *authorization* filter: the list is already the complete answer. It
- * performs NO hierarchy expansion and NO personal-family pass-through, so
- * `scopes: ['project:a']` admits `project:a` alone — not `project:a:sub`, not
- * `global`, not `local`. A caller who wants descendants must expand them into
- * the list itself.
- *
- * Composition: `scopes` is AND-ed with every other filter field (`status`,
- * `scope`, `domain`), so combining them can only ever narrow the result set.
+ * Permitted-scope allow-list — the authorization filter, pushed down into the
+ * query (post-filtering a k-NN list lets `LIMIT` count rows the caller cannot see).
+ *   - `undefined` → NO scope restriction.
+ *   - `[]`        → matches NOTHING; never widen it to "unrestricted" (privilege escalation).
+ *   - non-empty   → EXACT set membership (`scope = ANY(list)`): no hierarchy expansion,
+ *     no personal-family pass-through; callers expand descendants themselves.
+ * AND-ed with every other filter field, so it can only narrow results.
  */
 export interface ScopeRestriction {
   /** Permitted-scope allow-list. Absent = unrestricted, `[]` = nothing. */
@@ -108,23 +34,12 @@ export interface StorageFilter extends ScopeRestriction {
    */
   scope?: string
   /**
-   * Mounted-scope VISIBILITY grants (#775) — scopes explicitly mounted in
-   * `config.yaml` `stores:` (path and url entries alike). Each grant passes
-   * the `scope` visibility filter above exactly like the personal family:
-   * segment-aware containment (`scope = g OR scope LIKE g||':%' OR scope
-   * LIKE g||'/%'`), never a sibling string-prefix (#383).
-   *
-   * NOT AUTHORIZATION — read this twice before touching it. `scopes` (see
-   * {@link ScopeRestriction}) is the authorization allow-list: exact
-   * membership, AND-ed with everything, an empty list means NOTHING.
-   * `visibilityGrants` is the opposite kind of field: it only ever widens
-   * the `scope` VISIBILITY clause, is meaningless without `scope`, and MUST
-   * NEVER be consulted by (or OR-ed into) the `scopes` clause — an engram
-   * outside the `scopes` allow-list stays invisible no matter how many
-   * grants cover it. Confusing the two is a privilege escalation, not a
-   * styling choice.
-   *
-   * Absent and `[]` are equivalent: no extra scopes pass (prior behavior).
+   * Mounted-scope VISIBILITY grants (scopes mounted in `config.yaml` `stores:`).
+   * Each passes the `scope` visibility filter like the personal family, with
+   * segment-aware containment (`= g`, `LIKE g||':%'`, `LIKE g||'/%'`), never a string prefix.
+   * NOT AUTHORIZATION: it only widens the `scope` clause and MUST NEVER be OR-ed into
+   * the `scopes` allow-list ({@link ScopeRestriction}) — doing so is a privilege escalation.
+   * Absent and `[]` are equivalent: no extra scopes pass.
    */
   visibilityGrants?: readonly string[]
   domain?: string
@@ -156,7 +71,7 @@ export type StorageAdapterRole = 'index' | 'primary'
 export type VectorIndexKind = 'exact' | 'hnsw' | 'ivfflat'
 
 /**
- * On-disk element format of the embedding column (#223). A REAL difference in
+ * On-disk element format of the embedding column. A REAL difference in
  * stored values, not just a size knob: `halfvec` rounds every element to fp16,
  * so two tiers running different precisions answer the same query with
  * slightly different scores. Part of the strategy so a caller comparing two
@@ -167,12 +82,10 @@ export type VectorElementFormat = 'float32' | 'halfvec'
 /**
  * What a caller gets from `searchVector()` — DECLARED, not inferred.
  *
- * Core has always been exact (in-memory cosine over the whole corpus), so
- * "100% recall" was a property nobody had to ask about. At Postgres scale that
- * stops being free: an approximate index is the only way to answer in
- * bounded time, and its recall is a tuning outcome. Rather than let that
- * become an implementation detail that differs silently between deployments,
- * every adapter declares it. See ADR-0005 for the decision and the measurement
+ * The in-memory path is exact (cosine over the whole corpus). At Postgres
+ * scale an approximate index is the only way to answer in bounded time, and
+ * its recall is a tuning outcome. So that this does not differ silently
+ * between deployments, every adapter declares it. See ADR-0005 for the decision and the measurement
  * protocol behind `recallTarget`.
  */
 export interface VectorIndexStrategy {
@@ -186,7 +99,7 @@ export interface VectorIndexStrategy {
    * scan as ground truth, |approx ∩ exact| / k averaged over the query set).
    */
   readonly recallTarget: number | null
-  /** Element format of the stored vectors (#223). */
+  /** Element format of the stored vectors. */
   readonly format: VectorElementFormat
   /**
    * Tuning parameters actually in force, e.g. `{ m, efConstruction, efSearch }`
@@ -214,15 +127,9 @@ export const EXACT_VECTOR_INDEX: VectorIndexStrategy = Object.freeze({
 export const PGVECTOR_DEFAULT_EF_SEARCH = 40
 
 /**
- * Headroom multiplier applied on top of the hard `>= limit` floor.
- *
- * The floor is a correctness requirement: `ef_search < limit` cannot return
- * `limit` rows at all. The multiplier covers the *second* failure mode — a
- * post-filter. When a vector scan is followed by a predicate the index cannot
- * evaluate (`status = 'active'`, a scope restriction), pgvector yields
- * `ef_search` candidates and the filter then removes some of them, so a query
- * asking for `k` rows can come back short even with `ef_search = k`. Fetching
- * 2x candidates absorbs a filter that rejects up to half the neighbourhood.
+ * Headroom multiplier on top of the hard `ef_search >= limit` floor. A predicate the
+ * index cannot evaluate (status, scope) post-filters the `ef_search` candidates, so
+ * 2x absorbs a filter rejecting up to half the neighbourhood.
  */
 export const EF_SEARCH_FILTER_HEADROOM = 2
 
@@ -258,26 +165,10 @@ export function efSearchFor(
 }
 
 /**
- * Defaults for an out-of-tree adapter adopting the 0.16 interface.
- *
- * `role` and `vectorIndex` are REQUIRED, deliberately — the point of ADR-0005
- * is that a caller can ask what it is getting instead of assuming the exactness
- * core happened to have historically. That makes them a breaking change for
- * anyone who implemented this interface before 0.16, so here is the one-line
- * adoption:
- *
- * ```ts
- * class MyAdapter implements StorageAdapter {
- *   readonly role = DERIVED_INDEX_DEFAULTS.role
- *   readonly vectorIndex = DERIVED_INDEX_DEFAULTS.vectorIndex
- *   // ...
- * }
- * ```
- *
- * These describe the historical behaviour every pre-0.16 adapter had: a derived
- * index over YAML, answering `searchVector` with an exact scan. If yours is
- * approximate, say so rather than taking these — a wrong `vectorIndex` is worse
- * than none, because it is a claim a caller may act on.
+ * Defaults for an out-of-tree adapter: a derived index over YAML with exact
+ * vector search. `role` and `vectorIndex` are REQUIRED on purpose (ADR-0005).
+ * If your vector search is approximate, do not take these — a wrong `vectorIndex`
+ * is a claim callers act on.
  */
 export const DERIVED_INDEX_DEFAULTS = {
   role: 'index',
@@ -286,21 +177,10 @@ export const DERIVED_INDEX_DEFAULTS = {
 
 
 /**
- * Escape LIKE metacharacters in a caller-supplied value.
- *
- * `buildFilterClause` puts `filter.scope` and `filter.domain` straight into
- * LIKE patterns. Unescaped, a `%` from the caller widens the match instead of
- * narrowing it — `{ domain: '%' }` returns every domain, and `{ scope: '%' }`
- * returns engrams from unrelated groups, which is exactly the segment-aware
- * containment the #383 guard exists to enforce. Both verified against a live
- * database before this was added.
- *
- * Shared by every adapter on purpose: the scope rules have already drifted once
- * between the Postgres and PGLite copies, and that drift was an authorization
- * bypass. One implementation, or it happens again.
- *
- * Callers must pair this with `ESCAPE '\'` on the LIKE, so the escape
- * character does not depend on the server's `standard_conforming_strings`.
+ * Escape LIKE metacharacters in a caller-supplied value, so `%` cannot widen
+ * `filter.scope`/`filter.domain` matches past segment-aware containment.
+ * Shared by every adapter on purpose: scope-rule drift between adapters is an
+ * authorization bypass. Callers must pair it with `ESCAPE '\'` on the LIKE.
  */
 export function escapeLikePattern(value: string): string {
   return value.replace(/[\\%_]/g, c => `\\${c}`)
@@ -316,7 +196,7 @@ export interface StorageAdapter {
   /**
    * What `searchVector()` actually does — exact or approximate, with which
    * parameters. REQUIRED: a caller must be able to ask what it is getting
-   * rather than assume the exactness core happened to have historically.
+   * rather than assume exactness.
    * Exact backends report {@link EXACT_VECTOR_INDEX}.
    */
   readonly vectorIndex: VectorIndexStrategy
@@ -343,98 +223,29 @@ export interface StorageAdapter {
    */
   searchBM25(query: string, opts: { limit: number } & StorageFilter): Promise<Engram[]>
   /**
-   * `searchBM25`, plus whether the candidate set was EXHAUSTED (#753). OPTIONAL
-   * and purely additive — an adapter that cannot know this leaves it undefined
-   * and core's widening loop behaves exactly as before.
-   *
-   * Core cannot derive the answer: `rows.length === limit` is
-   * indistinguishable from "more rows exist", so the widening loop re-queries
-   * on the assumption there might be. For an adapter whose prefilter cannot
-   * rank — `PostgresAdapter`, which computes and scores the FULL candidate set
-   * and slices in core — that assumption is wrong every time, and the re-query
-   * is a 2-3x cost amplification concentrated in exactly the high-rejection
-   * case the widening exists to serve.
+   * `searchBM25`, plus whether the candidate set was EXHAUSTED. Optional and
+   * additive; when undefined core's widening loop re-queries as usual. Core cannot
+   * infer exhaustion from `rows.length === limit`, and for a full-candidate adapter
+   * like `PostgresAdapter` the re-query is a pure 2-3x cost.
    */
   searchBM25Exhaustive?(
     query: string,
     opts: { limit: number } & StorageFilter,
   ): Promise<{ rows: Engram[]; exhausted: boolean }>
   /**
-   * Corpus-wide `N` and per-term `df` for BM25 scoring (convergence Phase 4,
-   * #711). OPTIONAL — a store that cannot compute these exactly must leave it
-   * undefined, and the caller falls back to deriving them from the candidate
-   * set.
-   *
-   * ## Why this exists
-   *
-   * `searchBM25` returns a ranked, truncated candidate list. Scoring in core
-   * over that list means `computeIdf` sees `N = candidates.length`, so a term
-   * that is rare across 50,000 engrams but common among the 200 that came back
-   * is scored as common — IDF inverted, precisely for the terms it exists to
-   * privilege. Nothing errors; the ranking is just quietly wrong.
-   *
-   * So narrowing in the store and scoring in core is only sound if the store
-   * ALSO reports what the corpus looks like beyond the candidates.
-   *
-   * ## The exactness requirement
-   *
-   * `df` must be counted under `termMatches` from `fts.ts` —
-   * `t.includes(qt) || qt.startsWith(t)` — over the same scope restriction the
-   * search used. Not "close enough": an approximate `df` is worse than the
-   * local fallback, because local `df` is at least wrong in a way that
-   * correlates with the candidate set and can be reasoned about, whereas an
-   * approximation is wrong in a way that varies per term with no pattern.
-   *
-   * An implementation that cannot reproduce the rule should return `undefined`
-   * rather than a best effort.
+   * Corpus-wide `N` and per-term `df` for BM25 scoring. Optional; when undefined the
+   * caller derives them from the (truncated) candidate set, which skews IDF.
+   * `df` must be counted EXACTLY under `termMatches` from `fts.ts` over the same scope
+   * restriction as the search; return `undefined` rather than an approximation.
    *
    * @param queryTokens Tokens from `ftsTokenize` — already lowercased and
    *   stop-word filtered, so the store must not re-tokenize.
    */
   corpusStats?(queryTokens: string[], opts?: ScopeRestriction): Promise<CorpusStats | undefined>
   /**
-   * Corpus-wide `N` and per-term `df` for BM25 scoring (convergence Phase 4,
-   * #711). OPTIONAL — a store that cannot compute these exactly must leave it
-   * undefined, and the caller falls back to deriving them from the candidate
-   * set.
-   *
-   * ## Why this exists
-   *
-   * `searchBM25` returns a ranked, truncated candidate list. Scoring in core
-   * over that list means `computeIdf` sees `N = candidates.length`, so a term
-   * that is rare across 50,000 engrams but common among the 200 that came back
-   * is scored as common — IDF inverted, precisely for the terms it exists to
-   * privilege. Nothing errors; the ranking is just quietly wrong.
-   *
-   * So narrowing in the store and scoring in core is only sound if the store
-   * ALSO reports what the corpus looks like beyond the candidates.
-   *
-   * ## The exactness requirement
-   *
-   * `df` must be counted under `termMatches` from `fts.ts` —
-   * `t.includes(qt) || qt.startsWith(t)` — over the same scope restriction the
-   * search used. Not "close enough": an approximate `df` is worse than the
-   * local fallback, because local `df` is at least wrong in a way that
-   * correlates with the candidate set and can be reasoned about, whereas an
-   * approximation is wrong in a way that varies per term with no pattern.
-   *
-   * An implementation that cannot reproduce the rule should return `undefined`
-   * rather than a best effort.
-   *
-   * @param queryTokens Tokens from `ftsTokenize` — already lowercased and
-   *   stop-word filtered, so the store must not re-tokenize.
-   */
-  corpusStats?(queryTokens: string[], opts?: ScopeRestriction): Promise<CorpusStats | undefined>
-  /**
-   * Vector similarity search (cosine).
-   *
-   * `opts.scopes` must be applied IN the query (as part of the k-NN
-   * predicate), not to the returned rows — otherwise `limit` is measured
-   * against the unrestricted neighbour list and in-scope results are diluted
-   * away. See {@link ScopeRestriction}. The `scope` visibility filter and
-   * `visibilityGrants` (#775) ride the same rule for the same reason: a
-   * caller that honours them post-hoc spends `limit` on rows it is about to
-   * discard, and a granted team engram never surfaces through the vector leg.
+   * Vector similarity search (cosine). `opts.scopes`, the `scope` visibility filter
+   * and `visibilityGrants` must be applied IN the k-NN query, not to returned rows,
+   * or `limit` is spent on discarded rows ({@link ScopeRestriction}).
    */
   searchVector(
     query: Float32Array,
@@ -446,41 +257,19 @@ export interface StorageAdapter {
    *
    * `contentHash` is `embeddingContentHash(engram)` for the engram the vector
    * was computed from — the store persists it beside the vector so it can
-   * later tell a current vector from a stale one (#812). Optional only for
-   * back-compatibility with callers that predate staleness tracking; omitting
-   * it stores a NULL hash, which reads as "unknown" and makes the engram a
+   * later tell a current vector from a stale one. Optional for compatibility
+   * with callers that do not track staleness; omitting it stores a NULL hash, which reads as "unknown" and makes the engram a
    * candidate for one re-embed.
    */
   upsertEmbedding(engramId: string, vector: Float32Array, contentHash?: string): Promise<void>
   /**
-   * Active engrams with no stored embedding, up to `limit`, as ONE set-based
-   * query (#762). With `includeStale`, also those whose stored vector was
-   * computed from text the engram no longer has (#812).
-   *
-   * The two callers want different questions and must not be merged:
-   *
-   *   - the BACKFILL passes `includeStale: true` — a stale vector is work to do.
-   *   - the semantic read path's completeness gate does NOT. It asks whether
-   *     any engram is INVISIBLE to the vector leg, because that is what makes a
-   *     vector search silently partial. A stale vector still returns the engram,
-   *     just ranked by older text. Letting staleness open that gate would drop
-   *     every semantic recall onto the O(N) in-memory path corpus-wide until the
-   *     backfill caught up — one edited engram, whole-store cliff, which is the
-   *     regression this tier exists to avoid (ADR-0005's 2026-07-28 amendment).
-   *     Edits kick the backfill via the write path anyway, so nothing is missed.
-   *
-   * OPTIONAL — and the enabling contract for
-   * primary-store auto-embed: core only wires the write-path/backfill
-   * embedding pass into an adapter that can answer "which rows lack
-   * embeddings" without loading the corpus. The alternative shape — load
-   * everything, probe `hasEmbedding` per id — is O(N) round trips on every
-   * write, which at the corpus size that selects a server tier is a worse
-   * regression than the missing embeddings (see ADR-0005's 2026-07-28
-   * amendment). An adapter that cannot answer this as a set must leave the
-   * method undefined; core then skips auto-embed rather than degrade writes.
-   *
-   * Called with `limit: 1` as a completeness probe on the semantic read path,
-   * so the implementation should be an indexed anti-join, not a scan-and-diff.
+   * Active engrams with no stored embedding, up to `limit`, as ONE set-based query
+   * (an indexed anti-join, not scan-and-diff; probed with `limit: 1`).
+   * - The backfill passes `includeStale: true` (stale vectors are work to do).
+   * - The semantic read path's completeness gate must NOT: a stale vector still
+   *   returns the engram, and counting it would push all recall onto the O(N) path (ADR-0005).
+   * Optional: core only enables primary-store auto-embed for adapters that implement
+   * it; leave it undefined if you cannot answer as a set.
    */
   listEngramsMissingEmbeddings?(limit: number, opts?: { includeStale?: boolean }): Promise<Engram[]>
   /** Release resources. */

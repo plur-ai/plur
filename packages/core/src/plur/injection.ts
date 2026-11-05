@@ -1,0 +1,537 @@
+import * as fs from 'fs'
+import { join } from 'path'
+import { embedderStatus, embeddingSearchWithScores, semanticModelState, type SimilarityResult } from '../embeddings.js'
+import { computeQueryHash, generateInjectionId, isRecentDuplicateInjection } from '../history.js'
+import { Plur } from '../index.js'
+import { assignLayer, formatWithLayer, selectAndSpread } from '../inject.js'
+import { isEntityDomain } from '../intent/index.js'
+import { logger } from '../logger.js'
+import {
+    type RemoteOnlyStatus
+} from '../remote-only.js'
+import {
+    isRemoteRecallDisabled,
+    settleBy,
+    type RemoteRecallResult
+} from '../remote-recall.js'
+import type { Engram } from '../schemas/engram.js'
+import { NO_SESSION } from '../session-scopes.js'
+import { resolveScopeTarget } from '../store-resolver.js'
+import { normalizeEndpointUrl } from '../store/remote-store.js'
+import { withLock } from '../file-lock.js'
+import type { DegradedReason, InjectionResult, InjectOptions } from '../types.js'
+
+export interface InjectionMethods {
+  /** Scored injection within token budget (BM25 only). Returns formatted strings. */
+  inject(task: string, options?: InjectOptions): Promise<InjectionResult>
+
+  /**
+   * Whether the remote-only folder's team server served this read
+   * (`InjectionResult.remote_only`). Adapters say so, once per session, when
+   * it did not: the session then has no memory, by design — never a silent
+   * fallback to the personal store.
+   */
+  /** @internal */
+  _remoteOnlyStatus(remote: RemoteRecallResult | null | undefined): RemoteOnlyStatus
+
+  /** Scored injection with embedding boost when available. Falls back to BM25 if embeddings not installed. */
+  injectHybrid(task: string, options?: InjectOptions): Promise<InjectionResult>
+
+  /** @internal */
+  _formatInjection(task: string, options?: InjectOptions, embeddingBoosts?: Map<string, number>, remote?: { engrams: Engram[]; boosts: Map<string, number> }, deadlineAt?: number): Promise<InjectionResult>
+}
+
+export const injectionMethods: InjectionMethods & ThisType<Plur> = {
+  async inject(task: string, options?: InjectOptions): Promise<InjectionResult> {
+    if (this._remoteOnly) {
+      // remote-only: there is no local store to inject from, so even the
+      // keyword path dials the folder's team server (one call, bounded by
+      // remote_timeout_ms and the same end-to-end deadline as injectHybrid).
+      // Elsewhere inject() stays local-only.
+      const deadlineAt = this._recallDeadlineAt(options)
+      const remotePromise = this._startRemoteRecall(task, {
+        scope: options?.scope,
+        scopes: options?.scopes,
+        session: options?.session_id,
+        remote: options?.remote,
+        remote_timeout_ms: options?.remote_timeout_ms,
+      }, deadlineAt)
+      const { result: remoteResult, report } = await this._awaitRemote(remotePromise, deadlineAt)
+      const remote = this._remoteInjectCandidates(remoteResult, options)
+      const result = await this._formatInjection(task, options, undefined, remote, deadlineAt)
+      result.remote = report
+      result.remote_only = this._remoteOnlyStatus(remoteResult)
+      return result
+    }
+    return await this._formatInjection(task, options)
+  },
+
+  _remoteOnlyStatus(remote: RemoteRecallResult | null | undefined): RemoteOnlyStatus {
+    const ro = this._remoteOnly!
+    const base = { folder: ro.folder, scope: ro.scope }
+    if (!ro.scope) return { ...base, served: false, reason: 'no-scope' }
+    // The store a write to the folder's scope goes to: the shared resolver.
+    const target = resolveScopeTarget(ro.scope, this.config.stores ?? [])
+    const store = target.kind === 'remote' && target.writable ? target.entry : undefined
+    if (!store?.url) return { ...base, served: false, reason: 'no-store' }
+    let host = store.url
+    try { host = new URL(store.url).host } catch { /* keep as configured */ }
+    if (!remote) return { ...base, host, served: false, reason: isRemoteRecallDisabled() ? 'disabled' : 'not-dialled' }
+    const key = normalizeEndpointUrl(store.url)
+    const outcome = remote.outcomes.find(o => normalizeEndpointUrl(o.url) === key)
+    if (!outcome) return { ...base, host, served: false, reason: 'not-dialled' }
+    return outcome.state === 'ok' ? { ...base, host, served: true } : { ...base, host, served: false, reason: outcome.state }
+  },
+
+  async injectHybrid(task: string, options?: InjectOptions): Promise<InjectionResult> {
+    // The remote leg starts FIRST and runs in parallel with the local
+    // embedding work below, so a prompt costs at most ONE remote call per
+    // host. Bounded by the same end-to-end deadline as recall.
+    const deadlineAt = this._recallDeadlineAt(options)
+    const remotePromise = this._startRemoteRecall(task, {
+      scope: options?.scope,
+      // The authorization allow-list bounds dialing too.
+      scopes: options?.scopes,
+      // The inject's session (same id plur_session_start minted for
+      // co_injection provenance) doubles as the dialing-context key: the
+      // session default scope drives org-affinity when no explicit scope is
+      // given, so a mid-session scope switch redials the right org's hosts.
+      // `dial_session`: the workspace's scope for a read with no
+      // session default of its own; never recorded as a session.
+      session: options?.dial_session ?? options?.session_id,
+      remote: options?.remote,
+      remote_timeout_ms: options?.remote_timeout_ms,
+      remote_project: options?.remote_project,
+    }, deadlineAt)
+    // Use actual cosine similarity scores as boosts so the 0.5 threshold in
+    // selectAndSpread is meaningful; rank-based boosts would give the top
+    // result a full boost even when its cosine is low.
+    let embeddingBoosts: Map<string, number> | undefined
+    // Why the semantic leg did not contribute, when it did not. `embed()`
+    // swallows an embedder failure and returns null, so without this the
+    // injection would silently run on keyword matching only.
+    let embedFailure: string | null = null
+    // Stops the abandoned semantic leg's remaining work (the embeddings cache
+    // save in particular) once the deadline has passed.
+    const semanticAbort = new AbortController()
+    /** The model is not on disk: keyword only, never a download. */
+    let modelMissing = false
+    const semanticLeg = async (): Promise<void> => {
+    // remote-only: no embedder (see recallSemantic).
+    if (this._remoteOnly) return
+    if (await semanticModelState() === 'missing') { modelMissing = true; return }
+    try {
+      // remote-only: the read corpus (team store rows + packs), and no PGLite
+      // index, which mirrors the personal store.
+      const engrams = (await this._readCorpus()).filter(e => e.status === 'active')
+      // Route through PGLite/pgvector when active, intersecting hits
+      // with the YAML-rooted `engrams` set; else the JSON cache path.
+      let results: SimilarityResult[] = []
+      if (this.pgliteAdapter && !this._remoteOnly) {
+        const { embed } = await import('../embeddings.js')
+        const queryVec = await embed(task, 'query')
+        if (queryVec) {
+          try {
+            // Scope-restricted in-query, same reason as the recall legs. Less
+            // acute here because `limit` is `engrams.length` rather than a
+            // small k, so there is no cut for permitted rows to fall below;
+            // passing it keeps every vector path consistent and safe if that
+            // limit changes.
+            const hits = await this.pgliteAdapter!.searchVector(queryVec, engrams.length, { scopes: options?.scopes })
+            if (hits.length > 0) {
+              const allowed = new Map<string, Engram>(engrams.map(e => [e.id, e]))
+              for (const hit of hits) {
+                const e = allowed.get(hit.engram.id)
+                if (e) results.push({ engram: e, score: Math.max(0, Math.min(1, hit.score)) })
+              }
+            }
+          } catch (err) {
+            logger.warning(`[plur] PGLite searchVector failed in injectHybrid: ${(err as Error).message}.`)
+          }
+        }
+      }
+      if (results.length === 0) {
+        results = await embeddingSearchWithScores(engrams, task, engrams.length, this.paths.root, { signal: semanticAbort.signal, deadlineAt })
+      }
+      // Cross-encoder rerank stage: replace the cosine boosts for the
+      // top-K with the reranker's relevance, min-max normalized into [0,1] so
+      // the selectAndSpread 0.5 threshold stays meaningful. Off by default.
+      const rerank = await this._resolveRerankOptions(options?.rerank)
+      if (rerank && results.length > 0) {
+        const topK = Math.max(1, Math.min(results.length, rerank.topK ?? 50))
+        const head = results.slice(0, topK)
+        try {
+          const scores = await rerank.reranker!.scoreBatch(task, head.map(r => r.engram.statement))
+          if (scores.length === head.length) {
+            const min = Math.min(...scores)
+            const max = Math.max(...scores)
+            const span = max - min
+            for (let i = 0; i < head.length; i++) {
+              const normalized = span > 0 ? (scores[i] - min) / span : 0.5
+              head[i] = { engram: head[i].engram, score: normalized }
+            }
+            head.sort((a, b) => b.score - a.score)
+            results = [...head, ...results.slice(topK)]
+          }
+        } catch (err) {
+          logger.warning(`[plur] injectHybrid reranker "${rerank.reranker!.name}" failed: ${(err as Error).message}. Falling back to cosine boosts.`)
+        }
+      }
+      if (results.length > 0) {
+        embeddingBoosts = new Map()
+        for (const r of results) {
+          embeddingBoosts.set(r.engram.id, r.score)
+        }
+      }
+      // Intent-aware boost: modest (<=1.5x) upweight for engrams matching
+      // the query intent. Boost cap stays 1.0 so the 0.5 threshold keeps meaning.
+      const intent = this._resolveIntentProfile(task, options?.intentOverride)
+      if (intent && embeddingBoosts) {
+        for (const e of results.map(r => r.engram)) {
+          let mult = 1.0
+          if (intent.profile.entityBoost !== 1.0 && isEntityDomain(e.domain)) {
+            mult *= intent.profile.entityBoost
+          }
+          if (intent.profile.episodeBoost !== 1.0 && Array.isArray(e.episode_ids) && e.episode_ids.length > 0) {
+            mult *= intent.profile.episodeBoost
+          }
+          if (intent.profile.recencyBoost !== 1.0) {
+            const ts = e.activation?.last_accessed ?? e.temporal?.learned_at
+            if (ts) {
+              const days = (Date.now() - Date.parse(ts)) / (1000 * 60 * 60 * 24)
+              if (Number.isFinite(days) && days >= 0) {
+                const r = Math.exp(-days / 30) // half-life ~30 days
+                mult *= 1.0 + r * (intent.profile.recencyBoost - 1.0)
+              }
+            }
+          }
+          if (mult !== 1.0) {
+            const cur = embeddingBoosts.get(e.id) ?? 0
+            embeddingBoosts.set(e.id, Math.min(1.0, cur * mult))
+          }
+        }
+      }
+    } catch (err) {
+      // Continue without boosts — but say so.
+      embedFailure = (err as Error)?.message ?? String(err)
+      logger.warning(`[plur] injectHybrid: embeddings failed (${embedFailure}) — keyword-only injection.`)
+    }
+    }
+    // The semantic leg (corpus load, embedder, reranker) is bounded by the
+    // deadline; past it the injection runs on keyword matching and says so.
+    const semantic = await settleBy(semanticLeg(), deadlineAt)
+    const semanticComplete = semantic.done && !modelMissing
+    if (!semanticComplete) this._maybeFillEmbeddingCache()
+    if (!semanticComplete) {
+      semanticAbort.abort()
+      embeddingBoosts = undefined
+    }
+    const boosts = embeddingBoosts
+    // A swallowed failure shows in the embedder's status. Embeddings the USER
+    // turned off (`disabled`) are a choice, not a degradation: never flagged.
+    const st = embedderStatus()
+    if (semanticComplete && !embedFailure && !st.disabled && !st.available) embedFailure = st.lastError ?? 'embedder unavailable'
+    // Server rows join the candidate pool + boost channel. Visibility/
+    // authorization run over them INSIDE _remoteInjectCandidates, before any
+    // boost exists to resurrect a scope-excluded row.
+    const { result: remoteResult, report } = await this._awaitRemote(remotePromise, deadlineAt)
+    const remote = this._remoteInjectCandidates(remoteResult, options)
+    const result = await this._formatInjection(task, options, boosts, remote, deadlineAt)
+    // What the server leg did on THIS call, as on recall.
+    result.remote = report
+    if (this._remoteOnly) result.remote_only = this._remoteOnlyStatus(remoteResult)
+    result.results_complete = semanticComplete && (report.state === 'ok' || report.state === 'not_dialed')
+    if (!semanticComplete) {
+      // Cut by the deadline — not an embedder fault, so no operator log line.
+      if (st.disabled) {
+        result.mode = 'bm25-only'
+      } else {
+        const reason: DegradedReason = modelMissing ? 'embedding_model_missing' : 'semantic_deadline'
+        result.mode = 'hybrid-degraded'
+        result.embedder_error = Plur.DEGRADED_MESSAGES[reason]
+        result.degraded_reason = reason
+      }
+      return result
+    }
+    // Reported as structured fields mirroring `HybridSearchResult`, not as a
+    // `warnings` line: `warnings` is rendered into the injected context on
+    // every prompt, and an install without the model would repeat the same
+    // line forever. Logged once per process for an operator.
+    if (embedFailure) {
+      result.mode = 'hybrid-degraded'
+      result.embedder_error = embedFailure
+      if (!Plur._injectDegradedLogged) {
+        Plur._injectDegradedLogged = true
+        logger.warning(`[plur] injectHybrid: embedder unavailable (${embedFailure}) — injecting by keyword match only.`)
+      }
+    } else {
+      result.mode = st.disabled ? 'bm25-only' : 'hybrid'
+    }
+    return result
+  },
+
+  async _formatInjection(task: string, options?: InjectOptions, embeddingBoosts?: Map<string, number>, remote?: { engrams: Engram[]; boosts: Map<string, number> }, deadlineAt?: number): Promise<InjectionResult> {
+    // remote-only: team store rows + packs, never the personal store.
+    let allEngrams = await this._readCorpus()
+    const allPacks = this._remoteOnly?.blocked ? [] : this._loadInstalledPacks()
+
+    if (remote && remote.engrams.length > 0) {
+      // Candidate-pool dedup by namespaced id — the SERVER copy wins (fresher
+      // than any peek-cache copy of the same remote row that
+      // _loadSecondaryAndPacks may have merged in).
+      const serverIds = new Set(remote.engrams.map(e => e.id))
+      allEngrams = [...allEngrams.filter(e => !serverIds.has(e.id)), ...remote.engrams]
+      // Boost-channel entry. The map is SHARED with the local cosine/reranker
+      // writes — collision rule is max-merge, so neither channel can lower
+      // the other's signal.
+      if (embeddingBoosts) {
+        for (const [id, boost] of remote.boosts) {
+          const cur = embeddingBoosts.get(id)
+          embeddingBoosts.set(id, cur === undefined ? boost : Math.max(cur, boost))
+        }
+      } else {
+        embeddingBoosts = remote.boosts
+      }
+    }
+
+    // Permitted-scope allow-list — AUTHORIZATION, applied before selection.
+    // `options.scope` is only a VISIBILITY filter that passes the whole
+    // personal family; without this, a multi-tenant caller would leak every
+    // principal's personal engrams into others' context. Exact membership like
+    // `ScopeRestriction`: absent = unrestricted, `[]` = nothing, else the list
+    // with no hierarchy expansion. Packs are filtered too (no exemption).
+    const permitted = options?.scopes
+    const inScope = (e: Engram): boolean => permitted === undefined || permitted.includes(e.scope)
+    // Pack engrams are carried by `packs`, NOT by this array.
+    //
+    // `_loadAllEngrams` merges installed-pack engrams into the corpus (stamped
+    // `_pack`) for recall. Left in here, `selectAndSpread` would score every
+    // pack engram twice, once under personal-loop rules never meant for it
+    // (the pack loop uses `packMatchTerms` and MAX_PER_PACK), competing for the
+    // token budget and inflating `total_injections`.
+    const withoutPacks = allEngrams.filter(e => (e as { _pack?: string })._pack === undefined)
+    const engrams = permitted === undefined ? withoutPacks : withoutPacks.filter(inScope)
+    const packs = permitted === undefined
+      ? allPacks
+      : allPacks
+        .map(p => ({ ...p, engrams: p.engrams.filter(inScope) }))
+        .filter(p => p.engrams.length > 0)
+
+    const budget = options?.budget ?? this.config.injection_budget ?? 2000
+
+    const result = selectAndSpread(
+      {
+        prompt: task,
+        scope: options?.scope,
+        // Mounted-scope visibility grants: scopes from config.stores
+        // pass the `scope` VISIBILITY filter inside scoreEngram like the
+        // personal family. Deliberately independent of the `permitted`
+        // authorization filter above — grants never widen `options.scopes`.
+        grantedScopes: this._grantedScopes(),
+        maxTokens: budget,
+      },
+      engrams,
+      packs,
+      {
+        spread_cap: this.config.injection?.spread_cap,
+        spread_budget: this.config.injection?.spread_budget,
+        expiry: this.config.expiry,
+        pinned_hard_ratio: this.config.injection?.pinned_hard_ratio,
+        pinned_ratio: this.config.injection?.pinned_ratio,
+      },
+      embeddingBoosts,
+    )
+
+    if (result.spread_drops) {
+      this._spreadDrops.dropped_unresolvable += result.spread_drops.dropped_unresolvable
+      this._spreadDrops.dropped_retired += result.spread_drops.dropped_retired
+    }
+
+    const directivesStr = formatWithLayer(result.directives, assignLayer('directives'))
+    const constraintsStr = formatWithLayer(result.constraints, assignLayer('constraints'))
+    const considerStr = formatWithLayer(result.consider, assignLayer('consider'))
+    const count = result.directives.length + result.constraints.length + result.consider.length
+    const tokensUsed = result.tokens_used.directives + result.tokens_used.consider
+
+    const injected_ids = [
+      ...result.directives.map(e => e.id),
+      ...result.constraints.map(e => e.id),
+      ...result.consider.map(e => e.id),
+    ]
+
+    // Build per-pack injection counts for telemetry (session_end activation tracking).
+    // Uses the `pack` field that selectAndSpread stamps onto every WireEngram —
+    // null means the engram belongs to the user's personal store, not an installed pack.
+    const injected_packs: Record<string, number> | undefined = injected_ids.length > 0
+      ? (() => {
+          const allEngrams = [
+            ...result.directives,
+            ...result.constraints,
+            ...result.consider,
+          ]
+          const counts: Record<string, number> = {}
+          for (const e of allEngrams) {
+            // `_pack` FIRST. `pack` is the schema field, set only when an
+            // engram's own YAML declares it; `_loadAllEngrams` stamps installed
+            // pack engrams with `_pack` (the pack's manifest name) and nothing
+            // sets `pack` on them, so reading `pack` alone would bucket them
+            // as `__personal__`.
+            //
+            // `_pack` survives into `WireEngram` because `stripScoring`
+            // rest-spreads. `pack` is kept as the fallback so a pack engram
+            // that DOES declare its origin still buckets by it.
+            const key = (e as { _pack?: string })._pack ?? e.pack ?? '__personal__'
+            counts[key] = (counts[key] ?? 0) + 1
+          }
+          return counts
+        })()
+      : undefined
+
+    // Log a co_injection provenance event (which engrams fired together for
+    // which query): IDs + query hash only, never statements; best-effort, a
+    // history write failure never breaks injection. Dedup is cross-process via
+    // the HISTORY FILE (hooks are fresh processes), keyed on query_hash + sorted
+    // engram IDs, since one query can select different engrams after a write.
+    if (injected_ids.length > 0) {
+      // Cross-process dedup of the co_injection history event. The
+      // injection_count increment below follows the same verdict.
+      const queryHash = computeQueryHash(task)
+
+      // The check and the append are ONE critical section, or nothing is
+      // deduped (hook processes spawn milliseconds apart).
+      // Its OWN lock file, not appendHistory's chain-stamping lock: withLock is
+      // not reentrant. They nest one way only (this one outside). Short backoff,
+      // since the section is just a tail read and an append.
+      const historyDir = join(this.paths.root, 'history')
+      // Whether THIS call is the one that recorded the injection. Decided inside
+      // the lock, read afterwards by the injection_count block so both counters
+      // follow the same verdict.
+      let recordedInjection = false
+      // Dedup applies to HOOK-sourced injections only.
+      //
+      // The key is content-based — query hash, engram set, source, session — so
+      // it cannot tell "the hook fired twice for one event" from "the caller
+      // injected the same thing three times". Duplicates come from hook
+      // processes: a fresh process per event, racing a sibling milliseconds
+      // away. Every other source ('inject', 'session_start') originates in a
+      // single long-lived MCP process making deliberate calls, and three
+      // deliberate calls are three injections.
+      const dedupApplies = options?.source === 'hook'
+      // NO_SESSION selects "no session default" for the dial
+      // context; it is not a session id and is never recorded as one.
+      const recordedSessionId = options?.session_id === NO_SESSION ? undefined : options?.session_id
+      const writeCoInjection = (): void => {
+        if (dedupApplies
+          && isRecentDuplicateInjection(this.paths.root, queryHash, injected_ids, 5_000, options?.source, recordedSessionId)) return
+        const injection_id = generateInjectionId()
+        try {
+          // Use the returned flag to learn whether the write landed:
+          // appendHistory swallows its own failure and returns normally, so
+          // the absence of a throw proves nothing, and counting a failed write
+          // would leave injection_count with no co_injection event behind it.
+          // `this._appendHistory`, not the bare `appendHistory`: the wrapper
+          // stamps `event.actor` with the configured identity.
+          const wrote = this._appendHistory({
+            event: 'co_injection',
+            engram_id: injection_id,
+            timestamp: new Date().toISOString(),
+            data: {
+              ids: injected_ids,
+              query_hash: queryHash,
+              // Event provenance for offline token-economics analysis of real
+              // sessions. Deliberately NOT read by the receipt, which shows no
+              // token/cost figure by design.
+              tokens_used: tokensUsed,
+              source: options?.source ?? 'inject',
+              ...(options?.scope ? { scope: options.scope } : {}),
+              ...(recordedSessionId ? { session_id: recordedSessionId } : {}),
+            },
+          })
+          // In-memory provenance is set regardless: the engrams WERE injected,
+          // whatever the log managed to record.
+          for (const id of injected_ids) this._lastInjectionByEngram.set(id, injection_id)
+          recordedInjection = wrote
+        } catch { /* best-effort */ }
+      }
+
+      try {
+        // The lock file lives beside the month files, so the directory has to
+        // exist before we can take it. appendHistory creates it too, but that
+        // is inside the section we are trying to guard.
+        if (!fs.existsSync(historyDir)) fs.mkdirSync(historyDir, { recursive: true })
+        withLock(join(historyDir, 'co-injection-dedup'), writeCoInjection, { maxRetries: 12, baseDelay: 2 })
+      } catch {
+        // Could not take the lock. Write UNDEDUPED rather than dropping the
+        // event: a duplicate provenance record is noise, a missing one is a
+        // hole in the log `plur restore` reads to NAME what it cannot recover.
+        // Losing a record to avoid a duplicate is the wrong way round.
+        writeCoInjection()
+      }
+
+      // Increment injection_count on primary-store engrams selected for context.
+      // Distinct from activation.frequency (recall events): this tracks actual
+      // injection into the model's context window. Best-effort: never breaks injection.
+      //
+      // Gated on the same verdict as the history event: a deduplicated event is
+      // one injection, so the counter must not disagree with the history log.
+      if (!recordedInjection || this._remoteOnly) {
+        // (remote-only: no counter on primary rows.)
+        // A duplicate. The engram's count was already incremented by the call
+        // that recorded the event, microseconds ago and in another process.
+      } else {
+      //
+      // TARGETED, via the `_loadTargeted`/`_updateEngrams` pair: this runs at
+      // every session start inside the global store lock, so a full corpus
+      // load and rewrite would stall every concurrent writer. On YAML (no
+      // `updateMany`) the pair falls back to a corpus write of the corpus
+      // loaded under this lock.
+      try {
+        await this._bookkeepingWithinDeadline(deadlineAt, async (tooLate) => {
+          const primaryEngrams = await this._loadTargeted(injected_ids)
+          const injectedSet = new Set(injected_ids)
+          const touched: Engram[] = []
+          for (const e of primaryEngrams) {
+            if (injectedSet.has(e.id)) {
+              e.injection_count = (e.injection_count ?? 0) + 1
+              touched.push(e)
+            }
+          }
+          if (tooLate()) return
+          await this._updateEngrams(primaryEngrams, touched)
+        })
+      } catch (err) {
+        // Best-effort, but not SILENT. `EngramStoreShrinkError` and
+        // `EngramStoreUnreadableError` are the guards telling us the store is
+        // degrading; swallowing them on the most frequently run write
+        // path means the user gets no signal from the operation they run most.
+        // Everything else stays quiet — a counter is not worth a warning.
+        const name = (err as Error)?.constructor?.name
+        if (name === 'EngramStoreShrinkError' || name === 'EngramStoreUnreadableError') {
+          logger.warning(
+            `[plur] injection counters were not recorded: ${(err as Error).message}. `
+            + `The injection itself succeeded — this is a store-integrity signal, not an injection failure.`,
+          )
+        }
+      }
+      }
+    }
+
+    // Surface persisted tensions touching this injection: flag, don't
+    // adjudicate.
+    const warnings = this._tensionWarningsFor(injected_ids)
+
+    return {
+      directives: directivesStr,
+      constraints: constraintsStr,
+      consider: considerStr,
+      count,
+      tokens_used: tokensUsed,
+      injected_ids,
+      ...(injected_packs ? { injected_packs } : {}),
+      // Pinned engrams that did not make it, carried into the public result so
+      // a caller can see what it did not get.
+      ...(result.omitted_pinned?.length ? { omitted_pinned: result.omitted_pinned } : {}),
+      ...(warnings.length > 0 ? { warnings } : {}),
+    }
+  },
+}

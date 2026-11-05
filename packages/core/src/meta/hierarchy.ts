@@ -1,4 +1,3 @@
-// packages/core/src/meta/hierarchy.ts
 import type { Engram } from '../schemas/engram.js'
 import type { MetaField } from '../schemas/meta-engram.js'
 import { tokenSimilarity } from './similarity.js'

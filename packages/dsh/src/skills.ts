@@ -1,20 +1,9 @@
 /**
- * The `plur-memory` skill, contributed at runtime.
- *
- * Registered directly on `ctx.skills` rather than through a filesystem provider,
- * so installing the plugin is the only step — nothing to copy into a skills
- * directory.
- *
- * MUST be reached through `ctx.inject(['skills'], ...)`. Cordis throws on
- * reading an undeclared service, so the guard below cannot save a caller that
- * has not declared the dependency — the property access throws first.
- *
- * The host contract is `SkillRegistration`: the body field is **`content`**,
- * and `source` is required. An earlier version passed `body`. Register-time
- * validation only checks name and description, so registration SUCCEEDED and
- * the skill appeared in the catalog — then `ctx.skills.get('plur-memory')`
- * threw "loaded skill 'plur-memory' source must be a string" for anyone who
- * opened it. Advertised and broken is worse than absent.
+ * The `plur-memory` skill, registered at runtime directly on `ctx.skills` (no files to copy).
+ * MUST be reached through `ctx.inject(['skills'], ...)`: Cordis throws on reading an
+ * undeclared service before any guard here runs.
+ * Host contract `SkillRegistration`: the body field is **`content`** and `source` is
+ * required — a wrong shape still registers, then throws when loaded.
  *
  * @module
  */

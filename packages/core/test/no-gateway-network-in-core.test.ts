@@ -20,7 +20,7 @@ const SRC = join(fileURLToPath(new URL('.', import.meta.url)), '..', 'src')
 const PRE_EXISTING_NETWORK = new Set([
   'version-check.ts',
   'embedders/openai.ts',
-  'packs.ts',
+  'packs/download.ts',
   'store/remote-store.ts',
   'remote-recall.ts',
   'telemetry-flush.ts',

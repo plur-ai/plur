@@ -48,7 +48,7 @@ export interface BrowsePage {
   offset: number
 }
 
-/** Rows per page. 50 made for a page you scroll past rather than read. */
+/** Rows per page: small enough to read rather than scroll past. */
 const DEFAULT_LIMIT = 25
 
 /** The day portion of a date or ISO timestamp, or `undefined` if unparseable. */
@@ -61,23 +61,18 @@ function dayOf(value: string | undefined): string | undefined {
 /**
  * Engram ID date formats.
  *
- * Both are in the wild: `ENG-2026-0814-017` and `ENG-2026-08-14-005`, plus an
- * optional org segment (`ENG-GPL-2026-0814-017`). Between them they cover every
- * row in a real 5,429-engram store, which is why the ID is the reliable source
- * for a creation date and `temporal.learned_at` is not.
+ * Both exist: `ENG-2026-0814-017` and `ENG-2026-08-14-005`, plus an optional
+ * org segment (`ENG-GPL-2026-0814-017`). The ID is the reliable source for a
+ * creation date; `temporal.learned_at` is not.
  */
 const ID_DATE = /^ENG(?:-[A-Z]+)?-(\d{4})-(\d{2})-?(\d{2})-/
 
 /**
  * How many times this engram has actually been recalled.
  *
- * Reads `activation.frequency` — the retrieval-event counter, populated on
- * 3,964 of 5,429 rows in a real store with eight months of history.
- *
- * NOT `injection_count`: that counter shipped in #866 on 2026-08-13, so it is
- * non-zero on a couple of dozen rows and reports a store with years of use as
- * essentially unread. It is kept as a fallback for the case where a future
- * store has injections but no recorded retrievals.
+ * Reads `activation.frequency`, the retrieval-event counter. `injection_count`
+ * is only a fallback: it is a newer counter and is zero on most rows of an
+ * older store, so reading it first would report a well-used store as unread.
  *
  * @param row - the engram.
  * @returns the recall count, or 0.
@@ -93,8 +88,8 @@ export function recallCount(row: EngramRow | null | undefined): number {
  * The date this engram was created.
  *
  * Prefers the date encoded in the engram ID, because `temporal.learned_at` is
- * optional and in practice almost never set — 1 row in 5,429 on a real store,
- * which renders a "written per day" chart completely empty.
+ * optional and in practice almost never set, which would leave a "written per
+ * day" chart empty.
  *
  * @param row - the engram.
  * @returns a `YYYY-MM-DD` date, or `undefined` when neither source yields one.
@@ -258,18 +253,8 @@ export interface DayCount {
 }
 
 /**
- * Engrams written per day, over a trailing window.
- *
- * Emits a contiguous run of days including empty ones, so the chart shows gaps
- * as gaps rather than silently compressing them into a misleadingly busy series.
- *
- * Dates come from {@link createdOn}, not `temporal.learned_at` — see that
- * function for why.
- *
- * Only WRITES are charted. A local store keeps no per-event recall log, only
- * cumulative counters, so a matching "recalled per day" band cannot be derived
- * without inventing data. The never-recalled share in {@link memoryStats}
- * carries that signal instead.
+ * Engrams written per day over a trailing window, including empty days so gaps show as gaps. Dates come from
+ * {@link createdOn}. Only writes are charted: local stores keep no per-event recall log (see {@link memoryStats}).
  *
  * @param rows - all engrams in scope.
  * @param days - window length in days, ending today.

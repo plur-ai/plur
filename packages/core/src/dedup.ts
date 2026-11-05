@@ -2,20 +2,10 @@ import type { Engram } from './schemas/engram.js'
 import type { DedupDecision } from './types.js'
 
 /**
- * What each decision means, shared by the single and the batch prompt.
- *
- * The decisions are defined by what the store does with them, which is what the
- * checker is really choosing (owner decision 2026-10-18): NOOP saves nothing,
- * UPDATE saves the new statement as its own memory that SUPERSEDES the old one
- * (the old one stops being given to the agent), ADD and MERGE save it as its
- * own memory beside the old one (MERGE also links the two). No decision ever
- * rewrites an existing memory.
- *
- * The hard cases are pairs that differ by one or two words. Whether those words
- * change WHAT the rule is about (two rules, both true: ADD) or WHAT it says
- * about the same thing (they cannot both be followed: UPDATE) is the question
- * the definitions and examples teach. The examples are invented and generic on
- * purpose; they must never be taken from an evaluation set.
+ * What each decision means, shared by the single and batch prompts. NOOP saves nothing;
+ * UPDATE saves a new memory that SUPERSEDES the old; ADD and MERGE save beside it (MERGE
+ * links them). No decision rewrites an existing memory. The examples are invented and
+ * generic on purpose — never take them from an evaluation set.
  */
 export const DEDUP_DECISION_GUIDE = `How to decide. Compare the new statement with the existing memory closest to it:
 - SUBJECT: what the statement is about: the project, product, system, component, kind of item, event, audience or situation it applies to.

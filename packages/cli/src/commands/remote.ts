@@ -10,29 +10,13 @@ import {
 } from '@plur-ai/core'
 
 /**
- * `plur remote` (#1413, folder-map design r3): the one way to connect a folder
- * to a team store.
- *
+ * `plur remote`: the one way to connect a folder to a team store.
  *   plur remote --url <u> --token <t> [--scope <s> | --scopes <a,b,...>]
- *   plur remote                 # show this folder's connection and check it
- *
- * With flags it checks the token against the server's /me for every scope
- * first (Plur.verifyRemoteStore) and writes nothing if any is refused; then it
- * registers each scope as a url store in the user's config.yaml
- * (Plur.addRemoteStore, idempotent) and maps the current folder in
- * folders.yaml with the scope (`--scope`, or the first of `--scopes`), under
- * the folder-map lock. Nothing is written to the repo's `.plur.yaml`, so the
- * token never lands in a repo folder, and no trust grant is needed: the URL
- * and token are the user's own, in the user's own config.
- *
- * Without flags it prints the resolved folder policy and checks the stores
- * serving this folder: exit 0 when all are reachable, 2 when one is not, 1
- * when none serves it.
- *
- * `plur init-remote` is a hidden alias (same flags; `--verify` is bare
- * `plur remote`). It used to write the URL and token into `.plur.yaml`.
- *
- * The token is never printed: not in text, not in --json, not in an error.
+ *   plur remote                 # show this folder's connection and check it (exit 0 ok, 2 unreachable, 1 none)
+ * With flags it verifies the token for every scope first and writes nothing if any is refused; then registers url
+ * stores in the user's config.yaml and maps the folder in folders.yaml under the folder-map lock. Nothing goes into
+ * `.plur.yaml`, so the token never lands in a repo and no trust grant is needed.
+ * `plur init-remote` is a hidden alias. The token is never printed — not in text, --json or errors.
  */
 
 const HELP = `plur remote — connect this folder to a team store
@@ -76,7 +60,7 @@ function parseArgs(args: string[]): Parsed | { error: string } {
     if (a === '--help' || a === '-h') { out.help = true; continue }
     if (a === '--verify') { out.verify = true; continue }
     // Accepted for init-remote compatibility; nothing is written to the
-    // folder any more, so there is no .gitignore to skip.
+    // folder, so there is no .gitignore to skip.
     if (a === '--no-gitignore') continue
     if (VALUE_FLAGS.has(a)) {
       const next = args[i + 1]
@@ -143,7 +127,7 @@ function legacyMovedMessage(path: string): string {
 
 // Text from outside this machine — a repo's `.plur.yaml`, a server's `/me` —
 // reaches the agent reading this output, so only values that fit a narrow
-// grammar are printed; anything else is shown as "invalid" (#1415 review).
+// grammar are printed; anything else is shown as "invalid".
 const SCOPE_OR_DOMAIN = /^[A-Za-z0-9._@/:-]{1,256}$/
 const HOST = /^(?:[A-Za-z0-9.-]+|\[[0-9A-Fa-f:.]+\])(?::[0-9]{1,5})?$/
 const USERNAME = /^[\p{L}\p{N}._@+-]{1,128}$/u
@@ -280,7 +264,7 @@ async function connect(parsed: Parsed, flags: GlobalFlags): Promise<void> {
   const stores: Array<{ scope: string; status: string }> = []
   for (const scope of scopes) {
     try {
-      // #1561: with --token-env only the variable's name goes into config.yaml.
+      // With --token-env only the variable's name goes into config.yaml.
       const r = await plur.addRemoteStore({ url, token: tok, scope, ...(parsed.tokenEnv ? { tokenEnv: parsed.tokenEnv } : {}) })
       stores.push({ scope, status: r.status })
     } catch (err) {
@@ -348,7 +332,7 @@ interface ServedStore {
   status: 'ok' | 'auth_expired' | 'unreachable'
   username?: string
   reason?: string
-  /** #1564 review M2: the variable holding the token is unset; nothing was sent. */
+  /** The variable holding the token is unset; nothing was sent. */
   token_env_unset?: string
 }
 

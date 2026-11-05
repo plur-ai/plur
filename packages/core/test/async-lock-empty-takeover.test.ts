@@ -35,7 +35,7 @@ import { pathToFileURL } from 'url'
 import {
   withAsyncLock, makeToken, DEFAULT_STALE_THRESHOLD, EMPTY_LOCK_GRACE_MS,
 } from '../src/store/async-lock.js'
-import { withLock } from '../src/sync.js'
+import { withLock } from '../src/file-lock.js'
 
 const SRC = join(__dirname, '..', 'src')
 // Worker processes import core's TypeScript SOURCE through tsx (a core
@@ -202,7 +202,7 @@ describe('empty store lock takeover (#1354)', () => {
     const worker = (flavour: 'async' | 'sync', rounds: number) => `
       import { openSync, closeSync, unlinkSync, appendFileSync } from 'node:fs'
       import { withAsyncLock } from ${JSON.stringify(join(SRC, 'store', 'async-lock.ts'))}
-      import { withLock } from ${JSON.stringify(join(SRC, 'sync.ts'))}
+      import { withLock } from ${JSON.stringify(join(SRC, 'file-lock.ts'))}
       const file = ${JSON.stringify(filePath)}, marker = ${JSON.stringify(marker)}, log = ${JSON.stringify(log)}
       const spin = ms => { const e = Date.now() + ms; while (Date.now() < e) {} }
       const body = () => {

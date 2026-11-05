@@ -1,0 +1,4 @@
+"packages/core/src/plur/scope-guards.ts#scopeGuardsMethods._hitHolder":
+  lean: ["PlurSpec/R2CoreA.lean:cache_row_yields_to_local_store"]
+  tests: ["packages/core/test/user-scope-remote-recall.test.ts::L2: a cached remote row does not swallow a write that the selection keeps local"]
+  drop: [lean: "PlurSpec/R2CoreA.lean:every_write_durable"]   # holds for every hit kind; says nothing about _hitHolder's choice

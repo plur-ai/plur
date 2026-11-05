@@ -1,30 +1,12 @@
 /**
- * OpenAI `text-embedding-3-large` adapter — Sprint 0 PR 5 (#219),
- * hardened for production reembed runs in #269.
- *
- * 3072-dim embeddings via the OpenAI Embeddings API. Supports Matryoshka
- * truncation through the `dimensions` request param; we ship the full 3072d
- * by default to match the model's spec. Opt-in only — activated via
- * `PLUR_EMBEDDER=openai-3-large` plus a valid `OPENAI_API_KEY`.
- *
- * License / cost note: the OpenAI API is a paid commercial service governed by
- * OpenAI's terms (https://openai.com/policies). At the time of writing
- * `text-embedding-3-large` is billed per 1k tokens. Local users typically
- * stay on the default EmbeddingGemma adapter (Apache 2.0, no network) and
- * only flip to this adapter when they want the higher-end retrieval ceiling
- * and are happy to pay for it.
- *
- * Network shape: minimal `fetch` POST to `/v1/embeddings`. No SDK dependency
- * so the package stays free of optional peer deps and works in environments
- * that don't ship the `openai` package. If/when an SDK switch is wanted, the
- * adapter is a single-file swap.
- *
- * Hardening (#269, iter-1 audit M-9):
- *   - AbortController timeout so a hung request can't block a migration
- *   - 429/503 retry with Retry-After respect + exponential backoff fallback
- *   - embedBatch chunks requests to the API's input-array and token caps
- *   - inputs over the 8191-token limit are truncated pre-request so one long
- *     statement can't HTTP-400 a 10k-engram reembed run halfway through
+ * OpenAI `text-embedding-3-large` adapter: 3072-dim by default (Matryoshka
+ * truncation via `dimensions`). Opt-in only: `PLUR_EMBEDDER=openai-3-large`
+ * plus `OPENAI_API_KEY`. A paid, per-token API (https://openai.com/policies);
+ * the default EmbeddingGemma adapter stays local and free.
+ * Plain POST to `/v1/embeddings`, no SDK dependency. Robustness:
+ *   - AbortController timeout; 429/503 retry honouring Retry-After, then backoff
+ *   - embedBatch chunks to the API's input-array and token caps
+ *   - inputs over 8191 tokens are truncated so one statement cannot fail a reembed
  */
 import { logger } from '../logger.js'
 import type { EmbedderAdapter } from './types.js'
@@ -214,7 +196,7 @@ export function makeOpenAI3LargeAdapter(options?: OpenAI3LargeOptions): Embedder
   }
   return {
     // A remote API: no local model, no cold start, so no background cache
-    // fill (#1586 round 6, L4).
+    // fill.
     remote: true,
     name: 'openai-3-large',
     dim: OPENAI_3_LARGE_DIM,

@@ -7,7 +7,7 @@ import { fileURLToPath } from 'url'
 import { homedir, platform } from 'os'
 
 import { VERSION } from './version.js'
-import { isPlurHookSpec } from './hook-command.js'
+import { buildClaudeHooks, isPlurHookSpec, type HookEntry } from '@plur-ai/gateway/harness'
 
 const HELP = `plur-mcp v${VERSION} — persistent memory for AI agents
 
@@ -34,14 +34,14 @@ Docs: https://plur.ai · https://github.com/plur-ai/plur
 // The local MCP shim `plur init` installs (~/.plur/bin/plur-mcp, which runs
 // the installed @plur-ai/mcp with node). Preferred when present: a global
 // upgrade replaces the package at the same path, so the entry follows it
-// without a re-pin (#1832). Not on Windows, where current Node cannot spawn
-// the `.cmd` shim (#1267).
+// without a re-pin. Not on Windows, where current Node cannot spawn the
+// `.cmd` shim.
 const MCP_SHIM = join(homedir(), '.plur', 'bin', 'plur-mcp')
 
-// Otherwise npx, pinned to THIS build's version, never @latest (#1069): an
-// @latest entry makes npx rewrite its cached native binaries on every
-// publish, and macOS SIGKILLs (CODESIGNING Invalid Page) any process that
-// pages one in mid-rewrite. Upgrades re-run init, which re-pins.
+// Otherwise npx, pinned to THIS build's version, never @latest: an @latest
+// entry makes npx rewrite its cached native binaries on every publish, and
+// macOS SIGKILLs (CODESIGNING Invalid Page) any process that pages one in
+// mid-rewrite. Upgrades re-run init, which re-pins.
 function mcpServerConfig(): { command: string; args: string[] } {
   if (platform() !== 'win32' && existsSync(MCP_SHIM)) return { command: MCP_SHIM, args: [] }
   return { command: 'npx', args: ['-y', `@plur-ai/mcp@${VERSION}`] }
@@ -50,21 +50,10 @@ function mcpServerConfig(): { command: string; args: string[] } {
 // --- Pack-upgrade helpers ---
 
 /**
- * Compare two semver strings (e.g. "1.0.0" vs "1.1.0"). Returns negative if
- * a < b, 0 if equal, positive if a > b. Tolerates missing patch segments
- * (treats "1.0" as "1.0.0"). Strips prerelease suffixes — "1.0.0-rc1" is
- * compared as "1.0.0", which means a prerelease compares EQUAL to its base
- * release. Adequate for the controlled pack ecosystem; for prerelease
- * support add a dedicated semver lib.
- *
- * Non-numeric leading segments (e.g. "v1.0.0", "abc.1.0") parse as 0 — so
- * "v1.0.0" compares as [0,0,0]. This is intentional: we'd rather accept the
- * pack and treat it as version-zero than throw. The `extractManifestVersion`
- * regex normally strips the leading `v`; this is a defense-in-depth fallback.
- *
- * Calendar versioning (e.g. "2025.04") parses correctly as numeric segments,
- * but a calendar-versioned pack will compare as far-future against semver-
- * versioned bundled packs and never receive upgrades. Packs ship semver.
+ * Compare two semver strings: negative if a < b, 0 if equal, positive if a > b.
+ * Missing patch counts as 0; prerelease/build suffixes are stripped (so "1.0.0-rc1"
+ * equals "1.0.0"). Non-numeric segments parse as 0 rather than throwing. Calendar
+ * versions would compare as far-future and never upgrade — packs ship semver.
  */
 export function compareSemver(a: string, b: string): number {
   const stripPrerelease = (v: string): string => v.split('-')[0].split('+')[0]
@@ -107,79 +96,18 @@ export function extractManifestVersion(skillMdPath: string): string | null {
   }
 }
 
-// Prefer local hook shim if available (installed by `plur init`, see #178).
+// Prefer local hook shim if available (installed by `plur init`).
 // Fall back to npx for first-time users who haven't run `plur init` yet,
-// pinned like the MCP entry (#1069, #1832): a bare `npx @plur-ai/cli`
-// resolves latest on every publish and races the npx cache rewrite. The CLI
-// is released in lockstep with this package, so the same version exists.
+// pinned like the MCP entry: a bare `npx @plur-ai/cli` resolves latest on
+// every publish and races the npx cache rewrite. The CLI is released in
+// lockstep with this package, so the same version exists.
 const _shimName = platform() === 'win32' ? 'plur-hook.cmd' : 'plur-hook'
 const _shimCandidate = join(homedir(), '.plur', 'bin', _shimName)
 const CLI = existsSync(_shimCandidate) ? _shimCandidate : `npx -y @plur-ai/cli@${VERSION}`
 
-/**
- * Hook set for `plur-mcp init`: the same hooks `plur init` writes to user
- * settings, i.e. @plur-ai/cli's `buildEnforcementHooks` plus
- * `buildInjectionHooks` (this package cannot import the CLI). Both installers
- * must give the agent the same memory behaviour; test/init-hooks.test.ts
- * compares the full sets and fails when they diverge (#1279).
- */
+/** Hook set for `plur-mcp init`: the shared set `plur init` installs too. */
 export function buildPlurHooks(cli: string): Record<string, HookEntry[]> {
-  return {
-    // --- Session lifecycle ---
-    // Sync with a 20s budget, like `plur init` (#1313): async context reaches
-    // Claude Code only at the next safe point, so a first reply without tool
-    // calls had no memory. hook-inject exits by itself after 15s, so the
-    // timeout sits above that. Keep in step with CLAUDE_INJECT_TIMEOUT_S in
-    // @plur-ai/cli's lib/claude-inject-budget.ts.
-    UserPromptSubmit: [{
-      hooks: [{ type: 'command', command: `${cli} hook-inject`, timeout: 20 }],
-    }],
-    // Re-inject after compaction. SessionStart with matcher "compact" fires
-    // right after compaction and can carry context; PostCompact cannot
-    // (#1274, #1279). Re-running init moves an old PostCompact entry here.
-    SessionStart: [{
-      // Reminds the agent to start the PLUR session first (hook-session-guard
-      // below nudges once if it does not).
-      hooks: [{ type: 'command', command: `${cli} hook-session-remind`, timeout: 3 }],
-    }, {
-      matcher: 'compact',
-      hooks: [{ type: 'command', command: `${cli} hook-inject --rehydrate`, timeout: 20 }],
-    }, {
-      // `claude --resume` keeps the session id, and SessionEnd below deleted
-      // its folder-question nonces: the resumed session is asked again with a
-      // fresh nonce (#1347, option C). Identical to `plur init`'s entry.
-      matcher: 'resume',
-      hooks: [{ type: 'command', command: `${cli} hook-session-resume`, timeout: 3 }],
-    }],
-    // Auto-close the memory lifecycle at session end (Claude Code SessionEnd,
-    // shipped v1.0.85) — captures a closing episode and cleans up the session
-    // checkpoint even if the agent forgot to call plur_session_end (#217).
-    SessionEnd: [{
-      hooks: [{ type: 'command', command: `${cli} hook-session-end`, timeout: 5 }],
-    }],
-    // --- Contextual injection ---
-    PreToolUse: [
-      // Session guard first, so it runs before any other PreToolUse hook.
-      { matcher: '*', hooks: [{ type: 'command', command: `${cli} hook-session-guard`, timeout: 3 }] },
-      { matcher: 'EnterPlanMode', hooks: [{ type: 'command', command: `${cli} hook-inject --event plan_mode`, timeout: 10 }] },
-      { matcher: 'Skill', hooks: [{ type: 'command', command: `${cli} hook-inject --event skill`, timeout: 10 }] },
-      { matcher: 'Agent', hooks: [{ type: 'command', command: `${cli} hook-inject --event agent`, timeout: 10 }] },
-      { matcher: 'Bash|Edit|Write|Agent', hooks: [{ type: 'command', command: `${cli} hook-observe`, timeout: 3 }] },
-    ],
-    PostToolUse: [
-      // Marks the session started for the guard (any `mcp__<server>__plur_session_start`).
-      { matcher: 'mcp__.*__plur_session_start', hooks: [{ type: 'command', command: `${cli} hook-session-mark`, timeout: 3 }] },
-      { matcher: 'Bash|Edit|Write|Agent', hooks: [{ type: 'command', command: `${cli} hook-observe --post`, timeout: 3 }] },
-    ],
-    SubagentStart: [
-      { matcher: '.*', hooks: [{ type: 'command', command: `${cli} hook-inject --event subagent`, timeout: 10 }] },
-    ],
-    Stop: [
-      { matcher: '*', hooks: [{ type: 'command', command: `${cli} hook-learn-check`, timeout: 2 }] },
-      // Rates the engrams injected this turn from the reply (#1310); synchronous, as in `plur init`.
-      { matcher: '*', hooks: [{ type: 'command', command: `${cli} hook-auto-rate claude`, timeout: 10 }] },
-    ],
-  }
+  return buildClaudeHooks(cli)
 }
 
 const PLUR_HOOKS = buildPlurHooks(CLI)
@@ -196,10 +124,7 @@ export interface Settings {
   [key: string]: unknown
 }
 
-export interface HookEntry {
-  matcher?: string
-  hooks: Array<{ type: string; command: string; args?: string[]; timeout?: number; async?: boolean }>
-}
+export type { HookEntry }
 
 /**
  * Closes the CLAUDE.md section. Same as PLUR_INSTRUCTIONS_MARKER in
@@ -306,12 +231,11 @@ export async function installClaudeMd(claudeMdPath: string = defaultClaudeMdPath
 
 
 /**
- * Read a config file this function intends to WRITE BACK. The #1059 rule,
- * ported from @plur-ai/cli's readConfigForWrite (this package cannot import
- * the CLI): a file that exists but does not parse to a JSON object is the
- * user's damaged-but-recoverable data — reading it as {} and writing the
- * merge back destroys every other entry they had. Reproduced live in the
- * 0.19.1 evaluator audit against exactly this function.
+ * Read a config file this function intends to WRITE BACK. Same rule as
+ * @plur-ai/cli's readConfigForWrite (this package cannot import the CLI): a
+ * file that exists but does not parse to a JSON object is the user's
+ * damaged-but-recoverable data — reading it as {} and writing the merge back
+ * would destroy every other entry they had.
  */
 function readJsonObjectForWrite(path: string): { data: Record<string, unknown>; ok: boolean } {
   if (!existsSync(path)) return { data: {}, ok: true }
@@ -326,12 +250,11 @@ function readJsonObjectForWrite(path: string): { data: Record<string, unknown>; 
 
 /**
  * Move the npx entry THIS command's releases wrote to what it writes today:
- * the @latest/bare shape (the #1069 npx cache-rewrite race), and a pin older
- * than or equal to this build (#1832 — so a global upgrade reaches the config
- * on the next init, the rule `plur init` applies to every editor). A newer
- * pin, another package or a custom command is the user's and is kept. Other
- * fields (env, type, timeout) are kept. Returns the status line, or null when
- * nothing changed.
+ * the @latest/bare shape (the npx cache-rewrite race described at
+ * mcpServerConfig), and a pin older than or equal to this build, so a global
+ * upgrade reaches the config on the next init. A newer pin, another package or
+ * a custom command is the user's and is kept. Other fields are kept. Returns
+ * the status line, or null when nothing changed.
  */
 function healOwnNpxEntry(servers: Record<string, unknown>): string | null {
   const existing = servers.plur as { command?: string; args?: string[] } | undefined
@@ -359,9 +282,8 @@ function healOwnNpxEntry(servers: Record<string, unknown>): string | null {
 /**
  * Register the server for Claude Code at user scope, in `~/.claude.json` — the
  * file `claude mcp add --scope user` writes and the only user-level place
- * Claude Code reads MCP servers (#1561). This used to write `<cwd>/.mcp.json`,
- * or `~/.claude/mcp.json` when that existed; Claude Code never reads the
- * latter. Same rules as `plur init`: an old `~/.claude/mcp.json` entry is
+ * Claude Code reads MCP servers (it never reads `~/.claude/mcp.json`). Same
+ * rules as `plur init`: an old `~/.claude/mcp.json` entry is
  * moved (env and extra keys kept) unless `~/.claude.json` already has one,
  * which wins; every change to an existing file is preceded by a backup
  * (writeWithBackup, which also refuses a file edited meanwhile); a run with
@@ -378,7 +300,7 @@ async function installClaudeUserMcp(): Promise<{ ok: boolean; status: string }> 
     ? (oldServers as Record<string, unknown>).plur
     : undefined
 
-  // The same implementation `plur init` uses (#1564 review).
+  // The same implementation `plur init` uses.
   const r = registerClaudeUserMcp({
     userPath: join(homedir(), '.claude.json'),
     entry: () => mcpServerConfig(),
@@ -467,23 +389,14 @@ function stripPlurHooks(entries: HookEntry[]): HookEntry[] {
 }
 
 /**
- * Merge PLUR hooks into Claude Code settings (#1279). No I/O apart from
- * reading plur-hook.meta.json for the exec-form check.
- * A hook is PLUR's only when isPlurHookSpec says so: the whole command is
- * PLUR's launcher (the shim, with any slash direction or quoting, or the npx
- * fallback, or on Windows the exec form `plur init` writes) followed by a
- * `hook-*` subcommand and plain arguments (decisions H2, F4).
- * - No PLUR hook present: append the full set ('installed').
- * - PLUR hooks present: remove PLUR's hooks from PostCompact, which cannot
- *   carry context (#1274), one hook at a time, dropping an entry only when
- *   it has no hooks left. If a PLUR rehydrate was among them, add the
- *   SessionStart(compact) entry unless one is there ('healed'). A file with
- *   PLUR hooks but no rehydrate (the global file `plur init --project` writes) gets
- *   none added. Nothing else changes, so a fuller
- *   `plur init` install is not replaced by this smaller set.
- * - Otherwise 'already', and the settings come back unchanged.
- * User hooks are never removed or reordered, including a user hook that
- * shares an entry with a PLUR hook.
+ * Merge PLUR hooks into Claude Code settings (only I/O: reading plur-hook.meta.json).
+ * A hook is PLUR's only when isPlurHookSpec says so.
+ * - No PLUR hook: append the full set ('installed').
+ * - PLUR hooks present: remove PLUR's PostCompact hooks (dropping emptied entries) and,
+ *   if a rehydrate was among them, add SessionStart(compact) unless present ('healed').
+ *   Nothing else changes, so a fuller `plur init` install is never replaced.
+ * - Otherwise 'already', settings unchanged.
+ * User hooks are never removed or reordered, even when sharing an entry with PLUR's.
  */
 export function applyPlurHooks(
   settings: Settings,
@@ -518,8 +431,8 @@ export function applyPlurHooks(
   }
   // SessionEnd deletes a session's folder-question nonces, so a file that
   // runs PLUR's SessionEnd also needs PLUR's SessionStart(resume), or a
-  // resumed session is never asked again (#1347, option C). Added to an
-  // install from before it existed; a file without SessionEnd gets none.
+  // resumed session is never asked again. Added to an install that lacks
+  // it; a file without SessionEnd gets none.
   if (hasPlurSubcommand(hooks.SessionEnd, 'hook-session-end') && !hasPlurSubcommand(hooks.SessionStart, 'hook-session-resume')) {
     const resume = (hooksMap.SessionStart ?? []).filter(isResumeEntry)
     if (resume.length > 0) {
@@ -534,11 +447,10 @@ export function applyPlurHooks(
 
 /**
  * Hooks go to user settings (~/.claude/settings.json), from any folder, as
- * `plur init` does since #1467: the folder map gates every hook, so a
- * user-level hook is safe everywhere. Writing to <cwd>/.claude/settings.json
- * whenever that folder existed put a second PLUR set back into a repo that
- * `plur init` had just migrated (#1469 review). plur-mcp init has no
- * `--project`; use `plur init --project` for a per-repo placement.
+ * `plur init` does: the folder map gates every hook, so a user-level hook is
+ * safe everywhere, and writing to <cwd>/.claude/settings.json would put a
+ * second PLUR set into a repo. plur-mcp init has no `--project`; use
+ * `plur init --project` for a per-repo placement.
  */
 function installHooks(): string {
   const settingsPath = join(homedir(), '.claude', 'settings.json')
@@ -579,7 +491,7 @@ async function runInit() {
   // Step 2: Write MCP config
   const mcp = await installClaudeUserMcp()
   const mcpStatus = mcp.status
-  // #1564 review L4: init did not do its main job; scripts must see it.
+  // Init did not do its main job; scripts must see it.
   if (!mcp.ok) process.exitCode = 1
   results.push(`MCP:      ${mcpStatus}`)
 
@@ -670,7 +582,7 @@ async function runPacks(): Promise<void> {
   const plur = new Plur({ path: plurPath })
 
   // The branch logic lives in `packs-cli.ts` so it can be tested without
-  // spawning a process (#545). This function's only job is streams and exit.
+  // spawning a process. This function's only job is streams and exit.
   const result = await packsCommand(process.argv.slice(3), plur)
   if (result.stdout) process.stdout.write(result.stdout)
   if (result.stderr) process.stderr.write(result.stderr)
@@ -693,7 +605,7 @@ if (arg === '--version' || arg === '-v') {
 
 if (arg === 'init') {
   await runInit()
-  // Non-zero when the MCP registration did not happen (#1564 review L4).
+  // Non-zero when the MCP registration did not happen.
   process.exit(process.exitCode ?? 0)
 }
 

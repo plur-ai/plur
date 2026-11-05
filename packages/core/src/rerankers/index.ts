@@ -1,23 +1,10 @@
 /**
- * Reranker factory — Sprint 0 cross-encoder reranker stage (#220).
- *
- * One uniform interface (`RerankerAdapter`) across reranker models. Only one
- * adapter ships in this PR — bge-reranker-v2-m3 — but the factory shape is
- * here so future API-backed rerankers (cohere, voyage, zeroentropy) drop in
- * without changing call sites.
- *
+ * Reranker factory: one `RerankerAdapter` interface across models.
  *   PLUR_RERANKER=bge-reranker-v2-m3   # opt in to the local cross-encoder
  *   PLUR_RERANKER=off                  # explicit skip (default)
- *
- * The reranker is OFF by default. PLUR's "no API key, no surprise latency"
- * posture extends to the model load cost: the BGE reranker adds ~50-500ms
- * per query (depending on K) and ~300 MB of resident weights once loaded.
- * Callers that want it set PLUR_RERANKER explicitly or pass
- * `rerank: true` to recallHybrid / injectHybrid.
- *
- * The "off" sentinel is a real adapter object whose scoreBatch is a no-op
- * — `isRerankerOff()` lets the recall path skip the rerank stage entirely
- * without an extra `if (!reranker)` branch in the hot path.
+ * OFF by default: the BGE reranker adds latency per query and ~300 MB of
+ * weights. Opt in via PLUR_RERANKER or `rerank: true` on recallHybrid/injectHybrid.
+ * "off" is a real no-op adapter; `isRerankerOff()` lets recall skip the stage.
  */
 import { logger } from '../logger.js'
 import { makeBgeRerankerV2M3Adapter, makeMsMarcoMiniLmL6Adapter } from './transformers-cross-encoder.js'
@@ -28,7 +15,7 @@ export type { RerankerAdapter } from './types.js'
 /**
  * All reranker names supported by the factory.
  *
- * Two tiers (#451):
+ * Two tiers:
  *   - bge-reranker-v2-m3  quality tier — 568M multilingual, seconds/query on
  *     CPU. For offline/batch pipelines where quality dominates.
  *   - ms-marco-minilm-l6  tiny tier — 22.7M English cross-encoder, tens of
@@ -40,10 +27,8 @@ export type RerankerName = typeof RERANKER_NAMES[number]
 /**
  * Default reranker when PLUR_RERANKER is unset.
  *
- * Opt-in posture: the default is "off" until we have benchmark evidence that
- * the latency/memory cost is worth it on PLUR's typical recall workloads.
- * Issue #220 records the rollout plan — flip to bge-reranker-v2-m3 once the
- * LongMemEval-S ablation shows the expected R@1 lift.
+ * Opt-in posture: the default is "off" until benchmark evidence shows the
+ * latency/memory cost is worth it on PLUR's typical recall workloads.
  */
 export const DEFAULT_RERANKER: RerankerName = 'off'
 
@@ -66,16 +51,16 @@ export function _setCachedReranker(name: RerankerName, adapter: RerankerAdapter)
   adapterCache.set(name, adapter)
 }
 
-// --- Runtime status tracking (#341) ---
+// --- Runtime status tracking ---
 //
 // applyReranker catches load/score errors and falls back to RRF order so
-// recall always returns something — but that made non-engagement invisible
+// recall always returns something, which would make non-engagement invisible
 // beyond a per-call logger.warning. This module-level tracker records what
 // the rerank stage actually did, so plur_doctor and the MCP recall path can
 // say "you asked for reranking and it is NOT happening" loudly, once.
 
 /**
- * Classification of a reranker failure (#341, ties into #340):
+ * Classification of a reranker failure:
  *   - `corrupt-cache`: the model downloaded but cannot be parsed (the classic
  *     symptom of a truncated/corrupt download, e.g. "Protobuf parsing
  *     failed"). Remediation is purge + re-download.
@@ -84,7 +69,7 @@ export function _setCachedReranker(name: RerankerName, adapter: RerankerAdapter)
  */
 export type RerankerFailureKind = 'corrupt-cache' | 'unavailable'
 
-/** Snapshot of what the rerank stage did in this process (#341). */
+/** Snapshot of what the rerank stage did in this process. */
 export interface RerankerRuntimeStatus {
   /** Rerank calls that engaged (cross-encoder actually scored) this process. */
   engaged_count: number
@@ -141,13 +126,13 @@ export function resetRerankerStatus(): void {
 }
 
 /**
- * Corrupt-model indicators. "Protobuf parsing failed" is the observed #340
- * shape (truncated Xet download); the rest are conservative synonyms for a
- * damaged on-disk artifact. Anything else is treated as `unavailable`.
+ * Corrupt-model indicators. "Protobuf parsing failed" is the shape of a
+ * truncated download; the rest are conservative synonyms for a damaged
+ * on-disk artifact. Anything else is treated as `unavailable`.
  */
 const CORRUPT_RE = /protobuf parsing failed|corrupt|truncat|unexpected end of (?:file|data|input)|invalid model/i
 
-/** Classify a reranker failure message: corrupt-cache vs unavailable (#341). */
+/** Classify a reranker failure message: corrupt-cache vs unavailable. */
 export function classifyRerankerFailure(message: string): RerankerFailureKind {
   return CORRUPT_RE.test(message) ? 'corrupt-cache' : 'unavailable'
 }

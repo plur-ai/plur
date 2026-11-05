@@ -5,13 +5,13 @@ import { homedir } from 'os'
 /**
  * Resolves symlinks so that `process.cwd()` (which the OS resolves canonically
  * via getcwd()) and `homedir()` (which reads the `$HOME` env verbatim) agree
- * even when `/tmp` or another component is a bind-mount or symlink (#521).
+ * even when `/tmp` or another component is a bind-mount or symlink.
  *
  * A copy of `canonicalize` in packages/core/src/project-config.ts, kept here
  * without a core import so the lightweight hooks stay cheap; a parity test
- * holds the two together (#1357). `realpathSync.native` folds letter case to
+ * holds the two together. `realpathSync.native` folds letter case to
  * the on-disk name on case-insensitive filesystems; a missing path resolves
- * its deepest existing ancestor and re-appends the rest (#1319).
+ * its deepest existing ancestor and re-appends the rest.
  */
 export function canonicalize(p: string): string {
   const abs = resolve(p)
@@ -28,37 +28,14 @@ export function canonicalize(p: string): string {
 }
 
 /**
- * Detect whether plur is configured for the current project.
- *
- * Walks up from `cwd` looking for a project-level plur marker:
- *   - `.mcp.json`, `.claude/settings.json`, `.claude/settings.local.json`, or `.cursor/mcp.json`
- *     with a `plur` server entry
- *   - `.plur.yaml` (project config — domain/scope defaults, remote config).
- *     This lets `plur init --global` users opt individual projects in even
- *     though their MCP server lives only in global settings.
- *
- * Does NOT fall back to global `~/.claude/settings.json` or `~/.cursor/mcp.json` because
- * `plur init --global` puts the server there, making the guard useless for
- * distinguishing plur-enabled vs non-plur projects (#247).
- *
- * The walk-up boundary at `home` (#521 fix): config files AT home are global
- * settings (`~/.claude/settings.json`, `~/.cursor/mcp.json`). Checking them
- * during a walk-up from a nested project reintroduces the #247 false-positive.
- * So home's configs are only consulted when the walk STARTED at home (cwd ===
- * home) — i.e., the user's project root IS $HOME. For nested projects the walk
- * stops without reading home's config files.
- *
- * The hooks no longer gate on this directly (#1347): they ask the folder map
- * through lib/folder-gate.ts, whose resolver walks the same markers
- * (core `findPlurMarker`, held to this walk by a parity test). This stays as
- * that gate's fallback when the resolver itself fails.
- *
- * The walk stops at the repository root (the folder holding `.git` is still
- * checked, nothing above it is), the same boundary as the `.plur.yaml` lookup
- * (#1588).
- *
- * Cheap — a few `existsSync` + JSON parses, terminates at `home`, the root, a
- * repository root, or the first match.
+ * Detect whether plur is configured for the current project: walks up from
+ * `cwd` for a `plur` server entry in `.mcp.json`, `.claude/settings.json`,
+ * `.claude/settings.local.json` or `.cursor/mcp.json`, or a `.plur.yaml`.
+ * Never falls back to global settings (`plur init --global` puts the server
+ * there). Home's configs are read only when cwd === home. Stops at home, the
+ * repository root (still checked), or the first match. Hooks gate through
+ * lib/folder-gate.ts (core `findPlurMarker`, held to this walk by a parity
+ * test); this is the fallback when that resolver fails.
  */
 export function isPlurConfigured(
   cwd: string = process.cwd(),
@@ -71,7 +48,7 @@ export function isPlurConfigured(
     const atHome = dir === homeResolved
     // At home, only check configs if the walk started here. Home's config files
     // are global settings — reading them during a walk-up from a nested project
-    // would reintroduce the #247 false-positive for `plur init --global` users.
+    // would make every project look configured for `plur init --global` users.
     if (!atHome || start === homeResolved) {
       if (configHasPlur(join(dir, '.mcp.json'))) return true
       if (configHasPlur(join(dir, '.claude', 'settings.json'))) return true
@@ -80,14 +57,14 @@ export function isPlurConfigured(
       if (existsSync(join(dir, '.plur.yaml'))) return true
     }
     if (atHome) break  // stop after (optionally) checking home
-    // Stop at the repository root (#1588), like the `.plur.yaml` lookup: a
+    // Stop at the repository root, like the `.plur.yaml` lookup: a
     // marker above a cloned repository does not configure it.
     if (existsSync(join(dir, '.git'))) break
     const parent = dirname(dir)
     if (parent === dir) break  // filesystem root
     dir = parent
   }
-  // Fix #247: Do NOT fall back to ~/.claude/settings.json or ~/.cursor/mcp.json — that would always
+  // Do NOT fall back to ~/.claude/settings.json or ~/.cursor/mcp.json — that would always
   // return true after `plur init --global`, blocking all non-plur projects.
   return false
 }

@@ -1,11 +1,8 @@
 /**
- * BGE-base adapter — BAAI/bge-base-en-v1.5 via @huggingface/transformers.
+ * BGE-base adapter: BAAI/bge-base-en-v1.5 via @huggingface/transformers.
  *
  * 768-dim, ~110M params, ~440MB on disk. MIT.
- *
- * The larger BGE sibling. Roughly +1.5pp MTEB over bge-small at ~3x the
- * compute cost. Included so the bake-off can pin whether the dim bump is
- * worth the latency/RAM hit on LongMemEval.
+ * Slightly better retrieval quality than bge-small at roughly 3x the compute.
  */
 import { makeTransformersAdapter } from './transformers-base.js'
 import type { EmbedderAdapter } from './types.js'

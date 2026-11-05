@@ -1,4 +1,3 @@
-// packages/core/src/meta/alignment.ts
 import type { EngramCluster } from './clustering.js'
 import type { StructuralTemplate } from '../schemas/meta-engram.js'
 import type { LlmFunction } from '../types.js'

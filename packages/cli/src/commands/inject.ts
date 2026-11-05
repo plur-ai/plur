@@ -16,10 +16,9 @@ Supersedes rule: if this 🧠 corrects a previous engram, call: plur_learn(state
 Skip the block only when truly nothing new was discovered.`
 
 /**
- * Flags this command accepts (#986). Declaring them turns on the argv check,
- * so a flag inject cannot honour (`--domain`: MCP `plur_inject` takes no
- * domain either) is refused rather than silently ignored — which is what
- * happened to `--scope` before it was wired through.
+ * Flags this command accepts. Declaring them turns on the argv check, so a
+ * flag inject cannot honour (`--domain`: MCP `plur_inject` takes no domain
+ * either) is refused rather than silently ignored.
  */
 export const FLAGS_WITH_VALUES = ['--budget', '--scope']
 
@@ -40,8 +39,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     else if (arg === '--scope' && i + 1 < args.length) { scope = args[++i]; i++ }
     else if (arg === '--no-with-default-protocol') { withProtocol = false; i++ }
     // `--` ends flag parsing: the next token is the task, verbatim, even when
-    // it starts with `-` (decision S4; formal r2 follow-up). Before, `--`
-    // itself became the task.
+    // it starts with `-`.
     else if (arg === '--') { if (!task && i + 1 < args.length) task = args[i + 1]; break }
     else if (!task) { task = arg; i++ }
     else { i++ }
@@ -53,18 +51,16 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
 
   // Same semantics as MCP plur_inject / plur_inject_hybrid: `scope` filters
   // engram selection, and on the hybrid path it is the remote leg's dialing
-  // context (#243/#776).
-  // Without --scope, the folder's scope is the dialing context (L10), by the
-  // same rule as MCP plur_inject_hybrid (#1566). `dial_session`, not
-  // `session_id`: the internal key is never recorded as a session. The
-  // keyword path (--fast) never dials, as before. An off folder, an
-  // undecided one (unscoped) or a broken folder map contacts no store at all.
+  // context. Without --scope, the folder's scope is the dialing context, by
+  // the same rule as MCP plur_inject_hybrid. `dial_session`, not `session_id`:
+  // the internal key is never recorded as a session. The keyword path
+  // (--fast) never dials. An off folder, an undecided one (unscoped) or a
+  // broken folder map contacts no store at all.
   const { session: dial_session, remote } = folderReadContext(plur, scope)
   const result = flags.fast
     ? await plur.inject(task, { budget, scope })
     : await plur.injectHybrid(task, { budget, scope, dial_session, remote })
 
-  // Append default learning protocol to directives (opt-out via --no-with-default-protocol)
   let directives = result.directives || ''
   if (withProtocol) {
     directives = directives ? `${directives}\n\n${DEFAULT_PROTOCOL}` : DEFAULT_PROTOCOL
@@ -77,10 +73,10 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       consider: result.consider,
       count: result.count,
       tokens_used: result.tokens_used,
-      // #1142: pinned engrams the budget dropped. Absent when none were.
+      // Pinned engrams the budget dropped. Absent when none were.
       ...(result.omitted_pinned?.length ? { omitted_pinned: result.omitted_pinned } : {}),
-      // #1586 audit L6: what the server leg did on this call (added fields).
-      // The keyword path (--fast) never dials.
+      // What the server leg did on this call. The keyword path (--fast) never
+      // dials.
       remote: result.remote ?? { state: 'not_dialed', hosts: [] },
       results_complete: result.results_complete ?? true,
       ...(result.mode ? { mode: result.mode } : {}),
@@ -103,9 +99,9 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       outputText(result.consider)
     }
     outputInfo(`\nInjected ${result.count} engrams (${result.tokens_used} tokens)`, flags)
-    // #1142: say what was pinned and did not fit. A pin the user set and the
-    // budget dropped is the case where silence costs most — they believe a
-    // standing rule is loaded.
+    // Say what was pinned and did not fit. A pin the user set and the budget
+    // dropped is the case where silence costs most — they believe a standing
+    // rule is loaded.
     if (result.omitted_pinned?.length) {
       outputInfo(
         `${result.omitted_pinned.length} pinned engram(s) did NOT fit: `

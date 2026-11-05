@@ -1,5 +1,3 @@
-// src/confidence.ts
-
 /**
  * Minimal interface for confidence computation.
  * Accepts any object with these optional fields — works with Engram,
@@ -35,7 +33,6 @@ export function computeConfidence(input: ConfidenceInput): number {
   const steepness = 2.0
   const base = 1 / (1 + Math.exp(-steepness * adjustedRatio))
 
-  // Consolidation bonus
   const consolidationBonus = input.consolidated ? 0.05 : 0
 
   return Math.min(1.0, Math.max(0.0, base + consolidationBonus))

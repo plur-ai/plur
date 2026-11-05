@@ -1,21 +1,10 @@
 /**
- * `plur keys` — manage per-actor Ed25519 signing keys (#1055).
- *
- * Subcommands:
- *   plur keys init                   Generate a key pair for the configured identity
- *   plur keys init --identity <name> Override the identity for key generation
- *   plur keys list                   List registered public keys for this store
- *
- * Key storage:
- *   Private key: <keys-dir>/<identity>.key  (mode 0600, never in a store or repo)
- *   Public key:  <store-root>/keys.yaml     (tracked, per-store registry)
- *
- * The keys directory is `PLUR_KEYS_DIR` if set, else `<store-root>/keys` —
- * the same folder `plur checkpoint` and the MCP session end sign from
- * (`keysDirFor`). There is no `--keys-dir` flag: on init alone it wrote keys
- * where signing never looked (0.23 code review, finding 8).
- *
- * Exit codes: 0 ok, 1 error.
+ * `plur keys` — manage per-actor Ed25519 signing keys.
+ *   plur keys init [--identity <name>]   Generate a key pair (for the configured identity, or <name>)
+ *   plur keys list                       List registered public keys for this store
+ * Private key: <keys-dir>/<identity>.key (0600, never in a store or repo); public key: <store-root>/keys.yaml.
+ * The keys dir is `PLUR_KEYS_DIR`, else `<store-root>/keys` — the folder signing reads (`keysDirFor`); there is
+ * deliberately no `--keys-dir` flag. Exit codes: 0 ok, 1 error.
  */
 import { join } from 'path'
 import { homedir } from 'os'
@@ -27,7 +16,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const subcommand = args[0]
 
   if (!subcommand || subcommand === '--help' || subcommand === 'help') {
-    outputText('plur keys — manage per-actor Ed25519 signing keys (#1055)')
+    outputText('plur keys — manage per-actor Ed25519 signing keys')
     outputText('')
     outputText('Subcommands:')
     outputText('  init                   Generate a key pair for the configured identity')
@@ -54,7 +43,6 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
 }
 
 async function runInit(args: string[], flags: GlobalFlags): Promise<void> {
-  // Parse the --identity override.
   let identityOverride: string | undefined
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--identity' && args[i + 1]) { identityOverride = args[++i]; continue }
@@ -78,7 +66,7 @@ async function runInit(args: string[], flags: GlobalFlags): Promise<void> {
   const identity = identityOverride
     ?? (configuredIdentity && configuredIdentity !== 'agent:unidentified' ? configuredIdentity : undefined)
   // A key for `agent:unidentified` is never used: checkpoints are only signed
-  // for a configured identity (0.23 audit, finding 16).
+  // for a configured identity.
   if (!identity || identity === 'agent:unidentified') {
     outputText('plur keys init: no identity to make a key for.')
     outputText('  Set `provenance.identity` in your PLUR config.yaml (e.g. `provenance:\n    identity: agent:miles`),')
@@ -101,7 +89,6 @@ async function runInit(args: string[], flags: GlobalFlags): Promise<void> {
     return
   }
 
-  // Register the public key in the store's registry.
   try {
     registerPublicKey(storeRoot, identity, publicKeyB64)
   } catch (err) {

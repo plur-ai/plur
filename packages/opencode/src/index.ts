@@ -8,6 +8,8 @@ import {
   folderAskOnce,
   sessionSettings,
   skippedStoreNotice,
+  withDeadline,
+  DEADLINE_MISSED,
   type FolderPolicy,
   type ProjectRemote,
 } from '@plur-ai/core'
@@ -28,19 +30,13 @@ import { folderAskReminder, plurOnPath, PLUR_CLI_MISSING } from './ask.js'
 
 const log = (msg: string) => { if (process.env.PLUR_DEBUG) console.error(`[plur:opencode] ${msg}`) }
 // Unconditional — unlike `log` above. A `.plur.yaml` scope the plugin refuses
-// to adopt (untrusted directory, D2) is exactly the kind of thing a user
+// to adopt (untrusted directory) is exactly the kind of thing a user
 // needs to see without having to already know to set PLUR_DEBUG=1 first.
 const warn = (msg: string) => { console.error(`[plur:opencode] warning: ${msg}`) }
 
 
-function withTimeout<T>(p: Promise<T>, ms: number): Promise<T | typeof TIMED_OUT> {
-  let timer: ReturnType<typeof setTimeout> | undefined
-  const t = new Promise<typeof TIMED_OUT>(resolve => { timer = setTimeout(() => resolve(TIMED_OUT), ms) })
-  return Promise.race([p, t]).finally(() => { if (timer) clearTimeout(timer) })
-}
-const TIMED_OUT = Symbol('timed-out')
 
-/** Turns after the question that still carry its commands (re-audit R4 of #1517). */
+/** Turns after the question that still carry its commands. */
 const REMINDER_TURNS = 1
 
 /** Never let a memory failure break the agent's turn. */
@@ -51,34 +47,14 @@ async function safe(label: string, fn: () => Promise<void>): Promise<void> {
 export const PlurPlugin: Plugin = async (ctx) => {
   const scopeRoot = resolveScopeRoot(ctx ?? {})
   // The folder-map decision, the folder asked about and the .plur.yaml read
-  // are all for the folder opencode is open in (audit F1 of #1517).
+  // are all for the folder opencode is open in.
   const folderDir = resolveFolderDir(ctx ?? {})
-  // `_plur` is a test-only injection seam, not part of the host contract —
-  // narrowly typed here rather than widening `ctx` itself.
-  //
-  // `autoDiscover: false` (D1, 2026-09 audit): the default constructor
-  // behaviour walks `cwd` looking for a `.plur/engrams.yaml` and, if found,
-  // registers it as a STORE in the user's GLOBAL `~/.plur/config.yaml` —
-  // silently (a `logger.info` suppressed at the default `warning`
-  // threshold), permanently (it outlives the session and is read by every
-  // other PLUR adapter too), and with the scope the discovered file's own
-  // `.plur.yaml` names, including `global`. `cwd` here is the session's git
-  // root — exactly where a cloned, hostile repo would ship both files. A
-  // plugin loaded into someone else's agent host must not perform a
-  // cwd-derived disk side effect that writes the user's global config as a
-  // side effect of merely being loaded.
-  //
-  // The construction below is wrapped (D7, 2026-09 audit):
-  // this whole block sits BEFORE the plugin has returned its hook map, so
-  // there is no `safe()` wrapper reachable yet, and `new Plur()` can throw
-  // (e.g. a hostile `.plur.yaml` naming a scope that collides with one the
-  // user already registered — proofD). A throw here used to reject this
-  // factory's promise, which fails opencode's PLUGIN LOAD, not just memory —
-  // the whole host degrades because its memory layer couldn't build. Catch
-  // it and return an all-no-op hook map instead: no memory this session,
-  // but the agent's turn is never at risk. The folder decision and the
-  // `.plur.yaml` read are no longer done here: they run per turn in
-  // `folderState()`, inside each hook's `safe()` (#1347).
+  // `_plur` is a test-only injection seam, not part of the host contract.
+  // `autoDiscover: false`: discovery would silently and permanently register a cwd
+  // `.plur/engrams.yaml` in the user's GLOBAL config — a hostile cloned repo could ship it.
+  // Construction is wrapped: no `safe()` exists yet, and a throw here would fail opencode's
+  // plugin load. On failure return an all-no-op hook map. Folder decisions run per turn
+  // in `folderState()`, inside `safe()`.
   let plur: Plur
   try {
     plur = (ctx as { _plur?: Plur })?._plur
@@ -97,7 +73,7 @@ export const PlurPlugin: Plugin = async (ctx) => {
   }
 
   // The plugin lives as long as the opencode process: when a recall finds the
-  // embedding model missing, it may load it in the background, once (#1586).
+  // embedding model missing, it may load it in the background, once.
   try { allowBackgroundModelLoad(true) } catch { /* optional */ }
 
   // Warnings about the repo's own settings are printed once per plugin
@@ -107,30 +83,20 @@ export const PlurPlugin: Plugin = async (ctx) => {
   const warnOnce = (msg: string) => { if (!warnedOnce.has(msg)) { warnedOnce.add(msg); warn(msg) } }
 
   /**
-   * What this session does in its folder, resolved per turn so a decision
-   * made mid-session (the user answering the folder question with
-   * `plur folders set`) applies from the next prompt (#1347):
-   *
-   *  - `off` → nothing: no recall, no question, no learning;
-   *  - `ask` → no memories; the first turn of each session carries the one
-   *    question, the next one a reminder, then nothing (`chat.message`);
-   *  - `on`  → the session scope is the map's scope, else a TRUSTED
-   *    `.plur.yaml`'s (the resolver decides both; a map scope beats the
-   *    hint). That scope is also what makes core dial the team store.
-   *
-   * The `.plur.yaml` is read once here, from one resolved path (E5,
-   * 2026-09 audit): its REMOTE settings (#1207) go through core's gate, the
-   * one every adapter passes (#1196/#1198), and its domain is adopted only
-   * when the policy came from that file and its directory is trusted — both
-   * checked against this same read, so the file trust is checked against is
-   * the file whose fields are adopted.
+   * What this session does in its folder, resolved per turn (so `plur folders set` applies
+   * from the next prompt):
+   *  - `off` → no recall, no question, no learning;
+   *  - `ask` → no memories; the first turn asks once, the next reminds (`chat.message`);
+   *  - `on`  → the map's scope, else a TRUSTED `.plur.yaml`'s; this scope dials the team store.
+   * The `.plur.yaml` is read once: remote settings go through core's gate, and its domain is
+   * adopted only from a trusted file — both checked against this same read.
    */
   function folderState(): { policy: FolderPolicy; settings: { scope?: string; domain?: string }; remote: ProjectRemote | null } {
     const policy = folderPolicy(plur, folderDir, warnOnce)
     if (policy.mode !== 'on') return { policy, settings: {}, remote: null }
     const configPath = findProjectConfigPath(folderDir)
     const raw = readProjectConfigFromPath(configPath)
-    // The `.plur.yaml` hints, trust-checked against this read (D2); warns
+    // The `.plur.yaml` hints, trust-checked against this read; warns
     // once when they are ignored because the map decided for an untrusted
     // repo. The scope is the resolver's (map scope, else the trusted hint);
     // the domain is the trusted hint's, and only when the policy came from
@@ -139,8 +105,7 @@ export const PlurPlugin: Plugin = async (ctx) => {
     const settings = sessionSettings(policy, hinted)
     const remote = resolveProjectRemoteFromConfig(plur, raw, configPath)
     // Refusal is unconditional like the scope one: team memory that silently
-    // never arrives is indistinguishable from a broken remote leg, which is
-    // the failure #1198 was filed about.
+    // never arrives is indistinguishable from a broken remote leg.
     if (remote.refusedFrom) warnOnce(projectRemoteRefusalNotice(remote.refusedFrom, plur.storageRoot))
     // Host only, never the token.
     if (remote.remoteProject) log(`project remote: ${remote.remoteProject.url}`)
@@ -152,24 +117,24 @@ export const PlurPlugin: Plugin = async (ctx) => {
   // memory, not a temp-dir marker like the CLI hooks: a session resumed in a
   // new opencode process gets the question again with fresh nonces, since
   // the old ones were expired when the previous process ended (dispose), the
-  // same outcome as the CLI's resume rule (#1347 option C).
+  // same outcome as the CLI's resume rule.
   const asked = new Set<string>()
   const claimAsk = (sessionID: string) => {
     if (asked.has(sessionID)) return false
     asked.add(sessionID)
     return true
   }
-  // The offer each undecided session was given (audit F2 of #1517): the full
+  // The offer each undecided session was given: the full
   // question until it has reached the model once, then one reminder with the
   // same commands on the next turn — the turn the user answers in — and then
-  // nothing (re-audit R4): the nonces are ended, so a later unrelated "yes"
+  // nothing: the nonces are ended, so a later unrelated "yes"
   // cannot be run as consent. Delivered into history (the chat.message
   // fallback), the question stays there, so no reminder is pushed at all.
   // `unreadable`: the offer is the "map cannot be read" notice; when that
-  // changes, the offer is rebuilt (re-audit R2).
+  // changes, the offer is rebuilt.
   type Offer = { question: string; reminder: string; unreadable: boolean; delivered: boolean; persisted: boolean; turnsSince: number }
   const offers = new Map<string, Offer>()
-  // Sessions the "plur CLI is missing" notice has REACHED (audit F8, re-audit R1).
+  // Sessions the "plur CLI is missing" notice has REACHED.
   const cliMissingTold = new Set<string>()
   /** A block reached the model: through system[] (`persisted` false) or as a history part. */
   const markDelivered = (sessionID: string, block: string, persisted: boolean) => {
@@ -180,7 +145,7 @@ export const PlurPlugin: Plugin = async (ctx) => {
       offer.persisted = persisted
     }
   }
-  /** End a session's folder nonces (#1378): they die with the session, or after core's TTL. */
+  /** End a session's folder nonces: they die with the session, or after core's TTL. */
   const endNonces = (sessionID: string | undefined) => {
     if (!sessionID || !asked.has(sessionID)) return
     try { plur.endFolderNonceSession(sessionID) } catch (e) { log(`ending folder nonces failed: ${(e as Error).message}`) }
@@ -190,7 +155,7 @@ export const PlurPlugin: Plugin = async (ctx) => {
   const path = new RenderPath()
   const turns = new TurnBuffer()
   // Sessions whose CURRENT turn's block was already injected by the
-  // chat.message fallback (formal R2, mcp#10): system.transform must not push
+  // chat.message fallback: system.transform must not push
   // it again into the same request. Reset at the next chat.message.
   const fallbackInjected = new Set<string>()
   void OPENCODE_PLUGIN_VERSION
@@ -231,14 +196,14 @@ export const PlurPlugin: Plugin = async (ctx) => {
           const unreadable = state.policy.reason === 'malformed-map' || state.policy.reason === 'resolver-error'
           let offer = offers.get(input.sessionID)
           // The map became unreadable after the question, or readable again
-          // after the notice (re-audit R2): drop the old offer and its nonces.
+          // after the notice: drop the old offer and its nonces.
           if (offer && offer.unreadable !== unreadable) {
             endNonces(input.sessionID)
             offers.delete(input.sessionID)
             asked.delete(input.sessionID)
             offer = undefined
           }
-          // The offered commands need the plur CLI (audit F8 of #1517): without
+          // The offered commands need the plur CLI: without
           // it, say so once per session and issue nothing; ask once it appears.
           const cliMissing = !offer && !unreadable && !plurOnPath()
           if (cliMissing) {
@@ -248,13 +213,12 @@ export const PlurPlugin: Plugin = async (ctx) => {
             const question = folderAskOnce({
               dir: folderDir, policy: state.policy, sessionId: input.sessionID,
               root: plur.storageRoot, plur, prompt: query, claim: claimAsk,
-              // Bound to this session (audit F5 of #1517): shell.env below tells
+              // Bound to this session: shell.env below tells
               // the agent's shell which session it is in.
               bindSession: true,
-              // This opencode process asked (#1562): the PLUR MCP server it
-              // started shows this question, not a second set of nonces.
-              // Its id and start time (#1563 review, L3), so a reused process
-              // id never passes for it.
+              // This opencode process asked: the PLUR MCP server it started
+              // shows this question, not a second set of nonces. Its id and
+              // start time, so a reused process id never passes for it.
               host: { pid: process.pid, startedAt: Date.now() - process.uptime() * 1000 },
             })
             if (question) {
@@ -281,17 +245,17 @@ export const PlurPlugin: Plugin = async (ctx) => {
             scope: settings.scope,
             // Without this the remote leg dials only when the session scope
             // happens to match a store already registered in the user's global
-            // config — so an enterprise user following the documented
-            // `plur init-remote` onboarding got local-only recall here while
-            // every other adapter reached their team store (#1207).
+            // config, so a user onboarded with `plur init-remote` would get
+            // local-only recall here while every other adapter reaches their
+            // team store.
             ...(remote?.remoteProject ? { remote_project: remote.remoteProject } : {}),
           })
           pending.catch(() => {}) // a late rejection after the timeout must not go unhandled
-          const injection = await withTimeout(pending, INJECT_TIMEOUT_MS)
-          // A store in this folder that was found but not added (#1589): one
+          const injection = await withDeadline(pending, INJECT_TIMEOUT_MS)
+          // A store in this folder that was found but not added: one
           // line, once per session and folder, like the CLI prompt hooks.
           const hint = skippedStoreNotice(plur, input.sessionID, folderDir)
-          if (injection === TIMED_OUT) {
+          if (injection === DEADLINE_MISSED) {
             // No memory this turn rather than the previous turn's block, which
             // answered a different query.
             if (hint) blocks.set(input.sessionID, hint)
@@ -329,7 +293,7 @@ export const PlurPlugin: Plugin = async (ctx) => {
             markDelivered(input.sessionID, block, true)
             log('system.transform unavailable — using chat.message fallback (accretes)')
           } else if (block) {
-            // Per the spec's Known Gotcha #1: a part with messageID undefined
+            // A part with messageID undefined
             // gets the ENTIRE user message rejected by opencode
             // ("invalid user part before save"), and turn.ts's exclusion
             // check short-circuits on a falsy messageID — so it would also
@@ -374,7 +338,7 @@ export const PlurPlugin: Plugin = async (ctx) => {
           path.markTurn(sessionID)
           const texts = turns.takeIfFresh(sessionID)
           if (!texts) return
-          // Auto-capture only where the folder is on (#1347).
+          // Auto-capture only where the folder is on.
           const state = folderState()
           if (state.policy.mode !== 'on') return
           // Fire-and-forget: never stall the turn on a slow store. One-shot
@@ -403,7 +367,7 @@ export const PlurPlugin: Plugin = async (ctx) => {
       await safe('compacting', async () => {
         const texts = turns.takeIfFresh(input.sessionID)
         // Memory crosses the cut, and what is dropped is learned, only where
-        // the folder is on (#1347): an ask folder's block is the question,
+        // the folder is on: an ask folder's block is the question,
         // which must not outlive its turn.
         const state = folderState()
         if (state.policy.mode !== 'on') return
@@ -415,7 +379,7 @@ export const PlurPlugin: Plugin = async (ctx) => {
 
     // Tells every shell the agent runs which session it belongs to, so
     // `plur folders set --nonce` accepts this session's nonces and refuses
-    // another session's (audit F5 of #1517). opencode's bash tool calls this
+    // another session's. opencode's bash tool calls this
     // hook with the session id (checked against 1.18.33).
     'shell.env': async (input, output) => {
       await safe('shell.env', async () => {
