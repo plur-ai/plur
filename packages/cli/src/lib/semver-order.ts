@@ -2,7 +2,7 @@
  * SemVer ordering for the launch pins PLUR writes into tool configs. Shared
  * by the Codex writer (codex-config.ts) and the JSON writers (mcp-config.ts,
  * opencode-config.ts), which apply the same rule: a PLUR pin older than or
- * equal to the running CLI is replaced, a newer pin is kept (#1623, #1832).
+ * equal to the running CLI is replaced, a newer pin is kept.
  */
 
 /** Parse `x.y.z[-pre][+build]`; null for anything else (tags, ranges). */

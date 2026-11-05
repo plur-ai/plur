@@ -262,7 +262,7 @@ function healOwnNpxEntry(servers: Record<string, unknown>): string | null {
   if (existing.command !== 'npx') return null
   // Only the exact argv this command writes, `npx [-y|--yes] <spec>`: an
   // extra argument, `-p <pkg> <bin>` or `--package` makes it a custom entry
-  // whose arguments a rewrite would drop (#1832 review).
+  // whose arguments a rewrite would drop.
   const args = existing.args ?? []
   const spec = args.length === 1 ? args[0]
     : args.length === 2 && (args[0] === '-y' || args[0] === '--yes') ? args[1] : ''

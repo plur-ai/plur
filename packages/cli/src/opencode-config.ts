@@ -26,7 +26,7 @@ export interface WriteOpencodeConfigResult {
   mcpPlurUpgraded: boolean
   /**
    * PLUR's own npx entry, pinned older than this CLI, moved to this CLI's pin
-   * because no installed MCP server was found to launch instead (#1832).
+   * because no installed MCP server was found to launch instead.
    */
   mcpPlurRepinned?: { from: string; to: string }
   /** A stale owned Windows node command was repaired. */
@@ -441,7 +441,7 @@ export function writeOpencodeConfig(
   } else if (isOwnLegacyNpxEntry(mcp.plur)) {
     // No installed MCP server to launch (macOS/Linux): npx stays, but the pin
     // follows the CLI that ran init, so a global upgrade reaches opencode on
-    // the next `plur init` (#1591, #1832). Same rule as every other writer:
+    // the next `plur init`. Same rule as every other writer:
     // an older pin moves, a newer pin is the user's and stays.
     const from = ((mcp.plur as { command: string[] }).command[2]).slice('@plur-ai/mcp@'.length)
     if (from !== cliVersion && olderOrEqual(from, cliVersion)) {

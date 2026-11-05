@@ -605,7 +605,7 @@ export function plurNpxPin(entry: McpServerEntry): string | null {
   const args = entry.args ?? []
   // Only the exact argv shapes PLUR writes, as codexLaunchKind matches them:
   // anything more (an extra argument, `-p <pkg> <bin>`, `--package`) is a
-  // custom entry whose arguments a rewrite would drop (#1832 review).
+  // custom entry whose arguments a rewrite would drop.
   let spec: string | undefined
   if (entry.command === '/bin/sh') {
     // init's POSIX shape: /bin/sh -lc 'exec npx -y <spec>'.
