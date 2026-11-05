@@ -167,14 +167,6 @@ anchors:
       npx.
     tests:
       - packages/cli/test/path-resolved-node-1302.test.ts::a bare node is never rewritten
-  packages/cli/src/mcp-config.ts#isRaceyPlurNpxEntry:
-    kind: guarantee
-    rule: >-
-      Only an unpinned or @latest npx entry for @plur-ai/mcp is healed; an explicit version pin, a fork or a mention is
-      never healed.
-    tests:
-      - packages/cli/test/mcp-config-cursor.test.ts::preserves a deliberate old-version pin
-      - packages/cli/test/mcp-config-cursor.test.ts::never claims a fork or sibling package
   packages/cli/src/mcp-config.ts#mergePlurMcp:
     kind: guarantee
     rule: "Adding the plur MCP entry is idempotent: an existing entry is left as it is."
@@ -188,6 +180,21 @@ anchors:
       node are never rewritten.
     tests:
       - packages/cli/test/path-resolved-node-1302.test.ts::a bare node is never rewritten
+  packages/cli/src/mcp-config.ts#plurNpxPin:
+    kind: guarantee
+    rule: >-
+      A PLUR npx entry for @plur-ai/mcp in the exact argv PLUR writes (npx [-y|--yes] <spec>, cmd.exe /c npx -y <spec>,
+      /bin/sh -lc 'exec npx -y <spec>'), untagged, @latest or pinned to a version older than or equal to the running
+      CLI, is moved to the installed shim or this CLI's pin; a newer pin, a fork, a tag, a range or any other entry is
+      never touched.
+    tests:
+      - packages/cli/test/mcp-config-cursor.test.ts::re-pins an older PLUR pin and keeps a newer one
+      - packages/cli/test/mcp-config-cursor.test.ts::never claims a fork or sibling package
+      - "packages/cli/test/tool-configs-follow-global-1832.test.ts::an older pin, no installed MCP → re-pinned to the running CLI"
+      - "packages/cli/test/tool-configs-follow-global-1832.test.ts::an older pin, installed MCP → the shim"
+      - "packages/cli/test/tool-configs-follow-global-1832.test.ts::a newer pin is the user's and stays, shim or not"
+      - "packages/cli/test/tool-configs-follow-global-1832.test.ts::a fork, a tag, a range and a custom command stay"
+      - "packages/cli/test/tool-configs-follow-global-1832.test.ts::a pinned entry with anything beyond PLUR's own argv stays"
   packages/cli/src/mcp-config.ts#readCodexPlurMcpCommand:
     kind: note
     why: "A usage constraint for maintainers: this lenient reader is for detection only, not for deciding removal."
