@@ -157,6 +157,21 @@ describe('check-plugin-core-range: published plugins', () => {
     expect(r.out).toContain('declares no @plur-ai/core requirement')
   })
 
+  it('a prerelease core is refused, as pnpm and npm match ranges without prereleases', () => {
+    const r = run(['--core', '0.24.0-rc.1', '--releasing', 'opencode,claw,dsh'], {})
+    expect(r.status, r.out).toBe(1)
+    expect(r.out).toContain('which excludes 0.24.0-rc.1')
+    expect(r.out).toContain('0.24.0-rc.1 is a prerelease')
+    expect(r.out).toContain('Release core as a plain version')
+  })
+
+  it('a published exact pin equal to a prerelease core is accepted, while the ranges are not', () => {
+    const r = run(['--core', '0.24.0-rc.1'], { ...CURRENT, opencode: published('0.21.6', { dep: '0.24.0-rc.1' }) })
+    expect(r.status, r.out).toBe(1)
+    expect(r.out).toContain('✓ published @plur-ai/opencode@0.21.6 accepts @plur-ai/core 0.24.0-rc.1')
+    expect(r.out).toContain('✗ published @plur-ai/claw@0.20.1 requires @plur-ai/core ">=0.23.0 <1", which excludes 0.24.0-rc.1')
+  })
+
   it('a 1.0 core fails the range on purpose', () => {
     const r = run(['--core', '1.0.0', '--releasing', 'opencode,claw,dsh'], {})
     expect(r.status, r.out).toBe(1)

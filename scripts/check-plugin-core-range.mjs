@@ -102,7 +102,9 @@ function judge(semver, requirement, core) {
     return semver.eq(requirement, core) ? null : `pins ${CORE} ${requirement} exactly`
   }
   if (!semver.validRange(requirement)) return `has an invalid ${CORE} range "${requirement}"`
-  return semver.satisfies(core, requirement, { includePrerelease: true })
+  // Matched the way the installers match: pnpm's workspace:<range> uses semver
+  // { loose: true } and npm's install ranges exclude prereleases too.
+  return semver.satisfies(core, requirement, { loose: true })
     ? null
     : `requires ${CORE} "${requirement}", which excludes ${core}`
 }
@@ -195,6 +197,12 @@ export async function main(argv = process.argv.slice(2)) {
       : `  Release them together with this core: add ${flags} to this release.`)
     console.error(`  A plugin published before ${CORE} became a range dependency (#1831) pins one exact`)
     console.error('  core, so the first release after that change must include all three plugin flags.')
+  }
+  if (failures.length > 0 && semver.prerelease(args.core)) {
+    console.error('')
+    console.error(`  ${args.core} is a prerelease. pnpm (for workspace:<range>) and npm match a range without`)
+    console.error('  prereleases, so no plugin range includes it: pnpm would build the plugins before core,')
+    console.error('  and a user installing a plugin would not get this core. Release core as a plain version.')
   }
   if (failures.length > 0) return 1
   if (unknowns.length > 0) {
