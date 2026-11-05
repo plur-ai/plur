@@ -49,11 +49,14 @@ Details: `CONTRIBUTING.md`, "Making a change", "Reviewing and merging" and "Rele
 ## Package dependency
 
 ```
-@plur-ai/core  ←  @plur-ai/mcp
-               ←  @plur-ai/claw
+@plur-ai/core  ←  @plur-ai/mcp, @plur-ai/cli          (workspace:*, published as the exact core)
+               ←  @plur-ai/claw, @plur-ai/opencode    (peer + dependency, workspace:>=<floor> <1,
+                                                        published as the range >=<floor> <1;
+                                                        release.sh sets <floor> to the released core)
+               ←  @plur-ai/dsh                         (dependency only, same range)
 ```
 
-MCP and Claw depend on core via `workspace:*`. **Claw imports from core's built dist, not source** — after changing core, rebuild before running claw tests:
+MCP and CLI depend on core via `workspace:*`. The plugins are on their own version tracks, so they depend on core by range, and `release.sh` checks that range against every core release (#1831; see RELEASING.md). **Claw imports from core's built dist, not source** — after changing core, rebuild before running claw tests:
 
 ```
 pnpm --filter @plur-ai/core build
