@@ -178,3 +178,41 @@ describe('npmLatest: a registry that drops the connection', () => {
     } finally { await m.close(); box.cleanup() }
   })
 })
+
+describe('npmLatest: only one exact version counts as an answer', () => {
+  let dir: string
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'plur-fake-npm-')) })
+  afterEach(() => rmSync(dir, { recursive: true, force: true }))
+
+  // A stand-in for npm-cli.js that prints `answer` as npm's --json output.
+  const fakeNpm = (answer: unknown) => {
+    const f = join(dir, 'npm-cli.js')
+    writeFileSync(f, `process.stdout.write(${JSON.stringify(JSON.stringify(answer))})\n`)
+    return f
+  }
+
+  it.each([['a range', '^1.2.0'], ['a tag', 'latest'], ['an empty answer', ''], ['a partial version', '1.2']])('%s is refused', async (_, answer) => {
+    expect(await npmLatest(PKG, { npmCli: fakeNpm(answer) })).toEqual({
+      state: 'unreachable', registry: 'the configured npm registry', reason: 'npm did not name one version as latest', connectFailure: false,
+    })
+  })
+
+  it('an exact version, with a pre-release, is accepted', async () => {
+    expect(await npmLatest(PKG, { npmCli: fakeNpm('1.2.3-rc.1') })).toEqual({ state: 'ok', version: '1.2.3-rc.1' })
+  })
+})
+
+describe('npmLatest: no temporary cache, no lookup', () => {
+  it('when no temporary directory can be made, npm is not run against its own cache', async () => {
+    const saved = process.env.TMPDIR
+    process.env.TMPDIR = join(tmpdir(), 'plur-no-such-dir', 'nested')
+    try {
+      // npmCli would fail the test if it ran: it does not exist.
+      expect(await npmLatest(PKG, { npmCli: '/nonexistent/npm-cli.js' })).toEqual({
+        state: 'unreachable', registry: 'the configured npm registry', reason: 'no temporary directory for npm', connectFailure: false,
+      })
+    } finally {
+      if (saved === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = saved
+    }
+  })
+})

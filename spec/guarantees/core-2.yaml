@@ -540,6 +540,33 @@ anchors:
     tests:
       - packages/core/test/normalize-engram.test.ts::is idempotent — a migrated record is untouched, by reference
       - packages/core/test/normalize-engram.test.ts::never mutates its input
+  packages/core/src/npm-latest.ts#(module):
+    kind: guarantee
+    rule: >-
+      latest is read through the user's npm (never a bare npm and never a direct registry fetch), never from npm's cache
+      when the registry is unreachable, and a failure names only the registry's host[:port], never a URL with credentials
+    tests:
+      - "packages/core/test/npm-latest-1833.test.ts::default registry from .npmrc"
+      - "packages/core/test/npm-latest-1833.test.ts::scoped @plur-ai:registry mirror in .npmrc wins over the default registry"
+      - "packages/core/test/npm-latest-1833.test.ts::never answers from npm's cache once the registry is gone"
+      - "packages/core/test/npm-latest-1833.test.ts::credentials in a registry URL are never printed"
+      - "packages/core/test/npm-latest-1833.test.ts::no npm: says so, makes no request"
+  packages/core/src/npm-latest.ts#EXACT_VERSION:
+    kind: guarantee
+    rule: only one exact version counts as npm's answer; a range, a tag or an empty answer is refused
+    tests:
+      - "packages/core/test/npm-latest-1833.test.ts::is refused"
+      - "packages/core/test/npm-latest-1833.test.ts::an exact version, with a pre-release, is accepted"
+  packages/core/src/npm-latest.ts#npmLatest:
+    kind: guarantee
+    rule: without a fresh temporary cache the lookup is refused rather than run against npm's own (possibly stale) cache
+    tests:
+      - "packages/core/test/npm-latest-1833.test.ts::when no temporary directory can be made, npm is not run against its own cache"
+  packages/core/src/npm-latest.ts#registryHost:
+    kind: guarantee
+    rule: the registry is named by host[:port] only, never with userinfo or path
+    tests:
+      - "packages/core/test/npm-latest-1833.test.ts::credentials in a registry URL are never printed"
   packages/core/src/offline.ts#updateCheckDisabledByEnv:
     kind: guarantee
     rule: The update check does not run when PLUR is offline or the check is turned off.
