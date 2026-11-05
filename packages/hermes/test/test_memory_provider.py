@@ -75,6 +75,15 @@ class TestAbcContract:
         p, _ = _provider()
         assert p.name == "plur"
 
+    def test_shutdown_is_a_quiet_no_op(self):
+        # Hermes's MemoryManager.shutdown_all() calls provider.shutdown() on
+        # every provider when it closes an idle session. Without the method it
+        # logs "Memory provider 'plur' shutdown failed" each time. There is
+        # nothing to flush: every bridge call is its own CLI subprocess.
+        p, bridge = _provider()
+        assert p.shutdown() is None
+        assert bridge.method_calls == []
+
     def test_is_available_true(self):
         bridge = _mock_bridge()
         p = PlurMemoryProvider(bridge=bridge)
