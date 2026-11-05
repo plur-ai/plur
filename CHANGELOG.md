@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+### Fixes
+
+- After `npm install -g @plur-ai/cli@latest @plur-ai/mcp@latest`, `plur init`
+  moves every editor config PLUR wrote to the new version. Entries that launch
+  the installed MCP server (`~/.plur/bin/plur-mcp`, or Node plus the installed
+  package for OpenCode) follow the upgrade unchanged. Where no installed server
+  is found, init records `npx -y @plur-ai/mcp@<version>`, and now updates an
+  older pinned version on every run in Claude Code, Claude Desktop, Cursor,
+  Antigravity, OpenCode and `plur-mcp init`, as it already did for Codex. Newer
+  pins and custom entries are left alone, and configs still never record
+  `@latest` (#1069). `plur-mcp init` also uses the installed MCP server when
+  `plur init` has set it up, and pins its npx hook fallback. Messages that read
+  as "do not install latest" now say: install the latest version globally;
+  tool configs record the exact version. The release announcement's update
+  line now runs `plur init`. (#1832)
+
 ## 0.23.0
 
 Memory you can prove. (#1790, #1799)
