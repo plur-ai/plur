@@ -1,7 +1,7 @@
 import { existsSync, unlinkSync } from 'fs'
 import { join, dirname, resolve } from 'path'
 import { homedir } from 'os'
-import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram, getCachedUpdateCheck, checkForUpdate, updateCheckOffline, minorVersionsBehind, scanForTensions, CapabilityCanary, NO_SESSION, findProjectConfigPath, readProjectConfigFromPath, isSharedScope, resolveRerankerName, getReranker, classifyRerankerFailure, hfCacheDirName, SUGGEST_DISPLAY_MIN_CONFIDENCE, mcpRemoteWarningLine, doctorRemoteRemediation, normalizeEndpointUrl, REMOTE_STATUS_TTL_MS, PROBE_CLEARABLE_STATES, summariseProvenance, formatLayer3, renderProvenanceSummary, type LearnContext, describeNeedsAction, summarizeOutbox, type OutboxSummary, folderMapProblem, type FolderMapProblem, tokenEnvUnsetDetail, tokenEnvUnsetFix, resolveRecallDeadlineMs } from '@plur-ai/core'
+import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram, getCachedUpdateCheck, checkForUpdate, updateCheckOffline, formatUpdateCheckFailure, minorVersionsBehind, scanForTensions, CapabilityCanary, NO_SESSION, findProjectConfigPath, readProjectConfigFromPath, isSharedScope, resolveRerankerName, getReranker, classifyRerankerFailure, hfCacheDirName, SUGGEST_DISPLAY_MIN_CONFIDENCE, mcpRemoteWarningLine, doctorRemoteRemediation, normalizeEndpointUrl, REMOTE_STATUS_TTL_MS, PROBE_CLEARABLE_STATES, summariseProvenance, formatLayer3, renderProvenanceSummary, type LearnContext, describeNeedsAction, summarizeOutbox, type OutboxSummary, folderMapProblem, type FolderMapProblem, tokenEnvUnsetDetail, tokenEnvUnsetFix, resolveRecallDeadlineMs } from '@plur-ai/core'
 import { folderMapAdvice } from './folder-map-advice.js'
 import type { LlmFunction, MetaField, TensionStatus, RerankerEvalResult, HistoryEvent, Receipt, RemoteStoreStatusEntry, RecallRemoteReport, RemoteOnlyStatus } from '@plur-ai/core'
 import { RemoteOnlyWriteError, remoteOnlySessionLine, remoteOnlyUnservedNotice, WARM_REMOTE_RECALL_TIMEOUT_MS } from '@plur-ai/core'
@@ -2994,7 +2994,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
         properties: {
           domain: { type: 'string', description: 'Only count engrams whose domain starts with this prefix (e.g. "meridian")' },
           created_after: { type: 'string', description: 'ISO-8601 date (YYYY-MM-DD). Only count engrams learned on or after this date.' },
-          check_updates: { type: 'boolean', description: 'If true, ask the npm registry whether a newer PLUR is published and report it as update_available. PLUR also checks once at start; if that check could not connect, PLUR is offline and this answers from the earlier result (update_check: "offline") without a new request.' },
+          check_updates: { type: 'boolean', description: 'If true, ask npm (through the user\'s npm registry settings) whether a newer PLUR is published and report it as update_available. When the registry cannot be reached, update_check names it and why, and no update is advertised. PLUR also checks once at start; if that check could not connect, PLUR is offline and this answers from the earlier result (update_check: "offline") without a new request.' },
         },
       },
       handler: async (args, plur) => {
@@ -3057,7 +3057,9 @@ function getAllToolDefinitions(): ToolDefinition[] {
             },
           } : {}),
           ...(update_offline ? {
-            update_check: 'offline: the update check could not connect earlier in this process, so PLUR makes no further network attempt. Restart PLUR once online to check again.',
+            update_check: `offline: ${formatUpdateCheckFailure(versionCheck) ?? 'the update check could not connect earlier in this process.'} PLUR makes no further network attempt in this process. Restart PLUR once the registry can be reached to check again.`,
+          } : versionCheck?.failure ? {
+            update_check: formatUpdateCheckFailure(versionCheck),
           } : {}),
           capabilities: await mcpCanary.status(),
           // A broken folders.yaml pauses every memory tool. Status is
