@@ -1,6 +1,7 @@
 import { PlurContextEngine, type PlurContextEngineOptions } from './context-engine.js'
 import { ensureSystemPrompt, PLUR_SYSTEM_SECTION } from './system-prompt.js'
-import { checkForUpdate, CapabilityCanary, recordEvent, flushIfNeeded, registerFlushOnExit, shortPackIntegrity } from '@plur-ai/core'
+import { join } from 'path'
+import { checkForUpdate, formatUpdateCheckFailure, CapabilityCanary, recordEvent, flushIfNeeded, registerFlushOnExit, shortPackIntegrity } from '@plur-ai/core'
 import { CLAW_VERSION } from './version.js'
 
 // Telemetry is core's module, not a copy, so the heartbeat endpoint cannot
@@ -271,12 +272,15 @@ const plugin = {
     api.logger.info(`PLUR registered: context engine + hooks + slash commands + CLI`)
 
     // Non-blocking version check, once at register. When it cannot connect the
-    // process is offline and no further update check is attempted.
+    // process is offline and no further update check is attempted. The answer
+    // is kept in the store, so a restart within its TTL asks npm nothing.
     checkForUpdate('@plur-ai/claw', plugin.version, (r) => {
       if (r.updateAvailable) {
         api.logger.warn(`PLUR update available: ${r.current} → ${r.latest}. Run: npm update @plur-ai/claw`)
       }
-    })
+      const failure = formatUpdateCheckFailure(r)
+      if (failure) api.logger.warn(`PLUR: ${failure}`)
+    }, { cacheFile: join(path, 'cache', 'update-check.json') })
   },
 }
 
