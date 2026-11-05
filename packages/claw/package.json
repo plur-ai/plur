@@ -28,9 +28,10 @@
     "postinstall": "node dist/setup.js 2>/dev/null || true"
   },
   "dependencies": {
-    "@plur-ai/core": "workspace:*"
+    "@plur-ai/core": "workspace:>=0.23.0 <1"
   },
   "peerDependencies": {
+    "@plur-ai/core": ">=0.23.0 <1",
     "openclaw": ">=2026.6.5"
   },
   "peerDependenciesMeta": {

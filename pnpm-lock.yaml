@@ -37,6 +37,9 @@ importers:
       '@types/node':
         specifier: 25.5.0
         version: 25.5.0
+      semver:
+        specifier: 7.7.4
+        version: 7.7.4
       tsup:
         specifier: ^8.5.1
         version: 8.5.1(jiti@2.7.0)(postcss@8.5.25)(tsx@4.22.4)(typescript@6.0.2)(yaml@2.9.0)
@@ -63,7 +66,7 @@ importers:
   packages/claw:
     dependencies:
       '@plur-ai/core':
-        specifier: workspace:*
+        specifier: workspace:>=0.23.0 <1
         version: link:../core
       openclaw:
         specifier: '>=2026.6.5'
@@ -169,7 +172,7 @@ importers:
         specifier: ^0.1.0-rc.6
         version: 0.1.0-rc.6(@deepseek-ai/cordis@4.0.1)(@deepseek-ai/dsh-invariants@0.1.0-rc.6(@deepseek-ai/cordis@4.0.1))(@deepseek-ai/dsh-llm@0.1.0-rc.6(@deepseek-ai/cordis@4.0.1)(@deepseek-ai/dsh-attachment@0.1.0-rc.6(@deepseek-ai/cordis@4.0.1)(@deepseek-ai/dsh-brand@0.1.0-rc.6(@deepseek-ai/cordis@4.0.1)(@deepseek-ai/dsh-invariants@0.1.0-rc.6(@deepseek-ai/cordis@4.0.1)))(@deepseek-ai/dsh-invariants@0.1.0-rc.6(@deepseek-ai/cordis@4.0.1)))(@deepseek-ai/dsh-brand@0.1.0-rc.6(@deepseek-ai/cordis@4.0.1)(@deepseek-ai/dsh-invariants@0.1.0-rc.6(@deepseek-ai/cordis@4.0.1)))(@deepseek-ai/dsh-invariants@0.1.0-rc.6(@deepseek-ai/cordis@4.0.1))(@deepseek-ai/dsh-timeout@0.1.0-rc.6(@deepseek-ai/cordis@4.0.1)(@deepseek-ai/dsh-invariants@0.1.0-rc.6(@deepseek-ai/cordis@4.0.1))))(@deepseek-ai/dsh-scope@0.1.0-rc.6(@deepseek-ai/cordis@4.0.1)(@deepseek-ai/dsh-invariants@0.1.0-rc.6(@deepseek-ai/cordis@4.0.1)))
       '@plur-ai/core':
-        specifier: workspace:*
+        specifier: workspace:>=0.23.0 <1
         version: link:../core
       js-yaml:
         specifier: '>=4.3.2 <5'
@@ -249,7 +252,7 @@ importers:
   packages/opencode:
     dependencies:
       '@plur-ai/core':
-        specifier: workspace:*
+        specifier: workspace:>=0.23.0 <1
         version: link:../core
     devDependencies:
       '@opencode-ai/plugin':
