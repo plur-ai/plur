@@ -80,6 +80,7 @@ describe('release.sh runs the plugin core-range check', () => {
   })
 
   it('before the first publish', () => {
+    expect(preCheck).toBeGreaterThan(0)
     expect(preCheck).toBeLessThan(at(/publish --access public/))
     expect(preCheck).toBeLessThan(at(/git push origin/))
   })
