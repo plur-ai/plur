@@ -863,6 +863,13 @@ class PlurMemoryProvider:
     def save_config(self, values: Dict[str, Any], hermes_home: str) -> None:
         """No-op: PLUR config is env-var-only; ``get_config_schema`` sets ``env_var``."""
 
+    def shutdown(self) -> None:
+        """No-op: nothing to flush or close — every bridge call is its own CLI subprocess.
+
+        Hermes's MemoryManager calls ``shutdown()`` on each provider when it closes
+        an idle session; without this method it logs a "shutdown failed" warning.
+        """
+
 
 def create_memory_provider(bridge: Optional[PlurBridge] = None) -> PlurMemoryProvider:
     """Factory used by the ``hermes_agent.memory_providers`` entry point.
