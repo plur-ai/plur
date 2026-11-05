@@ -162,6 +162,8 @@ function installHookBinary(): { shimPath: string; status: string } {
 // ─── MCP shim ───────────────────────────────────────────────────────────────
 // A local shim ~/.plur/bin/plur-mcp runs `node <resolved-mcp-entry>` directly, because `npx -y @plur-ai/mcp@latest`
 // on every session races the npx cache update on publish (ENOTEMPTY) and loses PLUR until the cache is wiped.
+// Tool configs record the shim, which follows a global upgrade at the same path, or an exact npx pin that every
+// `plur init` moves to its own version.
 
 /**
  * Find @plur-ai/mcp's dist/index.js by walking up from the CLI's location through nearby node_modules (it is a
@@ -1568,7 +1570,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     if (bareCmd.startsWith('/') || /^[A-Za-z]:[\\/]/.test(bareCmd)) {
       outputInfo('  Committing .cursor/mcp.json / .cursor/hooks.json? Their command is this machine\'s local', flags)
       outputInfo(`  path (${cursorCmd}) — it won't exist on a teammate's machine or a fresh Background Agent VM.`, flags)
-      outputInfo('  Run `plur init --cursor` there too (it pins the right version — avoid @latest).', flags)
+      outputInfo('  Run `plur init --cursor` there too: install the latest version globally; tool configs record the exact version.', flags)
     }
   }
   outputInfo(`CLAUDE.md:        ${claudeMdStatus}`, flags)

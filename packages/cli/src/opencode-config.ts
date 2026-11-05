@@ -4,6 +4,7 @@ import { homedir, platform } from 'os'
 import { atomicWrite } from '@plur-ai/core'
 import { buildMcpServerEntry, findMcpJsEntry, findMcpShim, isOwnWin32NodeEntry, isPathResolvedCommand, missingNodeEntryPaths } from './mcp-config.js'
 import { parseJsonc } from './lib/jsonc.js'
+import { olderOrEqual } from './lib/semver-order.js'
 import { applyEdits, modify, parseTree, type Node as JsonNode, type JSONPath, type ParseError } from 'jsonc-parser'
 import opencodePackage from '../../opencode/package.json'
 
@@ -23,6 +24,11 @@ export interface WriteOpencodeConfigResult {
   mcpPlurPreserved: boolean
   /** PLUR's old npx command migrated to the installed package or Windows fallback. */
   mcpPlurUpgraded: boolean
+  /**
+   * PLUR's own npx entry, pinned older than this CLI, moved to this CLI's pin
+   * because no installed MCP server was found to launch instead.
+   */
+  mcpPlurRepinned?: { from: string; to: string }
   /** A stale owned Windows node command was repaired. */
   mcpPlurRepaired: boolean
   /** True when the entry now in the file launches an installed binary, not npx. */
@@ -427,10 +433,22 @@ export function writeOpencodeConfig(
   // cmd.exe fallback is a repair too.
   const launch = opencodeMcpLaunch(cliVersion)
   let mcpPlurUpgraded = false
+  let mcpPlurRepinned: { from: string; to: string } | undefined
   if ((launch.local || platform() === 'win32') && isOwnLegacyNpxEntry(mcp.plur)) {
     mcp.plur = { ...mcp.plur, command: launch.command }
     mcpPlurUpgraded = true
     edits.push({ path: [...mcpPath, 'plur', 'command'], value: (mcp.plur as { command: string[] }).command })
+  } else if (isOwnLegacyNpxEntry(mcp.plur)) {
+    // No installed MCP server to launch (macOS/Linux): npx stays, but the pin
+    // follows the CLI that ran init, so a global upgrade reaches opencode on
+    // the next `plur init`. Same rule as every other writer:
+    // an older pin moves, a newer pin is the user's and stays.
+    const from = ((mcp.plur as { command: string[] }).command[2]).slice('@plur-ai/mcp@'.length)
+    if (from !== cliVersion && olderOrEqual(from, cliVersion)) {
+      mcp.plur = { ...mcp.plur, command: launch.command }
+      mcpPlurRepinned = { from, to: cliVersion }
+      edits.push({ path: [...mcpPath, 'plur', 'command'], value: launch.command })
+    }
   }
   // PLUR's own win32 node-form entry is repaired once it has gone stale.
   let mcpPlurRepaired = false
@@ -440,7 +458,7 @@ export function writeOpencodeConfig(
     mcpPlurRepaired = true
     edits.push({ path: [...mcpPath, 'plur', 'command'], value: repaired })
   }
-  const rewritten = mcpPlurUpgraded || mcpPlurRepaired
+  const rewritten = mcpPlurUpgraded || mcpPlurRepaired || mcpPlurRepinned !== undefined
   const mcpPlurPreserved = !rewritten && mcp.plur !== undefined && mcp.plur !== null
   if (!mcpPlurPreserved && !rewritten) {
     mcp.plur = {
@@ -467,6 +485,7 @@ export function writeOpencodeConfig(
   }
   return {
     created, changed, ok: true, mcpPlurPreserved, mcpPlurUpgraded, mcpPlurRepaired,
+    ...(mcpPlurRepinned ? { mcpPlurRepinned } : {}),
     mcpPlurLocal: launch.local && sameCommand((mcp.plur as { command?: unknown } | undefined)?.command, launch.command),
     ...(rewritten ? { mcpPlurCommand: (mcp.plur as { command: string[] }).command } : {}),
   }
@@ -484,6 +503,9 @@ export function opencodeMcpNote(result: WriteOpencodeConfigResult): string {
     ? `the pinned cmd.exe /c npx fallback (@plur-ai/mcp's js entry could not be resolved): ${written.join(' ')}`
     : `the local launcher (node/node.exe + installed @plur-ai/mcp): ${written.join(' ')}`
   if (result.mcpPlurUpgraded) return `\n  mcp.plur: upgraded to ${form}; other fields kept`
+  if (result.mcpPlurRepinned) {
+    return `\n  mcp.plur: updated the npx pin ${result.mcpPlurRepinned.from} → ${result.mcpPlurRepinned.to}; other fields kept`
+  }
   if (result.mcpPlurRepaired) {
     return `\n  mcp.plur: repaired (the node.exe or @plur-ai/mcp path it named was stale), now ${form}; other fields kept`
   }
