@@ -30,7 +30,7 @@ plur init --opencode
 plur doctor
 ```
 
-The plugin installs [`@plur-ai/core`](https://npmjs.com/package/@plur-ai/core) 0.23.0 or later (below 1.0) with it, so it reads and writes `~/.plur/` with the current core, not the one it was built with.
+The plugin installs [`@plur-ai/core`](https://npmjs.com/package/@plur-ai/core) with it: the core it was last published with, or later (below 1.0; the release sets the floor). So it reads and writes `~/.plur/` with the current core, not only the one it was built with.
 
 Restart OpenCode after setup or an upgrade, including its background service on V2. Plain `plur init` auto-detects an existing OpenCode config directory; `--opencode` also sets up a new one, and `--no-opencode` skips it.
 

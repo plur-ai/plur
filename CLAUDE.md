@@ -50,8 +50,9 @@ Details: `CONTRIBUTING.md`, "Making a change", "Reviewing and merging" and "Rele
 
 ```
 @plur-ai/core  ←  @plur-ai/mcp, @plur-ai/cli          (workspace:*, published as the exact core)
-               ←  @plur-ai/claw, @plur-ai/opencode    (peer + dependency, workspace:>=0.23.0 <1,
-                                                        published as the range >=0.23.0 <1)
+               ←  @plur-ai/claw, @plur-ai/opencode    (peer + dependency, workspace:>=<floor> <1,
+                                                        published as the range >=<floor> <1;
+                                                        release.sh sets <floor> to the released core)
                ←  @plur-ai/dsh                         (dependency only, same range)
 ```
 

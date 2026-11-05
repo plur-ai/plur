@@ -38,7 +38,7 @@ dsh plugin --profile web add @plur-ai/dsh
 
 就这样。重启 `dsh`，你的 agent 就有记忆了。
 
-需要 [`@plur-ai/core`](https://www.npmjs.com/package/@plur-ai/core) 0.23.0 或更高版本（低于 1.0）。它是普通依赖而非 peer 依赖，因此会随插件一并安装：DeepSeek Harness 的 profile 不会安装 peer 依赖，而 pnpm 11 在 profile 中也不会链接同时声明为两者的包。
+需要 [`@plur-ai/core`](https://www.npmjs.com/package/@plur-ai/core)：本插件上次发布时所用的 core 或更高版本（低于 1.0；下限由发布流程设定）。它是普通依赖而非 peer 依赖，因此会随插件一并安装：DeepSeek Harness 的 profile 不会安装 peer 依赖，而 pnpm 11 在 profile 中也不会链接同时声明为两者的包。
 
 ## 快速上手
 

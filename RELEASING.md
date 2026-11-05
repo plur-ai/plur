@@ -176,9 +176,20 @@ is caught by that package's own manifest test, not at publish time.
 ### Plugins depend on core by range (#1831)
 
 Because the plugins are not republished with every core, they do not pin the core
-they were built with. Each declares `@plur-ai/core` with the range `>=0.23.0 <1`;
-in the workspace the dependency is `workspace:>=0.23.0 <1`, which `pnpm publish`
-writes out as `>=0.23.0 <1`.
+they were built with. Each declares `@plur-ai/core` as a range, `>=<floor> <1`: the
+core it was last published with, or later. In the workspace the dependency is
+`workspace:>=<floor> <1`, which `pnpm publish` writes out as `>=<floor> <1`.
+
+**The release sets the floor.** When `--opencode`, `--claw` or `--dsh` is given,
+`release.sh` Step 1 rewrites that plugin's core dependency (and its core peer, where
+it has one) to `>=<version> <1`, where `<version>` is the core of the same release,
+and updates the plugin's specifier in `pnpm-lock.yaml` to match. A plugin is built
+and tested against exactly that core, so that core is the oldest one it is known to
+work with. Step 9b fails its `--post` check when a plugin released in the run has
+any other floor. Between releases the workspace floor stays where the last release
+put it (0.23.0 for all three when #1831 landed); the workspace builds against the
+workspace core whatever the floor is, and the floor moves at the plugin's next
+release.
 
 | Plugin | `@plur-ai/core` declared as | Why |
 |---|---|---|
@@ -206,7 +217,8 @@ anything, in `--dry-run` too. It fails (exit 1) when a plugin's workspace range,
 the core requirement of a published plugin that this run does not republish,
 excludes the release version, and it stops (exit 2) when it cannot check, for
 example when npm is unreachable. Step 9b runs it again in `--post` mode as a
-warning. A 1.0 core fails the range on purpose: that release has to decide, per
+warning, and there it also requires each plugin released in the run to have its
+floor at the released core. A 1.0 core fails the range on purpose: that release has to decide, per
 plugin, whether to widen the range and republish.
 
 **The first release after #1831 must republish all three plugins:**
@@ -221,11 +233,20 @@ opencode 0.21.5 pinned core 0.21.5, claw 0.20.0 pinned 0.20.0, dsh 0.1.0 pinned
 everything on `main` for each plugin since its last publish; review that before
 choosing the versions.
 
-The range has a cost: a published plugin can run on a core release it was never
-tested against. Within 0.x a core minor may remove or change an export a plugin
-uses. When that happens, raise the plugin's lower bound and republish it. A smoke
-test that installs the published plugins against the packed new core is tracked
-in [#1844](https://github.com/plur-ai/plur/issues/1844).
+The range has two risks, one per direction:
+
+- **A plugin starts using a newer core export.** The plugin code on `main` can
+  import something only the workspace core has (opencode's `withDeadline` is not
+  in core 0.23.0). The floor rule covers this for published plugins: a published
+  tarball's code can only use exports of the core it was built with, and its floor
+  is that core, so npm never pairs it with an older one. This is why the release
+  check does not look for missing exports itself.
+- **A core release removes or changes an export a published plugin uses.** Within
+  0.x a core minor may do that, and the range lets a published plugin run on a core
+  it was never tested against. When that happens, republish the plugin (its floor
+  moves to the new core) or narrow its range. A smoke test that installs the
+  published plugins against the packed new core is tracked in
+  [#1844](https://github.com/plur-ai/plur/issues/1844).
 
 ## Manual publish (one package)
 
