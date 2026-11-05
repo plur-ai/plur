@@ -59,7 +59,10 @@ describe('plur_doctor engram store check reports the local count (#1822)', () =>
       const doctor = await call('plur_doctor', {})
       const store = doctor.checks.find((c: any) => c.check === 'engram store')
       expect(store.detail).toMatch(/^0 engrams across 0 packs at /)
-      expect(store.ok).toBe(false)
+      // #1828: a team-only install (url store, no local engrams) passes, and
+      // the detail says why.
+      expect(store.ok).toBe(true)
+      expect(store.detail).toContain('team memory is on the server')
 
       const remote = doctor.checks.find((c: any) => c.check === 'remote store cache')
       expect(remote).toBeDefined()
