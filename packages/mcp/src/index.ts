@@ -2,7 +2,7 @@
 export {}
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, statSync } from 'fs'
-import { join } from 'path'
+import { dirname, join, resolve } from 'path'
 import { fileURLToPath } from 'url'
 import { homedir, platform } from 'os'
 
@@ -267,7 +267,11 @@ export async function installClaudeMd(claudeMdPath: string = defaultClaudeMdPath
   if (r.status === 'skipped') return `not written to ${claudeMdPath}: ${r.skipReason}`
   let backup: string | null
   try {
-    backup = r.status === 'already' ? null : writeWithBackup(claudeMdPath, r.content, existing)
+    // A CLAUDE.md taken from the working directory is the project's file: it may
+    // not write through a symlink out of the project (security audit 2026-11-06).
+    const confineTo = resolve(dirname(claudeMdPath)) === resolve(process.cwd()) && resolve(process.cwd()) !== resolve(homedir())
+      ? process.cwd() : undefined
+    backup = r.status === 'already' ? null : writeWithBackup(claudeMdPath, r.content, existing, { confineTo })
   } catch (err) {
     // A write PLUR declined (a dangling symlink, an edit made meanwhile): say
     // so and let the rest of the install carry on.

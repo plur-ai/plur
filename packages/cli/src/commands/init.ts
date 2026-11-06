@@ -681,7 +681,7 @@ function installProjectConfig(args: string[]): string | null {
  * Before this, re-running `plur init` saw the heading, reported "already in",
  * and an existing install never received a changed instruction.
  */
-export function writePlurSection(path: string, section: string, title: string): string {
+export function writePlurSection(path: string, section: string, title: string, opts?: { confineTo?: string }): string {
   const existing = existsSync(path) ? readFileSync(path, 'utf8') : null
   const r = upsertInstructionSection(existing, {
     section, title, heading: '## PLUR Memory', marker: PLUR_INSTRUCTIONS_MARKER, shipped: SHIPPED_PLUR_SECTIONS,
@@ -689,7 +689,7 @@ export function writePlurSection(path: string, section: string, title: string): 
   if (r.status === 'skipped') return `not written to ${path}: ${r.skipReason}`
   let backup: string | null
   try {
-    backup = r.status === 'already' ? null : writeWithBackup(path, r.content, existing)
+    backup = r.status === 'already' ? null : writeWithBackup(path, r.content, existing, opts)
   } catch (err) {
     // A write PLUR declined (a dangling symlink, an edit made meanwhile): say
     // so and let the rest of the install carry on.
@@ -720,7 +720,10 @@ function installClaudeMd(): string {
   const projectClaudeMd = join(process.cwd(), 'CLAUDE.md')
   const globalClaudeMd = join(homedir(), 'CLAUDE.md')
   const claudeMdPath = existsSync(projectClaudeMd) ? projectClaudeMd : existsSync(globalClaudeMd) ? globalClaudeMd : projectClaudeMd
-  return writePlurSection(claudeMdPath, CLAUDE_MD_SECTION, '# CLAUDE.md')
+  // The project file may not write through a symlink out of the project
+  // (security audit 2026-11-06); ~/CLAUDE.md may (dotfiles setups link it).
+  return writePlurSection(claudeMdPath, CLAUDE_MD_SECTION, '# CLAUDE.md',
+    claudeMdPath === projectClaudeMd ? { confineTo: process.cwd() } : undefined)
 }
 
 /**
@@ -1352,7 +1355,8 @@ function installAgentsMd(cwd: string = process.cwd(), globalFallback: string | n
     : (globalFallback && existsSync(globalFallback)) ? globalFallback
     : projectAgents
 
-  return writePlurSection(target, AGENTS_MD_SECTION, '# AGENTS.md')
+  return writePlurSection(target, AGENTS_MD_SECTION, '# AGENTS.md',
+    target === projectAgents ? { confineTo: cwd } : undefined)
 }
 
 // ── Antigravity CLI (agy) ───────────────────────────────────────────────────
