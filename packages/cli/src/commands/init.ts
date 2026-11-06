@@ -20,6 +20,7 @@ import {
 import {
   hookCommandPrefix,
   isPlurHookSpec,
+  isThisMachinesPlurHookSpec,
   claudeHookSpec,
   windowsHookCommand,
   resolveShortPath,
@@ -887,6 +888,15 @@ function migrateRepoHooks(flags: GlobalFlags, userPath: string): string | null {
         'so the folder question asks on the next prompt and can trust it'
     } else if (loadFolderMap(root).folders.some(e => e.path === folder || canonicalize(e.path) === target)) {
       recorded = 'the folder map already has it, left as is'
+    } else if (!repoHooksAreThisMachines(settings)) {
+      // A PLUR-looking hook a repository ships (the npx fallback, or a
+      // plur-hook shim outside this home) proves nothing about who wrote it.
+      // Recording `on` from it made the repo's own .plur store a shared,
+      // writable store read in every folder, without the user deciding
+      // (security audit 2026-11-06; #1588: nothing a repository ships is the
+      // user's decision). The hooks still move; the folder question asks.
+      recorded = 'not recorded in the folder map: its PLUR hooks do not name this machine\'s own plur-hook, ' +
+        'so they may have come with the repository; the folder question asks on the next prompt'
     } else {
       setFolderEntry(root, folder, { mode: 'on' }, { configuredScopes: [] })
       mapWritten = true
@@ -949,6 +959,13 @@ function isPlurHook(entry: HookEntry): boolean {
   // PLUR's launcher (shim, npx fallback, or the Windows exec form) plus any
   // hook-* (decisions H2, H3) — see isPlurHookSpec.
   return (entry?.hooks ?? []).some(isPlurHookSpec)
+}
+
+/** Every PLUR hook in `settings` is bound to this machine's own install (see isThisMachinesPlurHookSpec). */
+function repoHooksAreThisMachines(settings: Settings): boolean {
+  const specs = Object.values(settings.hooks ?? {}).flatMap(entries => (entries ?? []).flatMap(e => e?.hooks ?? []))
+    .filter(isPlurHookSpec)
+  return specs.length > 0 && specs.every(isThisMachinesPlurHookSpec)
 }
 
 function hasPlurHooks(settings: Settings): boolean {
