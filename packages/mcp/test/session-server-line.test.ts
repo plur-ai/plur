@@ -27,6 +27,9 @@ beforeEach(async () => {
     stores: [{ url, token, scope, scopes: [scope], enterprise: {}, discovery: {
       status: 'ok', username: 'fixture-user', key_expires_at: null, discovered_at: new Date().toISOString(),
       gitlab_host: 'gitlab.example.com', project_paths: { [scope]: 'team/backend' } } }] }))
+  // The mapped repository is trusted: an origin-derived team scope needs
+  // that (security audit 2026-11-06).
+  writeFileSync(join(home, '.plur', 'folders.yaml'), `folders:\n  - path: ${JSON.stringify(mapped)}\n    trusted: true\n`)
 })
 afterEach(async () => { await client?.close(); client = undefined; await stub.stop(); rmSync(home, { recursive: true, force: true }) })
 async function start(cwd: string, roots: string[], args: Record<string, unknown> = {}, failRefresh = false) {
@@ -85,7 +88,7 @@ it('different explicit folder scopes never advertise the first root as a shared 
   expect(result.server_status[0]).not.toContain(`saving to ${scope}`)
 })
 it('the same scope from a folder map and an origin is still a remote session default', async () => {
-  writeFileSync(join(home, '.plur', 'folders.yaml'), `folders:\n  - path: ${JSON.stringify(local)}\n    plur: on\n    scope: ${scope}\n`)
+  writeFileSync(join(home, '.plur', 'folders.yaml'), `folders:\n  - path: ${JSON.stringify(local)}\n    plur: on\n    scope: ${scope}\n  - path: ${JSON.stringify(mapped)}\n    trusted: true\n`)
   const result = await start(home, [local, mapped])
   expect(result.default_scope).toBe(scope)
   expect(result.server_status).toEqual([`PLUR → server as fixture-user · saving to ${scope}`])
