@@ -311,6 +311,90 @@ export function tokenEnvUnsetFix(url: string, variable: string): string {
 export const TOKEN_ENV_UNSET_RE = /environment variable (\S+), which is unset or empty/
 
 /**
+ * Byte caps for remote store responses (security audit 2026-11-06).
+ *
+ * Every request here was bounded by time only, so a hostile or compromised
+ * store server — or anyone on the path to a plain-http one — could hand the
+ * client a page of 50,000 rows or a 32 MiB /me body, all buffered, parsed and
+ * cached in the user's MCP server, hooks and CLI. The recall client already
+ * capped its bodies (MAX_REMOTE_RESPONSE_BYTES) for this reason; the same
+ * reader now bounds this store too.
+ *
+ * A page is at most {@link REMOTE_PAGE_LIMIT} rows; 4 MiB leaves ~20 KiB per
+ * row. Every other endpoint returns one object (an engram, /me, a write
+ * result): 1 MiB. An error body is cut to 200 characters anyway, so only its
+ * first 64 KiB are read.
+ */
+export const MAX_REMOTE_PAGE_BYTES = 4 * 1024 * 1024
+export const MAX_REMOTE_STORE_RESPONSE_BYTES = 1024 * 1024
+export const MAX_REMOTE_ERROR_BODY_BYTES = 64 * 1024
+/** Rows requested per page in {@link RemoteStore.load}; a page carrying more is refused. */
+export const REMOTE_PAGE_LIMIT = 200
+/** Pages walked per load: with the per-page row cap, at most 10,000 rows are cached per store. */
+export const REMOTE_MAX_PAGES = 50
+
+/** Thrown when a remote response body exceeds its byte cap. Not a host-down signal: the peer answered. */
+export class RemoteResponseTooLargeError extends Error {
+  constructor(url: string, cap: number) {
+    super(`remote response from ${safeOrigin(url)} is too large (over ${cap} bytes); refused`)
+    this.name = 'RemoteResponseTooLargeError'
+  }
+}
+
+/**
+ * Read a response body as text, refusing it (null) once it passes `cap`
+ * bytes: an oversized content-length is refused before reading, and a stream
+ * is counted and cancelled at the cap, so the excess is never buffered.
+ * Shared by this store and the recall client (remote-recall.ts).
+ */
+export async function readBodyCapped(res: Response, cap: number): Promise<string | null> {
+  const len = res.headers.get('content-length')
+  if (len && parseInt(len, 10) > cap) return null
+  const body = (res as { body?: { getReader?: () => { read(): Promise<{ done: boolean; value?: Uint8Array }>; cancel(): Promise<void> } } }).body
+  if (body && typeof body.getReader === 'function') {
+    const reader = body.getReader()
+    const chunks: Buffer[] = []
+    let total = 0
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (value) {
+        total += value.byteLength
+        if (total > cap) {
+          try { await reader.cancel() } catch { /* already dead */ }
+          return null
+        }
+        chunks.push(Buffer.from(value))
+      }
+    }
+    return Buffer.concat(chunks).toString('utf8')
+  }
+  const text = await res.text()
+  return Buffer.byteLength(text, 'utf8') > cap ? null : text
+}
+
+/**
+ * {@link readBodyCapped} for a response that may be a test double without a
+ * body stream. A real fetch Response always has one (or a null body, which
+ * carries no bytes), so the cap applies to everything that crosses the wire;
+ * a duck-typed stub falls back to its own json()/text().
+ */
+async function readCapped(res: Response, cap: number, as: 'json'): Promise<{ json: unknown } | null>
+async function readCapped(res: Response, cap: number, as: 'text'): Promise<{ text: string } | null>
+async function readCapped(res: Response, cap: number, as: 'json' | 'text'): Promise<{ json?: unknown; text?: string } | null> {
+  const streamed = typeof (res as { body?: { getReader?: unknown } | null }).body?.getReader === 'function'
+  if (!streamed) {
+    return as === 'json'
+      ? { json: await res.json().catch(() => undefined) }
+      : { text: await res.text().catch(() => '') }
+  }
+  const text = await readBodyCapped(res, cap)
+  if (text === null) return null
+  if (as === 'text') return { text }
+  try { return { json: JSON.parse(text) } } catch { return { json: undefined } }
+}
+
+/**
  * A response whose body has already been read, inside the request deadline.
  *
  * `json` is present only for a 2xx (and is `undefined` when the payload would
@@ -511,9 +595,21 @@ export class RemoteStore {
   private static async readBounded(res: Response): Promise<BoundedResponse> {
     // 2xx carries the payload; anything else carries an error body that gets
     // sanitised before it can reach a log line or an exception message.
-    return res.ok
-      ? { ok: true, status: res.status, json: await res.json().catch(() => undefined) }
-      : { ok: false, status: res.status, text: sanitiseResponseBody(await res.text().catch(() => '')) }
+    // Both are read under a byte cap (security audit 2026-11-06): an
+    // oversized payload throws (the caller sees a refusal, never a silently
+    // empty result), an oversized error body keeps its status.
+    if (res.ok) {
+      const body = await readCapped(res, MAX_REMOTE_STORE_RESPONSE_BYTES, 'json')
+      if (body === null) throw new RemoteResponseTooLargeError(res.url || 'remote', MAX_REMOTE_STORE_RESPONSE_BYTES)
+      return { ok: true, status: res.status, json: body.json }
+    }
+    return { ok: false, status: res.status, text: sanitiseResponseBody(await RemoteStore.readErrorText(res)) }
+  }
+
+  /** The first {@link MAX_REMOTE_ERROR_BODY_BYTES} of an error body; the rest is never buffered. */
+  private static async readErrorText(res: Response): Promise<string> {
+    const body = await readCapped(res, MAX_REMOTE_ERROR_BODY_BYTES, 'text').catch(() => ({ text: '' }))
+    return body === null ? '(error body too large)' : body.text
   }
 
   /**
@@ -526,7 +622,7 @@ export class RemoteStore {
    */
   private readBoundedRedacted = async (res: Response): Promise<BoundedResponse> => {
     if (res.ok) return RemoteStore.readBounded(res)
-    const raw = await res.text().catch(() => '')
+    const raw = await RemoteStore.readErrorText(res)
     return { ok: false, status: res.status, text: sanitiseResponseBody(redactToken(raw, this.token)) }
   }
 
@@ -888,8 +984,8 @@ export class RemoteStore {
         // that's plenty per scope, but we walk pages defensively.
         const all: Engram[] = []
         let offset = 0
-        const limit = 200
-        const maxPages = 50  // hard cap to avoid runaway loops
+        const limit = REMOTE_PAGE_LIMIT
+        const maxPages = REMOTE_MAX_PAGES  // hard cap to avoid runaway loops
         // #550: only cache a result set from a clean (complete) pagination run.
         // A mid-pagination abort/error must not overwrite a prior good cache with
         // a partial view — that's the "cache poisoning" class fixed in #130 for
@@ -940,7 +1036,16 @@ export class RemoteStore {
             // still without a mark (fetchBounded's rule too).
             let body: unknown
             try {
-              body = await r.json()
+              // Under a byte cap (security audit 2026-11-06): an oversized
+              // page ends pagination as incomplete, prior cache kept, without
+              // buffering the rest of it.
+              const capped = await readCapped(r, MAX_REMOTE_PAGE_BYTES, 'json')
+              if (capped === null) {
+                console.error(`[plur:remote-store] ${safeOrigin(this.url)} returned a page over ${MAX_REMOTE_PAGE_BYTES} bytes loading scope ${this.scope}; refused`)
+                break
+              }
+              if (capped.json === undefined) throw new Error('unparseable page')
+              body = capped.json
             } catch {
               const why = ctrl.signal.aborted
                 ? `a page body that stalled past ${LOAD_FETCH_TIMEOUT_MS}ms`
@@ -954,6 +1059,14 @@ export class RemoteStore {
               break
             }
             const rows = page.rows as any[]
+            // More rows than requested is not a page this client asked for
+            // (security audit 2026-11-06): refuse it as malformed rather than
+            // cache an unbounded set. Together with maxPages this bounds the
+            // rows cached per store to maxPages * limit.
+            if (rows.length > limit) {
+              console.error(`[plur:remote-store] ${safeOrigin(this.url)} returned a malformed page (${rows.length} rows, limit ${limit}) loading scope ${this.scope}`)
+              break
+            }
             // Server returns DB rows shaped {id, scope, status, data, created_at, updated_at}
             // — the engram contents live in row.data. Reshape + validate; drop malformed.
             for (const row of rows) {
