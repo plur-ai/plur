@@ -139,8 +139,11 @@ runs:
         Copy-Item docs/runbooks/codex-desktop-acceptance.txt $env:PLUR_TARBALLS
         "CLI version: $env:PLUR_CI_VERSION`nCommit: $env:GITHUB_SHA" | Set-Content (Join-Path $env:PLUR_TARBALLS 'candidate-version.txt')
 
+    # Not from pull request runs (security audit 2026-11-06). Defence in depth
+    # only: a pull request runs its own copy of this file, so the runbook's
+    # check of the run's event and branch is what binds the candidate.
     - name: Upload tested desktop acceptance candidate
-      if: inputs.scenario == 'fresh' && inputs.channel != 'latest'
+      if: inputs.scenario == 'fresh' && inputs.channel != 'latest' && github.event_name != 'pull_request' && github.event_name != 'pull_request_target'
       uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
       with:
         name: plur-codex-candidate-${{ github.sha }}
