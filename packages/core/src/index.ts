@@ -16,7 +16,7 @@ import { mergeSensitivityForWriteback } from './sensitivity-writeback.js'
 import { canonicalize } from './project-config.js'
 import { acceptDiscoveredScopes, registerServerEntry, PersonalScopeTakenError, SignInHeldError, type DiscoveryStatus, type ScopeRejection, type FoldReport, type ScopeHolder } from './server-discovery.js'
 import { classifyStoreDuplicates, removePrimaryStoreEntries } from './store-duplicates.js'
-import { generateEngramId, engramIdDatePrefix, loadAllPacks, loadPack, packEngramId, namespacePackEngrams, matchLegacyPackId, storePrefix, legacyStorePrefix, parseNamespacedId, namespaceEngramId, bareEngramId, initFilesystemStore, type LoadedPack } from './engrams.js'
+import { generateEngramId, engramIdDatePrefix, loadAllPacks, loadPack, packEngramId, namespacePackEngrams, matchLegacyPackId, storePrefix, legacyStorePrefix, parseNamespacedId, namespaceEngramId, bareEngramId, escapePrefixForRegExp, initFilesystemStore, type LoadedPack } from './engrams.js'
 import { maybeDailyBackup } from './backup.js'
 import { logger } from './logger.js'
 import { searchEngrams, ftsTokenize, extendCorpusStats, searchTextFrom } from './fts.js'
@@ -3089,7 +3089,7 @@ export class Plur {
       if (!store.path) continue
       if (storeScope !== undefined && store.scope !== storeScope) continue
       const prefix = storePrefix(store.scope)
-      const nsPattern = new RegExp(`^(ENG|ABS|META)-${prefix}-`)
+      const nsPattern = new RegExp(`^(ENG|ABS|META)-${escapePrefixForRegExp(prefix)}-`)
       if (nsPattern.test(id)) {
         // Strip the namespace prefix to get the original ID — or the id as it
         // is, when the store file already holds it namespaced.
@@ -3116,7 +3116,7 @@ export class Plur {
    */
   private _stripRemotePrefix(id: string, scope: string): string {
     const prefix = storePrefix(scope)
-    const nsPattern = new RegExp(`^(ENG|ABS|META)-${prefix}-`)
+    const nsPattern = new RegExp(`^(ENG|ABS|META)-${escapePrefixForRegExp(prefix)}-`)
     if (nsPattern.test(id)) {
       return id.replace(nsPattern, '$1-')
     }
@@ -7172,7 +7172,7 @@ export class Plur {
       if (!entry.url) continue
       // remote-only: only the folder's own team store (re-audit of #1521, C-3).
       if (this._remoteOnly && (entry.scope !== this._remoteOnly.scope || !this._isDeliverableTeamScope(entry.scope))) continue
-      const prefixRe = new RegExp(`^(ENG|ABS|META)-${storePrefix(entry.scope)}-`)
+      const prefixRe = new RegExp(`^(ENG|ABS|META)-${escapePrefixForRegExp(storePrefix(entry.scope))}-`)
       // An old-form (0.21.0) id names this store only when no other url
       // store shares its old prefix; then its bare form is asked for.
       const oldPrefix = legacyStorePrefix(entry.scope)
@@ -14324,6 +14324,16 @@ Generate an improved version of the procedure that prevents this failure. Return
     }
     if (!scope || typeof scope !== 'string') {
       throw new Error(`addStore: scope must be a non-empty string, got ${typeof scope}`)
+    }
+    // Security audit 2026-11-06: a scope is copied into id prefixes, config
+    // and routing keys; hold it to the scope grammar /me answers already obey.
+    if (!/^[A-Za-z0-9][A-Za-z0-9:._@/-]{0,199}$/.test(scope)) {
+      throw new Error(`addStore: scope "${scope}" has characters a scope cannot contain (letters, digits and : . _ @ / - only)`)
+    }
+    // `global` (and `local`) is where every unscoped save lands. Binding it to a
+    // remote url would send every future default-scope memory off the machine.
+    if (isRemote && (scope === 'global' || scope === 'local')) {
+      throw new Error(`addStore: scope "${scope}" is a built-in local scope and cannot be bound to a remote store`)
     }
 
     // Pick up any out-of-process config edit before we dedup/write (#307).

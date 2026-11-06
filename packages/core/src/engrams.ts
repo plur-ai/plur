@@ -1305,10 +1305,16 @@ export function namespacePackEngrams(engrams: Engram[], packName: string): Engra
  * see {@link legacyStorePrefix}) is upgraded to the current prefix rather than
  * wrapped a second time — a store file can hold such an id verbatim.
  */
+/** Escape a store prefix for use inside a RegExp: prefixes are derived from a
+ *  scope string and can carry regex metacharacters (security audit 2026-11-06). */
+export function escapePrefixForRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
 export function namespaceEngramId(id: string, scope: string): string {
   const prefix = storePrefix(scope)
-  if (new RegExp(`^(ENG|ABS|META)-${prefix}-`).test(id)) return id
-  const legacy = new RegExp(`^(ENG|ABS|META)-${legacyStorePrefix(scope)}-(?=\\d{4}-)`)
+  if (new RegExp(`^(ENG|ABS|META)-${escapePrefixForRegExp(prefix)}-`).test(id)) return id
+  const legacy = new RegExp(`^(ENG|ABS|META)-${escapePrefixForRegExp(legacyStorePrefix(scope))}-(?=\\d{4}-)`)
   if (legacy.test(id)) return id.replace(legacy, `$1-${prefix}-`)
   return id.replace(/^(ENG|ABS|META)-/, `$1-${prefix}-`)
 }

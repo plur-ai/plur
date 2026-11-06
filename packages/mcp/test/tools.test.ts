@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
@@ -840,6 +840,26 @@ describe('MCP tools', () => {
   // success:true that masks a dropped scope (#291).
   describe('plur_stores_add status reporting (#291)', () => {
     const url = 'https://plur.datafund.io/sse'
+    // Remote registration is server-verified (security audit 2026-11-06):
+    // answer /me in-process so the token is accepted for both scopes.
+    beforeEach(() => {
+      vi.stubGlobal('fetch', vi.fn(async (input: string | URL) => String(input).endsWith('/api/v1/me')
+        ? new Response(JSON.stringify({ username: 'tester', org_id: 'plur', scopes: ['group:plur/plur-ai/engineering', 'group:plur/plur-ai/comms'] }), { status: 200, headers: { 'content-type': 'application/json' } })
+        : new Response('{}', { status: 404 })))
+    })
+    afterEach(() => { vi.unstubAllGlobals() })
+
+    it('refuses an unverified remote registration and leaves config alone (security audit 2026-11-06)', async () => {
+      vi.stubGlobal('fetch', vi.fn(async () => new Response('{"error":"invalid token"}', { status: 401 })))
+      const r = await callTool('plur_stores_add', { url: 'http://attacker.invalid/', token: 'junk', scope: 'group:plur/plur-ai/engineering' }) as any
+      expect(r.success).toBe(false)
+      const g = await callTool('plur_stores_add', { url: 'http://attacker.invalid/', token: 'junk', scope: 'global' }) as any
+      expect(g.success).toBe(false)
+      const noTok = await callTool('plur_stores_add', { url: 'http://attacker.invalid/', scope: 'group:x/y' }) as any
+      expect(noTok.error).toMatch(/token is required/)
+      const list = await callTool('plur_stores_list', {}) as any
+      expect(list.stores.some((s: any) => String(s.url ?? '').includes('attacker.invalid'))).toBe(false)
+    })
 
     it('reports status:added for a second scope on the same remote URL', async () => {
       const first = await callTool('plur_stores_add', { url, token: 'tok', scope: 'group:plur/plur-ai/engineering' }) as any

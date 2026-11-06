@@ -1,6 +1,6 @@
 import { existsSync } from 'fs'
 import { createRequire } from 'module'
-import { loadEngrams, storePrefix, namespaceEngramId } from './engrams.js'
+import { loadEngrams, storePrefix, namespaceEngramId, escapePrefixForRegExp } from './engrams.js'
 import { withoutRemoteOnlyQueued } from './remote-only-rows.js'
 import { isPersonalScope, isScopeWithin } from './scope-util.js'
 import type { Engram } from './schemas/engram.js'
@@ -232,7 +232,7 @@ export class IndexedStorage {
     const rows = this.db.prepare("SELECT id, source FROM engrams WHERE source != 'primary'").all() as { id: string; source: string }[]
     const stale = rows.some(r => {
       const want = prefixBySource.get(r.source)
-      return want !== undefined && !new RegExp(`^(ENG|ABS|META)-${want}-`).test(r.id)
+      return want !== undefined && !new RegExp(`^(ENG|ABS|META)-${escapePrefixForRegExp(want)}-`).test(r.id)
     })
     if (stale) this.syncFromYaml()
   }

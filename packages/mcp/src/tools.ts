@@ -4812,11 +4812,21 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
         // (#291). A second scope on an already-registered remote URL now
         // genuinely persists, so success:true here is honest.
         const requestedScope = args.scope as string
-        const result = plur.addStore(path ?? '', requestedScope, {
-          shared:   args.shared   as boolean | undefined,
-          readonly: args.readonly as boolean | undefined,
-          url, token,
-        })
+        // Security audit 2026-11-06: a remote registration (or token rotation)
+        // redirects where memories are sent, so it goes through the same
+        // server-verified path as `plur stores add --url`: /me must accept the
+        // token and authorise the scope before config.yaml is touched. The
+        // model can no longer register an arbitrary endpoint or overwrite a
+        // working token with an unverified one.
+        if (url && !token) return { error: 'A remote store needs a token that the server accepts (token is required with url).' }
+        let result: { status: 'added' | 'already_registered' | 'overwritten' | 'token_rotated'; scope: string; token_scopes?: string[] }
+        try {
+          result = url
+            ? await plur.addRemoteStore({ url, token: token!, scope: requestedScope, shared: args.shared as boolean | undefined, readonly: args.readonly as boolean | undefined })
+            : plur.addStore(path ?? '', requestedScope, { shared: args.shared as boolean | undefined, readonly: args.readonly as boolean | undefined })
+        } catch (err) {
+          return { success: false, error: (err as Error).message }
+        }
         // #406: a local store is identified by its PATH, so registering a NEW
         // scope on an already-registered path is a no-op for that scope — the
         // existing entry's scope wins and the requested scope is dropped. Reporting
