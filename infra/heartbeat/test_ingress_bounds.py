@@ -56,6 +56,23 @@ def test_oversized_counts_and_versions_rejected():
     assert server.validate(_rec(3)) is None
 
 
+def test_unhashable_platform_and_trailing_newline_rejected():
+    assert server.validate({**_rec(4), "platform": {}}) is not None
+    assert server.validate({**_rec(4), "version": "1.2.3\n"}) is not None
+    assert server.validate({**_rec(4), "date": "2026-11-06\n"}) is not None
+
+
+def test_units_are_sandboxed_and_deploy_refuses_root():
+    here = os.path.dirname(__file__)
+    for unit in ("plur-heartbeat.service", "plur-metrics.service"):
+        text = open(os.path.join(here, unit)).read()
+        for d in ("NoNewPrivileges=yes", "ProtectSystem=strict", "ProtectHome=yes", "ReadWritePaths="):
+            assert d in text, (unit, d)
+    deploy = open(os.path.join(here, "deploy.sh")).read()
+    assert "refusing to run the internet-facing heartbeat as root" in deploy
+    assert '${DEPLOY_USER:-$(whoami)}' not in deploy
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

@@ -13,6 +13,19 @@ StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=plur-heartbeat
 
+# Sandboxing (security audit 2026-11-06): the ingress faces the internet.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+ReadWritePaths=/var/lib/plur-heartbeat
+
 Environment=HEARTBEAT_DATA_DIR=/var/lib/plur-heartbeat
 Environment=HEARTBEAT_HOST=127.0.0.1
 Environment=HEARTBEAT_PORT=8001

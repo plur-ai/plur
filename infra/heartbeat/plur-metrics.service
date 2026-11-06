@@ -12,5 +12,18 @@ StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=plur-metrics
 
+# Sandboxing (security audit 2026-11-06): the ingress faces the internet.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+ReadWritePaths=/var/lib/plur-heartbeat /var/lib/plur-metrics
+
 Environment=HEARTBEAT_DATA_DIR=/var/lib/plur-heartbeat
 Environment=METRICS_DIR=/var/lib/plur-metrics

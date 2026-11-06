@@ -45,13 +45,13 @@ def validate(payload: dict) -> Optional[str]:
     missing = required - payload.keys()
     if missing:
         return f"missing fields: {', '.join(sorted(missing))}"
-    if not isinstance(payload["install_id"], str) or not UUID_RE.match(payload["install_id"]):
+    if not isinstance(payload["install_id"], str) or not UUID_RE.fullmatch(payload["install_id"]):
         return "install_id must be UUID v4"
-    if not isinstance(payload["version"], str) or len(payload["version"]) > MAX_VERSION_LEN or not VERSION_RE.match(payload["version"]):
+    if not isinstance(payload["version"], str) or len(payload["version"]) > MAX_VERSION_LEN or not VERSION_RE.fullmatch(payload["version"]):
         return "version must match semver"
-    if payload["platform"] not in PLATFORMS:
+    if not isinstance(payload["platform"], str) or payload["platform"] not in PLATFORMS:
         return f"platform must be one of {PLATFORMS}"
-    if not isinstance(payload["date"], str) or not DATE_RE.match(payload["date"]):
+    if not isinstance(payload["date"], str) or not DATE_RE.fullmatch(payload["date"]):
         return "date must be YYYY-MM-DD"
     for field in ("learn_count", "recall_count", "session_count"):
         if not isinstance(payload[field], int) or isinstance(payload[field], bool) or payload[field] < 0 or payload[field] > MAX_COUNT:

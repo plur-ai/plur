@@ -3,20 +3,32 @@
 # Required env vars:
 #   CERTBOT_EMAIL   — email address for Let's Encrypt registration
 # Optional env vars:
-#   DEPLOY_USER     — unix user that owns the heartbeat files (default: current user)
+#   DEPLOY_USER     — unprivileged system user the services run as (default: plur-heartbeat,
+#                     created if missing). Never root and never your sudo-capable login:
+#                     the ingress faces the internet (security audit 2026-11-06).
 # Phase 1 (HTTP): works immediately once port 80 is open on the server
 # Phase 2 (HTTPS): requires DNS A record heartbeat.plur-ai.org pointed at this server
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-DEPLOY_USER="${DEPLOY_USER:-$(whoami)}"
+DEPLOY_USER="${DEPLOY_USER:-plur-heartbeat}"
+if [ "$DEPLOY_USER" = "root" ] || [ "$(id -u "$DEPLOY_USER" 2>/dev/null || echo x)" = "0" ]; then
+  echo "refusing to run the internet-facing heartbeat as root; set DEPLOY_USER to an unprivileged user" >&2
+  exit 1
+fi
+if ! id "$DEPLOY_USER" >/dev/null 2>&1; then
+  sudo useradd --system --no-create-home --shell /usr/sbin/nologin "$DEPLOY_USER"
+fi
 : "${CERTBOT_EMAIL:?CERTBOT_EMAIL env var is required for Phase 2 (certbot TLS)}"
 
 echo "==> Installing backend"
 sudo mkdir -p /opt/plur-heartbeat /var/lib/plur-heartbeat /var/lib/plur-metrics
 sudo cp "$SCRIPT_DIR/server.py" /opt/plur-heartbeat/server.py
 sudo cp "$SCRIPT_DIR/query.py" /opt/plur-heartbeat/query.py 2>/dev/null || true
-sudo chown -R "${DEPLOY_USER}:${DEPLOY_USER}" /opt/plur-heartbeat /var/lib/plur-heartbeat /var/lib/plur-metrics
+# Code is root-owned and read-only to the service; only the data dirs are its own.
+sudo chown -R root:root /opt/plur-heartbeat
+sudo chmod -R go-w /opt/plur-heartbeat
+sudo chown -R "${DEPLOY_USER}:${DEPLOY_USER}" /var/lib/plur-heartbeat /var/lib/plur-metrics
 
 echo "==> Installing systemd units (heartbeat ingress + daily MAU timer)"
 # Both service files use __DEPLOY_USER__ as a placeholder — expand at install time.
