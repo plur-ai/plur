@@ -449,6 +449,7 @@ class PlurBridge:
               dual_coding: dict | None = None,
               abstract: str | None = None,
               derived_from: str | None = None,
+              claim_class: str | None = None,
               force: bool = False) -> dict:
         needle = statement.strip().casefold()
         key = self._cache_key(needle, scope) if needle else ""
@@ -503,6 +504,11 @@ class PlurBridge:
             args.extend(["--abstract", _flag_value("abstract", abstract)])
         if derived_from:
             args.extend(["--derived-from", _flag_value("derived_from", derived_from)])
+        # Auto-harvest callers pass claim_class="inferred": core runs its
+        # prompt-injection refusal only for inferred claims (security audit
+        # 2026-11-06), so text the agent merely read is not stored unchecked.
+        if claim_class:
+            args.extend(["--claim-class", _flag_value("claim_class", claim_class)])
         result = self.call("learn", args, stdin=statement if via_stdin else None)
         if result == _SAFE_RESPONSE:
             # call() collapses an exhausted timeout into the read-path safe

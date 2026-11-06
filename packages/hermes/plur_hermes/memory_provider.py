@@ -635,6 +635,9 @@ class PlurMemoryProvider:
                     statement,
                     source="hermes:auto",
                     rationale="Auto-extracted from assistant self-report",
+                    # Harvested, not asserted: core refuses prompt-injection
+                    # text only for inferred claims (security audit 2026-11-06).
+                    claim_class="inferred",
                 )
                 self._learn_by_session[session_key] = (
                     self._learn_by_session.get(session_key, 0) + 1
