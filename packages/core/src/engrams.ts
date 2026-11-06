@@ -93,6 +93,26 @@ export class EngramStoreUnreadableError extends Error {
  *
  * Returns the raw entries of `engrams:`, or throws {@link EngramStoreUnreadableError}.
  */
+/**
+ * Walks a parsed YAML value counting every node, shared objects once per
+ * reference (so the count is the alias-EXPANDED size), and stops as soon as
+ * `budget` is spent. Iterative, so a deep value cannot overflow the stack;
+ * the walk never visits more than `budget` nodes.
+ */
+function withinExpansionBudget(value: unknown, budget: number): boolean {
+  const stack: unknown[] = [value]
+  let left = budget
+  while (stack.length > 0) {
+    const v = stack.pop()
+    if (--left < 0) return false
+    if (v === null || typeof v !== 'object') continue
+    if (Array.isArray(v)) { for (let i = v.length - 1; i >= 0; i--) stack.push(v[i]) }
+    else for (const k of Object.keys(v as object)) stack.push((v as Record<string, unknown>)[k])
+    if (stack.length > left) return false
+  }
+  return true
+}
+
 export function engramStoreEntries(filePath: string, content: string, byteLength: number): unknown[] {
   if (byteLength === 0) {
     throw new EngramStoreUnreadableError(filePath, new Error('file is empty (0 bytes)'))
@@ -105,6 +125,20 @@ export function engramStoreEntries(filePath: string, content: string, byteLength
   }
   if (raw == null) {
     throw new EngramStoreUnreadableError(filePath, new Error('file has content but parses to nothing'))
+  }
+  // Security audit 2026-11-06: js-yaml resolves aliases as SHARED references,
+  // so a small file (e.g. one record pulled from a shared sync remote) can
+  // hold an alias lattice whose expanded form is exponential. saveEngrams and
+  // sync re-dump with `noRefs: true`, which materializes every alias, so one
+  // ordinary write turned ~2 KB into tens of MB. PLUR itself never writes
+  // anchors, so a document whose expanded node count exceeds its own size is
+  // refused as unreadable. Quarantine is not an option: quarantined entries
+  // are written back, expanded, by the same serializer.
+  if (!withinExpansionBudget(raw, Math.max(10_000, content.length))) {
+    throw new EngramStoreUnreadableError(
+      filePath,
+      new Error('the document expands beyond its own size when YAML aliases are resolved (anchor/alias lattice?) — PLUR never writes aliases'),
+    )
   }
   if (typeof raw !== 'object' || Array.isArray(raw)) {
     throw new EngramStoreUnreadableError(filePath, new Error('top-level value is not a mapping'))
