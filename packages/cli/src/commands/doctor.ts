@@ -672,7 +672,9 @@ function inspectConfigs(): ConfigFileReport[] {
       }
     }
     if (cf.kind === 'codex-hooks') {
-      const hooksConfig = readCodexHooksConfig(cf.path)
+      // An unreadable file holds no PLUR hooks that Codex could run.
+      let hooksConfig: ReturnType<typeof readCodexHooksConfig>
+      try { hooksConfig = readCodexHooksConfig(cf.path) } catch { hooksConfig = { hooks: {} } }
       return {
         label: cf.label,
         path: cf.path,

@@ -173,14 +173,26 @@ export function mergeCodexHooks(
   return { ...clean, hooks }
 }
 
+/**
+ * The Codex hooks file, or `{ hooks: {} }` when there is none. Throws when the
+ * file exists but is not a JSON object (security audit 2026-11-06,
+ * hardening): flattening it to an empty config handed every caller a value
+ * that, written back, destroys the user's file — only installCodex's own
+ * pre-check stood in the way.
+ */
 export function readCodexHooksConfig(path: string): CodexHooksConfig {
   if (!existsSync(path)) return { hooks: {} }
+  let parsed: unknown
   try {
-    const parsed = JSON.parse(readFileSync(path, 'utf8')) as Partial<CodexHooksConfig>
-    return { ...parsed, hooks: parsed.hooks ?? {} }
-  } catch {
-    return { hooks: {} }
+    parsed = JSON.parse(readFileSync(path, 'utf8'))
+  } catch (err) {
+    throw new Error(`${path} is not valid JSON (${(err as Error).message})`)
   }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new Error(`${path} is not a JSON object`)
+  }
+  const config = parsed as Partial<CodexHooksConfig>
+  return { ...config, hooks: config.hooks ?? {} }
 }
 
 export function writeCodexHooksConfig(path: string, config: CodexHooksConfig): void {

@@ -1325,16 +1325,15 @@ function installCodexMcp(root: string, keepLaunch: boolean): string {
 function installCodex(cmd: string, root: string, keepLaunch: boolean, env: NodeJS.ProcessEnv = process.env): string {
   const hooksPath = codexHooksConfigPath(env)
 
-  // Same refusal as the Cursor path: readCodexHooksConfig() treats
-  // unparseable JSON as empty (a safe default for READING), but writing that
-  // back would destroy a hand-edited-but-malformed hooks.json along with any
-  // non-plur entries in it.
+  // Same refusal as the Cursor path: writing over a hand-edited-but-malformed
+  // hooks.json would destroy it along with any non-plur entries in it
+  // (readCodexHooksConfig() also throws on such a file).
   let hooksStatus: string
   let hooksWritten = false
   const exists = existsSync(hooksPath)
   // Parse AND shape check (adversarial audit F2): `12345`, `"text"` and
-  // `[...]` are valid JSON that readCodexHooksConfig flattens to an empty
-  // config — writing that back destroys whatever the user had, while the
+  // `[...]` are valid JSON that readCodexHooksConfig used to flatten to an
+  // empty config — writing that back destroys whatever the user had, while the
   // parse-only guard waves it through. Wrong shape gets the same refusal as
   // wrong syntax.
   let usable = true
