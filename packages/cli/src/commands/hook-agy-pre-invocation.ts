@@ -108,9 +108,12 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
     // Replayed only under the same folder decision (Codex round 7 on #1663):
     // never when the map cannot be read, and in a remote-only folder only a
     // message cached there for the same team scope.
+    // Any other mode change drops it too (security audit 2026-11-06,
+    // hardening): memory cached while `on` was replayed after the folder
+    // switched to `ask` within the same turn.
     const unresolved = policy?.reason === 'malformed-map' || policy?.reason === 'resolver-error'
-    const cached = rawCached && (unresolved ||
-      (policy?.mode === 'remote-only' && (rawCached.mode !== 'remote-only' || rawCached.scope !== policy.scope))) ? null : rawCached
+    const cached = rawCached && (unresolved || rawCached.mode !== policy?.mode ||
+      (policy?.mode === 'remote-only' && rawCached.scope !== policy.scope)) ? null : rawCached
 
     // "First" is the conversation's first turn. The absence of a cache alone
     // cannot say that: with an unusable cache dir it is absent on EVERY turn,
@@ -148,7 +151,7 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
       // is cached as this turn's message so mid-turn invocations replay it.
       // No store discovery: asking must not register this folder's .plur store.
       const ask = folderAskOnce({ dir: about, policy, sessionId: conversationId, flags, plur: createAskPlur(flags), prompt: user?.text ?? '' }) ?? ''
-      writeAgyTurnCache({ conversationId, step: user?.stepIndex ?? 0, textHash: userHash, message: ask })
+      writeAgyTurnCache({ conversationId, step: user?.stepIndex ?? 0, textHash: userHash, message: ask, mode: policy.mode })
       if (ask) emitInjectSteps(ask)
       return
     }
