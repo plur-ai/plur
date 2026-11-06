@@ -1570,6 +1570,33 @@ export function withLock<T>(
  */
 export const CONFIG_FILE_MODE = 0o600
 
+/**
+ * The mode a file DERIVED from an engram store is created with: the store
+ * file's own mode (security audit 2026-11-06).
+ *
+ * atomicWrite keeps an existing engrams.yaml at whatever mode the owner set, so
+ * a `chmod 600` on the store survives every save. Backups, the history log,
+ * episodes and tensions copy store content into NEW files, which used to be
+ * born at the umask default (0644/0664) — readable by accounts the store itself
+ * shuts out. Passing this as atomicWrite's `mode` (the same rule restoreBackup
+ * and the migration runner already apply by hand) keeps them at parity.
+ *
+ * `undefined` when the store file cannot be stat'ed: nothing to match, so the
+ * platform default applies, as before.
+ */
+export function storeFileMode(storeFile: string): number | undefined {
+  try { return statSync(storeFile).mode & 0o777 } catch { return undefined }
+}
+
+/**
+ * Directory mode matching {@link storeFileMode}: an execute bit wherever the
+ * store grants read, so a 0600 store gives a 0700 directory and a 0644 store a
+ * 0755 one. `undefined` (platform default) when the store mode is unknown.
+ */
+export function storeDirMode(fileMode: number | undefined): number | undefined {
+  return fileMode === undefined ? undefined : (fileMode | ((fileMode & 0o444) >> 2)) & 0o777
+}
+
 /** Options for {@link atomicWrite}. */
 export interface AtomicWriteOptions {
   /**
