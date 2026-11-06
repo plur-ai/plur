@@ -16296,7 +16296,8 @@ Generate an improved version of the procedure that prevents this failure. Return
    *     nested sensitivity fields the remote sent);
    *   - only the remote `forbid` is persisted, sanitized to the known
    *     SENSITIVITY_CATEGORIES (empty-after-sanitize falls to the safe
-   *     default, mirroring ScopeSensitivitySchema);
+   *     default, mirroring ScopeSensitivitySchema), and only ADDED to the
+   *     local effective forbid (union), never replacing it;
    *   - a hand-edited `allow` in local config.yaml is preserved and remains
    *     honored by the guard — a deliberate LOCAL decision.
    *
@@ -16329,8 +16330,13 @@ Generate an improved version of the procedure that prevents this failure. Return
       // verbatim; sensitivity = local entry's policy (incl. any hand-edited
       // `allow` + nested unknowns) with only `forbid` taken from the server,
       // sanitized to the category enum. No server sensitivity → local untouched.
+      // The persisted forbid is the UNION of the local effective forbid (the
+      // default categories when unset) and the server's: replacing it let a
+      // server answer forbid:['secrets'] drop 'infra' and disarm the guard for
+      // that scope, a loosening the trust rule forbids (security audit 2026-11-06).
+      const localForbid: readonly SensitivityCategory[] = entry.sensitivity?.forbid?.length ? entry.sensitivity.forbid : SENSITIVITY_CATEGORIES
       const nextSensitivity = meta.sensitivity !== undefined
-        ? { ...(entry.sensitivity ?? { allow: [] }), forbid: sanitizeForbidCategories(meta.sensitivity.forbid) }
+        ? { ...(entry.sensitivity ?? { allow: [] }), forbid: [...new Set([...localForbid, ...sanitizeForbidCategories(meta.sensitivity.forbid)])] }
         : entry.sensitivity
       const nextCovers = meta.covers !== undefined ? meta.covers : entry.covers
       const nextDescription = meta.description !== undefined ? meta.description : entry.description
