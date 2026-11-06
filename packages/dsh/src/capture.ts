@@ -10,7 +10,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { Config } from './config.js'
 import type { Counters } from './counters.js'
-import type { PlurClient } from './client.js'
+import type { MemoryFor, PlurClient } from './client.js'
 import { contain, type WriteQueue } from './guard.js'
 import { lastAssistantText, type LogEvent } from './session-log.js'
 
@@ -37,6 +37,8 @@ export interface CaptureDeps {
   /** The ONE shared write queue. Must not be created per-module. */
   queue: WriteQueue
   resolveScope: (session?: { id?: string; header?: { cwd?: string } }) => Promise<string>
+  /** The folder map's answer for the session (security audit 2026-11-06); absent, `plur` as given. */
+  memoryFor?: MemoryFor
 }
 
 /**
@@ -49,8 +51,9 @@ export interface CaptureDeps {
  * @param deps - config, counters, the PLUR client, and scope resolution.
  */
 export function registerCapture(ctx: Context, deps: CaptureDeps): void {
-  const { config, counters, plur, resolveScope, queue } = deps
+  const { config, counters, resolveScope, queue } = deps
   if (!config.autoCapture) return
+  const memoryFor: MemoryFor = deps.memoryFor ?? (async () => ({ off: false, plur: deps.plur }))
   const onError = () => counters.bump('errors_swallowed')
 
   // The payload is `{ agent, turn, signal }`, NOT the agent. Reading
@@ -64,6 +67,10 @@ export function registerCapture(ctx: Context, deps: CaptureDeps): void {
     const session = payload?.agent?.session
     // Holds the queue slot until settled or the queue's hard cap (decision S3).
     void queue(() => contain(async () => {
+      // Nothing is captured in a folder the user set `off` (security audit 2026-11-06).
+      const memory = await memoryFor(session)
+      if (memory.off) return
+      const plur = memory.plur
       const scope = await resolveScope(session)
       // `scope` is not a CaptureContext field — core keeps one timeline per
       // store and silently dropped it. A tag is where the scope survives, so a

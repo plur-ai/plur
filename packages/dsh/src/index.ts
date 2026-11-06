@@ -23,7 +23,7 @@ import type { PreStepDecision } from '@deepseek-ai/dsh-agent'
 import '@deepseek-ai/dsh-agent'
 import '@deepseek-ai/dsh-system-prompt'
 import '@deepseek-ai/dsh-tools'
-import type { PlurClient } from './client.js'
+import type { MemoryFor, PlurClient } from './client.js'
 import { registerCapture } from './capture.js'
 import { registerCommands } from './commands.js'
 import { Config } from './config.js'
@@ -175,9 +175,22 @@ export function apply(ctx: Context, config: Config, injected?: PlurClient): void
     return scopes.resolve(caller?.id ?? `anon:${cwd ?? 'none'}`, cwd)
   }
 
-  registerTools(ctx, { config, counters, plur, resolveScope, queue })
-  registerLearning(ctx, { config, counters, plur, resolveScope, queue })
-  registerCapture(ctx, { config, counters, plur, resolveScope, queue })
+  /**
+   * The folder map's decision for whichever session is calling (security
+   * audit 2026-11-06), resolved from the session cwd the way the opencode
+   * plugin and the MCP server do. The engine facade answers it with a client
+   * bound to that folder; an injected test client without `forFolder` is used
+   * as given.
+   */
+  const memoryFor: MemoryFor = async (caller) => {
+    const cwd = caller?.session?.header?.cwd ?? caller?.header?.cwd
+    const p = plur as PlurClient & { forFolder?: (cwd: string | undefined) => Promise<Awaited<ReturnType<MemoryFor>>> }
+    return typeof p.forFolder === 'function' ? p.forFolder(cwd) : { off: false, plur }
+  }
+
+  registerTools(ctx, { config, counters, plur, resolveScope, queue, memoryFor })
+  registerLearning(ctx, { config, counters, plur, resolveScope, queue, memoryFor })
+  registerCapture(ctx, { config, counters, plur, resolveScope, queue, memoryFor })
   // Skills and commands are OPTIONAL surfaces, so they mount in their own
   // scoped fibers via ctx.inject() rather than joining this plugin's `inject`
   // list. Two reasons, and the first one is a crash we shipped past every unit
@@ -317,6 +330,11 @@ export function apply(ctx: Context, config: Config, injected?: PlurClient): void
   ): Promise<void> {
     const block = await guard(async () => {
       const events = agent?.session?.events ?? []
+      // A folder the user set `off` renders an EMPTY block — not the cached
+      // one from before the change — and recalls nothing (security audit 2026-11-06).
+      const memory = await memoryFor(agent)
+      if (memory.off) return ''
+      const plur = memory.plur
       const query = recallQueryFrom(events, turn, proposed)
       if (!query) return undefined
       const scope = await scopes.resolve(agentId, agent?.session?.header?.cwd)
