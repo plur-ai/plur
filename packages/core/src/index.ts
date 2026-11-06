@@ -9843,7 +9843,38 @@ export class Plur {
         )
       }
     }
+    // Security audit 2026-11-06: a same-scope CONTENT edit of a queued row is
+    // a new logical write. The idempotency key is the queued write's identity,
+    // and the flush both admits a row (`_outboxRowStillQueued`) and
+    // acknowledges it (merge-back) by key alone. Keeping the old key let a
+    // flush that loaded the store before the edit push the pre-edit snapshot
+    // and then drop the edited row as delivered: withdrawn text reached the
+    // team store and the edit was lost. A new key makes that flush skip the
+    // stale snapshot, or, when the POST was already on the wire, keep the
+    // edited row queued and queue a retire of the copy the remote accepted.
+    if (pending && stored.status !== 'retired' && toWrite.scope === stored.scope && sd._outbox
+      && Plur._pushedContentSignature(stored) !== Plur._pushedContentSignature(toWrite)) {
+      sd._outbox = { ...(storedSd!._outbox as object), idempotency_key: randomUUID(), attempt_count: 0, last_error: '' }
+      changed = true
+    }
     if (changed) (toWrite as any).structured_data = Object.keys(sd).length > 0 ? sd : undefined
+  }
+
+  /**
+   * The parts of an engram a remote push carries (RemoteStore
+   * appendAndGetServerId's body, minus scope and the key). Two rows with the
+   * same signature would be delivered identically; volatile local state
+   * (activation, feedback, `updated_at`, outbox bookkeeping) is left out so a
+   * no-op update keeps its key.
+   */
+  private static _pushedContentSignature(engram: Engram): string {
+    const e = engram as any
+    return JSON.stringify([
+      e.statement, e.domain, e.type, e.tags, e.pinned, e.rationale, e.commitment,
+      e.temporal, e.valid_from, e.valid_until, e.relations?.supersedes, e.supersedes,
+      e.locked_reason, e.source, e.provenance, e.measured_under, e.knowledge_anchors,
+      e.dual_coding, e.attribution, e.claim_class, e.structured_data?._scopeSource,
+    ])
   }
 
   /**
