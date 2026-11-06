@@ -260,10 +260,118 @@ type Block = { type?: unknown; text?: unknown; name?: unknown; input?: unknown; 
 // of the message (re-audit H5).
 const ECHO_SPAN = /<(command-name|command-message|command-args|local-command-[a-z-]+|bash-[a-z-]+|task-notification|system-reminder|user-prompt-submit-hook)\b[^>]*>[\s\S]*?<\/\1>/g
 
+/** Fixed echo tag names; `local-command-` and `bash-` take a `[a-z-]+` suffix. */
+const ECHO_FIXED_NAMES = ['command-name', 'command-message', 'command-args', 'task-notification', 'system-reminder', 'user-prompt-submit-hook']
+const ECHO_VARIABLE_PREFIXES = ['local-command-', 'bash-']
+const isWordChar = (c: string | undefined): boolean => c !== undefined && /\w/.test(c)
+const isNameChar = (c: string | undefined): boolean => c !== undefined && ((c >= 'a' && c <= 'z') || c === '-')
+
+/**
+ * `text.replace(ECHO_SPAN, '')`, in linear time (security audit 2026-11-06,
+ * hardening). The regex rescans to the end of the text from every opener
+ * that has no closing `</name>` (its lazy body) or no `>` (its `[^>]*`), so
+ * a message of unclosed tags cost quadratic time. Here every closing tag is
+ * indexed once, the next `>` is shared by all openers before it, and each
+ * opener tries the same tag names, in the same order, the regex would.
+ */
+export function stripEchoSpans(text: string): string {
+  // Start offsets of every `</name>`, by name, ascending.
+  const closers = new Map<string, number[]>()
+  for (const m of text.matchAll(/<\/([a-z-]+)>/g)) {
+    const list = closers.get(m[1])
+    if (list) list.push(m.index!)
+    else closers.set(m[1], [m.index!])
+  }
+  // The closing names as a trie, so an opener's candidate names (prefixes of
+  // its [a-z-] run that some closer carries) are found in one walk.
+  type Trie = { next: Map<string, Trie>; name?: string }
+  const trie: Trie = { next: new Map() }
+  for (const name of closers.keys()) {
+    let node = trie
+    for (const c of name) {
+      let child = node.next.get(c)
+      if (!child) { child = { next: new Map() }; node.next.set(c, child) }
+      node = child
+    }
+    node.name = name
+  }
+  /** Offset just past the first `</name>` starting at or after `from`, or -1. */
+  const closeAfter = (name: string, from: number): number => {
+    const list = closers.get(name)
+    if (!list) return -1
+    let lo = 0
+    let hi = list.length
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (list[mid] < from) lo = mid + 1; else hi = mid }
+    return lo < list.length ? list[lo] + name.length + 3 : -1
+  }
+  // The first `>` at or after the last opener asked about. Openers are
+  // visited left to right, so one search serves every opener before that `>`.
+  let gtAt = -2
+  const nextGt = (from: number): number => {
+    if (gtAt === -2 || (gtAt !== -1 && from > gtAt)) gtAt = text.indexOf('>', from)
+    return gtAt
+  }
+  /** End of an echo span starting at `p` (a '<'), or -1. */
+  const matchAt = (p: number): number => {
+    const at = p + 1
+    // A tag name is [a-z-] only, so the first `>` after the name, which ends
+    // the regex's `[^>]*>`, is the first `>` after `<`, whatever the name.
+    const gt = nextGt(at)
+    if (gt === -1) return -1
+    /** End of the span opened by a tag `name` ending at `nameEnd`, or -1. */
+    const spanEnd = (name: string, nameEnd: number): number => {
+      if (isWordChar(text[nameEnd - 1]) === isWordChar(text[nameEnd])) return -1 // the regex's \b
+      return closeAfter(name, gt + 1)
+    }
+    for (const name of ECHO_FIXED_NAMES.slice(0, 3)) {
+      if (text.startsWith(name, at)) { const end = spanEnd(name, at + name.length); if (end !== -1) return end }
+    }
+    for (const prefix of ECHO_VARIABLE_PREFIXES) {
+      if (!text.startsWith(prefix, at)) continue
+      const start = at + prefix.length
+      // Names this opener could carry that some closer also carries: walk
+      // its [a-z-] run through the trie of closing names.
+      const ends: Array<[number, string]> = []
+      let node: Trie | undefined = trie
+      for (let i = at; node && isNameChar(text[i]); i++) {
+        node = node.next.get(text[i])
+        if (node?.name !== undefined && i + 1 > start) ends.push([i + 1, node.name])
+      }
+      // `[a-z-]+` is greedy: the longest name first, then shorter ones.
+      for (let k = ends.length - 1; k >= 0; k--) {
+        const span = spanEnd(ends[k][1], ends[k][0])
+        if (span !== -1) return span
+      }
+    }
+    for (const name of ECHO_FIXED_NAMES.slice(3)) {
+      if (text.startsWith(name, at)) { const end = spanEnd(name, at + name.length); if (end !== -1) return end }
+    }
+    return -1
+  }
+  let out = ''
+  let copied = 0
+  let p = text.indexOf('<')
+  while (p !== -1) {
+    const end = matchAt(p)
+    if (end !== -1) {
+      out += text.slice(copied, p)
+      copied = end
+      p = text.indexOf('<', end)
+    } else {
+      p = text.indexOf('<', p + 1)
+    }
+  }
+  return copied === 0 ? text : out + text.slice(copied)
+}
+
 /** The typed part of one text: echo spans removed. null when nothing typed is left. */
 function typedText(raw: string): string | null {
   if (!ECHO_TAG.test(raw) && !raw.includes('<')) return raw
-  const t = raw.replace(ECHO_SPAN, '').trim()
+  // Bounded first, like normaliseForSignal: the typed text that matters is at
+  // the end, and the span removal below must not see an unbounded message
+  // (security audit 2026-11-06, hardening).
+  const bounded = raw.length > 200_000 ? raw.slice(-200_000) : raw
+  const t = stripEchoSpans(bounded).trim()
   return t ? t : null
 }
 
