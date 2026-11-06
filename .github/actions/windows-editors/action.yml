@@ -38,7 +38,10 @@ runs:
     - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
       with:
         node-version: 22
-        cache: pnpm
+        # No shared pnpm cache on the latest channel (security audit
+        # 2026-11-06): it installs unpinned editor builds, and a store it
+        # saved would be restored into the pinned runs the release gate reads.
+        cache: ${{ inputs.channel != 'latest' && 'pnpm' || '' }}
     - shell: pwsh
       run: pnpm install --frozen-lockfile
 
