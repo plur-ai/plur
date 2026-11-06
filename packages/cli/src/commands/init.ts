@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync, readdirSync, copyFileSync, statSync } from 'fs'
 import { execFileSync, type ExecFileSyncOptions } from 'child_process'
-import { join, dirname } from 'path'
+import { join, dirname, basename } from 'path'
 import { fileURLToPath } from 'url'
 import { homedir, platform } from 'os'
 import { createInterface } from 'readline'
@@ -236,8 +236,8 @@ function installHookBinary(): { shimPath: string; status: string } {
  *   <prefix>/lib/node_modules/@plur-ai/mcp/dist/index.js     ← target
  *   <prefix>/lib/node_modules/@plur-ai/cli/dist/index.js     ← we're here
  *
- * Walks up from CLI's dist looking for a node_modules dir that contains
- * @plur-ai/mcp. Returns null if not found (caller falls back to npx).
+ * Looks only inside the CLI's own install root (see resolveMcpEntrypoint).
+ * Returns null if not found (caller falls back to npx).
  */
 /** A directory named `mcp` only counts as the workspace sibling if it really IS @plur-ai/mcp. */
 function isPlurMcpPackage(dir: string): boolean {
@@ -249,28 +249,31 @@ function isPlurMcpPackage(dir: string): boolean {
   }
 }
 
-function resolveMcpEntrypoint(): string | null {
-  // Start from CLI's dist directory.
-  const cliEntry = resolveCliEntrypoint()
-  let dir = dirname(cliEntry)
-  const MAX_DEPTH = 12
-  for (let depth = 0; depth < MAX_DEPTH; depth++) {
-    // Look for a sibling @plur-ai/mcp install
-    const candidate = join(dir, 'node_modules', '@plur-ai', 'mcp', 'dist', 'index.js')
-    if (existsSync(candidate)) return candidate
-    // Also check if we're already inside node_modules — common after `npm i -g`
-    const adjacent = join(dir, '..', '@plur-ai', 'mcp', 'dist', 'index.js')
-    if (existsSync(adjacent)) return adjacent
-    // Monorepo workspace layout: packages/cli/dist → packages/mcp/dist. The
-    // walk above never found it (cli doesn't depend on mcp, so pnpm creates
-    // no symlink), which meant the shim silently never installed on the one
-    // machine developing it — and the fallback npx entry shipped to the dev's
-    // own configs (#1069 dogfooding find).
-    const workspaceSibling = join(dir, '..', 'mcp', 'dist', 'index.js')
-    if (existsSync(workspaceSibling) && isPlurMcpPackage(join(dir, '..', 'mcp'))) return workspaceSibling
-    const parent = dirname(dir)
-    if (parent === dir) break
-    dir = parent
+function resolveMcpEntrypoint(cliEntry: string = resolveCliEntrypoint()): string | null {
+  // Only the CLI's own install root counts (security audit 2026-11-06). This
+  // used to walk up to 12 ancestors and take the first @plur-ai/mcp found,
+  // so a CLI-only install (the CLI does not depend on mcp) could adopt a
+  // package another local user planted high up (e.g. C:\node_modules on
+  // Windows), which init then registers as every MCP client's launch target.
+  const cliPkg = dirname(dirname(cliEntry)) // <...>/cli from <...>/cli/dist/index.js
+  const parent = dirname(cliPkg)
+  const candidates = [join(cliPkg, 'node_modules', '@plur-ai', 'mcp')] // nested dependency
+  if (basename(parent) === '@plur-ai' && basename(dirname(parent)) === 'node_modules') {
+    // npm/yarn layout, global or project: <node_modules>/@plur-ai/{cli,mcp}
+    candidates.push(join(parent, 'mcp'))
+    // pnpm layout: <nm>/.pnpm/<id>/node_modules/@plur-ai/cli → <nm>/@plur-ai/mcp
+    const pnpmDir = dirname(dirname(dirname(parent)))
+    if (basename(pnpmDir) === '.pnpm' && basename(dirname(pnpmDir)) === 'node_modules') {
+      candidates.push(join(dirname(pnpmDir), '@plur-ai', 'mcp'))
+    }
+  } else {
+    // Monorepo workspace layout: packages/cli → packages/mcp. Without this
+    // the shim never installed on the machine developing it (#1069).
+    candidates.push(join(parent, 'mcp'))
+  }
+  for (const pkg of candidates) {
+    const entry = join(pkg, 'dist', 'index.js')
+    if (existsSync(entry) && isPlurMcpPackage(pkg)) return entry
   }
   return null
 }
@@ -2043,6 +2046,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
 
 /** Test seams (formal Adapters #3). */
 export { mergeHooks as _mergeClaudeHooks }
+export { resolveMcpEntrypoint as _resolveMcpEntrypoint }
 export { isPlurHookSpec as _isPlurClaudeHookSpec }
 
 export { buildEnforcementHooks as _buildEnforcementHooks }
