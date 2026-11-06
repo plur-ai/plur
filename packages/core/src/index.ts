@@ -1302,14 +1302,21 @@ function isEnterpriseServerEntry(raw: unknown): raw is Record<string, unknown> &
   return isPlainObject(raw) && typeof raw.url === 'string' && Array.isArray(raw.scopes) && isPlainObject(raw.enterprise)
 }
 
-/** scope → url for every remote entry whose normalized url is not `exceptUrl`:
- *  the scopes another server already serves (#1631). */
+/** scope → where it is served, for every store entry other than the server
+ *  at `exceptUrl`: the scopes another server or a local path store already
+ *  serves (#1631). Path entries count as claimed too: a discovered url entry
+ *  wins over a path entry in resolveScopeTarget, so accepting such a scope
+ *  would silently move the user's local store to the server (security audit
+ *  2026-11-06). */
 function scopesServedElsewhere(rawStores: unknown[], exceptUrl: string): Map<string, string> {
   const out = new Map<string, string>()
   for (const r of rawStores) {
-    if (!isPlainObject(r) || typeof r.url !== 'string' || normalizeEndpointUrl(r.url) === exceptUrl) continue
+    if (!isPlainObject(r)) continue
+    if (typeof r.url === 'string' && normalizeEndpointUrl(r.url) === exceptUrl) continue
+    const where = typeof r.url === 'string' ? r.url : typeof r.path === 'string' ? `path:${r.path}` : undefined
+    if (!where) continue
     const scopes = [...stringList(r.scopes), ...stringList(r.pinned_scopes), ...(typeof r.scope === 'string' ? [r.scope] : [])]
-    for (const sc of scopes) if (!out.has(sc)) out.set(sc, r.url)
+    for (const sc of scopes) if (!out.has(sc)) out.set(sc, where)
   }
   return out
 }
@@ -15723,8 +15730,14 @@ Generate an improved version of the procedure that prevents this failure. Return
           continue
         }
         const cached = stringList(entry.scopes)
-        const decision = acceptDiscoveredScopes({ me, error, cached, otherServersScopes: scopesServedElsewhere(rawStores, key) })
         const oldDiscovery = isPlainObject(entry.discovery) ? entry.discovery : {}
+        // Bind the org this server may claim to the one cached at first
+        // discovery, not the org_id of this answer (security audit 2026-11-06).
+        const cachedOrgId = typeof oldDiscovery.org_id === 'string' && oldDiscovery.org_id ? oldDiscovery.org_id : undefined
+        const decision = acceptDiscoveredScopes({ me, error, cached, otherServersScopes: scopesServedElsewhere(rawStores, key), cachedOrgId })
+        if (cachedOrgId && me?.org_id && me.org_id.toLowerCase() !== cachedOrgId.toLowerCase()) {
+          logger.warning(`[plur:discovery] ${safeOrigin(url)} now reports org "${me.org_id}" but was discovered as org "${cachedOrgId}"; its scopes were not changed. If the org really changed, remove the server entry and sign in again.`)
+        }
         let next: Record<string, unknown>
         if (decision.replaceCache && me) {
           const personal = decision.scopes.find(sc => sc.toLowerCase() === `user:${me.org_id}:${me.username}`.toLowerCase())

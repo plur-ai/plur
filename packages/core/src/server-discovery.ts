@@ -17,8 +17,13 @@
  * - An answer with no `org_id` cannot be checked against an org, so every
  *   scope is rejected (`org-prefix`) and the answer is `degraded`: it never
  *   replaces a non-empty cache.
- * - Accepted scopes are filtered to the server's org; a scope another server
- *   entry already serves is refused.
+ * - An answer whose org_id differs from the org cached at first discovery
+ *   (`cachedOrgId`) is `degraded`: every scope is rejected (`org-prefix`) and
+ *   the cache is kept. The org filter below compares each scope with the
+ *   org_id of the same answer, so without this binding a server could name
+ *   any org and claim that org's scopes (security audit 2026-11-06).
+ * - Accepted scopes are filtered to the server's org; a scope another store
+ *   entry already serves (another server, or a local path store) is refused.
  */
 import { isDeepStrictEqual } from 'node:util'
 import type { MeResponse } from './store/remote-store.js'
@@ -47,8 +52,12 @@ export interface AcceptDiscoveredScopesInput {
   me: MeResponse | null
   error?: { status?: number; message: string }
   cached: string[]
-  /** scope → url of the other server entry that already serves it. */
+  /** scope → url (or `path:<dir>`) of the other store entry that already serves it. */
   otherServersScopes: ReadonlyMap<string, string>
+  /** The org_id recorded at sign-in or first discovery (`discovery.org_id`).
+   *  When set, an answer naming another org is not trusted (security audit
+   *  2026-11-06). */
+  cachedOrgId?: string
 }
 
 const ORG_PREFIXED_KINDS = ['group', 'project', 'team', 'space'] as const
@@ -90,7 +99,7 @@ function filterScopes(
  * Never reads from disk, never writes to disk, no I/O.
  */
 export function acceptDiscoveredScopes(input: AcceptDiscoveredScopesInput): AcceptedDiscovery {
-  const { me, error, cached, otherServersScopes } = input
+  const { me, error, cached, otherServersScopes, cachedOrgId } = input
   const keep = (status: DiscoveryStatus, rejected: ScopeRejection[] = []): AcceptedDiscovery =>
     ({ status, replaceCache: false, scopes: [...cached], rejected })
   const empty = (status: DiscoveryStatus, rejected: ScopeRejection[] = []): AcceptedDiscovery =>
@@ -114,6 +123,15 @@ export function acceptDiscoveredScopes(input: AcceptDiscoveredScopesInput): Acce
   if (!me.org_id && me.scopes_status !== 'not_synced') {
     const rejected = me.scopes.map((scope): ScopeRejection => ({ scope, reason: 'org-prefix' }))
     return cached.length > 0 ? keep('degraded', rejected) : empty('degraded', rejected)
+  }
+
+  // The org a server may claim is bound to the org it reported first. The org
+  // filter takes org_id from this same untrusted answer, so a server (or an
+  // on-path attacker on an http url) that switched org_id could claim another
+  // org's scopes, including ones served by a local store (security audit
+  // 2026-11-06). A changed org keeps the cache and rejects every scope.
+  if (cachedOrgId && me.org_id && me.org_id.toLowerCase() !== cachedOrgId.toLowerCase()) {
+    return keep('degraded', me.scopes.map((scope): ScopeRejection => ({ scope, reason: 'org-prefix' })))
   }
 
   switch (me.scopes_status) {
