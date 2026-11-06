@@ -126,6 +126,8 @@ export function localOnlyOptions(): { local_files_only?: true } {
  * (`transformers.js_config.use_external_data_format`, resolved the way
  * transformers.js resolves it).
  */
+const MAX_EXTERNAL_DATA_CHUNKS = 64
+
 function requiredFiles(weights: string, config: unknown): string[] {
   const files = [join('onnx', weights), 'tokenizer.json', 'tokenizer_config.json', 'config.json']
   // transformers.js merges `device_config[<device>]` over the top-level
@@ -144,7 +146,11 @@ function requiredFiles(weights: string, config: unknown): string[] {
   } else if (ext) {
     chunks = Number(ext)
   }
-  for (let i = 0; i < (Number.isFinite(chunks) ? chunks : 0); i++) {
+  // Clamped (security audit 2026-11-06, hardening): the count comes from a
+  // config.json in the model cache, and an absurd value made every presence
+  // check build that many paths. Real models declare a handful of chunks.
+  const count = Number.isFinite(chunks) ? Math.min(MAX_EXTERNAL_DATA_CHUNKS, Math.max(0, Math.floor(chunks))) : 0
+  for (let i = 0; i < count; i++) {
     files.push(join('onnx', `${weights}_data${i === 0 ? '' : '_' + i}`))
   }
   return files
