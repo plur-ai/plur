@@ -1,4 +1,5 @@
 import { existsSync, unlinkSync } from 'fs'
+import { execFileSync } from 'child_process'
 import { join, dirname, resolve } from 'path'
 import { homedir } from 'os'
 import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram, getCachedUpdateCheck, checkForUpdate, updateCheckOffline, minorVersionsBehind, scanForTensions, CapabilityCanary, NO_SESSION, findProjectConfigPath, readProjectConfigFromPath, isSharedScope, resolveRerankerName, getReranker, classifyRerankerFailure, hfCacheDirName, SUGGEST_DISPLAY_MIN_CONFIDENCE, mcpRemoteWarningLine, doctorRemoteRemediation, normalizeEndpointUrl, REMOTE_STATUS_TTL_MS, PROBE_CLEARABLE_STATES, summariseProvenance, formatLayer3, renderProvenanceSummary, type LearnContext, describeNeedsAction, summarizeOutbox, type OutboxSummary, folderMapProblem, type FolderMapProblem, tokenEnvUnsetDetail, tokenEnvUnsetFix, resolveRecallDeadlineMs, loadConfig } from '@plur-ai/core'
@@ -2921,14 +2922,14 @@ function getAllToolDefinitions(): ToolDefinition[] {
 
     {
       name: 'plur_sync',
-      description: 'Sync engrams via git AND refresh the derived index from YAML. Initializes repo on first call, commits and pushes/pulls on subsequent calls. Provide a remote URL on first call to enable cross-device sync. Pass full=true to drop-and-rebuild the index from YAML (recovery path; YAML stays untouched). Also flushes the remote-write outbox — retries team-scoped writes that were queued while their remote store was unreachable; use plur_outbox to inspect what is queued.',
+      description: 'Sync engrams via git AND refresh the derived index from YAML. Initializes repo on first call, commits and pushes/pulls on subsequent calls. Syncs only with a git remote the user already set up; this tool never adds one (the user runs `plur sync <remote>` in a terminal for that). Pass full=true to drop-and-rebuild the index from YAML (recovery path; YAML stays untouched). Also flushes the remote-write outbox — retries team-scoped writes that were queued while their remote store was unreachable; use plur_outbox to inspect what is queued.',
       annotations: { title: 'Sync', openWorldHint: true, destructiveHint: false, idempotentHint: true },
       inputSchema: {
         type: 'object',
         properties: {
           remote: {
             type: 'string',
-            description: 'Git remote URL (e.g. git@github.com:user/plur-engrams.git). Only needed on first call to set up remote.',
+            description: 'Not accepted for setting up a remote: adding one is a terminal step for the user (`plur sync <remote>`). With an origin already configured it is ignored.',
           },
           full: {
             type: 'boolean',
@@ -2942,7 +2943,24 @@ function getAllToolDefinitions(): ToolDefinition[] {
         },
       },
       handler: async (args, plur) => {
-        const result = await plur.sync(args.remote as string | undefined, {
+        // Adding a git origin decides where every non-local engram, private
+        // ones included, is pushed from then on, and the agent naming it can be
+        // steered by a prompt injection. So the tool never adds one: that stays
+        // the user's own CLI step, `plur sync <remote>`. An origin the user
+        // already configured keeps syncing (security audit 2026-11-06).
+        if (typeof args.remote === 'string' && args.remote.trim() !== '') {
+          let origin: string | null = null
+          try {
+            origin = execFileSync('git', ['-C', plur.storageRoot, 'remote', 'get-url', 'origin'],
+              { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() || null
+          } catch { origin = null }
+          if (!origin) {
+            throw new Error('plur_sync does not add a git remote, so nothing was synced. Adding one decides where your ' +
+              'memory is pushed, so the user sets it up in a terminal: plur sync <remote>. Ask the user to run that; ' +
+              'after it, plur_sync with no remote keeps that remote in sync.')
+          }
+        }
+        const result = await plur.sync(undefined, {
           full: args.full === true,
           ...(args.remote_type === 'personal' || args.remote_type === 'shared' ? { remoteType: args.remote_type } : {}),
         })
