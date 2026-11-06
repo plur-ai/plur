@@ -11888,8 +11888,22 @@ export class Plur {
     // `plur_sync` MCP tool and the `plur sync` CLI command, both top-level.
     // (Found by writing this fix's first regression test as a nested call and
     // watching it hang; see async-lock's "NOT REENTRANT" header.)
+    //
+    // Security audit 2026-11-06: the pull path also resets and rewrites the
+    // sibling stores (episodes, tensions, candidates — holdWithheld /
+    // restoreWithheld, the rebase itself, the merge fallback), and their
+    // writers lock only `<file>.lock`, never the engram lock. Holding just the
+    // engram lock let a capture or a tension claim land mid-sync, be reported
+    // as saved, and then be overwritten. So the sync also holds each sibling
+    // file's own lock, the same `withLock` its writers take. Fixed order after
+    // the engram lock; no writer takes the engram lock while holding a sibling
+    // lock, so this cannot deadlock. A writer that arrives meanwhile waits out
+    // its short retry budget and then fails loudly rather than being lost.
     const result = await this._withStoreLock(this.paths.engrams, async () => {
-      return gitSync(this.paths.root, remote, { remoteType })
+      return withLock(this.paths.tensions, () =>
+        withLock(this.paths.episodes, () =>
+          withLock(this.paths.candidates, () =>
+            gitSync(this.paths.root, remote, { remoteType }))))
     })
     // `git pull --rebase` may have REPLACED engrams.yaml underneath us, so any
     // cached snapshot the store is holding now describes a file that no longer
