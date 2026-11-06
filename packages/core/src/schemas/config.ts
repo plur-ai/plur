@@ -181,6 +181,14 @@ export const LlmTierConfigSchema = partialKeepAbsent(z.object({
   dedup_tier: z.enum(['fast', 'balanced', 'thorough']).default('fast'),
   profile_tier: z.enum(['fast', 'balanced', 'thorough']).default('balanced'),
   meta_tier: z.enum(['fast', 'balanced', 'thorough']).default('thorough'),
+  /**
+   * OpenAI-compatible base URLs (e.g. https://api.openai.com/v1) that an
+   * agent may name as `llm_base_url` in the MCP tools that send memory to a
+   * model. A loopback address needs no entry. Anything else is refused, so a
+   * prompt-injected agent cannot pick where the engram contents go
+   * (security audit 2026-11-06). Written by the user, never by a tool.
+   */
+  base_urls: z.array(z.string()).optional(),
 }))
 
 export const ProfileConfigSchema = partialKeepAbsent(z.object({

@@ -1,7 +1,7 @@
 import { existsSync, unlinkSync } from 'fs'
 import { join, dirname, resolve } from 'path'
 import { homedir } from 'os'
-import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram, getCachedUpdateCheck, checkForUpdate, updateCheckOffline, minorVersionsBehind, scanForTensions, CapabilityCanary, NO_SESSION, findProjectConfigPath, readProjectConfigFromPath, isSharedScope, resolveRerankerName, getReranker, classifyRerankerFailure, hfCacheDirName, SUGGEST_DISPLAY_MIN_CONFIDENCE, mcpRemoteWarningLine, doctorRemoteRemediation, normalizeEndpointUrl, REMOTE_STATUS_TTL_MS, PROBE_CLEARABLE_STATES, summariseProvenance, formatLayer3, renderProvenanceSummary, type LearnContext, describeNeedsAction, summarizeOutbox, type OutboxSummary, folderMapProblem, type FolderMapProblem, tokenEnvUnsetDetail, tokenEnvUnsetFix, resolveRecallDeadlineMs } from '@plur-ai/core'
+import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram, getCachedUpdateCheck, checkForUpdate, updateCheckOffline, minorVersionsBehind, scanForTensions, CapabilityCanary, NO_SESSION, findProjectConfigPath, readProjectConfigFromPath, isSharedScope, resolveRerankerName, getReranker, classifyRerankerFailure, hfCacheDirName, SUGGEST_DISPLAY_MIN_CONFIDENCE, mcpRemoteWarningLine, doctorRemoteRemediation, normalizeEndpointUrl, REMOTE_STATUS_TTL_MS, PROBE_CLEARABLE_STATES, summariseProvenance, formatLayer3, renderProvenanceSummary, type LearnContext, describeNeedsAction, summarizeOutbox, type OutboxSummary, folderMapProblem, type FolderMapProblem, tokenEnvUnsetDetail, tokenEnvUnsetFix, resolveRecallDeadlineMs, loadConfig } from '@plur-ai/core'
 import { folderMapAdvice } from './folder-map-advice.js'
 import type { LlmFunction, MetaField, TensionStatus, RerankerEvalResult, HistoryEvent, Receipt, RemoteStoreStatusEntry, RecallRemoteReport, RemoteOnlyStatus } from '@plur-ai/core'
 import { RemoteOnlyWriteError, remoteOnlySessionLine, remoteOnlyUnservedNotice } from '@plur-ai/core'
@@ -34,6 +34,44 @@ function makeHttpLlm(baseUrl: string, apiKey: string, model: string = 'gpt-4o-mi
     const data = await response.json() as any
     return data.choices?.[0]?.message?.content ?? ''
   }
+}
+
+/** The comparable form of an http(s) LLM base URL, or null (other schemes, userinfo, unparseable). */
+function llmBaseIdentity(url: string): { id: string; host: string } | null {
+  let u: URL
+  try { u = new URL(url) } catch { return null }
+  if ((u.protocol !== 'http:' && u.protocol !== 'https:') || u.username || u.password) return null
+  return { id: `${u.protocol}//${u.host}${u.pathname.replace(/\/+$/, '')}`, host: u.hostname.replace(/^\[|\]$/g, '') }
+}
+
+function isLoopbackHost(host: string): boolean {
+  return host === 'localhost' || host === '::1' || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)
+}
+
+/**
+ * The LLM for a tool whose caller names `llm_base_url`. That URL decides where
+ * the engram contents in the prompt are POSTed, and the caller is the agent,
+ * which a prompt injection can steer. So it is accepted only when it is a
+ * loopback address (a model the user runs on this machine) or one of the
+ * `llm.base_urls` the user listed in config.yaml; anything else is refused
+ * before any memory is read (security audit 2026-11-06).
+ */
+function makeAgentLlm(plur: Plur, baseUrl: string, apiKey: string, model?: string): LlmFunction {
+  const wanted = llmBaseIdentity(baseUrl)
+  let allowed = false
+  if (wanted) {
+    if (isLoopbackHost(wanted.host)) {
+      allowed = true
+    } else {
+      const listed = loadConfig(join(plur.storageRoot, 'config.yaml')).llm?.base_urls ?? []
+      allowed = listed.some(u => llmBaseIdentity(u)?.id === wanted.id)
+    }
+  }
+  if (!allowed) {
+    throw new Error('llm_base_url is not an endpoint you configured, so nothing was sent. Memory is sent only to a ' +
+      'loopback model or to a base URL listed under llm.base_urls in PLUR\'s config.yaml (edit that file yourself to add one).')
+  }
+  return makeHttpLlm(baseUrl, apiKey, model)
 }
 
 export interface ToolAnnotations {
@@ -3014,7 +3052,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
     {
       name: 'plur_extract_meta',
       description: 'Extract meta-engrams from stored engrams using the 6-stage pipeline (structural analysis → clustering → alignment → formulation → hierarchy). Requires an LLM API endpoint.',
-      annotations: { title: 'Extract meta-engrams', destructiveHint: false, idempotentHint: false },
+      annotations: { title: 'Extract meta-engrams', destructiveHint: false, idempotentHint: false, openWorldHint: true },
       inputSchema: {
         type: 'object',
         properties: {
@@ -3030,7 +3068,8 @@ function getAllToolDefinitions(): ToolDefinition[] {
       },
       handler: async (args, plur) => {
         refuseModelInRemoteOnly(plur, 'plur_extract_meta')
-        const llm = makeHttpLlm(
+        const llm = makeAgentLlm(
+          plur,
           args.llm_base_url as string,
           args.llm_api_key as string,
           args.llm_model as string | undefined,
@@ -3137,7 +3176,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
       // meta/validation.ts) and the handler persists it. A removal needs an
       // explicit, gated act, so plur_admin refuses this tool and it is a direct
       // tool in every profile (CURSOR_CORE_TOOL_NAMES).
-      annotations: { title: 'Validate meta-engram', destructiveHint: true, idempotentHint: false },
+      annotations: { title: 'Validate meta-engram', destructiveHint: true, idempotentHint: false, openWorldHint: true },
       inputSchema: {
         type: 'object',
         properties: {
@@ -3151,6 +3190,13 @@ function getAllToolDefinitions(): ToolDefinition[] {
       },
       handler: async (args, plur) => {
         refuseModelInRemoteOnly(plur, 'plur_validate_meta')
+        // Checked before any memory is read (security audit 2026-11-06).
+        const llm = makeAgentLlm(
+          plur,
+          args.llm_base_url as string,
+          args.llm_api_key as string,
+          args.llm_model as string | undefined,
+        )
         const allEngrams = await plur.list()
         const meta = allEngrams.find(e => e.id === (args.meta_engram_id as string))
         if (!meta) {
@@ -3159,12 +3205,6 @@ function getAllToolDefinitions(): ToolDefinition[] {
 
         const testDomain = args.test_domain as string
         const testEngrams = await plur.list({ domain: testDomain })
-
-        const llm = makeHttpLlm(
-          args.llm_base_url as string,
-          args.llm_api_key as string,
-          args.llm_model as string | undefined,
-        )
 
         const wasRetired = meta.status === 'retired'
         const result = await validateMetaEngram(meta, testEngrams, testDomain, llm)
@@ -5080,7 +5120,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
       // plur_forget's effect. A removal needs an explicit, gated act, so
       // plur_admin refuses this tool and it is a direct tool in every profile
       // (CURSOR_CORE_TOOL_NAMES), where the client sees this annotation.
-      annotations: { title: 'Tensions', readOnlyHint: false, destructiveHint: true, idempotentHint: false },
+      annotations: { title: 'Tensions', readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
       inputSchema: {
         type: 'object',
         properties: {
@@ -5131,7 +5171,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
         if (args.scan) {
           refuseModelInRemoteOnly(plur, 'plur_tensions scan')
           const llm = args.llm_base_url && args.llm_api_key
-            ? makeHttpLlm(args.llm_base_url as string, args.llm_api_key as string, args.llm_model as string | undefined)
+            ? makeAgentLlm(plur, args.llm_base_url as string, args.llm_api_key as string, args.llm_model as string | undefined)
             : getLlmFunction()
 
           if (!llm) {
@@ -5328,7 +5368,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
       // TOOL-4: procedure evolution replaces the procedure's text with what the
       // checker returns, so this is destructive: a direct tool in every
       // profile, refused by plur_admin. Behaviour unchanged.
-      annotations: { title: 'Report Failure', destructiveHint: true, idempotentHint: false },
+      annotations: { title: 'Report Failure', destructiveHint: true, idempotentHint: false, openWorldHint: true },
       inputSchema: {
         type: 'object',
         properties: {
@@ -5344,7 +5384,8 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
         if (args.llm_base_url && args.llm_api_key) refuseModelInRemoteOnly(plur, 'plur_report_failure with a model')
         let llm: LlmFunction | undefined
         if (args.llm_base_url && args.llm_api_key) {
-          llm = makeHttpLlm(
+          llm = makeAgentLlm(
+            plur,
             args.llm_base_url as string,
             args.llm_api_key as string,
             args.llm_model as string | undefined,
@@ -5518,7 +5559,8 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
     {
       name: 'plur_profile',
       description: 'Generate or retrieve a cognitive profile — a narrative summary synthesized from stored engrams. Cached for 24h.',
-      annotations: { title: 'Cognitive profile', readOnlyHint: true, idempotentHint: true },
+      // Not read-only: it sends memory to a model and writes profile_cache.json (security audit 2026-11-06).
+      annotations: { title: 'Cognitive profile', readOnlyHint: false, idempotentHint: true, openWorldHint: true },
       inputSchema: {
         type: 'object',
         properties: {
@@ -5545,7 +5587,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
           return { profile: null, error: 'No cached profile. Provide llm_base_url and llm_api_key.' }
         }
         const model = (args.llm_model as string) ?? selectModelForOperation('profile', status.config?.llm)
-        const llm = makeHttpLlm(args.llm_base_url as string, args.llm_api_key as string, model)
+        const llm = makeAgentLlm(plur, args.llm_base_url as string, args.llm_api_key as string, model)
         const engrams = await plur.list({ scope: args.scope as string | undefined })
         const profile = await generateProfile(engrams, llm, storagePath, status.config?.profile?.cache_ttl_hours ?? 24)
         return { profile, source: 'generated', engram_count: engrams.length, model }
