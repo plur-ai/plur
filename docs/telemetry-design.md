@@ -63,7 +63,7 @@ could not answer — a demand signal. The emit is opt-in/default-off and carries
 ```json
 {
   "install_id": "opaque uuid",
-  "query_fingerprint": "sha256 of the normalized query (irreversible)",
+  "query_fingerprint": "HMAC-SHA-256 of the normalized query under a per-install key",
   "scope_type": "project | group | space | global | local | other | null",
   "domain": "trading | null",
   "reason": "no_results | low_score",
@@ -72,8 +72,13 @@ could not answer — a demand signal. The emit is opt-in/default-off and carries
 }
 ```
 
-The fingerprint lets identical misses across installs cluster without disclosing
-content. `scope_type` is the scope KIND only — the user-defined scope *path*
+The fingerprint is keyed with a random per-install secret (`miss-signal-key`
+beside the install id, owner-only, never transmitted). It lets repeat misses on
+the same phrasing from one install cluster, but it cannot be matched against a
+list of guessed queries, and identical misses from different installs do not
+match. An unkeyed SHA-256 was used before; it let any reader of the received
+data confirm a guessed query by hashing it (security audit 2026-11-06).
+`scope_type` is the scope KIND only — the user-defined scope *path*
 (e.g. `project:acme-secret`, which can name a private project or client) is never
 transmitted (#312); only the kind, which is all that has routing-analytics value.
 `domain` is a generic topic label (e.g. `trading`) and **is** sent in readable
