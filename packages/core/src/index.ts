@@ -11711,6 +11711,10 @@ export class Plur {
         if (!captured || captured.length < 5) continue
         if (seen.has(captured.toLowerCase())) continue
         if (!this.config.allow_secrets && detectSecrets(captured).length > 0) continue
+        // Ingest harvests text the agent merely read (a page, a file, tool
+        // output) — the D4 case. Drop instruction-override text here so
+        // extract_only previews never offer it either (security audit 2026-11-06).
+        if (detectPromptInjection(captured).length > 0) continue
         seen.add(captured.toLowerCase())
         candidates.push({
           statement: captured,
@@ -11733,6 +11737,9 @@ export class Plur {
           scope: options?.scope ?? (this._remoteOnly ? undefined : 'global'),
           domain: options?.domain,
           source: candidate.source,
+          // Auto-harvested, not asserted by the user: the D4 injection gate in
+          // _validateLearnInput and the (inferred) render mark key on this.
+          claim_class: 'inferred',
         })
       }
     }
