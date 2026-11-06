@@ -9477,7 +9477,7 @@ export class Plur {
    * scopes (the index.ts personal fast-path). Defense-in-depth: activates only
    * if a future caller passes a shared-scope meta.
    */
-  async saveMetaEngrams(metas: Engram[]): Promise<{ saved: number; skipped: number }> {
+  async saveMetaEngrams(metas: Engram[]): Promise<{ saved: number; skipped: number; injection_refused?: string[] }> {
     this._assertWritable()
     this._remoteOnlyRefuseLocalStore('Saving meta-engrams (they are written to the personal store)')
     return await this._withStoreLock(this.paths.engrams, async () => {
@@ -9485,6 +9485,7 @@ export class Plur {
       const existingIds = new Set(engrams.map(e => e.id))
       let saved = 0
       let skipped = 0
+      const injectionRefused: string[] = []
       // Hard-tier tokens accepted earlier in this batch; listPinned cannot see
       // them until the batch is written.
       let pendingHard = 0
@@ -9493,6 +9494,23 @@ export class Plur {
           skipped++
           continue
         }
+        // Security audit 2026-11-06: a meta statement is model output derived
+        // from other engrams, some from lower-trust team stores, so it gets the
+        // prompt-injection gate learn() applies to claim_class 'inferred' text.
+        // A flagged meta is skipped and reported, not thrown: one bad cluster
+        // must not cost the batch.
+        const metaFields = this._engramContextFields(meta)
+        const injections = detectPromptInjection(metaFields ? `${meta.statement}\n${JSON.stringify(metaFields)}` : meta.statement)
+        if (injections.length > 0) {
+          logger.warning(
+            `[plur] meta-engram ${meta.id} skipped: prompt injection pattern (${injections[0].pattern}) in a model-inferred statement.`,
+          )
+          injectionRefused.push(meta.id)
+          skipped++
+          continue
+        }
+        // Model-inferred, so marked as such (ClaimClassSchema 'inferred').
+        if ((meta as any).claim_class === undefined) (meta as any).claim_class = 'inferred'
         pendingHard += await this._assertHardTierFits(meta, pendingHard)
         // LOW-1: guard each meta on the FULL content (statement + context
         // fields) at its scope before persist. Do NOT call _guardExplicitUpdate
@@ -9536,7 +9554,7 @@ export class Plur {
         await this._writeEngrams(this.paths.engrams, engrams)
         await this._syncIndex()
       }
-      return { saved, skipped }
+      return { saved, skipped, ...(injectionRefused.length > 0 ? { injection_refused: injectionRefused } : {}) }
     })
   }
 

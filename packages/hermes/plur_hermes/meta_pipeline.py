@@ -6,6 +6,7 @@ after each stage transition. Resumes on crash. 24h total TTL; 10-minute
 per-stage TTL resets the pipeline if the LLM fails to call submit_analysis.
 """
 
+import inspect
 import json
 import logging
 import os
@@ -298,6 +299,21 @@ class MetaPipeline:
     # `len(meta_engrams) × bridge_timeout` seconds.
     _MAX_CONSECUTIVE_SAVE_FAILURES = 3
 
+    def _inferred_kwargs(self) -> dict:
+        """claim_class='inferred' for bridge.learn when it accepts that parameter.
+
+        Security audit 2026-11-06: meta statements are model-formulated from
+        other engrams (some from lower-trust team stores); marking them
+        inferred puts them behind core's prompt-injection gate for inferred
+        text. Passed only when learn() names the parameter, so an older bridge
+        (or one without it) keeps saving as before.
+        """
+        try:
+            params = inspect.signature(self._bridge.learn).parameters
+        except (TypeError, ValueError):
+            return {}
+        return {"claim_class": "inferred"} if "claim_class" in params else {}
+
     def _save_and_finalize(self, state: 'MetaPipelineState', engrams_to_save: list[dict],
                            retry_round: bool) -> dict:
         """Run the save loop with a consecutive-failure circuit breaker, then
@@ -321,7 +337,8 @@ class MetaPipeline:
                 try:
                     self._bridge.learn(me["statement"], scope="global",
                                        type="architectural",
-                                       domain=me.get("domain", "meta"))
+                                       domain=me.get("domain", "meta"),
+                                       **self._inferred_kwargs())
                     saved_count += 1
                     consecutive_failures = 0
                 except Exception as e:

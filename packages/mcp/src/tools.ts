@@ -3106,7 +3106,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
 
         // Persist unless dry_run
         const isDryRun = args.dry_run === true
-        let saveStats: { saved: number; skipped: number } | null = null
+        let saveStats: { saved: number; skipped: number; injection_refused?: string[] } | null = null
         if (!isDryRun && result.results.length > 0) {
           saveStats = await plur.saveMetaEngrams(result.results)
         }
@@ -3120,6 +3120,8 @@ function getAllToolDefinitions(): ToolDefinition[] {
           duration_ms: result.duration_ms,
           dry_run: isDryRun,
           ...(saveStats ? { saved: saveStats.saved, skipped: saveStats.skipped } : {}),
+          // Security audit 2026-11-06: metas the prompt-injection gate refused.
+          ...(saveStats?.injection_refused ? { injection_refused: saveStats.injection_refused } : {}),
           results: result.results.map(m => ({
             id: m.id,
             statement: m.statement,
