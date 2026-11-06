@@ -200,9 +200,31 @@ export async function resolveLoadCacheDir(modelId: string, weights: string): Pro
   const override = process.env.PLUR_MODEL_CACHE_DIR || process.env.HF_HOME || null
   const def = await defaultCacheDir()
   const local = await localRootFor(modelId)
-  if (override && completeIn(join(override, modelId), local, weights)) return override
-  if (def && def !== override && completeIn(join(def, modelId), local, weights)) return def
-  return override ?? def
+  let dir: string | null
+  if (override && completeIn(join(override, modelId), local, weights)) dir = override
+  else if (def && def !== override && completeIn(join(def, modelId), local, weights)) dir = def
+  else dir = override ?? def
+  if (dir) lastCacheDirFor.set(modelId, dir)
+  return dir
+}
+
+/** The cache directory the last load of each model resolved to. */
+const lastCacheDirFor = new Map<string, string>()
+
+/**
+ * The folder holding `modelId` in PLUR's model cache — what to delete when
+ * that cache is corrupt. PLUR loads models from `<cacheDir>/<modelId>`
+ * (see {@link resolveLoadCacheDir}), not from the Hugging Face hub cache
+ * (`~/.cache/huggingface/hub/models--…`), which the purge advice used to name
+ * (security audit 2026-11-06, hardening). Synchronous, for log and doctor
+ * text: the directory the last load used, else the one a load would use.
+ */
+export function modelCacheFolder(modelId: string): string {
+  const dir = lastCacheDirFor.get(modelId)
+    ?? (process.env.PLUR_MODEL_CACHE_DIR || process.env.HF_HOME || defaultCacheDirSeam || libraryDefaultCacheDir || null)
+  return dir
+    ? join(dir, modelId)
+    : `${modelId} under PLUR's model cache (PLUR_MODEL_CACHE_DIR or HF_HOME when set, otherwise the .cache folder of the installed @huggingface/transformers package)`
 }
 
 /** Is the model on disk where a load would read it? Null when there is

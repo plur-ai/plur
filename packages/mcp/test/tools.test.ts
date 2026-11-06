@@ -965,7 +965,9 @@ describe('MCP tools', () => {
       expect(check.detail).toContain('corrupt')
       expect(check.detail).toContain('RRF-only')
       const remediation = result.remediation.join('\n')
-      expect(remediation).toContain('models--onnx-community--bge-reranker-v2-m3-ONNX')
+      // PLUR's own cache folder, not the HF hub cache (security audit 2026-11-06).
+      expect(remediation).toContain('onnx-community/bge-reranker-v2-m3-ONNX')
+      expect(remediation).not.toContain('huggingface/hub')
       expect(result.ok).toBe(false)
     })
 

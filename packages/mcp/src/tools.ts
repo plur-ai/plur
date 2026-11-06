@@ -2,7 +2,7 @@ import { existsSync, unlinkSync } from 'fs'
 import { execFileSync } from 'child_process'
 import { join, dirname, resolve } from 'path'
 import { homedir } from 'os'
-import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram, getCachedUpdateCheck, checkForUpdate, updateCheckOffline, minorVersionsBehind, scanForTensions, CapabilityCanary, NO_SESSION, findProjectConfigPath, readProjectConfigFromPath, isSharedScope, resolveRerankerName, getReranker, classifyRerankerFailure, hfCacheDirName, SUGGEST_DISPLAY_MIN_CONFIDENCE, mcpRemoteWarningLine, doctorRemoteRemediation, normalizeEndpointUrl, REMOTE_STATUS_TTL_MS, PROBE_CLEARABLE_STATES, summariseProvenance, formatLayer3, renderProvenanceSummary, type LearnContext, describeNeedsAction, summarizeOutbox, type OutboxSummary, folderMapProblem, type FolderMapProblem, tokenEnvUnsetDetail, tokenEnvUnsetFix, resolveRecallDeadlineMs, loadConfig } from '@plur-ai/core'
+import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram, getCachedUpdateCheck, checkForUpdate, updateCheckOffline, minorVersionsBehind, scanForTensions, CapabilityCanary, NO_SESSION, findProjectConfigPath, readProjectConfigFromPath, isSharedScope, resolveRerankerName, getReranker, classifyRerankerFailure, modelCacheFolder, SUGGEST_DISPLAY_MIN_CONFIDENCE, mcpRemoteWarningLine, doctorRemoteRemediation, normalizeEndpointUrl, REMOTE_STATUS_TTL_MS, PROBE_CLEARABLE_STATES, summariseProvenance, formatLayer3, renderProvenanceSummary, type LearnContext, describeNeedsAction, summarizeOutbox, type OutboxSummary, folderMapProblem, type FolderMapProblem, tokenEnvUnsetDetail, tokenEnvUnsetFix, resolveRecallDeadlineMs, loadConfig } from '@plur-ai/core'
 import { folderMapAdvice } from './folder-map-advice.js'
 import type { LlmFunction, MetaField, TensionStatus, RerankerEvalResult, HistoryEvent, Receipt, RemoteStoreStatusEntry, RecallRemoteReport, RemoteOnlyStatus } from '@plur-ai/core'
 import { RemoteOnlyWriteError, remoteOnlySessionLine, remoteOnlyUnservedNotice } from '@plur-ai/core'
@@ -3561,7 +3561,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
             '  • First-run download not yet completed (try: plur_doctor with retry:true)',
             '  • Network blocked HuggingFace Hub fetch — check connectivity to huggingface.co',
             '  • pnpm hoisting issue: @huggingface/transformers must resolve onnxruntime-node from the package root, not a workspace package',
-            '  • Corrupt model cache: a half-completed download leaves a broken cache that fails every subsequent load. Delete `~/.cache/huggingface/hub/models--Xenova--bge-small-en-v1.5/` and retry — the model will redownload on next call.',
+            '  • Corrupt model cache: a half-completed download leaves a broken cache that fails every subsequent load. Delete the model folder under the PLUR model cache (PLUR_MODEL_CACHE_DIR or HF_HOME when set, otherwise the .cache folder of the installed @huggingface/transformers package) and retry — the model will redownload on next call.',
             '  • Manual fix: from the @plur-ai/core package directory, run a script that imports @huggingface/transformers and calls pipeline() to trigger the download',
             '  • Or opt out: set PLUR_DISABLE_EMBEDDINGS=1, or write `embeddings: { enabled: false }` to ~/.plur/config.yaml — hybrid search will run BM25-only',
           )
@@ -3597,7 +3597,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
             if (kind === 'corrupt-cache') {
               rerankerDetail = `Model cache looks corrupt (${message}) — recall silently falls back to RRF-only`
               remediation.push(
-                `Reranker model cache is corrupt — the classic symptom of a truncated download (#340). Delete ~/.cache/huggingface/hub/${hfCacheDirName(adapter.modelId)}/ and run plur_doctor with retry:true — the model will redownload via the classic (non-Xet) path.`,
+                `Reranker model cache is corrupt — the classic symptom of a truncated download (#340). Delete ${modelCacheFolder(adapter.modelId)} (PLUR's model cache) and run plur_doctor with retry:true — the model will redownload via the classic (non-Xet) path.`,
               )
             } else {
               rerankerDetail = `Failed to load: ${message} — recall silently falls back to RRF-only`

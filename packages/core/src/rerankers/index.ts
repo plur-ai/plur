@@ -24,6 +24,7 @@ import { makeBgeRerankerV2M3Adapter, makeMsMarcoMiniLmL6Adapter } from './transf
 import type { RerankerAdapter } from './types.js'
 
 export type { RerankerAdapter } from './types.js'
+export { modelCacheFolder } from '../embedders/transformers-base.js'
 
 /**
  * All reranker names supported by the factory.
@@ -153,8 +154,8 @@ export function classifyRerankerFailure(message: string): RerankerFailureKind {
 }
 
 /**
- * HF hub cache directory name for a model id — the purge target when the
- * cache is corrupt: `~/.cache/huggingface/hub/<this>/`.
+ * HF hub cache directory name for a model id (`models--<org>--<name>`). Not
+ * where PLUR keeps models: purge advice names {@link modelCacheFolder}.
  */
 export function hfCacheDirName(modelId: string): string {
   return `models--${modelId.replace(/\//g, '--')}`

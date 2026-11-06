@@ -400,7 +400,7 @@ export { EMBEDDER_NAMES, DEFAULT_EMBEDDER, resolveEmbedderName, type EmbedderNam
 // failure paths without downloading the real ~300 MB model.
 export {
   getReranker, isRerankerOff, resolveRerankerName, RERANKER_NAMES, DEFAULT_RERANKER,
-  rerankerStatus, resetRerankerStatus, classifyRerankerFailure, hfCacheDirName,
+  rerankerStatus, resetRerankerStatus, classifyRerankerFailure, hfCacheDirName, modelCacheFolder,
   _resetRerankerCache, _setCachedReranker,
   type RerankerName, type RerankerRuntimeStatus, type RerankerFailureKind,
 } from './rerankers/index.js'
