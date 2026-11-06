@@ -15,7 +15,7 @@
  * the record look more authoritative than it is.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync, existsSync } from 'fs'
+import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { Plur } from '@plur-ai/core'
@@ -406,13 +406,20 @@ describe('plur_packs_export without a licence', () => {
 
   beforeEach(async () => {
     dir = mkdtempSync(join(tmpdir(), 'plur-export-lic-'))
-    out = join(mkdtempSync(join(tmpdir(), 'plur-export-lic-out-')), 'p')
+    // Exports are confined to ~/plur-packs (security audit 2026-11-06).
+    savedHome = process.env.HOME
+    process.env.HOME = mkdtempSync(join(tmpdir(), 'plur-export-lic-home-'))
+    out = join(process.env.HOME, 'plur-packs', 'p')
     plur = new Plur({ path: dir })
     await plur.learn('Shareable convention', { type: 'behavioral', visibility: 'public' })
     tools = getToolDefinitions('full')
     _resetSessionTelemetry()
   })
-  afterEach(() => { for (const d of [dir, join(out, '..')]) rmSync(d, { recursive: true, force: true }) })
+  let savedHome: string | undefined
+  afterEach(() => {
+    for (const d of [dir, process.env.HOME!]) rmSync(d, { recursive: true, force: true })
+    if (savedHome === undefined) delete process.env.HOME; else process.env.HOME = savedHome
+  })
 
   const exportPack = async (args: Record<string, unknown>) =>
     tools.find(t => t.name === 'plur_packs_export')!.handler({ name: 'p', output_dir: out, ...args }, plur) as Promise<any>
@@ -424,6 +431,19 @@ describe('plur_packs_export without a licence', () => {
     expect(r.next_step).toMatch(/[Aa]sk the user/)
     expect(r.next_step).toContain('license')
     expect(existsSync(join(out, 'engrams.yaml'))).toBe(false)
+  })
+
+  it('refuses an output_dir outside ~/plur-packs, e.g. the store root or a skills dir (security audit 2026-11-06)', async () => {
+    const before = readFileSync(join(dir, 'engrams.yaml'), 'utf8')
+    const r = await exportPack({ license: 'cc0-1.0', output_dir: dir })
+    expect(r.exported).toBe(false)
+    expect(readFileSync(join(dir, 'engrams.yaml'), 'utf8')).toBe(before)
+    const skills = join(process.env.HOME!, '.claude', 'skills', 'helper')
+    const s = await exportPack({ license: 'cc0-1.0', output_dir: skills })
+    expect(s.exported).toBe(false)
+    expect(existsSync(join(skills, 'SKILL.md'))).toBe(false)
+    const empty = await exportPack({ license: 'cc0-1.0', filter_domain: 'no-such-domain-zzz' })
+    expect(empty.exported).toBe(false)
   })
 
   it('exports once a licence is given', async () => {

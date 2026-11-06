@@ -5417,8 +5417,33 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
         }
 
         const { homedir } = await import('os')
-        const { join } = await import('path')
-        const outputDir = (args.output_dir as string) || join(homedir(), 'plur-packs', name)
+        const { join, resolve, dirname, sep } = await import('path')
+        const { existsSync, realpathSync, readdirSync } = await import('fs')
+        // Security audit 2026-11-06: output_dir comes from the model. An
+        // unconfined path let one export overwrite the live engrams.yaml or
+        // plant a SKILL.md in a harness skills directory. Keep exports under
+        // ~/plur-packs, never into a non-empty directory that is not an
+        // earlier export, and never with nothing to export.
+        if (engrams.length === 0) return { exported: false, error: 'No engrams match the given filters.' }
+        const packsRoot = join(homedir(), 'plur-packs')
+        const outputDir = resolve((args.output_dir as string) || join(packsRoot, name))
+        const realOf = (p: string): string => {
+          let cur = p
+          const tail: string[] = []
+          while (!existsSync(cur) && dirname(cur) !== cur) { tail.unshift(cur.slice(dirname(cur).length + 1)); cur = dirname(cur) }
+          return join(realpathSync(cur), ...tail)
+        }
+        const realRoot = realOf(packsRoot)
+        const realOut = realOf(outputDir)
+        if (realOut !== realRoot && !realOut.startsWith(realRoot + sep)) {
+          return { exported: false, error: `output_dir must be inside ${packsRoot}` }
+        }
+        if (existsSync(outputDir)) {
+          const entries = readdirSync(outputDir)
+          if (entries.length > 0 && !(entries.includes('SKILL.md') && entries.includes('INTEGRITY'))) {
+            return { exported: false, error: `${outputDir} already exists and is not an earlier pack export` }
+          }
+        }
         let result: ReturnType<typeof plur.exportPack>
         try {
           result = plur.exportPack(engrams, outputDir, {
