@@ -11,6 +11,7 @@ import { CLI_VERSION } from '../version.js'
 import { CLAUDE_INJECT_TIMEOUT_S } from '../lib/claude-inject-budget.js'
 import { plurRoot } from '../lib/folder-gate.js'
 import { recordHookInstall } from '../lib/hook-runs.js'
+import { readFileNoFollow, unsafeComponentUnder, writeFileNoFollow } from '../lib/no-follow-write.js'
 import {
   resolveFolderPolicy, loadFolderMap, setFolderEntry, folderMapPath, canonicalize,
   upsertInstructionSection, isShippedText, hasStandaloneMarker, writeWithBackup, backupFile, registerClaudeUserMcp,
@@ -1093,6 +1094,17 @@ function installCursor(cmd: string, root: string): string {
   const hooksPath = cursorProjectHooksConfigPath()
   const rulesPath = cursorRulesPath()
 
+  // The project controls every path below its root. A committed symlink at
+  // .cursor, .cursor/rules or one of the files written below would be
+  // followed by the plain writes and land outside the project (security
+  // audit 2026-11-06), so the whole Cursor leg refuses and says why.
+  const project = process.cwd()
+  const linked = [mcpPath, hooksPath, rulesPath].map(p => unsafeComponentUnder(project, p)).find(Boolean)
+  if (linked) {
+    return `Cursor: skipped — ${linked} is a symlink or not a regular file/directory; ` +
+      `PLUR does not write through links a project ships. Replace it with a real one, then re-run \`plur init --cursor\``
+  }
+
   // Same refusal the hooks leg below has carried since its dijkstra-evaluator
   // audit: an unparseable file must not be "read as {}" and written back (#1059).
   const { config: mcpConfig, ok: mcpParses } = readConfigForWrite(mcpPath)
@@ -1198,23 +1210,32 @@ function installCursor(cmd: string, root: string): string {
   // project-specific, regenerated, not something to commit. gitignore both
   // so they don't show up as untracked-file surprises in `git status` after
   // the first session.
-  const gitignorePath = join(process.cwd(), '.gitignore')
+  //
+  // A repository can ship .gitignore as a symlink to a file outside it (e.g.
+  // a shell rc); reading and rewriting it followed the link (security audit
+  // 2026-11-06). Read and write it only as a regular file in the project.
+  const gitignorePath = join(project, '.gitignore')
   const gitignoreLines = ['.cursor/rules/plur-context.mdc', '.cursor/rules/plur-reminder.mdc']
-  const originalGitignoreContent = existsSync(gitignorePath) ? readFileSync(gitignorePath, 'utf8') : ''
-  let gitignoreContent = originalGitignoreContent
-  for (const line of gitignoreLines) {
-    if (!gitignoreContent.includes(line)) {
-      gitignoreContent = gitignoreContent.trimEnd() + `\n${line}\n`
+  const originalGitignoreContent = readFileNoFollow(project, gitignorePath)
+  let gitignoreStatus = `gitignored ${gitignoreLines.join(', ')}`
+  if (originalGitignoreContent === null) {
+    gitignoreStatus = `.gitignore not updated: ${gitignorePath} is a symlink or not a regular file`
+  } else {
+    let gitignoreContent = originalGitignoreContent
+    for (const line of gitignoreLines) {
+      if (!gitignoreContent.includes(line)) {
+        gitignoreContent = gitignoreContent.trimEnd() + `\n${line}\n`
+      }
     }
-  }
-  if (gitignoreContent !== originalGitignoreContent) {
-    writeFileSync(gitignorePath, gitignoreContent)
+    if (gitignoreContent !== originalGitignoreContent && !writeFileNoFollow(project, gitignorePath, gitignoreContent)) {
+      gitignoreStatus = `.gitignore not updated: could not write ${gitignorePath} as a regular file`
+    }
   }
 
   return `Cursor: MCP ${mcpStatus} (${mcpPath}); ` +
     `hooks ${hooksStatus} (${hooksPath}); ` +
     `rule ${ruleStatus} (${rulesPath}); ` +
-    `gitignored .cursor/rules/plur-context.mdc, .cursor/rules/plur-reminder.mdc`
+    gitignoreStatus
 }
 
 // ── Codex ───────────────────────────────────────────────────────────────────
