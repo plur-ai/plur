@@ -1,4 +1,4 @@
-import { existsSync } from 'fs'
+import { chmodSync, closeSync, existsSync, openSync, statSync, unlinkSync } from 'fs'
 import { createRequire } from 'module'
 import { loadEngrams, storePrefix, namespaceEngramId, escapePrefixForRegExp } from './engrams.js'
 import { withoutRemoteOnlyQueued } from './remote-only-rows.js'
@@ -6,6 +6,7 @@ import { isPersonalScope, isScopeWithin } from './scope-util.js'
 import type { Engram } from './schemas/engram.js'
 import type { StoreEntry } from './schemas/config.js'
 import { escapeLikePattern, type StorageFilter } from './storage-adapter.js'
+import { storeFileMode } from './sync.js'
 
 const require = createRequire(import.meta.url)
 
@@ -32,6 +33,44 @@ function getDatabase(): any {
   return Database
 }
 
+/**
+ * Give engrams.db (and any WAL/SHM beside it) a mode no wider than the store
+ * files it mirrors, BEFORE SQLite opens it (security audit 2026-11-06).
+ *
+ * syncFromYaml copies every engram of the primary store and of every
+ * file-backed secondary store into this one file. SQLite creates a new
+ * database at its compiled default, 0644 minus umask, so an owner who
+ * restricted engrams.yaml (or a secondary store) to 0600 still had the whole
+ * corpus readable by other local accounts through the index. The mode is the
+ * intersection of the sources' modes (storeFileMode, the rule every other
+ * store-derived file follows), always keeping owner read/write so SQLite can
+ * work. A missing database file is pre-created empty at that mode; SQLite
+ * treats a zero-length file as a new database and gives its WAL/SHM the
+ * database file's mode. Existing files are only ever tightened. Best-effort:
+ * a filesystem without POSIX modes must not stop the index from opening.
+ * Returns true when it created the (empty) database file.
+ */
+export function prepareIndexFiles(dbPath: string, sourceFiles: readonly string[]): boolean {
+  let want: number | undefined
+  for (const f of sourceFiles) {
+    const m = storeFileMode(f)
+    if (m !== undefined) want = want === undefined ? m : (want & m)
+  }
+  if (want === undefined) return false
+  want |= 0o600
+  let created = false
+  try {
+    if (!existsSync(dbPath)) { closeSync(openSync(dbPath, 'a', want)); created = true }
+  } catch { /* SQLite will create it, or report why it cannot */ }
+  for (const f of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`, `${dbPath}-journal`]) {
+    try {
+      const cur = statSync(f).mode & 0o777
+      if ((cur & ~want) !== 0) chmodSync(f, cur & want)
+    } catch { /* absent, or not a mode-bearing filesystem */ }
+  }
+  return created
+}
+
 export class IndexedStorage {
   private dbPath: string
   private engramsPath: string
@@ -47,7 +86,16 @@ export class IndexedStorage {
   private getDb(): any {
     if (!this.db) {
       const DB = getDatabase()
-      this.db = new DB(this.dbPath)
+      // Never wider than the stores it mirrors (security audit 2026-11-06).
+      const created = prepareIndexFiles(this.dbPath, [this.engramsPath, ...this.stores.flatMap(s => s.path ? [s.path] : [])])
+      try {
+        this.db = new DB(this.dbPath)
+      } catch (err) {
+        // Do not leave behind the empty placeholder we created for a database
+        // SQLite could not open (e.g. its native binding is missing).
+        if (created) { try { if (statSync(this.dbPath).size === 0) unlinkSync(this.dbPath) } catch { /* gone */ } }
+        throw err
+      }
       this.db.pragma('journal_mode = WAL')
       this.db.exec(`
         CREATE TABLE IF NOT EXISTS engrams (
