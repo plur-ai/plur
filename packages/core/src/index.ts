@@ -9840,7 +9840,13 @@ export class Plur {
           + `${pending.target_url ?? '?'} (scope "${pending.target_scope ?? stored.scope}") — like rescope (#848).`,
         )
       } else if (writable) {
-        sd._outbox = { ...pending, target_url: writable.url, target_scope: newScope, attempt_count: 0, last_error: '' }
+        // Security audit 2026-11-06: a retarget is a different logical write
+        // (another scope, and the old copy may be retired), so it gets a new
+        // idempotency key. Keeping the old one let a key-honouring server
+        // answer the new-scope POST with the old-scope copy's id, and the
+        // flush dropped the row as delivered although nothing landed in the
+        // new scope (docs/remote-store-contract.md: two writes never share a key).
+        sd._outbox = { ...pending, target_url: writable.url, target_scope: newScope, attempt_count: 0, last_error: '', idempotency_key: randomUUID() }
       } else {
         delete sd._outbox
         logger.warning(
@@ -12532,6 +12538,13 @@ export class Plur {
     // queued write. Keep its admitted identity separate from the actual
     // receipt endpoint so acknowledgment cannot erase a newer queued write.
     const admittedWrites = new Map<string, { url: string; scope: string; key: string }>()
+    // Server ids this client is retiring (decision D1): a `deduplicated` reply
+    // naming one of them is never a delivery (security audit 2026-11-06).
+    const retiringServerIds = new Set<string>(
+      retiring.map(r => ((r as any).structured_data?._retireRemote as RetireEntry | undefined)?.server_id).filter((s): s is string => !!s),
+    )
+    /** Rows whose key this flush replaced after such a reply: local id → the key it admitted. */
+    const rekeyed = new Map<string, string>()
 
     for (const engram of pending) {
       // #1269: out of budget — leave the rest queued, untouched, for next time.
@@ -12727,6 +12740,24 @@ export class Plur {
           url: outbox.target_url, scope: outbox.target_scope, key: outbox.idempotency_key,
         })
         const pushed = await driver.appendAndGetServerId(cleanEngram, { signal: budget, idempotencyKey: outbox.idempotency_key })
+        // Security audit 2026-11-06 (hardening of the retarget fix): a
+        // `deduplicated` reply naming a copy this client is retiring (decision
+        // D1) is not a delivery. That copy is, or is about to be, deleted, so
+        // dropping the row on it would leave the memory nowhere. Keep the row
+        // queued under a fresh key and say so; the next flush posts it anew.
+        if (pushed.deduplicated && pushed.id && retiringServerIds.has(pushed.id)) {
+          admittedWrites.delete(engram.id)
+          rekeyed.set(engram.id, outbox.idempotency_key!)
+          outbox.idempotency_key = randomUUID()
+          outbox.last_attempt = now.toISOString()
+          outbox.attempt_count += 1
+          outbox.last_error = `the remote answered with ${pushed.id}, a copy queued for retirement — not taken as delivery; retried on the next flush`
+          metadataDirty = true
+          upload?.results.set(engram.id, { id: engram.id, outcome: 'failed', error: outbox.last_error })
+          expired_warnings.push(`${engram.id}: the remote answered with ${pushed.id}, a copy being retired — kept local and queued, not taken as delivered`)
+          failed++
+          continue
+        }
         upload?.results.set(engram.id, { id: engram.id, outcome: pushed.review_required ? 'held_for_review' : pushed.deduplicated ? 'already_on_server' : 'sent', new_id: pushed.id })
         // #863: remember the mapping so a later engram in this same flush can
         // point at the server id rather than the local one.
@@ -12869,7 +12900,10 @@ export class Plur {
             if (sOb?.target_url && !Plur._stillQueuedFor(e, { url: sOb.target_url, scope: sOb.target_scope ?? '' })) return e
             // A same-destination requeue is a different logical write too.
             // Failure bookkeeping from this attempt must not restore its old key.
-            if (sOb && (e as any).structured_data._outbox.idempotency_key !== sOb.idempotency_key) return e
+            // The one exception is this flush's own re-key after a reply naming
+            // a retired copy, while the fresh row still holds the key it admitted.
+            const freshKey = (e as any).structured_data._outbox.idempotency_key
+            if (sOb && freshKey !== sOb.idempotency_key && rekeyed.get(e.id) !== freshKey) return e
             const fSd = { ...((e as any).structured_data as Record<string, unknown> | undefined ?? {}) }
             // `_outbox` and `_demoted` are the flush's own bookkeeping: copy
             // them across (including their ABSENCE, which is how a cancelled
