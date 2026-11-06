@@ -514,6 +514,20 @@ export class RemoteStore {
   }
 
   /**
+   * The reader every request of this store uses. A server or proxy error page
+   * can echo the Authorization header back; the caller's own token is
+   * redacted from the error body HERE, before truncation and before the text
+   * can reach an exception message, a log line, or `_outbox.last_error` in
+   * engrams.yaml (which git sync pushes). Redacting per call site missed five
+   * of six error paths (security audit 2026-11-06).
+   */
+  private readBoundedRedacted = async (res: Response): Promise<BoundedResponse> => {
+    if (res.ok) return RemoteStore.readBounded(res)
+    const raw = await res.text().catch(() => '')
+    return { ok: false, status: res.status, text: sanitiseResponseBody(redactToken(raw, this.token)) }
+  }
+
+  /**
    * Run a request AND read its body under ONE deadline.
    *
    * `fetch()` resolves when response HEADERS arrive, so the timer this used to
@@ -679,7 +693,7 @@ export class RemoteStore {
     }
     const r = await this.fetchBounded(`${this.apiBase}/write-check`, {
       method: 'POST', headers: this.headers({ 'Content-Type': 'application/json' }), body: JSON.stringify({ scopes }),
-    }, RemoteStore.readBounded, signal)
+    }, this.readBoundedRedacted, signal)
     if (!r.ok) throw new RemoteHttpError(r.status, `Remote write-check failed: ${r.status} ${redactToken(r.text ?? '', this.token)}`)
     const results = (r.json as { results?: unknown } | undefined)?.results
     if (!Array.isArray(results) || results.length !== scopes.length) throw new Error('write-check returned an incomplete result list')
@@ -709,7 +723,7 @@ export class RemoteStore {
    * pattern so the `/\b40[13]\b/` auth-expired checks in callers still match.
    */
   async me(signal?: AbortSignal): Promise<MeResponse> {
-    const r = await this.fetchBounded(`${this.apiBase}/me`, { headers: this.headers() }, RemoteStore.readBounded, signal)
+    const r = await this.fetchBounded(`${this.apiBase}/me`, { headers: this.headers() }, this.readBoundedRedacted, signal)
     if (!r.ok) {
       let code: 'scope_lookup_failed' | undefined
       try { if (r.status === 503 && JSON.parse(r.text ?? '').error === 'scope_lookup_failed') code = 'scope_lookup_failed' } catch { /* generic errors are not authentication evidence */ }
@@ -1098,7 +1112,7 @@ export class RemoteStore {
         ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}),
       }),
       body,
-    }, RemoteStore.readBounded, opts?.signal)
+    }, this.readBoundedRedacted, opts?.signal)
     if (!r.ok) throw new RemoteHttpError(r.status, `Remote store append failed: ${r.status} ${r.text}`)
     const data = (r.json ?? {}) as { id?: unknown; review_required?: unknown; deduplicated?: unknown }
     // #404: validate the server-assigned id's SHAPE, not just truthiness. It
@@ -1141,7 +1155,7 @@ export class RemoteStore {
 
   async getById(id: string): Promise<Engram | null> {
     try {
-      const r = await this.fetchBounded(`${this.apiBase}/engrams/${encodeURIComponent(id)}`, { headers: this.headers() }, RemoteStore.readBounded)
+      const r = await this.fetchBounded(`${this.apiBase}/engrams/${encodeURIComponent(id)}`, { headers: this.headers() }, this.readBoundedRedacted)
       if (r.status === 404) return null
       if (!r.ok) return null
       // An unparseable 2xx body arrives as `undefined` rather than throwing;
@@ -1193,7 +1207,7 @@ export class RemoteStore {
     try {
       r = await this.fetchBounded(`${this.apiBase}/engrams/${encodeURIComponent(id)}`, {
         headers: this.headers(),
-      }, RemoteStore.readBounded, opts?.signal)
+      }, this.readBoundedRedacted, opts?.signal)
     } catch (err) {
       // An abort is "cannot tell", not "absent" — the whole point of this
       // method — so it must surface as a throw like any other transport
@@ -1241,7 +1255,7 @@ export class RemoteStore {
     try {
       r = await this.fetchBounded(`${this.apiBase}/engrams/${encodeURIComponent(id)}`, {
         headers: this.headers(),
-      }, RemoteStore.readBounded, opts?.signal)
+      }, this.readBoundedRedacted, opts?.signal)
     } catch {
       return 'unknown'
     }
@@ -1266,7 +1280,7 @@ export class RemoteStore {
     const r = await this.fetchBounded(`${this.apiBase}/engrams/${encodeURIComponent(id)}`, {
       method: 'DELETE',
       headers: this.headers(),
-    }, RemoteStore.readBounded)
+    }, this.readBoundedRedacted)
     if (r.ok) { this.cache = null; return 'removed' }
     if (r.status === 404 || r.status === 410) return 'absent'
     throw new Error(`Remote delete failed: ${r.status} ${r.text}`)
@@ -1276,7 +1290,7 @@ export class RemoteStore {
     const r = await this.fetchBounded(`${this.apiBase}/engrams/${encodeURIComponent(id)}`, {
       method: 'DELETE',
       headers: this.headers(),
-    }, RemoteStore.readBounded)
+    }, this.readBoundedRedacted)
     if (!r.ok) return false
     this.cache = null
     return true
@@ -1303,7 +1317,7 @@ export class RemoteStore {
       method: 'POST',
       headers: this.headers({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(payload),
-    }, RemoteStore.readBounded)
+    }, this.readBoundedRedacted)
     if (!r.ok) throw new Error(`Remote feedback failed: ${r.status} ${r.text}`)
     this.cache = null
   }
@@ -1351,7 +1365,7 @@ export class RemoteStore {
       method: 'PATCH',
       headers: this.headers({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(updates),
-    }, RemoteStore.readBounded)
+    }, this.readBoundedRedacted)
     if (r.status === 404) return null
     if (!r.ok) throw new Error(`Remote patch failed: ${r.status} ${r.text}`)
     // #327: the server confirmed the write (2xx). Capture the pre-write row
