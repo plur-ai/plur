@@ -67,6 +67,8 @@ it('an unmatched repository makes no remote recall or append, even with routing 
 }, 60_000)
 
 it('a mapped repository sends both save and recall requests (positive control)', async () => {
+  // A trusted repository: an origin-derived team scope needs that (security audit 2026-11-06).
+  writeFileSync(join(root, 'folders.yaml'), `folders:\n  - path: ${JSON.stringify(repo)}\n    trusted: true\n`)
   const learned = JSON.parse(await cli(['learn', 'fixture release procedure uses canary batches', '--json']))
   expect(learned.delivery).toBe('remote')
   expect(learned.scope).toBe(SCOPE)

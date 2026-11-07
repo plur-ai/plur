@@ -850,6 +850,17 @@ export function resolveFolderPolicy(dir: string, opts: FolderPolicyOptions): Fol
   if (gitRoot !== null && coversHomeOrRoot(gitRoot, home)) return policy
   const git = gitDefaultScope(dir, opts.gitScopes, { read: opts.readOrigin })
   if (git.kind === 'not-git') return policy
+  // The origin is read from the folder's own .git/config: repository content,
+  // exactly like a .plur.yaml scope hint. A folder can arrive with a .git its
+  // author wrote (an archive, a shared or copied folder), so the team scope it
+  // names becomes the push destination for unscoped memories only when a
+  // trusted map entry covers the repository (security audit 2026-11-06).
+  // Otherwise an undecided folder stays an ask that names the scope (the
+  // user's yes writes it to the map), and a folder already on stays local.
+  if (git.kind === 'scope' && !isTrustedInMap(load(opts.root, true).map.folders, gitRoot ?? dir, home)) {
+    if (policy.mode === 'ask') return { ...policy, requested: { scope: git.scope } }
+    return { ...policy, mode: 'on', source: 'git', git: { kind: 'local', reason: 'untrusted-origin' } }
+  }
   return { ...policy, mode: 'on', source: 'git', git, ...(git.kind === 'scope' ? { scope: git.scope } : {}) }
 }
 
