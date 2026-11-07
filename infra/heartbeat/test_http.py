@@ -102,6 +102,13 @@ def test_repeated_posts_append_rather_than_overwrite(ingress):
     assert len(written.read_text().strip().split("\n")) == 3
 
 
+def test_daily_file_is_capped(ingress, monkeypatch):
+    # security audit 2026-11-06: the unauthenticated ingress cannot grow a day's file without bound.
+    monkeypatch.setattr(server, "MAX_DAILY_BYTES", 300)
+    statuses = [request(ingress, body=VALID)[0] for _ in range(5)]
+    assert statuses[:2] == [204, 204] and statuses[-1] == 429
+
+
 def test_oversized_body_is_rejected_before_it_is_read(ingress):
     _, _, data_dir = ingress
     # Length header over MAX_BODY: the guard exists so a hostile caller cannot
