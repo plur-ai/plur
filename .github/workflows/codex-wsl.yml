@@ -58,8 +58,11 @@ jobs:
           mkdir -p /opt/plur-node
           cd /opt/plur-node
           curl -fsSLO https://nodejs.org/dist/v24.13.0/node-v24.13.0-linux-x64.tar.xz
-          curl -fsSLO https://nodejs.org/dist/v24.13.0/SHASUMS256.txt
-          grep ' node-v24.13.0-linux-x64.tar.xz$' SHASUMS256.txt | sha256sum -c -
+          # Pinned digest (security audit 2026-11-06): a SHASUMS256.txt fetched
+          # from the same origin as the tarball is no independent check.
+          # Taken from nodejs.org/dist/v24.13.0/SHASUMS256.txt on 2026-11-07 and
+          # confirmed by hashing the downloaded tarball. Update with the version.
+          echo 'e798599612f4bb71333a3397ab0d095fd62214e115aea45aa858a145fc72d67e  node-v24.13.0-linux-x64.tar.xz' | sha256sum -c -
           tar -xJf node-v24.13.0-linux-x64.tar.xz --strip-components=1
           export PATH=/opt/plur-node/bin:/usr/local/bin:/usr/bin:/bin
           npm install -g --no-audit --no-fund pnpm@9.15.9 @openai/codex@0.160.1
