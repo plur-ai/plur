@@ -48,8 +48,9 @@ afterEach(() => {
   vi.restoreAllMocks()
   if (oldHome === undefined) delete process.env.HOME; else process.env.HOME = oldHome
   if (oldPlurPath === undefined) delete process.env.PLUR_PATH; else process.env.PLUR_PATH = oldPlurPath
-  rmSync(dir, { recursive: true, force: true })
-  rmSync(home, { recursive: true, force: true })
+  // A background push may still be writing into the store when the test ends.
+  rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
+  rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
 })
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
