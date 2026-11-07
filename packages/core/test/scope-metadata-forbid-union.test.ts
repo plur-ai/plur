@@ -77,5 +77,8 @@ describe.each([
     // so the assertion above is not passing because nothing is ever sent.
     await after.learn('code review needs two approvals', { scope: ENG })
     expect(posts.filter(p => p.includes('/api/v1/engrams')).length).toBe(1)
+    // The accepted push still rewrites the store in the background; let it finish before teardown.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await vi.waitFor(() => expect((after as any)._outboxInFlight.size).toBe(0), { timeout: 10_000 })
   })
 })
