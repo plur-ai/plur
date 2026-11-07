@@ -845,15 +845,8 @@ function rewriteLocalSiblingRefs(root: string, renamed: ReadonlyMap<string, stri
 }
 
 /**
- * Refuse a pull whose remote tree holds anything but the engram store
- * (security audit 2026-11-06). Push stages only SYNC_PATHS, but `git pull`
- * checks out every path the remote commit carries — and silently overwrites
- * IGNORED files, which is exactly what config.yaml, keys/ and
- * agent-keystore.json are. Anyone who can push to the sync remote (a teammate
- * on a `shared` remote) could otherwise replace the local config (flipping
- * sync.remote_type to `personal` and leaking private engrams), plant a
- * trust.yaml/folders.yaml trust grant, or drop signing keys. Only allowlisted
- * regular files may arrive; symlinks and submodules are refused too.
+ * security audit 2026-11-06: git pull would check out (and overwrite ignored) paths outside the store, so a pull whose
+ * incoming commits add or change anything but allowlisted regular files is refused.
  */
 export function assertIncomingAllowlisted(root: string): void {
   const branch = gitSafe(['rev-parse', '--abbrev-ref', 'HEAD'], root) || 'main'
@@ -861,23 +854,18 @@ export function assertIncomingAllowlisted(root: string): void {
   if (gitSafe(['rev-parse', '-q', '--verify', ref], root) === null) return // nothing fetched for this branch
   // Only what the incoming commits ADD or CHANGE is checked, so a remote that
   // already carries a stale extra file from an older release keeps syncing.
-  const hasBase = gitSafe(['rev-parse', '-q', '--verify', 'HEAD'], root) !== null
-  const raw = hasBase
-    ? gitSafe(['diff', '--raw', '-z', '--no-renames', '--diff-filter=AMT', 'HEAD...' + ref], root)
-    : gitSafe(['ls-tree', '-r', '--full-tree', '-z', ref], root)
+  // With no HEAD yet, everything is incoming: diff against the empty tree.
+  const range = gitSafe(['rev-parse', '-q', '--verify', 'HEAD'], root) !== null ? ['HEAD...' + ref] : ['4b825dc642cb6eb9a060e54bf8d69288fbee4904', ref]
+  const raw = gitSafe(['diff', '--raw', '-z', '--no-renames', '--diff-filter=AMT', ...range], root)
   if (raw === null) throw new Error('[plur] refusing to pull: could not list what the sync remote would change')
   const rootFiles = new Set<string>(SYNC_PATHS.filter(p => p !== 'packs'))
   const packNames = new Set<string>(PACK_ALLOW_NAMES)
   const bad: string[] = []
   const parts = raw.split('\0').filter(Boolean)
-  const entries: Array<{ mode: string; file: string }> = []
-  if (hasBase) {
-    // --raw -z: ":<old mode> <new mode> <old sha> <new sha> <status>" NUL "<path>" NUL
-    for (let i = 0; i + 1 < parts.length; i += 2) entries.push({ mode: parts[i].slice(1).split(' ')[1], file: parts[i + 1] })
-  } else {
-    for (const e of parts) { const tab = e.indexOf('\t'); entries.push({ mode: e.slice(0, tab).split(' ')[0], file: e.slice(tab + 1) }) }
-  }
-  for (const { mode, file } of entries) {
+  // --raw -z: ":<old mode> <new mode> <old sha> <new sha> <status>" NUL "<path>" NUL
+  for (let i = 0; i + 1 < parts.length; i += 2) {
+    const mode = parts[i].slice(1).split(' ')[1]
+    const file = parts[i + 1]
     const allowedPath = rootFiles.has(file) ||
       (file.startsWith('packs/') && !file.split('/').some(seg => seg === '..' || seg === '') && packNames.has(basename(file)))
     if (!allowedPath || (mode !== '100644' && mode !== '100755')) bad.push(file)
