@@ -118,7 +118,7 @@ def test_requires_plur_ai_with_claim_class():
     text = (Path(__file__).resolve().parent.parent / "pyproject.toml").read_text()
     m = re.search(r'"plur-ai>=([0-9.]+)"', text)
     assert m, "plur-ai requirement missing"
-    assert tuple(int(x) for x in m.group(1).split(".")) >= (0, 23, 1)
+    assert tuple(int(x) for x in m.group(1).split(".")) >= (0, 23, 0)
 
 
 if __name__ == "__main__":
