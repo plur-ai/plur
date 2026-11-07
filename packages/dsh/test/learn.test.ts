@@ -49,7 +49,7 @@ function harness(plur: Record<string, unknown>, config = cfg({})) {
   registerLearning(ctx as never, {
     config,
     counters: createCounters(),
-    plur: plur as never,
+    memoryFor: async () => ({ off: false as const, plur: plur as never }),
     queue: async <T,>(fn: () => Promise<T>) => { try { return await fn() } catch { return undefined } },
     resolveScope: async () => config.scope ?? 'project:dsh',
   })

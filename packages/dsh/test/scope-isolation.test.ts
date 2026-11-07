@@ -31,7 +31,7 @@ function toolHarness(plur: PlurClient, config = cfg({})) {
   registerTools(ctx as never, {
     config,
     counters: createCounters(),
-    plur,
+    memoryFor: async () => ({ off: false as const, plur: plur }),
     queue: async <T,>(fn: () => Promise<T>) => { try { return await fn() } catch { return undefined } },
 
     resolveScope: async (agent?: { id?: string; session?: { header?: { cwd?: string } } }) => {
@@ -99,7 +99,7 @@ describe('auto-learn resolves the originating session scope', () => {
     registerLearning(ctx as never, {
       config,
       counters: createCounters(),
-      plur: { learn },
+      memoryFor: async () => ({ off: false as const, plur: { learn } }),
     queue: async <T,>(fn: () => Promise<T>) => { try { return await fn() } catch { return undefined } },
 
       resolveScope: async (session?: { header?: { cwd?: string } }) => {
