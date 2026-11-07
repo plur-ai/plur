@@ -84,22 +84,7 @@ export class EngramStoreUnreadableError extends Error {
  * back. A malformed engram is a partial-data problem; deleting it to tidy up
  * the file is a data-loss problem, and the second is worse.
  */
-/**
- * The shape rule for an engram store document — THE one definition, shared by
- * every reader of a store file (formal round 2, core-persistence#11): this
- * loader, sync's push-set strip (sync.ts `readEngramList`) and the backup gate
- * (backup.ts `validateStore`). Before, sync also accepted a bare top-level
- * array that this loader refuses, so sync would strip, commit and push a file
- * PLUR itself cannot load.
- *
- * Returns the raw entries of `engrams:`, or throws {@link EngramStoreUnreadableError}.
- */
-/**
- * Walks a parsed YAML value counting every node, shared objects once per
- * reference (so the count is the alias-EXPANDED size), and stops as soon as
- * `budget` is spent. Iterative, so a deep value cannot overflow the stack;
- * the walk never visits more than `budget` nodes.
- */
+/** Counts a parsed YAML value's nodes as if aliases were expanded, stopping once `budget` is spent. */
 function withinExpansionBudget(value: unknown, budget: number): boolean {
   const stack: unknown[] = [value]
   let left = budget
@@ -114,6 +99,16 @@ function withinExpansionBudget(value: unknown, budget: number): boolean {
   return true
 }
 
+/**
+ * The shape rule for an engram store document — THE one definition, shared by
+ * every reader of a store file (formal round 2, core-persistence#11): this
+ * loader, sync's push-set strip (sync.ts `readEngramList`) and the backup gate
+ * (backup.ts `validateStore`). Before, sync also accepted a bare top-level
+ * array that this loader refuses, so sync would strip, commit and push a file
+ * PLUR itself cannot load.
+ *
+ * Returns the raw entries of `engrams:`, or throws {@link EngramStoreUnreadableError}.
+ */
 export function engramStoreEntries(filePath: string, content: string, byteLength: number): unknown[] {
   if (byteLength === 0) {
     throw new EngramStoreUnreadableError(filePath, new Error('file is empty (0 bytes)'))
@@ -127,14 +122,7 @@ export function engramStoreEntries(filePath: string, content: string, byteLength
   if (raw == null) {
     throw new EngramStoreUnreadableError(filePath, new Error('file has content but parses to nothing'))
   }
-  // Security audit 2026-11-06: js-yaml resolves aliases as SHARED references,
-  // so a small file (e.g. one record pulled from a shared sync remote) can
-  // hold an alias lattice whose expanded form is exponential. saveEngrams and
-  // sync re-dump with `noRefs: true`, which materializes every alias, so one
-  // ordinary write turned ~2 KB into tens of MB. PLUR itself never writes
-  // anchors, so a document whose expanded node count exceeds its own size is
-  // refused as unreadable. Quarantine is not an option: quarantined entries
-  // are written back, expanded, by the same serializer.
+  // security audit 2026-11-06: an alias lattice would be materialized by the noRefs re-dump, so it is refused
   if (!withinExpansionBudget(raw, Math.max(10_000, content.length))) {
     throw new EngramStoreUnreadableError(
       filePath,

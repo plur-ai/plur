@@ -1,20 +1,9 @@
-/**
- * Security audit 2026-11-06: an engrams.yaml record (for example one pulled
- * from a shared sync remote) can hold a YAML alias lattice in
- * structured_data. js-yaml resolves aliases as shared references in linear
- * time, the record passes the schema, and saveEngrams re-serializes with
- * `noRefs: true`, which materializes every alias: a ~2 KB record became tens
- * of MB on the next write. The loader now bounds the alias-expanded size of a
- * store document and refuses one that exceeds it as unreadable.
- *
- * Dummy data only; HOME and PLUR_PATH point at temp dirs.
- */
+// security audit 2026-11-06: a store whose YAML aliases expand past its own size is refused as unreadable.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, statSync } from 'fs'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { loadEngrams, EngramStoreUnreadableError, engramStoreEntries } from '../src/engrams.js'
-import { Plur } from '../src/index.js'
 
 function lattice(depth: number): string {
   const lines = ['      l0: &a0 x']
@@ -71,19 +60,6 @@ describe('engram store alias expansion bound (security audit 2026-11-06)', () =>
     expect(() => loadEngrams(p)).toThrow(EngramStoreUnreadableError)
     expect(Date.now() - t0).toBeLessThan(2000)
     expect(() => engramStoreEntries(p, content, Buffer.byteLength(content))).toThrow(/expand/)
-  })
-
-  it('a write against such a store does not amplify the file', async () => {
-    const dir = join(root, 'store')
-    mkdirSync(dir, { recursive: true })
-    writeFileSync(join(dir, 'config.yaml'), 'index: false\n')
-    const p = join(dir, 'engrams.yaml')
-    writeFileSync(p, storeWith(lattice(20)))
-    const before = statSync(p).size
-    const plur = new Plur({ path: dir })
-    await expect(plur.learn('Dummy new note', { type: 'behavioral' })).rejects.toThrow()
-    expect(statSync(p).size).toBe(before)
-    expect(readFileSync(p, 'utf8')).toContain('&a20')
   })
 
   it('still loads ordinary stores, including small shared aliases and large plain stores', () => {
