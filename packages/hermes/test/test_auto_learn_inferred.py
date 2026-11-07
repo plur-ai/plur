@@ -22,6 +22,22 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from plur_hermes.bridge import PlurBridge  # noqa: E402
 
+
+# These tests point HOME/PLUR_PATH/PATH at a stub and switch PLUR_BRIDGE_RETRY
+# off. Under pytest, put the environment back after each test so later test
+# modules (the bridge lock-retry tests) see the real defaults.
+try:
+    import pytest as _pytest
+
+    @_pytest.fixture(autouse=True)
+    def _restore_environ():
+        saved = dict(os.environ)
+        yield
+        os.environ.clear()
+        os.environ.update(saved)
+except ImportError:  # run as a plain script
+    pass
+
 _STUB = """#!/usr/bin/env python3
 import json, os, sys
 with open(os.environ["PLUR_STUB_LOG"], "a") as f:

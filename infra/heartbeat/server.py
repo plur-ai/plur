@@ -84,8 +84,10 @@ def persist(payload: dict, data_dir: Path, date_str: str) -> str:
     out_path = data_dir / f"{date_str}.jsonl"
     line = json.dumps(payload, separators=(",", ":")) + "\n"
     with _seen_lock:
-        if _seen_day != date_str:
-            _seen_day, _seen_ids = date_str, _load_seen(out_path)
+        # Keyed by the day's file, not just the date, so a changed data dir
+        # never reuses another directory's seen set.
+        if _seen_day != str(out_path):
+            _seen_day, _seen_ids = str(out_path), _load_seen(out_path)
         if payload["install_id"] in _seen_ids:
             return "duplicate"
         data_dir.mkdir(parents=True, exist_ok=True)
