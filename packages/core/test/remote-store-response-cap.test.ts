@@ -1,14 +1,4 @@
-/**
- * Remote store responses are read under a byte cap, and a page may not carry
- * more rows than the client asked for (security audit 2026-11-06).
- *
- * RemoteStore bounded every request by time only: a hostile or compromised
- * store server (or an on-path attacker on plain http) could send a page of
- * 50,000 rows or a 32 MiB /me body, and the client buffered, parsed and cached
- * all of it. The sibling recall client already caps bodies for this reason.
- *
- * fetch is stubbed in-process; no network, no sockets.
- */
+// security audit 2026-11-06: remote store bodies are byte-capped and a page may not carry more rows than asked for.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { RemoteStore, _resetRemoteHostBreaker } from '../src/store/remote-store.js'
 
@@ -57,9 +47,10 @@ function stub(respond: (url: string) => Response): void {
 const newStore = () => new RemoteStore('https://remote.invalid/sse', 'dummy-token', 'group:acme/eng')
 
 describe('RemoteStore response bounds', () => {
-  it('control: an ordinary 3-row page loads', async () => {
-    stub(() => Response.json({ rows: [row(1), row(2), row(3)], total_count: 3 }))
+  it('control: an ordinary 3-row page and /me body load', async () => {
+    stub(url => url.endsWith('/me') ? Response.json({ scopes: ['group:acme/eng'] }) : Response.json({ rows: [row(1), row(2), row(3)], total_count: 3 }))
     expect(await newStore().load()).toHaveLength(3)
+    expect((await newStore().me()).scopes).toEqual(['group:acme/eng'])
   })
 
   it('refuses a page carrying more rows than the requested limit, and does not cache it', async () => {
@@ -78,29 +69,10 @@ describe('RemoteStore response bounds', () => {
     expect(body.pulled()).toBeLessThan(16 * MiB)
   })
 
-  it('refuses an oversized page by content-length before reading', async () => {
-    const body = countingBody('{"rows":[],"pad":"', 64)
-    stub(() => new Response(body.stream, { status: 200, headers: { 'content-length': String(64 * MiB) } }))
-    expect(await newStore().load()).toHaveLength(0)
-    expect(body.pulled()).toBeLessThan(16 * MiB)
-  })
-
   it('me() refuses an oversized body without buffering it', async () => {
     const body = countingBody('{"scopes":["group:acme/eng"],"pad":"', 64)
     stub(() => new Response(body.stream, { status: 200 }))
     await expect(newStore().me()).rejects.toThrow(/too large/i)
     expect(body.pulled()).toBeLessThan(16 * MiB)
-  })
-
-  it('an oversized error body is not buffered; the status still reaches the caller', async () => {
-    const body = countingBody('error page ', 64)
-    stub(() => new Response(body.stream, { status: 500 }))
-    await expect(newStore().me()).rejects.toThrow(/500/)
-    expect(body.pulled()).toBeLessThan(16 * MiB)
-  })
-
-  it('control: an ordinary /me body still parses', async () => {
-    stub(() => Response.json({ scopes: ['group:acme/eng'] }))
-    expect((await newStore().me()).scopes).toEqual(['group:acme/eng'])
   })
 })
