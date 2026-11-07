@@ -15,11 +15,40 @@
  *
  * @module
  */
+import { resolve } from 'node:path'
 import type { Config } from './config.js'
 import type { PlurClient } from './client.js'
 
 /** The constructor shape core exports. */
 type PlurCtor = new (options: { path?: string }) => PlurClient
+
+/** The slice of core's `FolderPolicy` this plugin reads. */
+interface FolderPolicyLike {
+  mode: string
+  scope?: string
+  reason?: string
+}
+
+/** The folder-map methods of the real `Plur` (core `resolveFolderPolicy` / `bindFolderPolicy`). */
+interface FolderBindable {
+  resolveFolderPolicy?(dir: string, options?: { readOnly?: boolean }): FolderPolicyLike
+  bindFolderPolicy?(dir: string, policy: FolderPolicyLike): void
+  close?(): void
+}
+
+/**
+ * What PLUR may do for one session folder (security audit 2026-11-06).
+ *
+ * `plur` is the client to use there, bound to the folder's policy; `off`
+ * means memory reads and writes nothing in that folder, and `message` says
+ * why in words a model can relay.
+ */
+export type FolderMemory =
+  | { off: false; plur: PlurClient; mode: string }
+  | { off: true; message: string }
+
+/** Ceiling on per-folder engine instances kept alive. */
+const MAX_FOLDER_INSTANCES = 32
 
 /** A facade that can also report whether the engine came up. */
 export interface Engine extends PlurClient {
@@ -32,6 +61,11 @@ export interface Engine extends PlurClient {
   trusts(dir: string): Promise<boolean>
   /** Can the engine answer `trusts` at all? Picks an honest remedy (audit 1228-c). */
   trustSupport(): Promise<'ok' | 'no-engine' | 'no-trust'>
+  /**
+   * The folder map's decision for a session folder, and the client bound to
+   * it (security audit 2026-11-06). See {@link FolderMemory}.
+   */
+  forFolder(cwd: string | undefined): Promise<FolderMemory>
 }
 
 /**
@@ -50,14 +84,14 @@ async function loadEngine(
   config: Config,
   importCore: () => Promise<unknown>,
   warn: (msg: string) => void,
-): Promise<PlurClient | undefined> {
+): Promise<{ plur: PlurClient; Plur: PlurCtor } | undefined> {
   try {
     const mod = await importCore() as { Plur?: PlurCtor; default?: { Plur?: PlurCtor } }
     // Tolerate both a named export and a default-wrapped namespace: bundlers
     // and Node disagree about interop often enough to be worth two lines.
     const Plur = mod.Plur ?? mod.default?.Plur
     if (typeof Plur !== 'function') return undefined
-    return new Plur({ path: config.path })
+    return { plur: new Plur({ path: config.path }), Plur }
   } catch (error) {
     warn(`[plur] memory engine unavailable, continuing without memory: ${error}`)
     return undefined
@@ -82,10 +116,18 @@ export function createEngine(
   importCore: () => Promise<unknown> = () => import('@plur-ai/core'),
   warn: (msg: string) => void = (msg) => console.warn(msg),
 ): Engine {
-  let pending: Promise<PlurClient | undefined> | undefined
-  const engine = (): Promise<PlurClient | undefined> => (pending ??= loadEngine(config, importCore, warn))
+  let pending: Promise<{ plur: PlurClient; Plur: PlurCtor } | undefined> | undefined
+  const loaded = () => (pending ??= loadEngine(config, importCore, warn))
+  const engine = async (): Promise<PlurClient | undefined> => (await loaded())?.plur
 
-  return {
+  // One instance per session folder, each bound to that folder's policy
+  // (security audit 2026-11-06). dsh serves several sessions at once, and
+  // core's remote-only mode is a property of the INSTANCE (bindFolderPolicy),
+  // so one shared instance cannot hold two folders' decisions.
+  const folders = new Map<string, { inst: PlurClient & FolderBindable; client: PlurClient }>()
+  const off = (message: string): FolderMemory => ({ off: true, message })
+
+  const facade: Engine = {
     ready: async () => (await engine()) !== undefined,
     trustSupport: async () => {
       const plur = await engine()
@@ -114,5 +156,68 @@ export function createEngine(
     capture: async (summary, context) => (await engine())?.capture?.(summary, context),
     list: async options => (await (await engine())?.list?.(options)) ?? [],
     status: async () => (await (await engine())?.status?.()) ?? {},
+
+    // The folder map (~/.plur/folders.yaml) is the user's decision about where
+    // PLUR may act (security audit 2026-11-06). This plugin used one unbound
+    // instance for every session, so a folder set `off` was still recalled
+    // from and written to, and a remote-only folder wrote personal rows.
+    // Resolved on every call so a change to the map applies to live sessions.
+    // `off` and an unreadable map read and write nothing; an unmapped folder
+    // (`ask`) behaves as the MCP server treats it — memory works.
+    forFolder: async (cwd) => {
+      const core = await loaded()
+      // No engine: every method above already degrades to a no-op.
+      if (!core) return { off: false, plur: facade, mode: 'on' }
+      const base = core.plur as PlurClient & FolderBindable
+      if (typeof base.resolveFolderPolicy !== 'function' || typeof base.bindFolderPolicy !== 'function') {
+        return off('PLUR is off here: this memory engine cannot read your folder map, so nothing is read or written.')
+      }
+      const dir = resolve(cwd ?? process.cwd())
+      let policy: FolderPolicyLike
+      try {
+        policy = base.resolveFolderPolicy(dir, { readOnly: true })
+      } catch (error) {
+        return off(`PLUR is off here: the folder decision for ${JSON.stringify(dir)} could not be resolved (${error}); nothing is read or written.`)
+      }
+      if (policy.reason === 'malformed-map' || policy.reason === 'resolver-error') {
+        return off('PLUR is off here: your folder map could not be read, so nothing is read or written until it is fixed (plur folders list).')
+      }
+      if (policy.mode === 'off') {
+        return off(`PLUR is off for this folder (${JSON.stringify(dir)}): your folder map turns memory off here, so nothing was read or written. `
+          + 'This is not an error — carry on without memory. Only the user can turn it back on, from a terminal.')
+      }
+      let entry = folders.get(dir)
+      if (!entry) {
+        while (folders.size >= MAX_FOLDER_INSTANCES) {
+          const [oldest, evicted] = folders.entries().next().value as [string, { inst: FolderBindable }]
+          folders.delete(oldest)
+          try { evicted.inst.close?.() } catch { /* best effort */ }
+        }
+        const inst = new core.Plur({ path: config.path }) as PlurClient & FolderBindable
+        // Only the PlurClient surface, bound to the instance. Core's own
+        // `ready()` resolves void, which `writable()` would read as "no engine".
+        const client: PlurClient = {
+          injectHybrid: inst.injectHybrid?.bind(inst),
+          inject: inst.inject?.bind(inst),
+          recall: inst.recall?.bind(inst),
+          isDirectoryTrusted: inst.isDirectoryTrusted?.bind(inst),
+          learn: inst.learn?.bind(inst),
+          forget: inst.forget?.bind(inst),
+          feedback: inst.feedback?.bind(inst),
+          capture: inst.capture?.bind(inst),
+          list: inst.list?.bind(inst),
+          status: inst.status?.bind(inst),
+        }
+        entry = { inst, client }
+        folders.set(dir, entry)
+      }
+      try {
+        entry.inst.bindFolderPolicy!(dir, policy)
+      } catch (error) {
+        return off(`PLUR is off here: the folder decision for ${JSON.stringify(dir)} could not be applied (${error}); nothing is read or written.`)
+      }
+      return { off: false, plur: entry.client, mode: policy.mode }
+    },
   }
+  return facade
 }

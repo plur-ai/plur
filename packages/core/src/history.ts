@@ -1,8 +1,8 @@
 import * as fs from 'fs'
-import { withLock } from './sync.js'
+import { storeDirMode, storeFileMode, withLock } from './sync.js'
 import * as yaml from 'js-yaml'
 import { logger } from './logger.js'
-import { join } from 'path'
+import { dirname, join } from 'path'
 import { createHash } from 'crypto'
 // Function-level import: session-manifest imports this module too, and the
 // record hash is only called at checkpoint time, long after both have loaded.
@@ -295,6 +295,17 @@ function invalidateChainHead(historyDir: string): void {
 }
 
 /**
+ * Mode for files under `history/`: the store's engrams.yaml mode. The log holds
+ * forget reasons, evolved statements, ids and scopes, so it must never be
+ * readable by more accounts than the store it describes; it used to be born at
+ * the umask default beside an owner-tightened 0600 store (security audit
+ * 2026-11-06). `undefined` (platform default) when there is no store file.
+ */
+function historyFileMode(historyDir: string): number | undefined {
+  return storeFileMode(join(dirname(historyDir), 'engrams.yaml'))
+}
+
+/**
  * Write the sidecar chain-head file. Best-effort: a write failure must not
  * propagate to the caller or fail the history append. The sidecar is advisory;
  * the JSONL is authoritative.
@@ -313,7 +324,7 @@ function writeChainHead(historyDir: string, rec: ChainHeadRecord): void {
     // size/inode check and the lookup falls through to the authoritative
     // tail-seek. Paying an fsync per append to durably persist a hint that is
     // already safe to lose is the wrong trade on the hot write path.
-    fs.writeFileSync(tmp, JSON.stringify(rec) + '\n', 'utf8')
+    fs.writeFileSync(tmp, JSON.stringify(rec) + '\n', { encoding: 'utf8', mode: historyFileMode(historyDir) ?? 0o666 })
     fs.renameSync(tmp, target)
   } catch {
     // best-effort — sidecar is advisory; JSONL is authoritative
@@ -605,8 +616,9 @@ export function appendHistoryStamped(
   onPrev?: (prev: string | null) => void,
 ): boolean {
   const historyDir = join(root, 'history')
+  const fileMode = historyFileMode(historyDir)
   if (!fs.existsSync(historyDir)) {
-    fs.mkdirSync(historyDir, { recursive: true })
+    fs.mkdirSync(historyDir, { recursive: true, mode: storeDirMode(fileMode) })
   }
 
   const date = event.timestamp.slice(0, 7) // YYYY-MM
@@ -694,7 +706,7 @@ export function appendHistoryStamped(
    */
   function writeEventLine(line: string, chained: boolean): boolean {
   try {
-    const fd = fs.openSync(filePath, 'a')
+    const fd = fs.openSync(filePath, 'a', fileMode ?? 0o666)
     try {
       fs.writeSync(fd, line)
       try { fs.fsyncSync(fd) } catch { /* append landed; durability is best-effort */ }
@@ -899,6 +911,7 @@ function dropTornTail(historyDir: string, filePath: string): void {
 export function appendHistoryBatch(root: string, events: readonly HistoryEvent[]): boolean {
   if (events.length === 0) return true
   const historyDir = join(root, 'history')
+  const fileMode = historyFileMode(historyDir)
   // The batch is one link per event in the same hash chain as appendHistory
   // (#1051), and must write exactly the links the same events appended one by
   // one would. It is written in runs of consecutive events for one month file:
@@ -926,7 +939,7 @@ export function appendHistoryBatch(root: string, events: readonly HistoryEvent[]
     }
     let ok = true
     try {
-      const fd = fs.openSync(filePath, 'a')
+      const fd = fs.openSync(filePath, 'a', fileMode ?? 0o666)
       try {
         fs.writeSync(fd, (endsMidLine(filePath) ? '\n' : '') + lines.join(''))
         try { fs.fsyncSync(fd) } catch { /* append landed; durability is best-effort */ }
@@ -946,7 +959,7 @@ export function appendHistoryBatch(root: string, events: readonly HistoryEvent[]
     return ok
   }
   try {
-    if (!fs.existsSync(historyDir)) fs.mkdirSync(historyDir, { recursive: true })
+    if (!fs.existsSync(historyDir)) fs.mkdirSync(historyDir, { recursive: true, mode: storeDirMode(fileMode) })
   } catch (err) {
     logger.warning(`[plur] history directory ${historyDir} could not be created: ${(err as Error).message}. The operation itself succeeded.`)
     return false

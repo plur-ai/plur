@@ -1,7 +1,8 @@
 import { existsSync, unlinkSync } from 'fs'
+import { execFileSync } from 'child_process'
 import { join, dirname, resolve } from 'path'
 import { homedir } from 'os'
-import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram, getCachedUpdateCheck, checkForUpdate, updateCheckOffline, minorVersionsBehind, scanForTensions, CapabilityCanary, NO_SESSION, findProjectConfigPath, readProjectConfigFromPath, isSharedScope, resolveRerankerName, getReranker, classifyRerankerFailure, hfCacheDirName, SUGGEST_DISPLAY_MIN_CONFIDENCE, mcpRemoteWarningLine, doctorRemoteRemediation, normalizeEndpointUrl, REMOTE_STATUS_TTL_MS, PROBE_CLEARABLE_STATES, summariseProvenance, formatLayer3, renderProvenanceSummary, type LearnContext, describeNeedsAction, summarizeOutbox, type OutboxSummary, folderMapProblem, type FolderMapProblem, tokenEnvUnsetDetail, tokenEnvUnsetFix, resolveRecallDeadlineMs } from '@plur-ai/core'
+import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateProfile, getProfileForInjection, markProfileDirty, selectModelForOperation, readHistoryForEngram, getCachedUpdateCheck, checkForUpdate, updateCheckOffline, minorVersionsBehind, scanForTensions, CapabilityCanary, NO_SESSION, findProjectConfigPath, readProjectConfigFromPath, isSharedScope, resolveRerankerName, getReranker, classifyRerankerFailure, modelCacheFolder, SUGGEST_DISPLAY_MIN_CONFIDENCE, mcpRemoteWarningLine, doctorRemoteRemediation, normalizeEndpointUrl, REMOTE_STATUS_TTL_MS, PROBE_CLEARABLE_STATES, summariseProvenance, formatLayer3, renderProvenanceSummary, type LearnContext, describeNeedsAction, summarizeOutbox, type OutboxSummary, folderMapProblem, type FolderMapProblem, tokenEnvUnsetDetail, tokenEnvUnsetFix, resolveRecallDeadlineMs, loadConfig } from '@plur-ai/core'
 import { folderMapAdvice } from './folder-map-advice.js'
 import type { LlmFunction, MetaField, TensionStatus, RerankerEvalResult, HistoryEvent, Receipt, RemoteStoreStatusEntry, RecallRemoteReport, RemoteOnlyStatus } from '@plur-ai/core'
 import { RemoteOnlyWriteError, remoteOnlySessionLine, remoteOnlyUnservedNotice } from '@plur-ai/core'
@@ -34,6 +35,44 @@ function makeHttpLlm(baseUrl: string, apiKey: string, model: string = 'gpt-4o-mi
     const data = await response.json() as any
     return data.choices?.[0]?.message?.content ?? ''
   }
+}
+
+/** The comparable form of an http(s) LLM base URL, or null (other schemes, userinfo, unparseable). */
+function llmBaseIdentity(url: string): { id: string; host: string } | null {
+  let u: URL
+  try { u = new URL(url) } catch { return null }
+  if ((u.protocol !== 'http:' && u.protocol !== 'https:') || u.username || u.password) return null
+  return { id: `${u.protocol}//${u.host}${u.pathname.replace(/\/+$/, '')}`, host: u.hostname.replace(/^\[|\]$/g, '') }
+}
+
+function isLoopbackHost(host: string): boolean {
+  return host === 'localhost' || host === '::1' || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)
+}
+
+/**
+ * The LLM for a tool whose caller names `llm_base_url`. That URL decides where
+ * the engram contents in the prompt are POSTed, and the caller is the agent,
+ * which a prompt injection can steer. So it is accepted only when it is a
+ * loopback address (a model the user runs on this machine) or one of the
+ * `llm.base_urls` the user listed in config.yaml; anything else is refused
+ * before any memory is read (security audit 2026-11-06).
+ */
+function makeAgentLlm(plur: Plur, baseUrl: string, apiKey: string, model?: string): LlmFunction {
+  const wanted = llmBaseIdentity(baseUrl)
+  let allowed = false
+  if (wanted) {
+    if (isLoopbackHost(wanted.host)) {
+      allowed = true
+    } else {
+      const listed = loadConfig(join(plur.storageRoot, 'config.yaml')).llm?.base_urls ?? []
+      allowed = listed.some(u => llmBaseIdentity(u)?.id === wanted.id)
+    }
+  }
+  if (!allowed) {
+    throw new Error('llm_base_url is not an endpoint you configured, so nothing was sent. Memory is sent only to a ' +
+      'loopback model or to a base URL listed under llm.base_urls in PLUR\'s config.yaml (edit that file yourself to add one).')
+  }
+  return makeHttpLlm(baseUrl, apiKey, model)
 }
 
 export interface ToolAnnotations {
@@ -2883,14 +2922,14 @@ function getAllToolDefinitions(): ToolDefinition[] {
 
     {
       name: 'plur_sync',
-      description: 'Sync engrams via git AND refresh the derived index from YAML. Initializes repo on first call, commits and pushes/pulls on subsequent calls. Provide a remote URL on first call to enable cross-device sync. Pass full=true to drop-and-rebuild the index from YAML (recovery path; YAML stays untouched). Also flushes the remote-write outbox — retries team-scoped writes that were queued while their remote store was unreachable; use plur_outbox to inspect what is queued.',
+      description: 'Sync engrams via git AND refresh the derived index from YAML. Initializes repo on first call, commits and pushes/pulls on subsequent calls. Syncs only with a git remote the user already set up; this tool never adds one (the user runs `plur sync <remote>` in a terminal for that). Pass full=true to drop-and-rebuild the index from YAML (recovery path; YAML stays untouched). Also flushes the remote-write outbox — retries team-scoped writes that were queued while their remote store was unreachable; use plur_outbox to inspect what is queued.',
       annotations: { title: 'Sync', openWorldHint: true, destructiveHint: false, idempotentHint: true },
       inputSchema: {
         type: 'object',
         properties: {
           remote: {
             type: 'string',
-            description: 'Git remote URL (e.g. git@github.com:user/plur-engrams.git). Only needed on first call to set up remote.',
+            description: 'Not accepted for setting up a remote: adding one is a terminal step for the user (`plur sync <remote>`). With an origin already configured it is ignored.',
           },
           full: {
             type: 'boolean',
@@ -2904,7 +2943,24 @@ function getAllToolDefinitions(): ToolDefinition[] {
         },
       },
       handler: async (args, plur) => {
-        const result = await plur.sync(args.remote as string | undefined, {
+        // Adding a git origin decides where every non-local engram, private
+        // ones included, is pushed from then on, and the agent naming it can be
+        // steered by a prompt injection. So the tool never adds one: that stays
+        // the user's own CLI step, `plur sync <remote>`. An origin the user
+        // already configured keeps syncing (security audit 2026-11-06).
+        if (typeof args.remote === 'string' && args.remote.trim() !== '') {
+          let origin: string | null = null
+          try {
+            origin = execFileSync('git', ['-C', plur.storageRoot, 'remote', 'get-url', 'origin'],
+              { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() || null
+          } catch { origin = null }
+          if (!origin) {
+            throw new Error('plur_sync does not add a git remote, so nothing was synced. Adding one decides where your ' +
+              'memory is pushed, so the user sets it up in a terminal: plur sync <remote>. Ask the user to run that; ' +
+              'after it, plur_sync with no remote keeps that remote in sync.')
+          }
+        }
+        const result = await plur.sync(undefined, {
           full: args.full === true,
           ...(args.remote_type === 'personal' || args.remote_type === 'shared' ? { remoteType: args.remote_type } : {}),
         })
@@ -3014,7 +3070,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
     {
       name: 'plur_extract_meta',
       description: 'Extract meta-engrams from stored engrams using the 6-stage pipeline (structural analysis → clustering → alignment → formulation → hierarchy). Requires an LLM API endpoint.',
-      annotations: { title: 'Extract meta-engrams', destructiveHint: false, idempotentHint: false },
+      annotations: { title: 'Extract meta-engrams', destructiveHint: false, idempotentHint: false, openWorldHint: true },
       inputSchema: {
         type: 'object',
         properties: {
@@ -3030,7 +3086,8 @@ function getAllToolDefinitions(): ToolDefinition[] {
       },
       handler: async (args, plur) => {
         refuseModelInRemoteOnly(plur, 'plur_extract_meta')
-        const llm = makeHttpLlm(
+        const llm = makeAgentLlm(
+          plur,
           args.llm_base_url as string,
           args.llm_api_key as string,
           args.llm_model as string | undefined,
@@ -3049,7 +3106,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
 
         // Persist unless dry_run
         const isDryRun = args.dry_run === true
-        let saveStats: { saved: number; skipped: number } | null = null
+        let saveStats: { saved: number; skipped: number; injection_refused?: string[] } | null = null
         if (!isDryRun && result.results.length > 0) {
           saveStats = await plur.saveMetaEngrams(result.results)
         }
@@ -3063,6 +3120,8 @@ function getAllToolDefinitions(): ToolDefinition[] {
           duration_ms: result.duration_ms,
           dry_run: isDryRun,
           ...(saveStats ? { saved: saveStats.saved, skipped: saveStats.skipped } : {}),
+          // Security audit 2026-11-06: metas the prompt-injection gate refused.
+          ...(saveStats?.injection_refused ? { injection_refused: saveStats.injection_refused } : {}),
           results: result.results.map(m => ({
             id: m.id,
             statement: m.statement,
@@ -3137,7 +3196,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
       // meta/validation.ts) and the handler persists it. A removal needs an
       // explicit, gated act, so plur_admin refuses this tool and it is a direct
       // tool in every profile (CURSOR_CORE_TOOL_NAMES).
-      annotations: { title: 'Validate meta-engram', destructiveHint: true, idempotentHint: false },
+      annotations: { title: 'Validate meta-engram', destructiveHint: true, idempotentHint: false, openWorldHint: true },
       inputSchema: {
         type: 'object',
         properties: {
@@ -3151,6 +3210,13 @@ function getAllToolDefinitions(): ToolDefinition[] {
       },
       handler: async (args, plur) => {
         refuseModelInRemoteOnly(plur, 'plur_validate_meta')
+        // Checked before any memory is read (security audit 2026-11-06).
+        const llm = makeAgentLlm(
+          plur,
+          args.llm_base_url as string,
+          args.llm_api_key as string,
+          args.llm_model as string | undefined,
+        )
         const allEngrams = await plur.list()
         const meta = allEngrams.find(e => e.id === (args.meta_engram_id as string))
         if (!meta) {
@@ -3159,12 +3225,6 @@ function getAllToolDefinitions(): ToolDefinition[] {
 
         const testDomain = args.test_domain as string
         const testEngrams = await plur.list({ domain: testDomain })
-
-        const llm = makeHttpLlm(
-          args.llm_base_url as string,
-          args.llm_api_key as string,
-          args.llm_model as string | undefined,
-        )
 
         const wasRetired = meta.status === 'retired'
         const result = await validateMetaEngram(meta, testEngrams, testDomain, llm)
@@ -3501,7 +3561,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
             '  • First-run download not yet completed (try: plur_doctor with retry:true)',
             '  • Network blocked HuggingFace Hub fetch — check connectivity to huggingface.co',
             '  • pnpm hoisting issue: @huggingface/transformers must resolve onnxruntime-node from the package root, not a workspace package',
-            '  • Corrupt model cache: a half-completed download leaves a broken cache that fails every subsequent load. Delete `~/.cache/huggingface/hub/models--Xenova--bge-small-en-v1.5/` and retry — the model will redownload on next call.',
+            '  • Corrupt model cache: a half-completed download leaves a broken cache that fails every subsequent load. Delete the model folder under the PLUR model cache (PLUR_MODEL_CACHE_DIR or HF_HOME when set, otherwise the .cache folder of the installed @huggingface/transformers package) and retry — the model will redownload on next call.',
             '  • Manual fix: from the @plur-ai/core package directory, run a script that imports @huggingface/transformers and calls pipeline() to trigger the download',
             '  • Or opt out: set PLUR_DISABLE_EMBEDDINGS=1, or write `embeddings: { enabled: false }` to ~/.plur/config.yaml — hybrid search will run BM25-only',
           )
@@ -3537,7 +3597,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
             if (kind === 'corrupt-cache') {
               rerankerDetail = `Model cache looks corrupt (${message}) — recall silently falls back to RRF-only`
               remediation.push(
-                `Reranker model cache is corrupt — the classic symptom of a truncated download (#340). Delete ~/.cache/huggingface/hub/${hfCacheDirName(adapter.modelId)}/ and run plur_doctor with retry:true — the model will redownload via the classic (non-Xet) path.`,
+                `Reranker model cache is corrupt — the classic symptom of a truncated download (#340). Delete ${modelCacheFolder(adapter.modelId)} (PLUR's model cache) and run plur_doctor with retry:true — the model will redownload via the classic (non-Xet) path.`,
               )
             } else {
               rerankerDetail = `Failed to load: ${message} — recall silently falls back to RRF-only`
@@ -4812,11 +4872,21 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
         // (#291). A second scope on an already-registered remote URL now
         // genuinely persists, so success:true here is honest.
         const requestedScope = args.scope as string
-        const result = plur.addStore(path ?? '', requestedScope, {
-          shared:   args.shared   as boolean | undefined,
-          readonly: args.readonly as boolean | undefined,
-          url, token,
-        })
+        // Security audit 2026-11-06: a remote registration (or token rotation)
+        // redirects where memories are sent, so it goes through the same
+        // server-verified path as `plur stores add --url`: /me must accept the
+        // token and authorise the scope before config.yaml is touched. The
+        // model can no longer register an arbitrary endpoint or overwrite a
+        // working token with an unverified one.
+        if (url && !token) return { error: 'A remote store needs a token that the server accepts (token is required with url).' }
+        let result: { status: 'added' | 'already_registered' | 'overwritten' | 'token_rotated'; scope: string; token_scopes?: string[] }
+        try {
+          result = url
+            ? await plur.addRemoteStore({ url, token: token!, scope: requestedScope, shared: args.shared as boolean | undefined, readonly: args.readonly as boolean | undefined })
+            : plur.addStore(path ?? '', requestedScope, { shared: args.shared as boolean | undefined, readonly: args.readonly as boolean | undefined })
+        } catch (err) {
+          return { success: false, error: (err as Error).message }
+        }
         // #406: a local store is identified by its PATH, so registering a NEW
         // scope on an already-registered path is a no-op for that scope — the
         // existing entry's scope wins and the requested scope is dropped. Reporting
@@ -5070,7 +5140,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
       // plur_forget's effect. A removal needs an explicit, gated act, so
       // plur_admin refuses this tool and it is a direct tool in every profile
       // (CURSOR_CORE_TOOL_NAMES), where the client sees this annotation.
-      annotations: { title: 'Tensions', readOnlyHint: false, destructiveHint: true, idempotentHint: false },
+      annotations: { title: 'Tensions', readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
       inputSchema: {
         type: 'object',
         properties: {
@@ -5121,7 +5191,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
         if (args.scan) {
           refuseModelInRemoteOnly(plur, 'plur_tensions scan')
           const llm = args.llm_base_url && args.llm_api_key
-            ? makeHttpLlm(args.llm_base_url as string, args.llm_api_key as string, args.llm_model as string | undefined)
+            ? makeAgentLlm(plur, args.llm_base_url as string, args.llm_api_key as string, args.llm_model as string | undefined)
             : getLlmFunction()
 
           if (!llm) {
@@ -5318,7 +5388,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
       // TOOL-4: procedure evolution replaces the procedure's text with what the
       // checker returns, so this is destructive: a direct tool in every
       // profile, refused by plur_admin. Behaviour unchanged.
-      annotations: { title: 'Report Failure', destructiveHint: true, idempotentHint: false },
+      annotations: { title: 'Report Failure', destructiveHint: true, idempotentHint: false, openWorldHint: true },
       inputSchema: {
         type: 'object',
         properties: {
@@ -5334,7 +5404,8 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
         if (args.llm_base_url && args.llm_api_key) refuseModelInRemoteOnly(plur, 'plur_report_failure with a model')
         let llm: LlmFunction | undefined
         if (args.llm_base_url && args.llm_api_key) {
-          llm = makeHttpLlm(
+          llm = makeAgentLlm(
+            plur,
             args.llm_base_url as string,
             args.llm_api_key as string,
             args.llm_model as string | undefined,
@@ -5407,8 +5478,33 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
         }
 
         const { homedir } = await import('os')
-        const { join } = await import('path')
-        const outputDir = (args.output_dir as string) || join(homedir(), 'plur-packs', name)
+        const { join, resolve, dirname, sep } = await import('path')
+        const { existsSync, realpathSync, readdirSync } = await import('fs')
+        // Security audit 2026-11-06: output_dir comes from the model. An
+        // unconfined path let one export overwrite the live engrams.yaml or
+        // plant a SKILL.md in a harness skills directory. Keep exports under
+        // ~/plur-packs, never into a non-empty directory that is not an
+        // earlier export, and never with nothing to export.
+        if (engrams.length === 0) return { exported: false, error: 'No engrams match the given filters.' }
+        const packsRoot = join(homedir(), 'plur-packs')
+        const outputDir = resolve((args.output_dir as string) || join(packsRoot, name))
+        const realOf = (p: string): string => {
+          let cur = p
+          const tail: string[] = []
+          while (!existsSync(cur) && dirname(cur) !== cur) { tail.unshift(cur.slice(dirname(cur).length + 1)); cur = dirname(cur) }
+          return join(realpathSync(cur), ...tail)
+        }
+        const realRoot = realOf(packsRoot)
+        const realOut = realOf(outputDir)
+        if (realOut !== realRoot && !realOut.startsWith(realRoot + sep)) {
+          return { exported: false, error: `output_dir must be inside ${packsRoot}` }
+        }
+        if (existsSync(outputDir)) {
+          const entries = readdirSync(outputDir)
+          if (entries.length > 0 && !(entries.includes('SKILL.md') && entries.includes('INTEGRITY'))) {
+            return { exported: false, error: `${outputDir} already exists and is not an earlier pack export` }
+          }
+        }
         let result: ReturnType<typeof plur.exportPack>
         try {
           result = plur.exportPack(engrams, outputDir, {
@@ -5483,7 +5579,8 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
     {
       name: 'plur_profile',
       description: 'Generate or retrieve a cognitive profile — a narrative summary synthesized from stored engrams. Cached for 24h.',
-      annotations: { title: 'Cognitive profile', readOnlyHint: true, idempotentHint: true },
+      // Not read-only: it sends memory to a model and writes profile_cache.json (security audit 2026-11-06).
+      annotations: { title: 'Cognitive profile', readOnlyHint: false, idempotentHint: true, openWorldHint: true },
       inputSchema: {
         type: 'object',
         properties: {
@@ -5510,7 +5607,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
           return { profile: null, error: 'No cached profile. Provide llm_base_url and llm_api_key.' }
         }
         const model = (args.llm_model as string) ?? selectModelForOperation('profile', status.config?.llm)
-        const llm = makeHttpLlm(args.llm_base_url as string, args.llm_api_key as string, model)
+        const llm = makeAgentLlm(plur, args.llm_base_url as string, args.llm_api_key as string, model)
         const engrams = await plur.list({ scope: args.scope as string | undefined })
         const profile = await generateProfile(engrams, llm, storagePath, status.config?.profile?.cache_ttl_hours ?? 24)
         return { profile, source: 'generated', engram_count: engrams.length, model }

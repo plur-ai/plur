@@ -94,7 +94,11 @@ const LEADING_DIRECTIVE_RE =
   /^(?:never|always|don'?t|do(?:es)?\s+not|doesn'?t|you\s+should(?:n'?t)?|you\s+must(?:n'?t)?|remember\s+that|i\s+prefer|i\s+like|we\s+decided|the\s+(?:rule|convention|pattern|standard)\s+is)\b/i
 
 function lastWord(statement: string): string {
-  const trimmed = statement.trim().replace(/[.!?,;:]+$/, '')
+  // Only the tail is matched: both end-anchored regexes below backtrack
+  // quadratically on a long run that does not reach the end (40k characters
+  // took about 1.6 s). A last word lies within the last 256 characters of any
+  // statement this scan is about (security audit 2026-11-06, hardening).
+  const trimmed = statement.trim().slice(-256).replace(/[.!?,;:]+$/, '')
   const m = trimmed.match(/([A-Za-z']+)$/)
   return m ? m[1].toLowerCase() : ''
 }

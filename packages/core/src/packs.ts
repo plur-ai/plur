@@ -1585,6 +1585,9 @@ function _installPackDir(
   let movedAside = false
   try {
     if (fs.existsSync(destDir)) {
+      if (!fs.lstatSync(destDir).isDirectory()) {
+        throw new Error(`[plur] refusing to install over ${destDir}: it is not a pack directory.`)
+      }
       fs.renameSync(destDir, displaced)
       movedAside = true
     }
@@ -1716,8 +1719,12 @@ function pickInstallDirName(
   // be read keeps the old behaviour (it is replaced): reinstalling over a
   // damaged copy is how it gets repaired.
   const accepts = (name: string): boolean => {
+    if (RESERVED_PACK_ENTRY.test(name) || isTransientPackDir(name)) return false
     const dir = path.join(packsDir, onDiskEntryName(packsDir, name))
     if (!fs.existsSync(dir)) return true
+    // Only a real directory can be a (damaged) pack worth replacing; a file or
+    // symlink at that name is never moved aside or deleted by an install.
+    if (!fs.lstatSync(dir).isDirectory()) return false
     if (!manifestName) return true
     let installed: string | undefined
     try { installed = loadPack(dir).manifest.name?.trim() } catch { return true }
@@ -1803,7 +1810,20 @@ function installedDirsNamed(packsDir: string, manifestName: string | undefined):
   }).sort()
 }
 
+/**
+ * Names PLUR keeps for its own control files in the packs directory. A pack
+ * may never be installed onto, or uninstalled as, one of them: a pack whose
+ * manifest said `name: registry.yaml` used to be swapped in over the registry
+ * file and delete every other pack's integrity baseline, and
+ * `plur packs uninstall registry.yaml` deleted the registry outright
+ * (security audit 2026-11-06).
+ */
+const RESERVED_PACK_ENTRY = /^registry\.yaml(\..*)?$/i
+
 function resolveInside(packsDir: string, name: string, op: string): string {
+  if (RESERVED_PACK_ENTRY.test(name) || isTransientPackDir(name)) {
+    throw new Error(`[plur] refusing to ${op} pack "${name}": that name is reserved for PLUR's own pack bookkeeping in ${packsDir}.`)
+  }
   const base = path.resolve(packsDir)
   const candidate = path.resolve(base, name)
   const contained = candidate !== base && candidate.startsWith(base + path.sep)
@@ -1853,6 +1873,11 @@ export function uninstallPack(packsDir: string, name: string): UninstallResult {
     } else {
       throw new Error(`Pack not found: ${name}. Use 'plur packs list' to see installed packs.`)
     }
+  }
+  // Only a pack directory is ever removed; a file at that name is PLUR's own
+  // bookkeeping or something the user put there, never a pack.
+  if (RESERVED_PACK_ENTRY.test(path.basename(packDir)) || !fs.lstatSync(packDir).isDirectory()) {
+    throw new Error(`Pack not found: ${name}. Use 'plur packs list' to see installed packs.`)
   }
 
   // Count engrams and get manifest name before removal

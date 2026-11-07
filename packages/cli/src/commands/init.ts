@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync, readdirSync, copyFileSync, statSync } from 'fs'
 import { execFileSync, type ExecFileSyncOptions } from 'child_process'
-import { join, dirname } from 'path'
+import { join, dirname, basename } from 'path'
 import { fileURLToPath } from 'url'
 import { homedir, platform } from 'os'
 import { createInterface } from 'readline'
@@ -11,6 +11,7 @@ import { CLI_VERSION } from '../version.js'
 import { CLAUDE_INJECT_TIMEOUT_S } from '../lib/claude-inject-budget.js'
 import { plurRoot } from '../lib/folder-gate.js'
 import { recordHookInstall } from '../lib/hook-runs.js'
+import { readFileNoFollow, unsafeComponentUnder, writeFileNoFollow } from '../lib/no-follow-write.js'
 import {
   resolveFolderPolicy, loadFolderMap, setFolderEntry, folderMapPath, canonicalize,
   upsertInstructionSection, isShippedText, hasStandaloneMarker, writeWithBackup, backupFile, registerClaudeUserMcp,
@@ -19,6 +20,7 @@ import {
 import {
   hookCommandPrefix,
   isPlurHookSpec,
+  isThisMachinesPlurHookSpec,
   claudeHookSpec,
   windowsHookCommand,
   resolveShortPath,
@@ -234,8 +236,8 @@ function installHookBinary(): { shimPath: string; status: string } {
  *   <prefix>/lib/node_modules/@plur-ai/mcp/dist/index.js     ← target
  *   <prefix>/lib/node_modules/@plur-ai/cli/dist/index.js     ← we're here
  *
- * Walks up from CLI's dist looking for a node_modules dir that contains
- * @plur-ai/mcp. Returns null if not found (caller falls back to npx).
+ * Looks only inside the CLI's own install root (see resolveMcpEntrypoint).
+ * Returns null if not found (caller falls back to npx).
  */
 /** A directory named `mcp` only counts as the workspace sibling if it really IS @plur-ai/mcp. */
 function isPlurMcpPackage(dir: string): boolean {
@@ -247,28 +249,31 @@ function isPlurMcpPackage(dir: string): boolean {
   }
 }
 
-function resolveMcpEntrypoint(): string | null {
-  // Start from CLI's dist directory.
-  const cliEntry = resolveCliEntrypoint()
-  let dir = dirname(cliEntry)
-  const MAX_DEPTH = 12
-  for (let depth = 0; depth < MAX_DEPTH; depth++) {
-    // Look for a sibling @plur-ai/mcp install
-    const candidate = join(dir, 'node_modules', '@plur-ai', 'mcp', 'dist', 'index.js')
-    if (existsSync(candidate)) return candidate
-    // Also check if we're already inside node_modules — common after `npm i -g`
-    const adjacent = join(dir, '..', '@plur-ai', 'mcp', 'dist', 'index.js')
-    if (existsSync(adjacent)) return adjacent
-    // Monorepo workspace layout: packages/cli/dist → packages/mcp/dist. The
-    // walk above never found it (cli doesn't depend on mcp, so pnpm creates
-    // no symlink), which meant the shim silently never installed on the one
-    // machine developing it — and the fallback npx entry shipped to the dev's
-    // own configs (#1069 dogfooding find).
-    const workspaceSibling = join(dir, '..', 'mcp', 'dist', 'index.js')
-    if (existsSync(workspaceSibling) && isPlurMcpPackage(join(dir, '..', 'mcp'))) return workspaceSibling
-    const parent = dirname(dir)
-    if (parent === dir) break
-    dir = parent
+function resolveMcpEntrypoint(cliEntry: string = resolveCliEntrypoint()): string | null {
+  // Only the CLI's own install root counts (security audit 2026-11-06). This
+  // used to walk up to 12 ancestors and take the first @plur-ai/mcp found,
+  // so a CLI-only install (the CLI does not depend on mcp) could adopt a
+  // package another local user planted high up (e.g. C:\node_modules on
+  // Windows), which init then registers as every MCP client's launch target.
+  const cliPkg = dirname(dirname(cliEntry)) // <...>/cli from <...>/cli/dist/index.js
+  const parent = dirname(cliPkg)
+  const candidates = [join(cliPkg, 'node_modules', '@plur-ai', 'mcp')] // nested dependency
+  if (basename(parent) === '@plur-ai' && basename(dirname(parent)) === 'node_modules') {
+    // npm/yarn layout, global or project: <node_modules>/@plur-ai/{cli,mcp}
+    candidates.push(join(parent, 'mcp'))
+    // pnpm layout: <nm>/.pnpm/<id>/node_modules/@plur-ai/cli → <nm>/@plur-ai/mcp
+    const pnpmDir = dirname(dirname(dirname(parent)))
+    if (basename(pnpmDir) === '.pnpm' && basename(dirname(pnpmDir)) === 'node_modules') {
+      candidates.push(join(dirname(pnpmDir), '@plur-ai', 'mcp'))
+    }
+  } else {
+    // Monorepo workspace layout: packages/cli → packages/mcp. Without this
+    // the shim never installed on the machine developing it (#1069).
+    candidates.push(join(parent, 'mcp'))
+  }
+  for (const pkg of candidates) {
+    const entry = join(pkg, 'dist', 'index.js')
+    if (existsSync(entry) && isPlurMcpPackage(pkg)) return entry
   }
   return null
 }
@@ -681,7 +686,7 @@ function installProjectConfig(args: string[]): string | null {
  * Before this, re-running `plur init` saw the heading, reported "already in",
  * and an existing install never received a changed instruction.
  */
-export function writePlurSection(path: string, section: string, title: string): string {
+export function writePlurSection(path: string, section: string, title: string, opts?: { confineTo?: string }): string {
   const existing = existsSync(path) ? readFileSync(path, 'utf8') : null
   const r = upsertInstructionSection(existing, {
     section, title, heading: '## PLUR Memory', marker: PLUR_INSTRUCTIONS_MARKER, shipped: SHIPPED_PLUR_SECTIONS,
@@ -689,7 +694,7 @@ export function writePlurSection(path: string, section: string, title: string): 
   if (r.status === 'skipped') return `not written to ${path}: ${r.skipReason}`
   let backup: string | null
   try {
-    backup = r.status === 'already' ? null : writeWithBackup(path, r.content, existing)
+    backup = r.status === 'already' ? null : writeWithBackup(path, r.content, existing, opts)
   } catch (err) {
     // A write PLUR declined (a dangling symlink, an edit made meanwhile): say
     // so and let the rest of the install carry on.
@@ -720,7 +725,10 @@ function installClaudeMd(): string {
   const projectClaudeMd = join(process.cwd(), 'CLAUDE.md')
   const globalClaudeMd = join(homedir(), 'CLAUDE.md')
   const claudeMdPath = existsSync(projectClaudeMd) ? projectClaudeMd : existsSync(globalClaudeMd) ? globalClaudeMd : projectClaudeMd
-  return writePlurSection(claudeMdPath, CLAUDE_MD_SECTION, '# CLAUDE.md')
+  // The project file may not write through a symlink out of the project
+  // (security audit 2026-11-06); ~/CLAUDE.md may (dotfiles setups link it).
+  return writePlurSection(claudeMdPath, CLAUDE_MD_SECTION, '# CLAUDE.md',
+    claudeMdPath === projectClaudeMd ? { confineTo: process.cwd() } : undefined)
 }
 
 /**
@@ -883,6 +891,16 @@ function migrateRepoHooks(flags: GlobalFlags, userPath: string): string | null {
         'so the folder question asks on the next prompt and can trust it'
     } else if (loadFolderMap(root).folders.some(e => e.path === folder || canonicalize(e.path) === target)) {
       recorded = 'the folder map already has it, left as is'
+    } else if (!repoHooksAreThisMachines(settings) || repoFileIsTracked(folder, repoPath)) {
+      // A PLUR-looking hook a repository ships (the npx fallback, or a
+      // plur-hook shim outside this home) proves nothing about who wrote it.
+      // Recording `on` from it made the repo's own .plur store a shared,
+      // writable store read in every folder, without the user deciding
+      // (security audit 2026-11-06; #1588: nothing a repository ships is the
+      // user's decision). The hooks still move; the folder question asks.
+      recorded = 'not recorded in the folder map: its PLUR hooks may have come with the repository ' +
+        '(they do not name this machine\'s own plur-hook, or the file is committed to git); ' +
+        'the folder question asks on the next prompt'
     } else {
       setFolderEntry(root, folder, { mode: 'on' }, { configuredScopes: [] })
       mapWritten = true
@@ -945,6 +963,30 @@ function isPlurHook(entry: HookEntry): boolean {
   // PLUR's launcher (shim, npx fallback, or the Windows exec form) plus any
   // hook-* (decisions H2, H3) — see isPlurHookSpec.
   return (entry?.hooks ?? []).some(isPlurHookSpec)
+}
+
+/**
+ * The repo settings file is committed to git. An older local `plur init` wrote
+ * `.claude/settings.json` as an untracked local file; a cloned repository can
+ * only deliver files it commits. So a tracked file came with the repository,
+ * and even a hook naming this home's own plur-hook (the path can be guessed)
+ * is not the user's decision (security audit 2026-11-06). No git, or a folder
+ * that is not a repository, counts as untracked.
+ */
+function repoFileIsTracked(folder: string, file: string): boolean {
+  try {
+    execFileSync('git', ['-C', folder, 'ls-files', '--error-unmatch', '--', file], { stdio: 'ignore', timeout: 5000 })
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** Every PLUR hook in `settings` is bound to this machine's own install (see isThisMachinesPlurHookSpec). */
+function repoHooksAreThisMachines(settings: Settings): boolean {
+  const specs = Object.values(settings.hooks ?? {}).flatMap(entries => (entries ?? []).flatMap(e => e?.hooks ?? []))
+    .filter(isPlurHookSpec)
+  return specs.length > 0 && specs.every(isThisMachinesPlurHookSpec)
 }
 
 function hasPlurHooks(settings: Settings): boolean {
@@ -1090,6 +1132,17 @@ function installCursor(cmd: string, root: string): string {
   const hooksPath = cursorProjectHooksConfigPath()
   const rulesPath = cursorRulesPath()
 
+  // The project controls every path below its root. A committed symlink at
+  // .cursor, .cursor/rules or one of the files written below would be
+  // followed by the plain writes and land outside the project (security
+  // audit 2026-11-06), so the whole Cursor leg refuses and says why.
+  const project = process.cwd()
+  const linked = [mcpPath, hooksPath, rulesPath].map(p => unsafeComponentUnder(project, p)).find(Boolean)
+  if (linked) {
+    return `Cursor: skipped — ${linked} is a symlink or not a regular file/directory; ` +
+      `PLUR does not write through links a project ships. Replace it with a real one, then re-run \`plur init --cursor\``
+  }
+
   // Same refusal the hooks leg below has carried since its dijkstra-evaluator
   // audit: an unparseable file must not be "read as {}" and written back (#1059).
   const { config: mcpConfig, ok: mcpParses } = readConfigForWrite(mcpPath)
@@ -1195,23 +1248,32 @@ function installCursor(cmd: string, root: string): string {
   // project-specific, regenerated, not something to commit. gitignore both
   // so they don't show up as untracked-file surprises in `git status` after
   // the first session.
-  const gitignorePath = join(process.cwd(), '.gitignore')
+  //
+  // A repository can ship .gitignore as a symlink to a file outside it (e.g.
+  // a shell rc); reading and rewriting it followed the link (security audit
+  // 2026-11-06). Read and write it only as a regular file in the project.
+  const gitignorePath = join(project, '.gitignore')
   const gitignoreLines = ['.cursor/rules/plur-context.mdc', '.cursor/rules/plur-reminder.mdc']
-  const originalGitignoreContent = existsSync(gitignorePath) ? readFileSync(gitignorePath, 'utf8') : ''
-  let gitignoreContent = originalGitignoreContent
-  for (const line of gitignoreLines) {
-    if (!gitignoreContent.includes(line)) {
-      gitignoreContent = gitignoreContent.trimEnd() + `\n${line}\n`
+  const originalGitignoreContent = readFileNoFollow(project, gitignorePath)
+  let gitignoreStatus = `gitignored ${gitignoreLines.join(', ')}`
+  if (originalGitignoreContent === null) {
+    gitignoreStatus = `.gitignore not updated: ${gitignorePath} is a symlink or not a regular file`
+  } else {
+    let gitignoreContent = originalGitignoreContent
+    for (const line of gitignoreLines) {
+      if (!gitignoreContent.includes(line)) {
+        gitignoreContent = gitignoreContent.trimEnd() + `\n${line}\n`
+      }
     }
-  }
-  if (gitignoreContent !== originalGitignoreContent) {
-    writeFileSync(gitignorePath, gitignoreContent)
+    if (gitignoreContent !== originalGitignoreContent && !writeFileNoFollow(project, gitignorePath, gitignoreContent)) {
+      gitignoreStatus = `.gitignore not updated: could not write ${gitignorePath} as a regular file`
+    }
   }
 
   return `Cursor: MCP ${mcpStatus} (${mcpPath}); ` +
     `hooks ${hooksStatus} (${hooksPath}); ` +
     `rule ${ruleStatus} (${rulesPath}); ` +
-    `gitignored .cursor/rules/plur-context.mdc, .cursor/rules/plur-reminder.mdc`
+    gitignoreStatus
 }
 
 // ── Codex ───────────────────────────────────────────────────────────────────
@@ -1281,16 +1343,15 @@ function installCodexMcp(root: string, keepLaunch: boolean): string {
 function installCodex(cmd: string, root: string, keepLaunch: boolean, env: NodeJS.ProcessEnv = process.env): string {
   const hooksPath = codexHooksConfigPath(env)
 
-  // Same refusal as the Cursor path: readCodexHooksConfig() treats
-  // unparseable JSON as empty (a safe default for READING), but writing that
-  // back would destroy a hand-edited-but-malformed hooks.json along with any
-  // non-plur entries in it.
+  // Same refusal as the Cursor path: writing over a hand-edited-but-malformed
+  // hooks.json would destroy it along with any non-plur entries in it
+  // (readCodexHooksConfig() also throws on such a file).
   let hooksStatus: string
   let hooksWritten = false
   const exists = existsSync(hooksPath)
   // Parse AND shape check (adversarial audit F2): `12345`, `"text"` and
-  // `[...]` are valid JSON that readCodexHooksConfig flattens to an empty
-  // config — writing that back destroys whatever the user had, while the
+  // `[...]` are valid JSON that readCodexHooksConfig used to flatten to an
+  // empty config — writing that back destroys whatever the user had, while the
   // parse-only guard waves it through. Wrong shape gets the same refusal as
   // wrong syntax.
   let usable = true
@@ -1352,7 +1413,8 @@ function installAgentsMd(cwd: string = process.cwd(), globalFallback: string | n
     : (globalFallback && existsSync(globalFallback)) ? globalFallback
     : projectAgents
 
-  return writePlurSection(target, AGENTS_MD_SECTION, '# AGENTS.md')
+  return writePlurSection(target, AGENTS_MD_SECTION, '# AGENTS.md',
+    target === projectAgents ? { confineTo: cwd } : undefined)
 }
 
 // ── Antigravity CLI (agy) ───────────────────────────────────────────────────
@@ -2001,6 +2063,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
 
 /** Test seams (formal Adapters #3). */
 export { mergeHooks as _mergeClaudeHooks }
+export { resolveMcpEntrypoint as _resolveMcpEntrypoint }
 export { isPlurHookSpec as _isPlurClaudeHookSpec }
 
 export { buildEnforcementHooks as _buildEnforcementHooks }

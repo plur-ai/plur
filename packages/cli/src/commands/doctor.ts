@@ -672,7 +672,9 @@ function inspectConfigs(): ConfigFileReport[] {
       }
     }
     if (cf.kind === 'codex-hooks') {
-      const hooksConfig = readCodexHooksConfig(cf.path)
+      // An unreadable file holds no PLUR hooks that Codex could run.
+      let hooksConfig: ReturnType<typeof readCodexHooksConfig>
+      try { hooksConfig = readCodexHooksConfig(cf.path) } catch { hooksConfig = { hooks: {} } }
       return {
         label: cf.label,
         path: cf.path,
@@ -751,10 +753,27 @@ function resolveProbeTarget(): { entry: McpServerEntry; source: string } {
   // Probe what Claude Code launches first (#1561): ~/.claude.json (user, then
   // this folder's local scope), then the other harnesses' files; a
   // settings.json entry, which nothing launches, only as a last resort.
-  const files = knownConfigFiles().filter(cf => cf.exists && cf.kind !== 'cursor-hooks')
-  const cc = claudeCodePlurEntry(process.cwd())
+  //
+  // Security (audit 2026-11-06): a project-scoped entry (.mcp.json walked up
+  // from cwd, ./.claude/settings.json, ./.cursor/mcp.json) is written by
+  // whoever authored the repository. Spawning it would run a repo-chosen
+  // command as the user with the user's whole environment — Claude Code
+  // itself never launches a project .mcp.json server before the user approves
+  // it. So doctor probes a project entry only when ~/.claude.json records that
+  // approval for this project; otherwise it falls through to user-owned config.
+  const cwd = process.cwd()
+  const projectPaths = new Set([join(cwd, '.claude', 'settings.json'), join(cwd, '.mcp.json'), cursorProjectMcpConfigPath(cwd)])
+  const files = knownConfigFiles().filter(cf => cf.exists && cf.kind !== 'cursor-hooks' && !projectPaths.has(cf.path))
+  const cc = claudeCodePlurEntry(cwd)
   const ccEntry = cc ? readPlurMcpEntry(cc.config) : null
-  if (cc && ccEntry) return { entry: ccEntry, source: `Claude Code (${cc.scope} scope, ${cc.path})` }
+  if (cc && ccEntry && (cc.scope !== 'project' || projectMcpServerApproved(cc.path))) {
+    return { entry: ccEntry, source: `Claude Code (${cc.scope} scope, ${cc.path})` }
+  }
+  if (cc && cc.scope === 'project') {
+    const user = readConfig(claudeCodeUserConfigPath())
+    const userEntry = hasPlurMcp(user) ? readPlurMcpEntry(user) : null
+    if (userEntry) return { entry: userEntry, source: `Claude Code (user scope; the project entry in ${cc.path} is not approved, so it was not run)` }
+  }
   const ordered = [
     ...files.filter(cf => cf.kind !== 'claude-user' && !isClaudeSettingsFile(cf.path)),
     ...files.filter(cf => isClaudeSettingsFile(cf.path)),
@@ -1269,6 +1288,18 @@ function localScopePlur(config: Record<string, unknown>, cwd: string): Record<st
     }
   }
   return null
+}
+
+/**
+ * Has the user approved the `plur` server of this project `.mcp.json` in
+ * Claude Code? Claude Code records that in ~/.claude.json under
+ * projects[<dir>].enabledMcpjsonServers. Anything else is unapproved.
+ */
+function projectMcpServerApproved(mcpJsonPath: string): boolean {
+  const projects = (readConfig(claudeCodeUserConfigPath()) as Record<string, unknown>).projects
+  if (!projects || typeof projects !== 'object') return false
+  const p = (projects as Record<string, unknown>)[dirname(mcpJsonPath)] as { enabledMcpjsonServers?: unknown } | undefined
+  return Array.isArray(p?.enabledMcpjsonServers) && p!.enabledMcpjsonServers.includes('plur')
 }
 
 /** The nearest `.mcp.json` with a plur entry, walking up from `cwd` as Claude Code does (#1564 review M1). */

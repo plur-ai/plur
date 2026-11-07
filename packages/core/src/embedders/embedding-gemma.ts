@@ -28,7 +28,10 @@
  * benchmark numbers and keep first-run download manageable.
  */
 import type { EmbedderAdapter, EmbedRole } from './types.js'
-import { importTransformers, resolveLoadCacheDir, modelPresence, envOf, refuseMissingModelOffline, localOnlyOptions } from './transformers-base.js'
+import {
+  importTransformers, resolveLoadCacheDir, modelPresence, envOf, refuseMissingModelOffline, localOnlyOptions,
+  verifyPinnedModel, pinnedLoadOptions, disposeQuietly,
+} from './transformers-base.js'
 
 export const EMBEDDING_GEMMA_MODEL_ID = 'onnx-community/embeddinggemma-300m-ONNX'
 const DIM = 768
@@ -64,10 +67,20 @@ async function load(): Promise<{ tokenizer: Tok; model: Mdl }> {
       // library is asked (audit 6, N4). The tokenizer loader looks up
       // tokenizer_config.json remotely without the options passed below, so
       // `local_files_only` alone still reached the network.
+      // Pinned revision and verified files (security audit 2026-11-06,
+      // H-x03-1): checked before the load, and again after it for what it
+      // downloaded, before the model is used.
+      await verifyPinnedModel(EMBEDDING_GEMMA_MODEL_ID, GEMMA_WEIGHTS, cacheDir, 'before', 'embedding model')
       await refuseMissingModelOffline(EMBEDDING_GEMMA_MODEL_ID, GEMMA_WEIGHTS, 'embedding model')
-      const offline = localOnlyOptions()
+      const offline = { ...pinnedLoadOptions(EMBEDDING_GEMMA_MODEL_ID), ...localOnlyOptions() }
       const tokenizer = (await AutoTokenizer.from_pretrained(EMBEDDING_GEMMA_MODEL_ID, offline)) as unknown as Tok
       const model = (await AutoModel.from_pretrained(EMBEDDING_GEMMA_MODEL_ID, { dtype: 'q8', ...offline })) as unknown as Mdl
+      try {
+        await verifyPinnedModel(EMBEDDING_GEMMA_MODEL_ID, GEMMA_WEIGHTS, cacheDir, 'after', 'embedding model')
+      } catch (err) {
+        await disposeQuietly(model)
+        throw err
+      }
       gemmaLoaded = true
       return { tokenizer, model }
     })()

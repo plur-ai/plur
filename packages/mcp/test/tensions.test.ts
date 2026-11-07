@@ -5,6 +5,9 @@ import * as path from 'path'
 import { Plur } from '@plur-ai/core'
 import { getToolDefinitions } from '../src/tools.js'
 
+// LLM calls use a loopback base URL (fetch is stubbed): an agent-supplied
+// llm_base_url must be loopback or listed in config.yaml (security audit 2026-11-06).
+
 function tmpDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'plur-tensions-'))
 }
@@ -78,7 +81,7 @@ describe('plur_tensions tool', () => {
     }) as any
     try {
       const result = await tensionsTool.handler({
-        scan: true, llm_base_url: 'https://api.openai.com/v1', llm_api_key: 'test-key',
+        scan: true, llm_base_url: 'http://127.0.0.1:9/v1', llm_api_key: 'test-key',
       }, plur) as any
       expect(result.count).toBeGreaterThan(0)
       expect(result.tensions[0].tension_id).toMatch(/^T-/)
@@ -178,7 +181,7 @@ describe('plur_tensions scan mode', () => {
 
     const result = await tensionsTool.handler({
       scan: true,
-      llm_base_url: 'https://api.openai.com/v1',
+      llm_base_url: 'http://127.0.0.1:9/v1',
       llm_api_key: 'test-key',
     }, plur) as any
 
@@ -204,7 +207,7 @@ describe('plur_tensions scan mode', () => {
 
     const result = await tensionsTool.handler({
       scan: true,
-      llm_base_url: 'https://api.openai.com/v1',
+      llm_base_url: 'http://127.0.0.1:9/v1',
       llm_api_key: 'test-key',
     }, plur) as any
 
@@ -226,7 +229,7 @@ describe('plur_tensions scan mode', () => {
 
     const result = await tensionsTool.handler({
       scan: true,
-      llm_base_url: 'https://api.openai.com/v1',
+      llm_base_url: 'http://127.0.0.1:9/v1',
       llm_api_key: 'test-key',
       min_confidence: 0.3,
     }, plur) as any
@@ -251,7 +254,7 @@ describe('plur_tensions scan mode', () => {
 
     const result = await tensionsTool.handler({
       scan: true,
-      llm_base_url: 'https://api.openai.com/v1',
+      llm_base_url: 'http://127.0.0.1:9/v1',
       llm_api_key: 'test-key',
     }, plur) as any
 
@@ -278,7 +281,7 @@ describe('plur_tensions scan mode', () => {
 
     const result = await tensionsTool.handler({
       scan: true,
-      llm_base_url: 'https://api.openai.com/v1',
+      llm_base_url: 'http://127.0.0.1:9/v1',
       llm_api_key: 'test-key',
       batch_size: 1,
     }, plur) as any
@@ -359,7 +362,7 @@ describe('plur_tensions temporal config wiring (#240)', () => {
     globalThis.fetch = fetchMock as any
 
     const result = await tensionsTool.handler({
-      scan: true, llm_base_url: 'https://api.openai.com/v1', llm_api_key: 'k',
+      scan: true, llm_base_url: 'http://127.0.0.1:9/v1', llm_api_key: 'k',
     }, plur) as any
 
     expect(result.pairs_checked).toBe(0)
@@ -382,7 +385,7 @@ describe('plur_tensions temporal config wiring (#240)', () => {
     globalThis.fetch = fetchMock as any
 
     const result = await tensionsTool.handler({
-      scan: true, llm_base_url: 'https://api.openai.com/v1', llm_api_key: 'k',
+      scan: true, llm_base_url: 'http://127.0.0.1:9/v1', llm_api_key: 'k',
     }, plur) as any
 
     expect(result.pairs_checked).toBe(1)
@@ -399,7 +402,7 @@ describe('plur_tensions temporal config wiring (#240)', () => {
     globalThis.fetch = yesLlm() as any
 
     const result = await tensionsTool.handler({
-      scan: true, llm_base_url: 'https://api.openai.com/v1', llm_api_key: 'k',
+      scan: true, llm_base_url: 'http://127.0.0.1:9/v1', llm_api_key: 'k',
       temporal_discount: true, min_confidence: 0.2,
     }, plur) as any
 
@@ -417,7 +420,7 @@ describe('plur_tensions temporal config wiring (#240)', () => {
     globalThis.fetch = yesLlm() as any
 
     const result = await tensionsTool.handler({
-      scan: true, llm_base_url: 'https://api.openai.com/v1', llm_api_key: 'k',
+      scan: true, llm_base_url: 'http://127.0.0.1:9/v1', llm_api_key: 'k',
       min_confidence: 0.2,
     }, plur) as any
 
@@ -472,7 +475,7 @@ describe('plur_learn supersedes (#240)', () => {
     globalThis.fetch = fetchMock as any
     try {
       const result = await tensionsTool.handler({
-        scan: true, llm_base_url: 'https://api.openai.com/v1', llm_api_key: 'k',
+        scan: true, llm_base_url: 'http://127.0.0.1:9/v1', llm_api_key: 'k',
       }, plur) as any
       expect(result.pairs_checked).toBe(0)
       expect(fetchMock).not.toHaveBeenCalled()

@@ -8,6 +8,7 @@ import json
 import os
 import re
 import sys
+import threading
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -18,6 +19,12 @@ BIND_HOST = os.environ.get("HEARTBEAT_HOST", "127.0.0.1")
 BIND_PORT = int(os.environ.get("HEARTBEAT_PORT", "8001"))
 MAX_BODY = 1024  # bytes
 SOCKET_TIMEOUT = int(os.environ.get("HEARTBEAT_TIMEOUT", "10"))
+# Security audit 2026-11-06: the endpoint is unauthenticated, so what it
+# retains must be bounded by construction, not only by the proxy's rate limit.
+# One record per install_id per UTC day, and a hard cap on each day's file.
+MAX_DAILY_BYTES = int(os.environ.get("HEARTBEAT_MAX_DAILY_BYTES", str(16 * 1024 * 1024)))
+MAX_COUNT = 10**9
+MAX_VERSION_LEN = 64
 
 UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -38,18 +45,59 @@ def validate(payload: dict) -> Optional[str]:
     missing = required - payload.keys()
     if missing:
         return f"missing fields: {', '.join(sorted(missing))}"
-    if not isinstance(payload["install_id"], str) or not UUID_RE.match(payload["install_id"]):
+    if not isinstance(payload["install_id"], str) or not UUID_RE.fullmatch(payload["install_id"]):
         return "install_id must be UUID v4"
-    if not isinstance(payload["version"], str) or not VERSION_RE.match(payload["version"]):
+    if not isinstance(payload["version"], str) or len(payload["version"]) > MAX_VERSION_LEN or not VERSION_RE.fullmatch(payload["version"]):
         return "version must match semver"
-    if payload["platform"] not in PLATFORMS:
+    if not isinstance(payload["platform"], str) or payload["platform"] not in PLATFORMS:
         return f"platform must be one of {PLATFORMS}"
-    if not isinstance(payload["date"], str) or not DATE_RE.match(payload["date"]):
+    if not isinstance(payload["date"], str) or not DATE_RE.fullmatch(payload["date"]):
         return "date must be YYYY-MM-DD"
     for field in ("learn_count", "recall_count", "session_count"):
-        if not isinstance(payload[field], int) or isinstance(payload[field], bool) or payload[field] < 0:
+        if not isinstance(payload[field], int) or isinstance(payload[field], bool) or payload[field] < 0 or payload[field] > MAX_COUNT:
             return f"{field} must be non-negative integer"
     return None
+
+
+_seen_lock = threading.Lock()
+_seen_day: Optional[str] = None
+_seen_ids: set = set()
+
+
+def _load_seen(path: Path) -> set:
+    ids = set()
+    try:
+        with open(path) as f:
+            for line in f:
+                try:
+                    ids.add(json.loads(line).get("install_id"))
+                except (json.JSONDecodeError, AttributeError):
+                    continue
+    except FileNotFoundError:
+        pass
+    return ids
+
+
+def persist(payload: dict, data_dir: Path, date_str: str) -> str:
+    """Append one heartbeat; returns 'written', 'duplicate' or 'full'."""
+    global _seen_day, _seen_ids
+    out_path = data_dir / f"{date_str}.jsonl"
+    line = json.dumps(payload, separators=(",", ":")) + "\n"
+    with _seen_lock:
+        # Keyed by the day's file, not just the date, so a changed data dir
+        # never reuses another directory's seen set.
+        if _seen_day != str(out_path):
+            _seen_day, _seen_ids = str(out_path), _load_seen(out_path)
+        if payload["install_id"] in _seen_ids:
+            return "duplicate"
+        data_dir.mkdir(parents=True, exist_ok=True)
+        size = out_path.stat().st_size if out_path.exists() else 0
+        if size + len(line) > MAX_DAILY_BYTES:
+            return "full"
+        with open(out_path, "a") as f:
+            f.write(line)
+        _seen_ids.add(payload["install_id"])
+        return "written"
 
 
 class HeartbeatHandler(BaseHTTPRequestHandler):
@@ -100,12 +148,9 @@ class HeartbeatHandler(BaseHTTPRequestHandler):
             return
 
         date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        out_path = DATA_DIR / f"{date_str}.jsonl"
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
-
-        line = json.dumps(payload, separators=(",", ":")) + "\n"
-        with open(out_path, "a") as f:
-            f.write(line)
+        if persist(payload, DATA_DIR, date_str) == "full":
+            self.send_plain(429, "daily capacity reached")
+            return
 
         self.send_response(204)
         self.end_headers()

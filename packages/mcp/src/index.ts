@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 export {}
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, statSync } from 'fs'
-import { join } from 'path'
+import { existsSync, readFileSync, mkdirSync, readdirSync, statSync } from 'fs'
+import { dirname, join, resolve } from 'path'
 import { fileURLToPath } from 'url'
 import { homedir, platform } from 'os'
 
@@ -267,7 +267,11 @@ export async function installClaudeMd(claudeMdPath: string = defaultClaudeMdPath
   if (r.status === 'skipped') return `not written to ${claudeMdPath}: ${r.skipReason}`
   let backup: string | null
   try {
-    backup = r.status === 'already' ? null : writeWithBackup(claudeMdPath, r.content, existing)
+    // A CLAUDE.md taken from the working directory is the project's file: it may
+    // not write through a symlink out of the project (security audit 2026-11-06).
+    const confineTo = resolve(dirname(claudeMdPath)) === resolve(process.cwd()) && resolve(process.cwd()) !== resolve(homedir())
+      ? process.cwd() : undefined
+    backup = r.status === 'already' ? null : writeWithBackup(claudeMdPath, r.content, existing, { confineTo })
   } catch (err) {
     // A write PLUR declined (a dangling symlink, an edit made meanwhile): say
     // so and let the rest of the install carry on.
@@ -515,9 +519,13 @@ export function applyPlurHooks(
  * `plur init` had just migrated (#1469 review). plur-mcp init has no
  * `--project`; use `plur init --project` for a per-repo placement.
  */
-function installHooks(): string {
+export async function installHooks(): Promise<string> {
+  const { writeWithBackup } = await import('@plur-ai/core')
   const settingsPath = join(homedir(), '.claude', 'settings.json')
 
+  // The bytes the edit is based on: writeWithBackup refuses a file that
+  // changed after this read instead of overwriting the user's edit.
+  const settingsRaw = existsSync(settingsPath) ? readFileSync(settingsPath, 'utf8') : null
   const settingsRead = readJsonObjectForWrite(settingsPath)
   if (!settingsRead.ok) {
     return `skipped — ${settingsPath} exists but is not a JSON object; writing would discard your other settings. Fix it by hand, then re-run \`plur-mcp init\``
@@ -529,10 +537,20 @@ function installHooks(): string {
 
   const dir = join(settingsPath, '..')
   mkdirSync(dir, { recursive: true })
-  writeFileSync(settingsPath, JSON.stringify(next, null, 2) + '\n')
+  // A backup and a temp-file rename, as every other config write here
+  // (security audit 2026-11-06, hardening): an in-place write that dies
+  // half-way left ~/.claude/settings.json truncated, with every other
+  // setting in it lost and no copy to restore.
+  let backup: string | null
+  try {
+    backup = writeWithBackup(settingsPath, JSON.stringify(next, null, 2) + '\n', settingsRaw)
+  } catch (err) {
+    return `skipped — ${settingsPath} was not changed (${(err as Error).message})`
+  }
+  const saved = backup ? ` (backup: ${backup})` : ''
   return status === 'healed'
-    ? `updated PLUR hooks (SessionStart compact/resume) in ${settingsPath}`
-    : `installed in ${settingsPath}`
+    ? `updated PLUR hooks (SessionStart compact/resume) in ${settingsPath}${saved}`
+    : `installed in ${settingsPath}${saved}`
 }
 
 async function runInit() {
@@ -559,7 +577,7 @@ async function runInit() {
   results.push(`MCP:      ${mcpStatus}`)
 
   // Step 3: Install Claude Code hooks
-  const hooksStatus = installHooks()
+  const hooksStatus = await installHooks()
   results.push(`Hooks:    ${hooksStatus}`)
 
   // Step 4: Add PLUR section to CLAUDE.md

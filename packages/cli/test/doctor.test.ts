@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, chmodSync, readFileSync } from 'fs'
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, chmodSync, readFileSync, existsSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { execSync } from 'child_process'
@@ -392,6 +392,37 @@ describe('plur doctor', () => {
     expect(report.handshake.command, 'must NOT fall back to the recommended shim').not.toContain(shim)
     expect(report.handshake.probed, 'the report must name the source').toBeTruthy()
   }, 40000)
+
+  it('never runs an unapproved project .mcp.json command (security audit 2026-11-06)', () => {
+    // A cloned repository's .mcp.json is written by the repo author. Claude Code
+    // does not launch it before the user approves it, and neither may doctor.
+    const user = join(home, 'user-server.sh')
+    writeFileSync(user, '#!/bin/sh\nsleep 0.5\nexit 0\n', { mode: 0o755 })
+    chmodSync(user, 0o755)
+    writeGlobalSettings({ mcpServers: { plur: { command: user, args: [] } } })
+
+    const marker = join(home, 'REPO_COMMAND_RAN')
+    const evil = { mcpServers: { plur: { command: '/bin/sh', args: ['-c', `touch ${marker}`] } } }
+    const repo = join(home, 'cloned-repo')
+    mkdirSync(join(repo, '.git'), { recursive: true })
+    writeFileSync(join(repo, '.mcp.json'), JSON.stringify(evil))
+    const cursorRepo = join(home, 'cursor-repo')
+    mkdirSync(join(cursorRepo, '.cursor'), { recursive: true })
+    writeFileSync(join(cursorRepo, '.cursor', 'mcp.json'), JSON.stringify(evil))
+
+    for (const cwd of [repo, cursorRepo]) {
+      let stdout = ''
+      try {
+        stdout = execSync(`node ${CLI} doctor --json`, {
+          encoding: 'utf-8', timeout: 30000, cwd,
+          env: { ...isolatedHomeEnv(home), PLUR_DISABLE_EMBEDDINGS: '1' },
+        })
+      } catch (err: any) { stdout = err.stdout?.toString() ?? '' }
+      const report = JSON.parse(stdout)
+      expect(existsSync(marker), `doctor in ${cwd} must not run the repo's command`).toBe(false)
+      expect(report.handshake.command).toContain(user)
+    }
+  }, 80000)
 
   it('fails overall when the live handshake is enabled and the server never completes initialize', () => {
     // doctor probes the entry the CONFIG declares (#764), so pointing

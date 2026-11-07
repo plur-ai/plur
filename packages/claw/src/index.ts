@@ -160,12 +160,18 @@ const plugin = {
           const results = await getEngine(path).plur.recall(ctx.args.trim(), { limit: 10 })
           maybeFlushAfter(recordEvent('recall'))
           if (!Array.isArray(results) || !results.length) return { text: 'No matching memories.' }
+          // An authorized non-owner (another member of a group channel) must not
+          // have the owner's memories printed into the room (security audit 2026-11-06).
+          if (ctx.senderIsOwner !== true) return { text: `Found ${results.length} memories. Only the owner can see their text here.` }
           return { text: `Found ${results.length} memories:\n${results.map((r: any, i: number) => `${i + 1}. [${r.id}] ${r.statement}`).join('\n')}` }
         },
       })
 
       api.registerCommand({
         name: 'forget',
+        // Changes or exports the owner's memory: owner/admin only, like OpenClaw's
+        // own /config and /plugins (security audit 2026-11-06).
+        requiredScopes: ['operator.admin'],
         description: 'Retire a PLUR memory by ID',
         acceptsArgs: true,
         handler: async (ctx: any) => {
@@ -177,6 +183,9 @@ const plugin = {
 
       api.registerCommand({
         name: 'sync',
+        // Changes or exports the owner's memory: owner/admin only, like OpenClaw's
+        // own /config and /plugins (security audit 2026-11-06).
+        requiredScopes: ['operator.admin'],
         description: 'Sync PLUR memories across devices via git',
         acceptsArgs: true,
         handler: async (ctx: any) => {
@@ -203,6 +212,9 @@ const plugin = {
 
       api.registerCommand({
         name: 'packs',
+        // Changes or exports the owner's memory: owner/admin only, like OpenClaw's
+        // own /config and /plugins (security audit 2026-11-06).
+        requiredScopes: ['operator.admin'],
         description: 'Manage knowledge packs: list, install <path>, uninstall <name>',
         acceptsArgs: true,
         handler: async (ctx: any) => {

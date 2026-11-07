@@ -8,7 +8,8 @@
  */
 import { existsSync, readFileSync } from 'fs'
 import yaml from 'js-yaml'
-import { atomicWrite } from './sync.js'
+import { atomicWrite, storeFileMode } from './sync.js'
+import { dirname, join } from 'path'
 import { parseRecordArrayFile } from './engrams.js'
 import { TensionRecordSchema, type TensionRecord, type TensionCategory } from './schemas/tension.js'
 import type { Engram } from './schemas/engram.js'
@@ -48,7 +49,9 @@ export function loadTensions(path: string): TensionRecord[] {
  */
 export function saveTensions(path: string, records: TensionRecord[], quarantined: unknown[] = []): void {
   const out = quarantined.length > 0 ? [...records, ...(quarantined as TensionRecord[])] : records
-  atomicWrite(path, yaml.dump(out, { lineWidth: 120, noRefs: true }))
+  // Same mode as the store's engrams.yaml: tensions name engrams and must never
+  // be readable by more accounts than the store (security audit 2026-11-06).
+  atomicWrite(path, yaml.dump(out, { lineWidth: 120, noRefs: true }), { mode: storeFileMode(join(dirname(path), 'engrams.yaml')) })
 }
 
 /**

@@ -1,8 +1,9 @@
-import { readSync, mkdirSync, writeFileSync, existsSync, statSync, lstatSync, readFileSync, readdirSync, unlinkSync } from 'fs'
+import { readSync, writeFileSync, existsSync, statSync, lstatSync, readFileSync, readdirSync, unlinkSync } from 'fs'
 import { join, dirname } from 'path'
 import { tmpdir } from 'os'
 import { cursorContextRulePath, cursorReminderRulePath } from '../mcp-config.js'
 import { safeSessionKey } from './session-key.js'
+import { writeFileNoFollow } from './no-follow-write.js'
 import { ensureSessionDir, sessionDirSafeToSweep, sessionDirTrusted, ticketCounter } from './codex-hook-io.js'
 
 /**
@@ -291,10 +292,13 @@ export function removeGeneratedContextRules(dir: string): void {
  * giving reminders their own file fixes this without needing to merge or
  * section-split file content.
  */
-export function writeContextRule(content: string, path: string = cursorContextRulePath()): void {
-  mkdirSync(dirname(path), { recursive: true })
-  writeFileSync(
-    path,
-    CONTEXT_RULE_HEADER + `${content}\n`,
-  )
+export function writeContextRule(content: string, path: string = cursorContextRulePath()): boolean {
+  // The rule lives at <workspace>/.cursor/rules/<name>.mdc, and the repository
+  // controls everything under <workspace>. A committed symlink at .cursor,
+  // .cursor/rules or the leaf used to be followed, rewriting a file outside
+  // the workspace with PLUR's text or recalled memory (security audit
+  // 2026-11-06). Write only real files in real directories; a refused write
+  // fails open — the hook's additional_context still carries the content.
+  const workspace = dirname(dirname(dirname(path)))
+  return writeFileNoFollow(workspace, path, CONTEXT_RULE_HEADER + `${content}\n`)
 }

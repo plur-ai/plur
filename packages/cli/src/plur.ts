@@ -80,6 +80,14 @@ export function parseGlobalFlags(rawArgv: string[]): {
       if (value === undefined || /^--[A-Za-z]/.test(value)) {
         error = error ?? `--path needs a directory, but the next argument was ${value ?? '(nothing)'}.`
         i += 1
+      } else if (flags.path !== undefined && flags.path !== value) {
+        // A second, different --path is refused (security audit 2026-11-06).
+        // This parser cannot tell a real global flag from a `--path=/x` token
+        // sitting in a command flag's value slot (`--source --path=/x`), and
+        // last-wins let such a value override the store the caller named.
+        error = error ?? `--path was given twice with different directories (${flags.path} and ${value}); `
+          + 'refusing to guess which store you meant.'
+        i += 2
       } else { flags.path = value; i += 2 }
     }
     else {

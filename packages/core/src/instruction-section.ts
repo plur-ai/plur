@@ -4,7 +4,7 @@ import {
   writeFileSync,
 } from 'fs'
 import { randomBytes } from 'crypto'
-import { basename, dirname, join } from 'path'
+import { basename, dirname, isAbsolute, join, relative } from 'path'
 
 /**
  * Put PLUR's instruction section into a file the user also writes in
@@ -503,7 +503,12 @@ export class InstructionWriteRefused extends Error {
  * refused too. A file that is not writable is refused before anything is
  * copied (re-audit low d).
  */
-export function writeWithBackup(path: string, content: string, expected?: string | Buffer | null): string | null {
+export function writeWithBackup(
+  path: string,
+  content: string,
+  expected?: string | Buffer | null,
+  opts?: { confineTo?: string },
+): string | null {
   const asBuffer = (v: string | Buffer) => (typeof v === 'string' ? Buffer.from(v) : v)
   let link: ReturnType<typeof lstatSync> | null = null
   try { link = lstatSync(path) } catch { link = null }
@@ -526,6 +531,18 @@ export function writeWithBackup(path: string, content: string, expected?: string
   }
 
   const target = realpathSync(path)
+  // A file PLUR picked up from the working directory (a project CLAUDE.md /
+  // AGENTS.md) may be a symlink the repository shipped. Following it out of the
+  // project let `plur-mcp init` append its section to ~/.gitconfig or any other
+  // file the user can write (security audit 2026-11-06). Callers pass the
+  // project directory; a target that resolves outside it is refused.
+  if (opts?.confineTo) {
+    const root = realpathSync(opts.confineTo)
+    const rel = relative(root, target)
+    if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) {
+      throw new InstructionWriteRefused(`it is a symlink to ${target}, outside ${root} — PLUR will not write through it`)
+    }
+  }
   accessSync(target, constants.W_OK)
   const original = readFileSync(target)
   const st = statSync(target)

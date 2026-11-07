@@ -117,11 +117,23 @@ function straightApostrophes(text: string): string {
   return text.replace(/[\u2018\u2019\u02bc]/g, "'")
 }
 
+/** `t` without leading/trailing `'` and `-`. */
+function trimQuotesAndDashes(t: string): string {
+  // An index loop, not /^['-]+|['-]+$/: that regex backtracks quadratically
+  // on one token holding a long interior run ("a----…--b"), measured at over
+  // a second for 40k characters (security audit 2026-11-06, hardening).
+  let start = 0
+  let end = t.length
+  while (start < end && (t[start] === "'" || t[start] === '-')) start++
+  while (end > start && (t[end - 1] === "'" || t[end - 1] === '-')) end--
+  return start === 0 && end === t.length ? t : t.slice(start, end)
+}
+
 function tokens(text: string): string[] {
   // Inner apostrophes and hyphens belong to the word ("don't", "zebra-quartz");
   // leading/trailing ones are quote marks and dashes around it.
   return (straightApostrophes(text.toLowerCase()).match(/[\p{L}\p{N}_'-]+/gu) ?? [])
-    .map(t => t.replace(/^['-]+|['-]+$/g, ''))
+    .map(trimQuotesAndDashes)
     .filter(Boolean)
 }
 
@@ -169,22 +181,50 @@ function isCorrection(sentence: string): boolean {
     || (LEADING_MARKER.test(sentence) && CONTRADICTION_CUE.test(sentence))
 }
 
-/** Rate one injected engram against the assistant's reply. */
-export function detectInjectionSignal(statement: string, reply: string): InjectionSignalResult {
-  const stmtWords = tokens(statement)
-  const sents = sentences(reply)
+/**
+ * How much of a reply is rated: its last 64 KiB (characters). A verdict is
+ * about what the reply says it did, which sits at its end; the cap bounds the
+ * work of a huge reply (security audit 2026-11-06, hardening).
+ */
+const MAX_RATED_REPLY_CHARS = 64 * 1024
+
+/** A reply split and tokenized once, shared by every engram rated against it. */
+interface PreparedReply {
+  sents: string[]
+  /** The reply's tokens, each tagged with the sentence it sits in. */
+  flat: string[]
+  sentOf: number[]
+  /** isCorrection by sentence index, computed at most once per sentence. */
+  correctionMemo: Array<boolean | undefined>
+  /** Each sentence's token set, built on first use. */
+  wordsMemo: Array<Set<string> | undefined>
+}
+
+function prepareReply(reply: string): PreparedReply {
+  const tail = reply.length > MAX_RATED_REPLY_CHARS ? reply.slice(-MAX_RATED_REPLY_CHARS) : reply
+  const sents = sentences(tail)
   // The reply's tokens, each tagged with the sentence it sits in, so a match
   // can be traced back to the sentences that hold it.
   const flat: string[] = []
   const sentOf: number[] = []
   sents.forEach((s, i) => { for (const t of tokens(s)) { flat.push(t); sentOf.push(i) } })
+  return { sents, flat, sentOf, correctionMemo: new Array(sents.length), wordsMemo: new Array(sents.length) }
+}
+
+/** Rate one injected engram against the assistant's reply. */
+export function detectInjectionSignal(statement: string, reply: string): InjectionSignalResult {
+  return signalFor(statement, prepareReply(reply))
+}
+
+function signalFor(statement: string, prepared: PreparedReply): InjectionSignalResult {
+  const stmtWords = tokens(statement)
+  const { sents, flat, sentOf, correctionMemo, wordsMemo } = prepared
   if (stmtWords.length === 0 || flat.length === 0) return { signal: null, confidence: 0 }
 
   // isCorrection by sentence index, computed at most once per sentence. Every
   // occurrence asks about its own sentence and the next one; without the memo
   // a long sentence full of occurrences was re-scanned once per occurrence,
   // which is quadratic (a 1 MiB reply took over a minute).
-  const correctionMemo: Array<boolean | undefined> = new Array(sents.length)
   const sentenceCorrects = (i: number): boolean =>
     (correctionMemo[i] ??= isCorrection(sents[i]))
 
@@ -277,9 +317,9 @@ export function detectInjectionSignal(statement: string, reply: string): Injecti
   )
   if (distinctive.length > 0) {
     const needed = Math.min(NEGATIVE_MIN_SHARED_WORDS, distinctive.length)
-    for (const sentence of sents) {
-      if (!isCorrection(sentence)) continue
-      const words = new Set(tokens(sentence))
+    for (let i = 0; i < sents.length; i++) {
+      if (!sentenceCorrects(i)) continue
+      const words = (wordsMemo[i] ??= new Set(tokens(sents[i])))
       const hits = distinctive.filter(w => words.has(w)).length
       if (hits >= needed) return { signal: 'negative', confidence: NEGATIVE_CONFIDENCE }
     }
@@ -298,9 +338,12 @@ export function rateInjectedEngrams(
   minConfidence: number = AUTO_FEEDBACK_MIN_CONFIDENCE,
 ): RatedEngram[] {
   const out: RatedEngram[] = []
+  // Tokenized once for all engrams, not once per engram (hardening, security
+  // audit 2026-11-06): the cost was the reply's size times the engram count.
+  let prepared: PreparedReply | undefined
   for (const e of engrams) {
     if (!e.id || !e.statement) continue
-    const { signal, confidence } = detectInjectionSignal(e.statement, reply)
+    const { signal, confidence } = signalFor(e.statement, prepared ??= prepareReply(reply))
     if (signal && confidence >= minConfidence) out.push({ id: e.id, signal, confidence })
   }
   return out

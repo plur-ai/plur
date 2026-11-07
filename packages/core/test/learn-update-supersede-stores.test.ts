@@ -98,21 +98,22 @@ describe('UPDATE across stores: reported only when the target is actually suppre
     expect(ids, 'an UPDATE was reported but the replaced memory is still given').not.toContain(target.id)
   })
 
-  it('readonly secondary target: not reported as UPDATE; saved as an ADD linked to it, target untouched', async () => {
+  it('readonly secondary target: not reported as UPDATE; saved as a plain ADD, target untouched', async () => {
     const { plur, target, sideId } = await secondary(true)
     // Readonly rows are not offered as candidates; a writable neighbour makes the
-    // checker run, and the checker names the readonly row anyway.
+    // checker run, and the checker names the readonly row anyway. An id the
+    // prompt did not offer is no match at all (security audit 2026-11-06): no
+    // supersede, and no related link either.
     await plur.learn(NEIGHBOUR, { scope: SIDE })
     const r = await plur.learnAsync(NEW, { scope: SIDE, llm: says(() => target.id) })
     expect(r.decision).toBe('ADD')
     expect(r.engram.relations?.supersedes ?? []).toEqual([])
-    expect(r.engram.relations?.related ?? []).toContain(target.id)
-    expect(r.likely_duplicate_of?.id).toBe(target.id)
+    expect(r.engram.relations?.related ?? []).not.toContain(target.id)
     const sideNow = await new Plur({ path: side }).getById(sideId)
     expect(sideNow?.relations?.superseded_by ?? []).toEqual([])
   })
 
-  it('pack target: not reported as UPDATE; saved as an ADD linked to it', async () => {
+  it('pack target: not reported as UPDATE; saved as an ADD', async () => {
     const plur = new Plur({ path: dir })
     const src = join(dir, 'pk-source')
     mkdirSync(src, { recursive: true })
@@ -136,7 +137,8 @@ describe('UPDATE across stores: reported only when the target is actually suppre
     const r = await plur.learnAsync(NEW, { scope: 'global', llm: says(() => target.id) })
     expect(r.decision).toBe('ADD')
     expect(r.engram.relations?.supersedes ?? []).toEqual([])
-    expect(r.engram.relations?.related ?? []).toContain(target.id)
+    // Pack rows are not offered as candidates, so the id is no match (security audit 2026-11-06).
+    expect(r.engram.relations?.related ?? []).not.toContain(target.id)
   })
 
   it('secondary target locked between the read and the write: not superseded, the new one is a draft, review opened', async () => {

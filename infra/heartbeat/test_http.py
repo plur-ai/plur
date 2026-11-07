@@ -96,10 +96,21 @@ def test_valid_post_writes_a_line_and_returns_204(ingress):
 def test_repeated_posts_append_rather_than_overwrite(ingress):
     _, _, data_dir = ingress
     for i in range(3):
-        status, _ = request(ingress, body={**VALID, "learn_count": i})
+        status, _ = request(ingress, body={**VALID, "install_id": f"123e4567-e89b-4d3c-a456-42661417400{i}", "learn_count": i})
         assert status == 204
     written = list(data_dir.glob("*.jsonl"))[0]
     assert len(written.read_text().strip().split("\n")) == 3
+
+
+def test_same_install_same_day_is_kept_once(ingress):
+    # Security audit 2026-11-06: the unauthenticated ingress keeps one record
+    # per install per day, so a client cannot grow the file without bound.
+    _, _, data_dir = ingress
+    for i in range(3):
+        status, _ = request(ingress, body={**VALID, "learn_count": i})
+        assert status == 204
+    written = list(data_dir.glob("*.jsonl"))[0]
+    assert len(written.read_text().strip().split("\n")) == 1
 
 
 def test_oversized_body_is_rejected_before_it_is_read(ingress):

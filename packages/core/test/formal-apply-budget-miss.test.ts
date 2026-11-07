@@ -40,7 +40,7 @@ describe('I3 — default miss floor between 1/61 and 2/61', () => {
 describe('I5 — domain is sent as its first dotted segment only', () => {
   const now = new Date('2026-06-14T10:00:00Z')
   const mk = (domain: string | undefined) =>
-    buildMissSignalPayload({ query: 'q', domain, resultCount: 0, topScore: null }, 'no_results', 'id', now).domain
+    buildMissSignalPayload({ query: 'q', domain, resultCount: 0, topScore: null }, 'no_results', 'id', now, 'dummy-key').domain
 
   it('a dotted domain is reduced to its first segment', () => {
     expect(mk('acme-secret.clients.bigbank')).toBe('acme-secret')
@@ -49,7 +49,7 @@ describe('I5 — domain is sent as its first dotted segment only', () => {
 
   it('the rest of the domain path never reaches the wire', () => {
     const payload = buildMissSignalPayload(
-      { query: 'q', domain: 'trading.client-foo.deal-42', resultCount: 0, topScore: null }, 'no_results', 'id', now)
+      { query: 'q', domain: 'trading.client-foo.deal-42', resultCount: 0, topScore: null }, 'no_results', 'id', now, 'dummy-key')
     expect(JSON.stringify(payload)).not.toContain('client-foo')
     expect(JSON.stringify(payload)).not.toContain('deal-42')
   })

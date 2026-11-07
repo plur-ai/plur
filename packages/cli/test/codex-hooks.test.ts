@@ -168,11 +168,7 @@ describe('read/write round trip', () => {
     expect(JSON.parse(readFileSync(path, 'utf8')).description).toBe('mine')
   })
 
-  it('treats a malformed file as empty when READING (init refuses to write over it)', () => {
-    const path = join(dir, 'hooks.json')
-    writeFileSync(path, '{ not json')
-    expect(readCodexHooksConfig(path)).toEqual({ hooks: {} })
-  })
+  // A malformed file now throws when read: test/codex-hooks-read-strict.test.ts.
 
   it('reads a config with no hooks key without throwing', () => {
     const path = join(dir, 'hooks.json')

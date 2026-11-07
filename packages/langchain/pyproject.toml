@@ -22,7 +22,11 @@ classifiers = [
 ]
 dependencies = [
   "langchain-core>=0.2,<0.3",
-  "plur-ai>=0.10.0",
+  # auto-learn passes learn(claim_class=...) so core runs its prompt-injection
+  # refusal on harvested text (security audit 2026-11-06); the in-repo
+  # plur-ai accepts it from 0.23.0 on. An older plur-ai raises TypeError,
+  # which auto-learn swallows: nothing is learned, so it fails closed.
+  "plur-ai>=0.23.0",
 ]
 
 [project.optional-dependencies]

@@ -49,8 +49,12 @@ class Plur:
         tags: Iterable[str] | None = None,
         source: str | None = None,
         rationale: str | None = None,
+        claim_class: str | None = None,
     ) -> dict:
         """Store a correction, preference, or convention. Returns the engram.
+
+        ``claim_class="inferred"`` marks an automatically harvested statement;
+        core then refuses it if it carries a prompt-injection pattern.
 
         The statement is stored verbatim. One that starts with ``-`` (for example
         ``"--dry-run is required"``) is sent on stdin: in argv the CLI would read
@@ -70,6 +74,8 @@ class Plur:
             args += ["--rationale", rationale]
         if tags:
             args += ["--tags", ",".join(tags)]
+        if claim_class:
+            args += ["--claim-class", claim_class]
         return self._run(args, input=statement if on_stdin else None) or {}
 
     def recall(self, query: str, *, limit: int | None = None) -> list[dict]:
