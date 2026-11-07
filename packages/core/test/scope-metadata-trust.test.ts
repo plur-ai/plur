@@ -115,8 +115,11 @@ describe('F1: remote `allow` cannot disarm the leak guard', () => {
     // categories dropped, empty → safe default); persistScopeMetadata adds a
     // belt-and-braces sanitize for discoveries built by other callers. Feed a
     // hand-built discovery with junk categories straight into the persist.
+    // The local forbid is ['secrets'] so the union with the server's sanitized
+    // forbid shows the junk being dropped (security audit 2026-11-06: the
+    // server can only add categories to the local forbid, never remove them).
     const { dir, plur } = makeDir([
-      { url: baseUrl, token: TOKEN, scope: ENG, shared: true, readonly: false },
+      { url: baseUrl, token: TOKEN, scope: ENG, shared: true, readonly: false, sensitivity: { forbid: ['secrets'], allow: [] } },
     ])
     plur.persistScopeMetadata([{
       url: baseUrl, ok: true, authorized: [ENG], registered: [ENG], unregistered: [],
@@ -196,24 +199,28 @@ describe('F2: metadata persist converges (no rewrite-every-session_start loop)',
   })
 
   it('a server forbid change is persisted once (not discarded by the writeback merge), then converges', async () => {
+    // Local policy forbids only secrets; the server adds infra (a tightening).
     server.setMe({
       scope_metadata: [{ scope: ENG, description: 'Eng', covers: ['plur.engineering'], sensitivity: { forbid: ['secrets', 'infra'] } }],
     })
     const { dir, plur } = makeDir([
-      { url: baseUrl, token: TOKEN, scope: ENG, shared: true, readonly: false },
+      { url: baseUrl, token: TOKEN, scope: ENG, shared: true, readonly: false, sensitivity: { forbid: ['secrets'], allow: [] } },
     ])
+    // The tightening must land ON DISK (the pre-audit raw-forbid restore in
+    // mergeStoresForWriteback discarded it).
     await syncMeta(plur)
     expect((await readStores(dir)).find(s => s.scope === ENG)!.sensitivity?.forbid).toEqual(['secrets', 'infra'])
 
-    // Server tightens the policy shape → the change must land ON DISK (the
-    // pre-audit raw-forbid restore in mergeStoresForWriteback discarded it).
+    // A narrower server forbid never removes a category (security audit
+    // 2026-11-06): forbid ['secrets'] would drop 'infra', which is a loosening,
+    // not a tightening. The persisted forbid is the union, so nothing changes.
     server.setMe({
       scope_metadata: [{ scope: ENG, description: 'Eng', covers: ['plur.engineering'], sensitivity: { forbid: ['secrets'] } }],
     })
     await syncMeta(plur)
-    expect((await readStores(dir)).find(s => s.scope === ENG)!.sensitivity?.forbid).toEqual(['secrets'])
+    expect((await readStores(dir)).find(s => s.scope === ENG)!.sensitivity?.forbid).toEqual(['secrets', 'infra'])
 
-    // …and the new state converges: the next identical sync is a no-op.
+    // …and the state converges: the next identical sync is a no-op.
     const before = { mtime: statSync(join(dir, 'config.yaml')).mtimeMs, content: readFileSync(join(dir, 'config.yaml'), 'utf8') }
     await new Promise(r => setTimeout(r, 15))
     await syncMeta(plur)

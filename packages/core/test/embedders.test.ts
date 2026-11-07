@@ -94,6 +94,13 @@ async function captureTokenizerInputs(
     AutoTokenizer: { from_pretrained: async () => (text: string) => { inputs.push(text); return {} } },
     AutoModel: { from_pretrained: async () => async () => ({ sentence_embedding: { data: new Float32Array(768) } }) },
   }))
+  // The mocked model writes no files, so pin it with none (security audit
+  // 2026-11-06, H-x03-1: an unpinned model is refused; model-pinning.test.ts
+  // covers the file checks).
+  const pins = await import('../src/embedders/model-pins.js')
+  pins._setModelPinsForTesting({
+    'onnx-community/embeddinggemma-300m-ONNX': { revision: 'c0ffee0000000000000000000000000000000001', files: {} },
+  })
   const { makeEmbeddingGemmaAdapter: mk } = await import('../src/embedders/embedding-gemma.js')
   const adapter = mk()
   for (const [text, role] of calls) await adapter.embed(text, role)

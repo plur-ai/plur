@@ -1,11 +1,13 @@
-import { existsSync } from 'fs'
+import { chmodSync, closeSync, existsSync, openSync, statSync } from 'fs'
 import { createRequire } from 'module'
 import { loadEngrams, storePrefix, namespaceEngramId } from './engrams.js'
+import { escapeRegExp } from './redact-token.js'
 import { withoutRemoteOnlyQueued } from './remote-only-rows.js'
 import { isPersonalScope, isScopeWithin } from './scope-util.js'
 import type { Engram } from './schemas/engram.js'
 import type { StoreEntry } from './schemas/config.js'
 import { escapeLikePattern, type StorageFilter } from './storage-adapter.js'
+import { storeFileMode } from './sync.js'
 
 const require = createRequire(import.meta.url)
 
@@ -32,6 +34,21 @@ function getDatabase(): any {
   return Database
 }
 
+// security audit 2026-11-06: engrams.db (and so its WAL/SHM) is never wider than the store files it mirrors.
+export function prepareIndexFiles(dbPath: string, sourceFiles: readonly string[]): void {
+  let want: number | undefined
+  for (const f of sourceFiles) {
+    const m = storeFileMode(f)
+    if (m !== undefined) want = want === undefined ? m : (want & m)
+  }
+  if (want === undefined) return
+  want |= 0o600
+  try {
+    if (!existsSync(dbPath)) closeSync(openSync(dbPath, 'a', want))
+    else if ((statSync(dbPath).mode & 0o777 & ~want) !== 0) chmodSync(dbPath, statSync(dbPath).mode & 0o777 & want)
+  } catch { /* SQLite will create it, or report why it cannot */ }
+}
+
 export class IndexedStorage {
   private dbPath: string
   private engramsPath: string
@@ -47,6 +64,7 @@ export class IndexedStorage {
   private getDb(): any {
     if (!this.db) {
       const DB = getDatabase()
+      prepareIndexFiles(this.dbPath, [this.engramsPath, ...this.stores.flatMap(s => s.path ? [s.path] : [])])
       this.db = new DB(this.dbPath)
       this.db.pragma('journal_mode = WAL')
       this.db.exec(`
@@ -232,7 +250,7 @@ export class IndexedStorage {
     const rows = this.db.prepare("SELECT id, source FROM engrams WHERE source != 'primary'").all() as { id: string; source: string }[]
     const stale = rows.some(r => {
       const want = prefixBySource.get(r.source)
-      return want !== undefined && !new RegExp(`^(ENG|ABS|META)-${want}-`).test(r.id)
+      return want !== undefined && !new RegExp(`^(ENG|ABS|META)-${escapeRegExp(want)}-`).test(r.id)
     })
     if (stale) this.syncFromYaml()
   }

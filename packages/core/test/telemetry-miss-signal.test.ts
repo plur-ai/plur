@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -70,16 +70,16 @@ describe('telemetry miss-signal (WS5 demand flywheel)', () => {
   })
 
   describe('fingerprintQuery (privacy)', () => {
-    it('is a 64-char hex SHA-256 digest, not the query', () => {
-      const fp = fingerprintQuery('how do I deploy the trading bot')
+    it('is a 64-char hex HMAC-SHA-256 digest, not the query', () => {
+      const fp = fingerprintQuery('how do I deploy the trading bot', 'dummy-key')
       expect(fp).toMatch(/^[0-9a-f]{64}$/)
       expect(fp).not.toContain('deploy')
     })
     it('is stable across whitespace/case normalization', () => {
-      expect(fingerprintQuery('Deploy  The  Bot')).toBe(fingerprintQuery('deploy the bot'))
+      expect(fingerprintQuery('Deploy  The  Bot', 'dummy-key')).toBe(fingerprintQuery('deploy the bot', 'dummy-key'))
     })
     it('differs for different queries', () => {
-      expect(fingerprintQuery('alpha')).not.toBe(fingerprintQuery('beta'))
+      expect(fingerprintQuery('alpha', 'dummy-key')).not.toBe(fingerprintQuery('beta', 'dummy-key'))
     })
   })
 
@@ -111,10 +111,11 @@ describe('telemetry miss-signal (WS5 demand flywheel)', () => {
         'no_results',
         'install-abc',
         now,
+        'dummy-key',
       )
       expect(payload).toEqual({
         install_id: 'install-abc',
-        query_fingerprint: fingerprintQuery('secret query text'),
+        query_fingerprint: fingerprintQuery('secret query text', 'dummy-key'),
         scope_type: 'project',
         domain: 'trading',
         reason: 'no_results',
@@ -127,7 +128,7 @@ describe('telemetry miss-signal (WS5 demand flywheel)', () => {
       expect(wire).not.toContain('acme-secret')
     })
     it('nulls absent scope/domain', () => {
-      const payload = buildMissSignalPayload(noResults, 'no_results', 'id', new Date())
+      const payload = buildMissSignalPayload(noResults, 'no_results', 'id', new Date(), 'dummy-key')
       expect(payload.scope_type).toBeNull()
       expect(payload.domain).toBeNull()
     })
@@ -165,7 +166,7 @@ describe('telemetry miss-signal (WS5 demand flywheel)', () => {
       expect(calls).toHaveLength(1)
       const body = calls[0].body
       expect(body.reason).toBe('no_results')
-      expect(body.query_fingerprint).toBe(fingerprintQuery('unanswerable'))
+      expect(body.query_fingerprint).toBe(fingerprintQuery('unanswerable', readFileSync(join(dir, 'miss-signal-key'), 'utf8').trim()))
       expect(JSON.stringify(body)).not.toContain('unanswerable')
     })
 

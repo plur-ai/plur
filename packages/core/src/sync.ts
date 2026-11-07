@@ -844,6 +844,35 @@ function rewriteLocalSiblingRefs(root: string, renamed: ReadonlyMap<string, stri
   return rewrote
 }
 
+/** security audit 2026-11-06: refuse a pull whose incoming commits add or change anything but allowlisted regular files. */
+export function assertIncomingAllowlisted(root: string): void {
+  const branch = gitSafe(['rev-parse', '--abbrev-ref', 'HEAD'], root) || 'main'
+  const ref = `origin/${branch}`
+  if (gitSafe(['rev-parse', '-q', '--verify', ref], root) === null) return // nothing fetched for this branch
+  // Only what the incoming commits ADD or CHANGE is checked, so a remote that
+  // already carries a stale extra file from an older release keeps syncing.
+  // With no HEAD yet, everything is incoming: diff against the empty tree.
+  const range = gitSafe(['rev-parse', '-q', '--verify', 'HEAD'], root) !== null ? ['HEAD...' + ref] : ['4b825dc642cb6eb9a060e54bf8d69288fbee4904', ref]
+  const raw = gitSafe(['diff', '--raw', '-z', '--no-renames', '--diff-filter=AMT', ...range], root)
+  if (raw === null) throw new Error('[plur] refusing to pull: could not list what the sync remote would change')
+  const rootFiles = new Set<string>(SYNC_PATHS.filter(p => p !== 'packs'))
+  const packNames = new Set<string>(PACK_ALLOW_NAMES)
+  const bad: string[] = []
+  const parts = raw.split('\0').filter(Boolean)
+  // --raw -z: ":<old mode> <new mode> <old sha> <new sha> <status>" NUL "<path>" NUL
+  for (let i = 0; i + 1 < parts.length; i += 2) {
+    const mode = parts[i].slice(1).split(' ')[1]
+    const file = parts[i + 1]
+    const allowedPath = rootFiles.has(file) ||
+      (file.startsWith('packs/') && !file.split('/').some(seg => seg === '..' || seg === '') && packNames.has(basename(file)))
+    if (!allowedPath || (mode !== '100644' && mode !== '100755')) bad.push(file)
+  }
+  if (bad.length > 0) {
+    const shown = bad.slice(0, 10).join(', ') + (bad.length > 10 ? `, … (${bad.length} paths)` : '')
+    throw new Error(`[plur] refusing to pull: the sync remote contains files outside the engram store (${shown}). Only ${[...rootFiles].join(', ')} and pack files are synced. Remove them from the remote, or check who can push to it.`)
+  }
+}
+
 /** @returns whether the pull integrated, the sibling files rewritten after a P1b rename (to commit), and held files still waiting. */
 function pullRebase(root: string, remoteType: SyncRemoteType): { ok: boolean; rewroteSiblings: string[]; unresolved: WithheldFile[] } {
   const before = readSiblingsBeforePull(root)
@@ -1330,6 +1359,7 @@ export function sync(root: string, remote?: string, options?: { remoteType?: Syn
   // meant to pull, not what we actually got.
   let pullFailed = false
   if (behind > 0) {
+    assertIncomingAllowlisted(root)
     const storePath = join(root, 'engrams.yaml')
     const before = existsSync(storePath) ? readFileSync(storePath, 'utf8') : null
     const pulledResult = pullRebase(root, remoteType)
@@ -1524,6 +1554,11 @@ export function withLock<T>(
  * tokens and Postgres DSNs (audit 2026-08-03, finding 7). Owner-only.
  */
 export const CONFIG_FILE_MODE = 0o600
+
+/** security audit 2026-11-06: files derived from a store take the store file's mode (undefined when it cannot be stat'ed). */
+export function storeFileMode(storeFile: string): number | undefined {
+  try { return statSync(storeFile).mode & 0o777 } catch { return undefined }
+}
 
 /** Options for {@link atomicWrite}. */
 export interface AtomicWriteOptions {
