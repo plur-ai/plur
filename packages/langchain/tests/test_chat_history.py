@@ -40,6 +40,7 @@ def test_ai_message_triggers_learning():
     history, bridge = _make_history()
     history.add_message(AIMessage(content="I was wrong. The right approach is blue-green."))
     assert bridge.learn.called
+    assert bridge.learn.call_args.kwargs["claim_class"] == "inferred"
 
 
 def test_ai_message_no_learning_when_disabled():

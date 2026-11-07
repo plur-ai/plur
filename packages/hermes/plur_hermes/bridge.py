@@ -150,6 +150,13 @@ class PlurNotFoundError(PlurBridgeError):
     pass
 
 
+def _flag_value(name: str, value: str) -> str:
+    """Refuse a flag value the CLI would parse as a flag (e.g. `--path=/x` re-pointing the store)."""
+    if value.lstrip().startswith("-"):
+        raise PlurBridgeError(f"{name} may not begin with '-': {value!r}")
+    return value
+
+
 class PlurLockError(PlurBridgeError):
     """Raised when the CLI cannot acquire the engram-store write lock.
 
@@ -436,6 +443,7 @@ class PlurBridge:
               dual_coding: dict | None = None,
               abstract: str | None = None,
               derived_from: str | None = None,
+              claim_class: str | None = None,
               force: bool = False) -> dict:
         needle = statement.strip().casefold()
         key = self._cache_key(needle, scope) if needle else ""
@@ -469,27 +477,30 @@ class PlurBridge:
         # could be read as a flag it goes on stdin, which `plur learn` reads
         # when no positional is given; every other statement stays in argv.
         via_stdin = statement.lstrip().startswith("-")
-        args = ([] if via_stdin else [statement]) + ["--type", type]
+        args = ([] if via_stdin else [statement]) + ["--type", _flag_value("type", type)]
         if scope is not None:
-            args.extend(["--scope", scope])
+            args.extend(["--scope", _flag_value("scope", scope)])
         if domain:
-            args.extend(["--domain", domain])
+            args.extend(["--domain", _flag_value("domain", domain)])
         if source:
-            args.extend(["--source", source])
+            args.extend(["--source", _flag_value("source", source)])
         if tags:
-            args.extend(["--tags", ",".join(tags)])
+            args.extend(["--tags", _flag_value("tags", ",".join(tags))])
         if rationale:
-            args.extend(["--rationale", rationale])
+            args.extend(["--rationale", _flag_value("rationale", rationale)])
         if visibility:
-            args.extend(["--visibility", visibility])
+            args.extend(["--visibility", _flag_value("visibility", visibility)])
         if knowledge_anchors:
             args.extend(["--knowledge-anchors", json.dumps(knowledge_anchors)])
         if dual_coding:
             args.extend(["--dual-coding", json.dumps(dual_coding)])
         if abstract:
-            args.extend(["--abstract", abstract])
+            args.extend(["--abstract", _flag_value("abstract", abstract)])
         if derived_from:
-            args.extend(["--derived-from", derived_from])
+            args.extend(["--derived-from", _flag_value("derived_from", derived_from)])
+        # security audit 2026-11-06: harvesters pass "inferred" so core's injection refusal applies
+        if claim_class:
+            args.extend(["--claim-class", _flag_value("claim_class", claim_class)])
         result = self.call("learn", args, stdin=statement if via_stdin else None)
         if result == _SAFE_RESPONSE:
             # call() collapses an exhausted timeout into the read-path safe
@@ -571,13 +582,13 @@ class PlurBridge:
                search: str | None = None) -> dict:
         if not id and not search:
             raise PlurBridgeError("forget() requires either id or search parameter")
+        # security audit 2026-11-06: the target travels after "--" so it cannot re-point the store
         args: list[str] = []
-        if id:
-            args.append(id)
         if search:
-            args.extend(["--search", search])
+            args.append("--search")
         if reason:
-            args.extend(["--reason", reason])
+            args.extend(["--reason", _flag_value("reason", reason)])
+        args += ["--", id or search]
         # A forget invalidates the dedup cache (formal R2 #5): a cached entry
         # would otherwise report a retired engram as the live duplicate until
         # its TTL runs out. Cleared before the call — a failed or timed-out
@@ -592,10 +603,11 @@ class PlurBridge:
             return self.call("feedback", args)
         if not id or not signal:
             raise PlurBridgeError("feedback() requires id and signal, or batch parameter")
-        return self.call("feedback", [id, signal])
+        # security audit 2026-11-06: feedback/promote do not honour "--", so flag-like values are refused
+        return self.call("feedback", [_flag_value("id", id), _flag_value("signal", signal)])
 
     def promote(self, id: str) -> dict:
-        return self.call("promote", [id])
+        return self.call("promote", [_flag_value("id", id)])
 
     def stores_add(self, path: str, scope: str = "global",
                    shared: bool = False, readonly: bool = False) -> dict:
@@ -611,15 +623,17 @@ class PlurBridge:
 
     def ingest(self, content: str, source: str | None = None, extract_only: bool = False,
                scope: str | None = None, domain: str | None = None) -> dict:
-        args = [content]
+        # security audit 2026-11-06: content travels after "--" so it cannot re-point the store
+        args: list[str] = []
         if source:
-            args.extend(["--source", source])
+            args.extend(["--source", _flag_value("source", source)])
         if scope:
-            args.extend(["--scope", scope])
+            args.extend(["--scope", _flag_value("scope", scope)])
         if domain:
-            args.extend(["--domain", domain])
+            args.extend(["--domain", _flag_value("domain", domain)])
         if extract_only:
             args.append("--extract-only")
+        args += ["--", content]
         return self.call("ingest", args)
 
     def capture(self, summary: str, agent: str = "hermes", session: str | None = None) -> dict:
@@ -632,8 +646,9 @@ class PlurBridge:
         return self.call("capture", args, stdin=summary if via_stdin else None)
 
     def timeline(self, query: str | None = None, limit: int = 20) -> dict:
+        # security audit 2026-11-06: the query travels after "--" so it cannot re-point the store
         args = ["--limit", str(limit)]
-        if query: args.insert(0, query)
+        if query: args += ["--", query]
         return self.call("timeline", args)
 
     def status(self) -> dict:
@@ -646,9 +661,11 @@ class PlurBridge:
         return self.call("packs", ["list"])
 
     def similarity_search(self, query: str, limit: int = 10, scope: str | None = None) -> dict:
-        args = [query, "--limit", str(limit)]
+        # security audit 2026-11-06: the query travels after "--" so it cannot re-point the store
+        args = ["--limit", str(limit)]
         if scope:
-            args.extend(["--scope", scope])
+            args.extend(["--scope", _flag_value("scope", scope)])
+        args += ["--", query]
         return self.call("similarity-search", args)
 
     def packs_install(self, source: str) -> dict:

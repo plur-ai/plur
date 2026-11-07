@@ -74,6 +74,8 @@ class PlurChatMessageHistory(BaseChatMessageHistory):
                     statement,
                     source="langchain:PlurChatMessageHistory",
                     rationale="Auto-extracted from LangChain AI message",
+                    # security audit 2026-11-06: harvested, so core's injection refusal applies
+                    claim_class="inferred",
                 )
             except Exception:
                 pass

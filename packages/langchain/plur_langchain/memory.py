@@ -62,6 +62,8 @@ class PlurMemory(BaseMemory):
                     statement,
                     source="langchain:PlurMemory",
                     rationale="Auto-extracted from LangChain chain output",
+                    # security audit 2026-11-06: harvested, so core's injection refusal applies
+                    claim_class="inferred",
                 )
             except Exception:
                 pass

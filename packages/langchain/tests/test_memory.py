@@ -42,6 +42,7 @@ def test_save_context_learns_from_correction():
     outputs = {"response": "I was wrong. The correct way is to use PUT not POST."}
     memory.save_context({"input": "how do I update?"}, outputs)
     assert bridge.learn.called
+    assert bridge.learn.call_args.kwargs["claim_class"] == "inferred"
 
 
 def test_save_context_no_learn_when_disabled():
