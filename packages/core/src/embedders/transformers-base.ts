@@ -293,12 +293,20 @@ export async function verifyPinnedModel(modelId: string, cacheDir: string | null
     const missing: string[] = []
     for (const file of files) {
       let found = locate(file)
-      if (!found && !afterLoad && pinnedDir && legacyDir && isFile(join(legacyDir, file))) {
-        const dest = join(pinnedDir, file)
-        try {
-          mkdirSync(dirname(dest), { recursive: true })
-          try { linkSync(join(legacyDir, file), dest) } catch { copyFileSync(join(legacyDir, file), dest) }
-        } catch { /* not adopted: a download fetches it */ }
+      const old = legacyDir ? join(legacyDir, file) : ''
+      if (!found && !afterLoad && pinnedDir && legacyDir && isFile(old)) {
+        // Adopt an old-layout file only when it already matches; otherwise a download (if allowed) fetches the pinned one.
+        if ((await sha256Of(old)) === pin.files[file]) {
+          const dest = join(pinnedDir, file)
+          try {
+            mkdirSync(dirname(dest), { recursive: true })
+            try { linkSync(old, dest) } catch { copyFileSync(old, dest) }
+            verified.add(dest)
+            continue
+          } catch { /* not adopted: a download fetches it */ }
+        } else if (downloadsOff()) {
+          throw new Error(`${what} ${modelId}: ${old} does not match the sha256 PLUR pins for ${file} at revision ${pin.revision} (integrity check failed: the model cache is corrupt or was tampered with). The file was not used. Delete ${folder} to force a clean re-download.`)
+        }
         found = locate(file)
       }
       if (!found) {
