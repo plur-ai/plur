@@ -14,9 +14,7 @@
 //      makes zero network calls and writes zero files for miss-signals.
 //   2. Content-free AND identifier-free. The raw query NEVER leaves the process
 //      — we ship an HMAC-SHA-256 of the normalized query under a per-install
-//      random key that never leaves this machine (security audit 2026-11-06:
-//      a bare SHA-256 let any reader of the telemetry confirm a guessed query
-//      by hashing it).
+//      key that never leaves this machine (security audit 2026-11-06).
 //      The scope is reduced to its KIND only (#312): 'project:acme-secret'
 //      becomes 'project', so a user's private project/client name in the scope
 //      path is never transmitted. The domain is reduced to its first dotted
@@ -45,9 +43,6 @@ export type MissSignalOpts = {
   env?: NodeJS.ProcessEnv
   configPath?: string
   installIdPath?: string
-  /** Where the per-install fingerprint key lives. Default: `miss-signal-key`
-   *  beside the install id. */
-  fingerprintKeyPath?: string
   fetch?: typeof globalThis.fetch
   endpoint?: string
   timeoutMs?: number
@@ -143,26 +138,10 @@ function utcDate(d: Date): string {
   return d.toISOString().slice(0, 10)
 }
 
-/**
- * Normalize then HMAC-SHA-256 the query under this install's key.
- *
- * Security audit 2026-11-06: this used to be a bare SHA-256, a deterministic
- * function of low-entropy text anyone can compute, so a reader of the received
- * telemetry could confirm a guessed query ("acme corp acquisition offer
- * price") by hashing it. Keyed with a random secret that never leaves this
- * machine, the fingerprint still clusters repeat misses on the same phrasing
- * WITHIN one install (with its install id), but cannot be matched against a
- * guess list, nor across installs. Nothing in this repository consumes the
- * fingerprint across installs; that clustering cannot be had without making
- * guesses checkable, so it is given up.
- */
+/** Normalize then HMAC-SHA-256 the query under this install's key, so a guessed query cannot be confirmed by hashing it. */
 export function fingerprintQuery(query: string, key: string): string {
   const normalized = query.trim().toLowerCase().replace(/\s+/g, ' ')
   return createHmac('sha256', key).update(normalized, 'utf8').digest('hex')
-}
-
-function defaultFingerprintKeyPath(installIdPath: string): string {
-  return join(dirname(installIdPath), 'miss-signal-key')
 }
 
 /**
@@ -262,9 +241,8 @@ export async function emitMissSignal(
   try {
     const installIdPath = opts.installIdPath ?? defaultInstallIdPath()
     const installId = readOrCreateInstallId(installIdPath)
-    // The fingerprint key: a random UUID (122 random bits) created once,
-    // owner-only, by the same read-or-create the install id uses. Never sent.
-    const fingerprintKey = readOrCreateInstallId(opts.fingerprintKeyPath ?? defaultFingerprintKeyPath(installIdPath))
+    // Random, owner-only, created once beside the install id; never sent.
+    const fingerprintKey = readOrCreateInstallId(join(dirname(installIdPath), 'miss-signal-key'))
     const now = (opts.now ?? (() => new Date()))()
     const payload = buildMissSignalPayload(input, reason, installId, now, fingerprintKey)
     return await postMissSignal(payload, opts, env)
