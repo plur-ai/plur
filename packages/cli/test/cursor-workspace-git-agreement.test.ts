@@ -15,6 +15,9 @@ beforeEach(() => {
     execFileSync('git', ['init', '-q', folder])
     execFileSync('git', ['-C', folder, 'remote', 'add', 'origin', `https://git${i}.example.test/team/app.git`])
   }
+  // A repository's git origin picks a team scope only when the repo is trusted
+  // (security audit 2026-11-06).
+  writeFileSync(join(root, 'folders.yaml'), JSON.stringify({ version: 1, folders: folders.map(path => ({ path, trusted: true })) }))
   writeFileSync(join(root, 'config.yaml'), JSON.stringify({ stores: scopes.map((scope, i) => ({
     url: `https://memory${i}.example.test`, token: 'fixture-key', scope, scopes: [scope], enterprise: {},
     discovery: { status: 'ok', discovered_at: new Date().toISOString(), gitlab_host: `git${i}.example.test`, project_paths: { [scope]: 'team/app' } },
