@@ -7761,29 +7761,6 @@ export class Plur {
   }
 
   /**
-   * The recall query as it may be sent to `hosts` (security audit
-   * 2026-11-06). The remote leg used to POST the caller's text after length
-   * truncation only, so a credential pasted into a prompt reached the team
-   * store host although learn() refuses the same text for the same scope.
-   * Now the truncated query passes the write leg's gate: every
-   * whitespace-separated span that detectSecrets flags, or that
-   * `_offendingHitsForScope` flags for any dialed scope, becomes
-   * "[redacted]". A hit that spans several words (and so survives the
-   * per-word pass) redacts its whole line; if anything is still flagged the
-   * query is withheld (empty string: the remote leg is skipped).
-   */
-  private _redactRemoteQuery(query: string, hosts: RemoteRecallHost[]): string {
-    const text = query.length > MAX_REMOTE_QUERY_CHARS ? query.slice(0, MAX_REMOTE_QUERY_CHARS) : query
-    const scopes = [...new Set(hosts.flatMap(h => h.scopes))]
-    const flagged = (s: string): boolean =>
-      detectSecrets(s).length > 0 || scopes.some(scope => this._offendingHitsForScope(s, scope).length > 0)
-    if (!flagged(text)) return text
-    let out = text.replace(/\S+/g, w => (flagged(w) ? '[redacted]' : w))
-    if (flagged(out)) out = out.split('\n').map(line => (flagged(line) ? '[redacted]' : line)).join('\n')
-    return flagged(out) ? '' : out
-  }
-
-  /**
    * Start the remote recall leg — called BEFORE the local pipeline so the
    * effective added latency is max(0, remote − local). Returns null (zero
    * fetches, zero new latency) when: the caller opted out (`remote: false` —
@@ -7812,11 +7789,11 @@ export class Plur {
     if (hosts.length === 0) return null
     // The dialed hosts ride along so a recall that stops waiting at its
     // deadline can still name them in its per-call report (#1586).
-    // Security audit 2026-11-06: the query leaves the machine for these
-    // hosts, so it passes the same content gate as a write to their scopes.
-    const safeQuery = this._redactRemoteQuery(query, hosts)
-    if (!safeQuery.trim()) return null
-    return Object.assign(remoteRecall(hosts, safeQuery, {
+    // security audit 2026-11-06: a query a write to these scopes would refuse never leaves the machine
+    const text = query.length > MAX_REMOTE_QUERY_CHARS ? query.slice(0, MAX_REMOTE_QUERY_CHARS) : query
+    const scopes = [...new Set(hosts.flatMap(h => h.scopes))]
+    if (detectSecrets(text).length > 0 || scopes.some(scope => this._offendingHitsForScope(text, scope).length > 0)) return null
+    return Object.assign(remoteRecall(hosts, query, {
       timeoutMs: resolveRemoteRecallTimeoutMs(options?.remote_timeout_ms),
       limit: options?.limit,
       statePath: this.remoteHealthStatePath(),

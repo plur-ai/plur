@@ -1,13 +1,4 @@
-/**
- * Security audit 2026-11-06: the remote recall leg (recallHybrid /
- * injectHybrid, including the UserPromptSubmit hook) POSTed the raw query to
- * the team store host, secrets included, although learn() refuses the same
- * text for the same scope. The query now passes the write leg's content gate
- * first: spans flagged by detectSecrets, or by the dialed scopes' sensitivity
- * policy, are replaced with "[redacted]".
- *
- * In-process `globalThis.fetch` stub only — dummy keys, no sockets.
- */
+// security audit 2026-11-06: a recall query carrying a secret is never sent to a team host.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
@@ -54,27 +45,13 @@ describe('remote recall query redaction (security audit 2026-11-06)', () => {
 
   const recallPosts = () => sent.filter(s => s.url.includes('/recall') && s.body)
 
-  it('recallHybrid and injectHybrid never send a pasted secret to the team host', async () => {
+  it('recallHybrid and injectHybrid withhold a query with a pasted secret; a clean query is sent as is', async () => {
     const plur = new Plur({ path: dir })
     const q = `why does ci fail, token ${GHP} key ${AWS}`
     await plur.recallHybrid(q, { scope: SCOPE } as any)
     await plur.injectHybrid(q, { scope: SCOPE, source: 'hook' } as any)
-    const posts = recallPosts()
-    expect(posts.length).toBeGreaterThan(0)
-    for (const p of posts) {
-      const sentQuery = String(p.body.query)
-      expect(sentQuery).not.toContain(AWS)
-      expect(sentQuery).not.toContain(GHP)
-      expect(sentQuery).toContain('[redacted]')
-      expect(sentQuery).toContain('why does ci fail')
-    }
-  })
-
-  it('leaves a clean query untouched', async () => {
-    const plur = new Plur({ path: dir })
+    expect(recallPosts()).toEqual([])
     await plur.recallHybrid('how do we tag releases', { scope: SCOPE } as any)
-    const posts = recallPosts()
-    expect(posts.length).toBeGreaterThan(0)
-    expect(posts[0].body.query).toBe('how do we tag releases')
+    expect(recallPosts().map(p => p.body.query)).toEqual(['how do we tag releases'])
   })
 })
