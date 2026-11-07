@@ -4527,12 +4527,11 @@ export class Plur {
 
   /**
    * The text the write-time HARD secret scan reads: the statement plus every
-   * caller-supplied content field, as listed by `LEARN_CONTEXT_FIELD_ROLES`.
+   * content field (learnContextContent for a write, engramContentFields for an engram).
    * Statement-only when the context carries no content field, so a plain
    * write scans exactly what it always did.
    */
-  private _hardScanText(statement: string, context: LearnContext | undefined): string {
-    const content = learnContextContent(context)
+  private _hardScanText(statement: string, content: Record<string, unknown> | undefined): string {
     return content ? `${statement}\n${JSON.stringify(content)}` : statement
   }
 
@@ -4725,7 +4724,7 @@ export class Plur {
       // compiler — a hand-picked subset here is how `attribution` and
       // `license` went unscanned. Shared/remote writes are additionally
       // policy-scanned by _guardSensitiveScope below.
-      const secrets = detectSecrets(this._hardScanText(statement, context))
+      const secrets = detectSecrets(this._hardScanText(statement, learnContextContent(context)))
       if (secrets.length > 0) {
         throw new Error(`Secret detected in statement or context: ${secrets[0].pattern}. Use config.allow_secrets to override.`)
       }
@@ -4751,7 +4750,7 @@ export class Plur {
     // caller can still write the statement as `asserted`/omitted if it
     // genuinely came from the user.
     if (context?.claim_class === 'inferred') {
-      const injections = detectPromptInjection(this._hardScanText(statement, context))
+      const injections = detectPromptInjection(this._hardScanText(statement, learnContextContent(context)))
       if (injections.length > 0) {
         throw new Error(
           `Prompt injection pattern detected in an auto-harvested (claim_class: 'inferred') statement or context: `
@@ -9467,13 +9466,8 @@ export class Plur {
           skipped++
           continue
         }
-        // Security audit 2026-11-06: a meta statement is model output derived
-        // from other engrams, some from lower-trust team stores, so it gets the
-        // prompt-injection gate learn() applies to claim_class 'inferred' text.
-        // A flagged meta is skipped and reported, not thrown: one bad cluster
-        // must not cost the batch.
-        const metaFields = this._engramContextFields(meta)
-        const injections = detectPromptInjection(metaFields ? `${meta.statement}\n${JSON.stringify(metaFields)}` : meta.statement)
+        // security audit 2026-11-06: model-inferred metas get learn()'s injection gate; a flagged one is skipped, not thrown
+        const injections = detectPromptInjection(this._hardScanText(meta.statement, this._engramContextFields(meta)))
         if (injections.length > 0) {
           logger.warning(
             `[plur] meta-engram ${meta.id} skipped: prompt injection pattern (${injections[0].pattern}) in a model-inferred statement.`,
