@@ -213,8 +213,7 @@ describe('applyReranker runtime surfacing (#341)', () => {
       const text = warning!.map(String).join(' ')
       expect(text).toContain('RRF')
       expect(text).toContain('corrupt')
-      // PLUR's own cache folder <cacheDir>/<modelId>, not the HF hub cache
-      // (security audit 2026-11-06).
+      // security audit 2026-11-06: PLUR's own cache folder, not the HF hub cache.
       expect(text).toContain('onnx-community/bge-reranker-v2-m3-ONNX')
       expect(text).not.toContain('huggingface/hub')
       expect(text).toContain('plur_doctor')

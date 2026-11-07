@@ -154,14 +154,6 @@ export function classifyRerankerFailure(message: string): RerankerFailureKind {
 }
 
 /**
- * HF hub cache directory name for a model id (`models--<org>--<name>`). Not
- * where PLUR keeps models: purge advice names {@link modelCacheFolder}.
- */
-export function hfCacheDirName(modelId: string): string {
-  return `models--${modelId.replace(/\//g, '--')}`
-}
-
-/**
  * The "off" adapter. Returns zero for every pair — the recall path treats
  * this as "no reranking happened" and falls back to the RRF order.
  *

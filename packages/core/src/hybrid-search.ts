@@ -318,7 +318,7 @@ function logRerankerFailure(reranker: RerankerAdapter, message: string): void {
     return
   }
   const hint = rec.kind === 'corrupt-cache'
-    // PLUR's own model cache, not the HF hub cache (security audit 2026-11-06).
+    // security audit 2026-11-06: PLUR's own model cache, not the HF hub cache.
     ? ` Model cache looks corrupt (truncated download, see #340) — delete ${modelCacheFolder(reranker.modelId)} to force a clean re-download.`
     : ''
   logger.warning(`${base}${hint} Run plur_doctor for diagnosis. Repeats of this failure log at debug level.`)

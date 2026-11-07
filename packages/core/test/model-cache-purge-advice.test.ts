@@ -1,11 +1,4 @@
-/**
- * Security audit 2026-11-06 (hardening): the corrupt-model-cache advice told
- * users to delete ~/.cache/huggingface/hub/models--<org>--<name>/, but PLUR
- * loads models from <cacheDir>/<modelId> (PLUR_MODEL_CACHE_DIR, HF_HOME or the
- * transformers.js package cache). Following the advice deleted nothing PLUR
- * uses (or something else entirely) and left the corrupt model in place.
- * The advice now names PLUR's real folder.
- */
+// security audit 2026-11-06: corrupt-cache advice names PLUR's <cacheDir>/<modelId>, not the HF hub cache.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { mkdtempSync, rmSync } from 'fs'
 import { join } from 'path'
