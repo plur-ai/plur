@@ -111,6 +111,16 @@ def test_chat_history_ai_message_marks_inferred():
     assert all(_claim_class(a) == "inferred" for a in got), got
 
 
+
+def test_requires_plur_ai_with_claim_class():
+    import re
+    from pathlib import Path
+    text = (Path(__file__).resolve().parent.parent / "pyproject.toml").read_text()
+    m = re.search(r'"plur-ai>=([0-9.]+)"', text)
+    assert m, "plur-ai requirement missing"
+    assert tuple(int(x) for x in m.group(1).split(".")) >= (0, 23, 1)
+
+
 if __name__ == "__main__":
     failed = 0
     tests = [(n, f) for n, f in sorted(globals().items()) if n.startswith("test_") and callable(f)]

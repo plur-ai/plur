@@ -22,7 +22,10 @@ classifiers = [
 ]
 dependencies = [
   "langchain-core>=0.2,<0.3",
-  "plur-ai>=0.10.0",
+  # 0.23.1+ accepts learn(claim_class=...), which auto-learn passes so core
+  # runs its prompt-injection refusal on harvested text (security audit
+  # 2026-11-06). Publish plur-ai first.
+  "plur-ai>=0.23.1",
 ]
 
 [project.optional-dependencies]
