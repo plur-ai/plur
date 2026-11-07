@@ -16,7 +16,7 @@ import { mergeSensitivityForWriteback } from './sensitivity-writeback.js'
 import { canonicalize } from './project-config.js'
 import { acceptDiscoveredScopes, registerServerEntry, PersonalScopeTakenError, SignInHeldError, type DiscoveryStatus, type ScopeRejection, type FoldReport, type ScopeHolder } from './server-discovery.js'
 import { classifyStoreDuplicates, removePrimaryStoreEntries } from './store-duplicates.js'
-import { generateEngramId, engramIdDatePrefix, loadAllPacks, loadPack, packEngramId, namespacePackEngrams, matchLegacyPackId, storePrefix, legacyStorePrefix, parseNamespacedId, namespaceEngramId, bareEngramId, escapePrefixForRegExp, initFilesystemStore, type LoadedPack } from './engrams.js'
+import { generateEngramId, engramIdDatePrefix, loadAllPacks, loadPack, packEngramId, namespacePackEngrams, matchLegacyPackId, storePrefix, legacyStorePrefix, parseNamespacedId, namespaceEngramId, bareEngramId, initFilesystemStore, type LoadedPack } from './engrams.js'
 import { maybeDailyBackup } from './backup.js'
 import { logger } from './logger.js'
 import { searchEngrams, ftsTokenize, extendCorpusStats, searchTextFrom } from './fts.js'
@@ -68,7 +68,7 @@ import { RemoteStore, RemoteAbortedError, RemoteHttpError, RemoteTimeoutError, n
 import type { MeResponse } from './store/remote-store.js'
 import { recordSeenOnServer, seenOnServer } from './seen-on-server.js'
 import { classifyOutboxFailure, credentialChanged, statusFromErrorText, NEEDS_ACTION_RETRY_MS, NEEDS_ACTION_STATUSES, OUTBOX_CLAIM_ERROR_PREFIX, summarizeOutbox, type OutboxState, type OutboxSummary } from './outbox-health.js'
-import { redactToken, containsToken } from './redact-token.js'
+import { redactToken, containsToken, escapeRegExp } from './redact-token.js'
 import {
   remoteRecall, isRemoteRecallDisabled, resolveRemoteRecallTimeoutMs, scopeOrg, tokenHealthKey, MAX_REMOTE_QUERY_CHARS,
   REMOTE_STATUS_TTL_MS, PROBE_CLEARABLE_STATES,
@@ -3096,7 +3096,7 @@ export class Plur {
       if (!store.path) continue
       if (storeScope !== undefined && store.scope !== storeScope) continue
       const prefix = storePrefix(store.scope)
-      const nsPattern = new RegExp(`^(ENG|ABS|META)-${escapePrefixForRegExp(prefix)}-`)
+      const nsPattern = new RegExp(`^(ENG|ABS|META)-${escapeRegExp(prefix)}-`)
       if (nsPattern.test(id)) {
         // Strip the namespace prefix to get the original ID — or the id as it
         // is, when the store file already holds it namespaced.
@@ -3123,7 +3123,7 @@ export class Plur {
    */
   private _stripRemotePrefix(id: string, scope: string): string {
     const prefix = storePrefix(scope)
-    const nsPattern = new RegExp(`^(ENG|ABS|META)-${escapePrefixForRegExp(prefix)}-`)
+    const nsPattern = new RegExp(`^(ENG|ABS|META)-${escapeRegExp(prefix)}-`)
     if (nsPattern.test(id)) {
       return id.replace(nsPattern, '$1-')
     }
@@ -7179,7 +7179,7 @@ export class Plur {
       if (!entry.url) continue
       // remote-only: only the folder's own team store (re-audit of #1521, C-3).
       if (this._remoteOnly && (entry.scope !== this._remoteOnly.scope || !this._isDeliverableTeamScope(entry.scope))) continue
-      const prefixRe = new RegExp(`^(ENG|ABS|META)-${escapePrefixForRegExp(storePrefix(entry.scope))}-`)
+      const prefixRe = new RegExp(`^(ENG|ABS|META)-${escapeRegExp(storePrefix(entry.scope))}-`)
       // An old-form (0.21.0) id names this store only when no other url
       // store shares its old prefix; then its bare form is asked for.
       const oldPrefix = legacyStorePrefix(entry.scope)

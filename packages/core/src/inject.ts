@@ -9,6 +9,7 @@ import { makeVisibilityPredicate } from './scope-util.js'
 import { collapseLineTerminators } from './sanitize.js'
 import { isNotYetValid, isExpired, isExpiredBeyondGrace } from './validity.js'
 import { ftsTokenize } from './fts.js'
+import { escapeRegExp } from './redact-token.js'
 
 /**
  * D1-RECALL/INJECT-ASYMMETRY (#353). When an inject is given an EXPLICIT
@@ -469,7 +470,6 @@ const HISTORICAL_KEYWORDS = ['before', 'was', 'prior', 'used to', 'previously', 
 // The inter-word gap is matched as \s+ (not a literal space) so a phrase split
 // by a newline, tab, or doubled space — "used\nto", "used  to" — still matches;
 // hardcoding a single U+0020 there was a false-negative on multi-line prompts.
-const escapeRegExp = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 const HISTORICAL_KEYWORD_PATTERNS = HISTORICAL_KEYWORDS.map(
   kw => new RegExp(`\\b${kw.split(/\s+/).map(escapeRegExp).join('\\s+')}\\b`),
 )

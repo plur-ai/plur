@@ -8,6 +8,7 @@ import { atomicWrite, fsyncDir } from './sync.js'
 import { recordLastWritten } from './backup.js'
 import { normalizeEngramInput } from './normalize-engram.js'
 import { createHash } from 'crypto'
+import { escapeRegExp } from './redact-token.js'
 import { appendHistoryBatch, readRekeyedPairs, type HistoryEvent } from './history.js'
 
 /**
@@ -1339,16 +1340,10 @@ export function namespacePackEngrams(engrams: Engram[], packName: string): Engra
  * see {@link legacyStorePrefix}) is upgraded to the current prefix rather than
  * wrapped a second time — a store file can hold such an id verbatim.
  */
-/** Escape a store prefix for use inside a RegExp: prefixes are derived from a
- *  scope string and can carry regex metacharacters (security audit 2026-11-06). */
-export function escapePrefixForRegExp(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-}
-
 export function namespaceEngramId(id: string, scope: string): string {
   const prefix = storePrefix(scope)
-  if (new RegExp(`^(ENG|ABS|META)-${escapePrefixForRegExp(prefix)}-`).test(id)) return id
-  const legacy = new RegExp(`^(ENG|ABS|META)-${escapePrefixForRegExp(legacyStorePrefix(scope))}-(?=\\d{4}-)`)
+  if (new RegExp(`^(ENG|ABS|META)-${escapeRegExp(prefix)}-`).test(id)) return id
+  const legacy = new RegExp(`^(ENG|ABS|META)-${escapeRegExp(legacyStorePrefix(scope))}-(?=\\d{4}-)`)
   if (legacy.test(id)) return id.replace(legacy, `$1-${prefix}-`)
   return id.replace(/^(ENG|ABS|META)-/, `$1-${prefix}-`)
 }
