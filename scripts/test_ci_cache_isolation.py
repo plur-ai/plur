@@ -47,5 +47,13 @@ class OpencodeCompatCheckout(unittest.TestCase):
             self.assertIs((s.get('with') or {}).get('persist-credentials'), False)
 
 
+
+class CodexWslNodeDigest(unittest.TestCase):
+    def test_node_tarball_checked_against_a_pinned_digest(self) -> None:
+        text = (ROOT / ".github/workflows/codex-wsl.yml").read_text()
+        self.assertNotIn("curl -fsSLO https://nodejs.org/dist/v24.13.0/SHASUMS256.txt", text)
+        self.assertRegex(text, r"echo '[0-9a-f]{64}  node-v[0-9.]+-linux-x64\.tar\.xz' \| sha256sum -c -")
+
+
 if __name__ == '__main__':
     unittest.main()
