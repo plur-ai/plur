@@ -19,6 +19,9 @@ beforeEach(async () => {
   mkdirSync(root); mkdirSync(repo); mkdirSync(join(home, 'tmp'))
   execFileSync('git', ['init', '-q', repo])
   execFileSync('git', ['-C', repo, 'remote', 'add', 'origin', 'https://gitlab.example.com/team/backend.git'])
+  // A repository's git origin picks a team scope only when the repo is trusted
+  // (security audit 2026-11-06).
+  writeFileSync(join(root, 'folders.yaml'), yaml.dump({ version: 1, folders: [{ path: repo, trusted: true }] }))
   stub = new StubServer('fixture-key')
   const { url, token } = await stub.start()
   writeFileSync(join(root, 'config.yaml'), yaml.dump({

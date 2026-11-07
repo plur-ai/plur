@@ -25,6 +25,9 @@ beforeEach(async () => {
   base = realpathSync(mkdtempSync(join(tmpdir(), 'oc-git-origin-')))
   root = join(base, 'plur'); repo = join(base, 'repo')
   mkdirSync(root); execFileSync('git', ['init', '-q', repo])
+  // A repository's git origin picks a team scope only when the repo is trusted
+  // (security audit 2026-11-06).
+  writeFileSync(join(root, 'folders.yaml'), JSON.stringify({ version: 1, folders: [{ path: repo, trusted: true }] }))
   stub = new StubServer('fixture-key')
   const { url, token } = await stub.start()
   writeFileSync(join(root, 'config.yaml'), JSON.stringify({ index: false, embeddings: { enabled: false },
