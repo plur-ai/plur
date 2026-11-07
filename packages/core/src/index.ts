@@ -1302,12 +1302,8 @@ function isEnterpriseServerEntry(raw: unknown): raw is Record<string, unknown> &
   return isPlainObject(raw) && typeof raw.url === 'string' && Array.isArray(raw.scopes) && isPlainObject(raw.enterprise)
 }
 
-/** scope → where it is served, for every store entry other than the server
- *  at `exceptUrl`: the scopes another server or a local path store already
- *  serves (#1631). Path entries count as claimed too: a discovered url entry
- *  wins over a path entry in resolveScopeTarget, so accepting such a scope
- *  would silently move the user's local store to the server (security audit
- *  2026-11-06). */
+/** scope → where it is served, for every store entry other than the server at `exceptUrl` (#1631).
+ *  security audit 2026-11-06: path stores count as claimed, or a discovered url entry would take their scope over. */
 function scopesServedElsewhere(rawStores: unknown[], exceptUrl: string): Map<string, string> {
   const out = new Map<string, string>()
   for (const r of rawStores) {
@@ -15763,12 +15759,10 @@ Generate an improved version of the procedure that prevents this failure. Return
         }
         const cached = stringList(entry.scopes)
         const oldDiscovery = isPlainObject(entry.discovery) ? entry.discovery : {}
-        // Bind the org this server may claim to the one cached at first
-        // discovery, not the org_id of this answer (security audit 2026-11-06).
         const cachedOrgId = typeof oldDiscovery.org_id === 'string' && oldDiscovery.org_id ? oldDiscovery.org_id : undefined
         const decision = acceptDiscoveredScopes({ me, error, cached, otherServersScopes: scopesServedElsewhere(rawStores, key), cachedOrgId })
-        if (cachedOrgId && me?.org_id && me.org_id.toLowerCase() !== cachedOrgId.toLowerCase()) {
-          logger.warning(`[plur:discovery] ${safeOrigin(url)} now reports org "${me.org_id}" but was discovered as org "${cachedOrgId}"; its scopes were not changed. If the org really changed, remove the server entry and sign in again.`)
+        if (decision.orgChanged) {
+          logger.warning(`[plur:discovery] ${safeOrigin(url)} now reports org "${me?.org_id}" but was discovered as org "${cachedOrgId}"; its scopes were not changed. If the org really changed, remove the server entry and sign in again.`)
         }
         let next: Record<string, unknown>
         if (decision.replaceCache && me) {

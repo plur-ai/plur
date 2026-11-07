@@ -17,11 +17,7 @@
  * - An answer with no `org_id` cannot be checked against an org, so every
  *   scope is rejected (`org-prefix`) and the answer is `degraded`: it never
  *   replaces a non-empty cache.
- * - An answer whose org_id differs from the org cached at first discovery
- *   (`cachedOrgId`) is `degraded`: every scope is rejected (`org-prefix`) and
- *   the cache is kept. The org filter below compares each scope with the
- *   org_id of the same answer, so without this binding a server could name
- *   any org and claim that org's scopes (security audit 2026-11-06).
+ * - An answer whose org_id differs from `cachedOrgId` is `degraded` with `orgChanged` (security audit 2026-11-06).
  * - Accepted scopes are filtered to the server's org; a scope another store
  *   entry already serves (another server, or a local path store) is refused.
  */
@@ -46,6 +42,8 @@ export interface AcceptedDiscovery {
   /** When replaceCache, the new list. When not, a copy of `cached`. */
   scopes: string[]
   rejected: ScopeRejection[]
+  /** The answer named another org than `cachedOrgId`; nothing was accepted. */
+  orgChanged?: true
 }
 
 export interface AcceptDiscoveredScopesInput {
@@ -54,9 +52,7 @@ export interface AcceptDiscoveredScopesInput {
   cached: string[]
   /** scope → url (or `path:<dir>`) of the other store entry that already serves it. */
   otherServersScopes: ReadonlyMap<string, string>
-  /** The org_id recorded at sign-in or first discovery (`discovery.org_id`).
-   *  When set, an answer naming another org is not trusted (security audit
-   *  2026-11-06). */
+  /** `discovery.org_id` from sign-in or first discovery; an answer naming another org is not trusted. */
   cachedOrgId?: string
 }
 
@@ -125,13 +121,9 @@ export function acceptDiscoveredScopes(input: AcceptDiscoveredScopesInput): Acce
     return cached.length > 0 ? keep('degraded', rejected) : empty('degraded', rejected)
   }
 
-  // The org a server may claim is bound to the org it reported first. The org
-  // filter takes org_id from this same untrusted answer, so a server (or an
-  // on-path attacker on an http url) that switched org_id could claim another
-  // org's scopes, including ones served by a local store (security audit
-  // 2026-11-06). A changed org keeps the cache and rejects every scope.
+  // security audit 2026-11-06: the org filter trusts this answer's org_id, so it is bound to the cached org
   if (cachedOrgId && me.org_id && me.org_id.toLowerCase() !== cachedOrgId.toLowerCase()) {
-    return keep('degraded', me.scopes.map((scope): ScopeRejection => ({ scope, reason: 'org-prefix' })))
+    return { ...keep('degraded', me.scopes.map((scope): ScopeRejection => ({ scope, reason: 'org-prefix' }))), orgChanged: true }
   }
 
   switch (me.scopes_status) {
