@@ -552,30 +552,17 @@ export class RemoteStore {
    * #1152. Callers branch on `ok`/`status` exactly as before; the payload is
    * simply already here.
    */
-  private static async readBounded(res: Response): Promise<BoundedResponse> {
+  private readBounded = async (res: Response): Promise<BoundedResponse> => {
     // 2xx carries the payload; anything else carries an error body that gets
     // sanitised before it can reach a log line or an exception message.
+    // security audit 2026-11-06: the caller's token is redacted from every error body, before truncation
     if (!res.ok) {
       const text = await readBodyCapped(res, MAX_REMOTE_STORE_RESPONSE_BYTES).catch(() => '')
-      return { ok: false, status: res.status, text: sanitiseResponseBody(text ?? '(error body too large)') }
+      return { ok: false, status: res.status, text: sanitiseResponseBody(redactToken(text ?? '(error body too large)', this.token)) }
     }
     const body = await readJsonCapped(res, MAX_REMOTE_STORE_RESPONSE_BYTES).catch(() => ({ json: undefined }))
     if (body === null) throw new Error(`remote response from ${safeOrigin(res.url || 'remote')} is too large (over ${MAX_REMOTE_STORE_RESPONSE_BYTES} bytes); refused`)
     return { ok: true, status: res.status, json: body.json }
-  }
-
-  /**
-   * The reader every request of this store uses. A server or proxy error page
-   * can echo the Authorization header back; the caller's own token is
-   * redacted from the error body HERE, before truncation and before the text
-   * can reach an exception message, a log line, or `_outbox.last_error` in
-   * engrams.yaml (which git sync pushes). Redacting per call site missed five
-   * of six error paths (security audit 2026-11-06).
-   */
-  private readBoundedRedacted = async (res: Response): Promise<BoundedResponse> => {
-    if (res.ok) return RemoteStore.readBounded(res)
-    const raw = await readBodyCapped(res, MAX_REMOTE_STORE_RESPONSE_BYTES).catch(() => '')
-    return { ok: false, status: res.status, text: sanitiseResponseBody(redactToken(raw ?? '(error body too large)', this.token)) }
   }
 
   /**
@@ -744,8 +731,8 @@ export class RemoteStore {
     }
     const r = await this.fetchBounded(`${this.apiBase}/write-check`, {
       method: 'POST', headers: this.headers({ 'Content-Type': 'application/json' }), body: JSON.stringify({ scopes }),
-    }, this.readBoundedRedacted, signal)
-    if (!r.ok) throw new RemoteHttpError(r.status, `Remote write-check failed: ${r.status} ${redactToken(r.text ?? '', this.token)}`)
+    }, this.readBounded, signal)
+    if (!r.ok) throw new RemoteHttpError(r.status, `Remote write-check failed: ${r.status} ${r.text}`)
     const results = (r.json as { results?: unknown } | undefined)?.results
     if (!Array.isArray(results) || results.length !== scopes.length) throw new Error('write-check returned an incomplete result list')
     return results.map((item: unknown, i): WriteCheckResult => {
@@ -774,7 +761,7 @@ export class RemoteStore {
    * pattern so the `/\b40[13]\b/` auth-expired checks in callers still match.
    */
   async me(signal?: AbortSignal): Promise<MeResponse> {
-    const r = await this.fetchBounded(`${this.apiBase}/me`, { headers: this.headers() }, this.readBoundedRedacted, signal)
+    const r = await this.fetchBounded(`${this.apiBase}/me`, { headers: this.headers() }, this.readBounded, signal)
     if (!r.ok) {
       let code: 'scope_lookup_failed' | undefined
       try { if (r.status === 503 && JSON.parse(r.text ?? '').error === 'scope_lookup_failed') code = 'scope_lookup_failed' } catch { /* generic errors are not authentication evidence */ }
@@ -1174,7 +1161,7 @@ export class RemoteStore {
         ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}),
       }),
       body,
-    }, this.readBoundedRedacted, opts?.signal)
+    }, this.readBounded, opts?.signal)
     if (!r.ok) throw new RemoteHttpError(r.status, `Remote store append failed: ${r.status} ${r.text}`)
     const data = (r.json ?? {}) as { id?: unknown; review_required?: unknown; deduplicated?: unknown }
     // #404: validate the server-assigned id's SHAPE, not just truthiness. It
@@ -1217,7 +1204,7 @@ export class RemoteStore {
 
   async getById(id: string): Promise<Engram | null> {
     try {
-      const r = await this.fetchBounded(`${this.apiBase}/engrams/${encodeURIComponent(id)}`, { headers: this.headers() }, this.readBoundedRedacted)
+      const r = await this.fetchBounded(`${this.apiBase}/engrams/${encodeURIComponent(id)}`, { headers: this.headers() }, this.readBounded)
       if (r.status === 404) return null
       if (!r.ok) return null
       // An unparseable 2xx body arrives as `undefined` rather than throwing;
@@ -1269,7 +1256,7 @@ export class RemoteStore {
     try {
       r = await this.fetchBounded(`${this.apiBase}/engrams/${encodeURIComponent(id)}`, {
         headers: this.headers(),
-      }, this.readBoundedRedacted, opts?.signal)
+      }, this.readBounded, opts?.signal)
     } catch (err) {
       // An abort is "cannot tell", not "absent" — the whole point of this
       // method — so it must surface as a throw like any other transport
@@ -1317,7 +1304,7 @@ export class RemoteStore {
     try {
       r = await this.fetchBounded(`${this.apiBase}/engrams/${encodeURIComponent(id)}`, {
         headers: this.headers(),
-      }, this.readBoundedRedacted, opts?.signal)
+      }, this.readBounded, opts?.signal)
     } catch {
       return 'unknown'
     }
@@ -1342,7 +1329,7 @@ export class RemoteStore {
     const r = await this.fetchBounded(`${this.apiBase}/engrams/${encodeURIComponent(id)}`, {
       method: 'DELETE',
       headers: this.headers(),
-    }, this.readBoundedRedacted)
+    }, this.readBounded)
     if (r.ok) { this.cache = null; return 'removed' }
     if (r.status === 404 || r.status === 410) return 'absent'
     throw new Error(`Remote delete failed: ${r.status} ${r.text}`)
@@ -1352,7 +1339,7 @@ export class RemoteStore {
     const r = await this.fetchBounded(`${this.apiBase}/engrams/${encodeURIComponent(id)}`, {
       method: 'DELETE',
       headers: this.headers(),
-    }, this.readBoundedRedacted)
+    }, this.readBounded)
     if (!r.ok) return false
     this.cache = null
     return true
@@ -1379,7 +1366,7 @@ export class RemoteStore {
       method: 'POST',
       headers: this.headers({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(payload),
-    }, this.readBoundedRedacted)
+    }, this.readBounded)
     if (!r.ok) throw new Error(`Remote feedback failed: ${r.status} ${r.text}`)
     this.cache = null
   }
@@ -1427,7 +1414,7 @@ export class RemoteStore {
       method: 'PATCH',
       headers: this.headers({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(updates),
-    }, this.readBoundedRedacted)
+    }, this.readBounded)
     if (r.status === 404) return null
     if (!r.ok) throw new Error(`Remote patch failed: ${r.status} ${r.text}`)
     // #327: the server confirmed the write (2xx). Capture the pre-write row
