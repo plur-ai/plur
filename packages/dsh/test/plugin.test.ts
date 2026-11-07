@@ -3,6 +3,9 @@ import { Config } from '../src/config.js'
 import { apply, name } from '../src/index.js'
 import { cfg } from './helpers/config.js'
 
+// No real engine: a fire-and-forget refresh would otherwise open a store under the real HOME.
+vi.mock('@plur-ai/core', () => ({ Plur: undefined, default: undefined }))
+
 /** Minimal Cordis-shaped double: records registrations and lets tests fire events. */
 function makeCtx() {
   const listeners = new Map<string, Function[]>()
