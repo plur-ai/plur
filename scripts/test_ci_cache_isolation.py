@@ -55,5 +55,19 @@ class CodexWslNodeDigest(unittest.TestCase):
         self.assertRegex(text, r"echo '[0-9a-f]{64}  node-v[0-9.]+-linux-x64\.tar\.xz' \| sha256sum -c -")
 
 
+
+class EvalModelCacheFollowsPins(unittest.TestCase):
+    """The eval model cache is keyed by the model pins (security audit
+    2026-11-06, H-x03-1): a cache saved for one pinned revision must not be
+    restored after the pin moves, or the evals would start from files core
+    now refuses."""
+
+    def test_every_model_cache_key_hashes_the_pins(self):
+        text = (ROOT / ".github/workflows/evals.yml").read_text()
+        keys = re.findall(r"key:\s*(plur-models-\S.*)", text)
+        self.assertTrue(keys)
+        for key in keys:
+            self.assertIn("hashFiles('packages/core/src/embedders/model-pins.ts')", key)
+
 if __name__ == '__main__':
     unittest.main()
