@@ -12,7 +12,7 @@
  */
 import { join, dirname } from 'path'
 import { createHash } from 'crypto'
-import { createReadStream, existsSync, readFileSync, statSync, mkdirSync, linkSync, copyFileSync } from 'fs'
+import { createReadStream, existsSync, readFileSync, statSync, mkdirSync, linkSync, copyFileSync, writeFileSync } from 'fs'
 import type { EmbedderAdapter } from './types.js'
 import { offlineByEnv, offlineNow } from '../offline.js'
 import { modelPin } from './model-pins.js'
@@ -252,13 +252,37 @@ export async function modelPresence(modelId: string, weights: string): Promise<b
 
 // security audit 2026-11-06 (H-x03-1): every pinned file is checked against its sha256 before the model is used.
 
+let hashes = 0
+/** Test seam: files hashed by this module instance (a fresh import stands in for a new process). */
+export function _modelHashCount(): number { return hashes }
+
 async function sha256Of(path: string): Promise<string> {
+  hashes++
   const h = createHash('sha256')
   for await (const chunk of createReadStream(path)) h.update(chunk as Buffer)
   return h.digest('hex')
 }
 
 const isFile = (p: string) => statSync(p, { throwIfNoEntry: false })?.isFile() === true
+
+// A file's hash result is kept per (size, mtime, ctime, inode), in memory and in a marker in the
+// revision folder, so a 100MB+ model file is hashed once, not in every process; any write changes ctime.
+const MARKER = '.plur-verified.json'
+const verifiedStat = new Map<string, string>()
+const statKey = (p: string) => {
+  const s = statSync(p, { throwIfNoEntry: false })
+  return s?.isFile() ? `${s.size}:${s.mtimeMs}:${s.ctimeMs}:${s.ino}` : null
+}
+async function matchesPin(path: string, expected: string, marker: Record<string, string>): Promise<boolean> {
+  const before = statKey(path)
+  if (!before) return false
+  const known = `${before}|${expected}`
+  if (verifiedStat.get(path) === known || marker[path] === known) { verifiedStat.set(path, known); return true }
+  if ((await sha256Of(path)) !== expected || statKey(path) !== before) return false
+  verifiedStat.set(path, known)
+  marker[path] = known
+  return true
+}
 
 /**
  * Check a pinned model's files against their pins before transformers.js
@@ -289,6 +313,12 @@ export async function verifyPinnedModel(modelId: string, cacheDir: string | null
     return c.find(([p]) => isFile(p))
   }
   const verified = new Set<string>()
+  const markerPath = pinnedDir ? join(pinnedDir, MARKER) : null
+  const marker: Record<string, string> = (markerPath && readJson(markerPath) as Record<string, string> | null) || {}
+  const saveMarker = () => {
+    if (!markerPath) return
+    try { mkdirSync(pinnedDir!, { recursive: true }); writeFileSync(markerPath, JSON.stringify(marker)) } catch { /* only costs a re-hash */ }
+  }
   const check = async (files: string[], afterLoad: boolean): Promise<string[]> => {
     const missing: string[] = []
     for (const file of files) {
@@ -315,7 +345,7 @@ export async function verifyPinnedModel(modelId: string, cacheDir: string | null
         continue
       }
       const [path, where] = found
-      if ((await sha256Of(path)) !== pin.files[file]) {
+      if (!(await matchesPin(path, pin.files[file], marker))) {
         throw new Error(
           `${what} ${modelId}: ${path} does not match the sha256 PLUR pins for ${file} at revision ${pin.revision} ` +
           `(integrity check failed: the model cache is corrupt or was tampered with). The file was not used. ` +
@@ -328,6 +358,7 @@ export async function verifyPinnedModel(modelId: string, cacheDir: string | null
     if (pinnedDir && legacyDir && verified.has(join(pinnedDir, 'tokenizer_config.json')) && !isFile(join(legacyDir, 'tokenizer_config.json'))) {
       try { copyFileSync(join(pinnedDir, 'tokenizer_config.json'), join(legacyDir, 'tokenizer_config.json')) } catch { /* a lookup then asks the network */ }
     }
+    saveMarker()
     return missing
   }
   const missing = await check(Object.keys(pin.files), false)

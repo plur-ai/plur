@@ -203,6 +203,25 @@ describe('integrity: a file that does not match its pin is never used', () => {
     await expect(makeMsMarcoMiniLmL6Adapter().scoreBatch('q', ['d'])).rejects.toThrow(/onnx\/model_quantized\.onnx does not match.*corrupt/)
   })
 
+  it('a verified file is not hashed again by the next process, but a changed one is, and is refused', async () => {
+    const id = 'Xenova/bge-small-en-v1.5'
+    const files = dummyFiles('model.onnx')
+    let core = await freshCore()
+    pinDummy(core.pins, id, files)
+    seed(join(cache, id, REV), files)
+    await core.base.verifyPinnedModel(id, cache)
+    expect(core.base._modelHashCount()).toBe(Object.keys(files).length)
+    core = await freshCore()
+    pinDummy(core.pins, id, files)
+    await core.base.verifyPinnedModel(id, cache)
+    expect(core.base._modelHashCount()).toBe(0)
+    appendFileSync(join(cache, id, REV, 'onnx', 'model.onnx'), 'X')
+    core = await freshCore()
+    pinDummy(core.pins, id, files)
+    await expect(core.base.verifyPinnedModel(id, cache)).rejects.toThrow(/corrupt/)
+    expect(core.base._modelHashCount()).toBe(1)
+  })
+
   it('a model with no pin is refused', async () => {
     const { base } = await freshCore()
     const adapter = base.makeTransformersAdapter({ name: 'stub', dim: 384, modelId: 'example/unpinned', pooling: 'mean' })
