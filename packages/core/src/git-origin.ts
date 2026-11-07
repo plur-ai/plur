@@ -193,7 +193,7 @@ export interface GitScopeSource {
   discovered_at?: string
 }
 
-export type LocalReason = 'no-remote' | 'not-company-gitlab' | 'no-scope-for-project' | 'untrusted-origin'
+export type LocalReason = 'no-remote' | 'not-company-gitlab' | 'no-scope-for-project'
 export type UnknownReason = 'git-unreadable' | 'scopes-unavailable' | 'cache-stale' | 'ambiguous-mapping'
 export type GitScopeOutcome =
   | { kind: 'scope'; scope: string; server: string }

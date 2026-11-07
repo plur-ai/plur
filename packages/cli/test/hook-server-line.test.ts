@@ -22,8 +22,7 @@ beforeEach(async () => {
     url, token, scope, scopes: [scope], enterprise: {}, discovery: { status: 'ok', username: 'fixture-user',
       key_expires_at: null, discovered_at: new Date().toISOString(), gitlab_host: 'gitlab.example.com', project_paths: { [scope]: 'team/backend' } },
   }] }))
-  // Trusted: an origin-derived team scope needs a trusted repository (security audit 2026-11-06).
-  writeFileSync(join(root, 'folders.yaml'), `folders:\n  - path: ${JSON.stringify(repo)}\n    plur: on\n    trusted: true\n`)
+  writeFileSync(join(root, 'folders.yaml'), `folders:\n  - path: ${JSON.stringify(repo)}\n    plur: on\n`)
 })
 afterEach(async () => { await stub.stop(); rmSync(home, { recursive: true, force: true }) })
 async function hook(command: string, extra: string[] = [], source = 'startup') {

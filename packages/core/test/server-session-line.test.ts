@@ -45,8 +45,6 @@ beforeEach(() => {
   repo = join(root, 'repo'); mkdirSync(repo)
   execFileSync('git', ['init', '-q', repo])
   execFileSync('git', ['-C', repo, 'remote', 'add', 'origin', 'https://gitlab.example.com/team/backend.git'])
-  // Trusted: an origin-derived team scope needs a trusted repository (security audit 2026-11-06).
-  writeFileSync(join(root, 'folders.yaml'), `folders:\n  - path: ${JSON.stringify(repo)}\n    trusted: true\n`)
 })
 afterEach(() => { plur?.close(); plur = undefined; vi.restoreAllMocks(); rmSync(root, { recursive: true, force: true }) })
 it('reads cached server and queue state without a network call', async () => {

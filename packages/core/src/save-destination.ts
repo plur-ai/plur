@@ -20,7 +20,6 @@ const localReasons: Record<LocalReason, string> = {
   'no-remote': 'this repo has no origin remote',
   'not-company-gitlab': 'this repo is not on the company GitLab',
   'no-scope-for-project': 'this repo has no team scope',
-  'untrusted-origin': 'this repo is not trusted, so its team scope is not used',
 }
 const unknownReasons: Record<UnknownReason, string> = {
   'git-unreadable': 'git could not be read',
