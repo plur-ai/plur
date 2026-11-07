@@ -89,11 +89,7 @@ async function loadPipeline(modelId: string, dtype: Dtype): Promise<LoadedPipeli
       const cacheDir = await resolveLoadCacheDir(modelId, weights)
       const env = envOf(transformers)
       if (cacheDir && env) env.cacheDir = cacheDir
-      // Pinned revision and verified files (security audit 2026-11-06,
-      // H-x03-1): checked before the load, and again after it for what it
-      // downloaded, before the model is used. A mismatch is reported as a
-      // corrupt cache (classifyRerankerFailure), naming the folder to delete.
-      await verifyPinnedModel(modelId, weights, cacheDir, 'before', 'reranker model')
+      const verifyDownload = await verifyPinnedModel(modelId, cacheDir, 'reranker model')
       await refuseMissingModelOffline(modelId, weights, 'reranker model')
       const offline = { ...pinnedLoadOptions(modelId), ...localOnlyOptions() }
       const [tokenizer, model] = await Promise.all([
@@ -101,7 +97,7 @@ async function loadPipeline(modelId: string, dtype: Dtype): Promise<LoadedPipeli
         AutoModelForSequenceClassification.from_pretrained(modelId, { dtype, ...offline }),
       ])
       try {
-        await verifyPinnedModel(modelId, weights, cacheDir, 'after', 'reranker model')
+        await verifyDownload()
       } catch (err) {
         await disposeQuietly(model)
         throw err

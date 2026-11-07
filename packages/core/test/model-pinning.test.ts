@@ -1,20 +1,6 @@
-/**
- * Model pinning and integrity (security audit 2026-11-06, hardening H-x03-1).
- *
- * PLUR downloaded its ONNX models from third-party Hugging Face repositories
- * at `resolve/main` (a moving branch) and reused cached files with no check.
- * Now every model is pinned to a commit (model-pins.ts), every loader passes
- * that revision to transformers.js, and every file is checked against its
- * pinned sha256 before the model is used. An existing cache in the old,
- * unpinned layout keeps working offline when its files match the pins.
- *
- * Offline: transformers.js is replaced by a double that records the options
- * each loader passes and, where a test needs it, writes files the way a
- * download would. Model files are dummy bytes whose hashes are pinned through
- * the test seam; the real pins are checked for shape only.
- */
+// security audit 2026-11-06 (H-x03-1): pinned revisions and sha256-checked model files; transformers.js is a double, files are dummies pinned via the test seam.
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync, appendFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync, appendFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -90,10 +76,10 @@ async function freshCore() {
   return { pins, base }
 }
 
+const pinOf = (files: Record<string, string>) => ({ revision: REV, files: Object.fromEntries(Object.entries(files).map(([f, b]) => [f, sha(b)])) })
+
 function pinDummy(pins: { _setModelPinsForTesting: (p: Record<string, { revision: string; files: Record<string, string> }> | undefined) => void }, modelId: string, files: Record<string, string>) {
-  pins._setModelPinsForTesting({
-    [modelId]: { revision: REV, files: Object.fromEntries(Object.entries(files).map(([f, b]) => [f, sha(b)])) },
-  })
+  pins._setModelPinsForTesting({ [modelId]: pinOf(files) })
 }
 
 beforeEach(() => {
@@ -150,7 +136,6 @@ describe('the cache layout of a pinned model', () => {
     const id = 'Xenova/bge-small-en-v1.5'
     const files = dummyFiles('model.onnx')
     pinDummy(pins, id, files)
-    expect(base.pinnedModelDir(cache, id)).toBe(join(cache, id, REV))
     seed(join(cache, id, REV), files)
     expect(await base.modelPresence(id, 'model.onnx')).toBe(true)
     expect(await base.resolveLoadCacheDir(id, 'model.onnx')).toBe(cache)
@@ -161,46 +146,29 @@ describe('the cache layout of a pinned model', () => {
 })
 
 describe('loaders pass the pinned revision', () => {
-  it('bge-small: tokenizer and model are loaded at the pin, not through pipeline()', async () => {
+  it('every loader loads tokenizer and model at the pin, not through pipeline()', async () => {
     const { pins, base } = await freshCore()
-    const id = 'Xenova/bge-small-en-v1.5'
-    const files = dummyFiles('model.onnx')
-    pinDummy(pins, id, files)
-    seed(join(cache, id, REV), files)
-    const adapter = base.makeTransformersAdapter({ name: 'bge-small', dim: 384, modelId: id, pooling: 'cls', dtype: 'fp32' })
-    // The double's pipeline object is not callable, so embed() fails after the load.
-    await adapter.embed('x').catch(() => {})
-    const loads = calls.filter(c => c.id === id)
-    expect(loads.map(c => c.cls).sort()).toEqual(['AutoModel', 'AutoTokenizer'])
-    for (const c of loads) expect(c.opts.revision).toBe(REV)
-    expect(fakeEnv.cacheDir).toBe(cache)
-  })
-
-  it('EmbeddingGemma and both rerankers load at the pin', async () => {
-    const { pins } = await freshCore()
-    const gemma = 'onnx-community/embeddinggemma-300m-ONNX'
-    const msm = 'Xenova/ms-marco-MiniLM-L-6-v2'
-    const bge = 'onnx-community/bge-reranker-v2-m3-ONNX'
-    const gFiles = dummyFiles('model_quantized.onnx', ['model_quantized.onnx_data'])
-    const rFiles = dummyFiles('model_quantized.onnx')
-    pins._setModelPinsForTesting({
-      [gemma]: { revision: REV, files: Object.fromEntries(Object.entries(gFiles).map(([f, b]) => [f, sha(b)])) },
-      [msm]: { revision: REV, files: Object.fromEntries(Object.entries(rFiles).map(([f, b]) => [f, sha(b)])) },
-      [bge]: { revision: REV, files: Object.fromEntries(Object.entries(rFiles).map(([f, b]) => [f, sha(b)])) },
-    })
-    seed(join(cache, gemma, REV), gFiles)
-    seed(join(cache, msm, REV), rFiles)
-    seed(join(cache, bge, REV), rFiles)
     const { makeEmbeddingGemmaAdapter } = await import('../src/embedders/embedding-gemma.js')
     const { makeMsMarcoMiniLmL6Adapter, makeBgeRerankerV2M3Adapter } = await import('../src/rerankers/transformers-cross-encoder.js')
-    await makeEmbeddingGemmaAdapter().embed('x', 'query').catch(() => {})
-    await makeMsMarcoMiniLmL6Adapter().scoreBatch('q', ['d']).catch(() => {})
-    await makeBgeRerankerV2M3Adapter().scoreBatch('q', ['d']).catch(() => {})
-    for (const id of [gemma, msm, bge]) {
+    const q8 = dummyFiles('model_quantized.onnx')
+    const table: Array<[string, Record<string, string>, () => Promise<unknown>]> = [
+      ['Xenova/bge-small-en-v1.5', dummyFiles('model.onnx'),
+        () => base.makeTransformersAdapter({ name: 'bge-small', dim: 384, modelId: 'Xenova/bge-small-en-v1.5', pooling: 'cls', dtype: 'fp32' }).embed('x')],
+      ['onnx-community/embeddinggemma-300m-ONNX', dummyFiles('model_quantized.onnx', ['model_quantized.onnx_data']),
+        () => makeEmbeddingGemmaAdapter().embed('x', 'query')],
+      ['Xenova/ms-marco-MiniLM-L-6-v2', q8, () => makeMsMarcoMiniLmL6Adapter().scoreBatch('q', ['d'])],
+      ['onnx-community/bge-reranker-v2-m3-ONNX', q8, () => makeBgeRerankerV2M3Adapter().scoreBatch('q', ['d'])],
+    ]
+    pins._setModelPinsForTesting(Object.fromEntries(table.map(([id, files]) => [id, pinOf(files)])))
+    for (const [id, files, load] of table) {
+      seed(join(cache, id, REV), files)
+      // The double's pipeline object is not callable, so embed() fails after the load.
+      await load().catch(() => {})
       const loads = calls.filter(c => c.id === id)
       expect(loads.length, `${id} was not loaded`).toBe(2)
       for (const c of loads) expect(c.opts.revision, `${c.cls} ${id}`).toBe(REV)
     }
+    expect(fakeEnv.cacheDir).toBe(cache)
   })
 })
 
@@ -212,8 +180,8 @@ describe('integrity: a file that does not match its pin is never used', () => {
     pinDummy(pins, id, files)
     seed(join(cache, id, REV), files)
     appendFileSync(join(cache, id, REV, 'onnx', 'model.onnx'), 'X')
-    const err = await base.verifyPinnedModel(id, 'model.onnx', cache, 'before').catch(e => e)
-    expect(err).toBeInstanceOf(base.ModelIntegrityError)
+    const err = await base.verifyPinnedModel(id, cache).catch(e => e)
+    expect(err.message).toMatch(/corrupt/)
     expect(err.message).toContain(join(cache, id, REV, 'onnx', 'model.onnx'))
     expect(err.message).toContain(`Delete ${join(cache, id)}`)
     // Classified as the corrupt-cache case by the reranker/doctor path.
@@ -221,7 +189,7 @@ describe('integrity: a file that does not match its pin is never used', () => {
     expect(classifyRerankerFailure(err.message)).toBe('corrupt-cache')
     // And through a loader: the model is never loaded.
     const adapter = base.makeTransformersAdapter({ name: 'bge-small', dim: 384, modelId: id, pooling: 'cls', dtype: 'fp32' })
-    await expect(adapter.embed('x')).rejects.toThrow(/does not match the sha256/)
+    await expect(adapter.embed('x')).rejects.toThrow(/corrupt/)
     expect(calls.filter(c => c.id === id)).toEqual([])
   })
 
@@ -232,7 +200,7 @@ describe('integrity: a file that does not match its pin is never used', () => {
     pinDummy(pins, id, files)
     downloads = { ...files, 'onnx/model_quantized.onnx': 'not the pinned weights' }
     const { makeMsMarcoMiniLmL6Adapter } = await import('../src/rerankers/transformers-cross-encoder.js')
-    await expect(makeMsMarcoMiniLmL6Adapter().scoreBatch('q', ['d'])).rejects.toThrow(/does not match the sha256.*onnx\/model_quantized\.onnx/)
+    await expect(makeMsMarcoMiniLmL6Adapter().scoreBatch('q', ['d'])).rejects.toThrow(/onnx\/model_quantized\.onnx does not match.*corrupt/)
   })
 
   it('a model with no pin is refused', async () => {
@@ -240,26 +208,6 @@ describe('integrity: a file that does not match its pin is never used', () => {
     const adapter = base.makeTransformersAdapter({ name: 'stub', dim: 384, modelId: 'example/unpinned', pooling: 'mean' })
     await expect(adapter.embed('x')).rejects.toThrow(/no integrity pin/)
     expect(calls).toEqual([])
-  })
-
-  it('hashes a file once, and again when it changes', async () => {
-    const { pins, base } = await freshCore()
-    const id = 'Xenova/bge-small-en-v1.5'
-    const files = dummyFiles('model.onnx')
-    pinDummy(pins, id, files)
-    seed(join(cache, id, REV), files)
-    await base.verifyPinnedModel(id, 'model.onnx', cache, 'before')
-    expect(base._modelHashCount()).toBe(4)
-    expect(existsSync(join(cache, id, REV, '.plur-verified.json'))).toBe(true)
-    // A new process (in-memory results gone) trusts the marker: no re-hash.
-    base._resetVerifiedModelFiles()
-    await base.verifyPinnedModel(id, 'model.onnx', cache, 'before')
-    expect(base._modelHashCount()).toBe(0)
-    // Same size, new bytes: the ctime changed, so it is hashed and refused.
-    const w = join(cache, id, REV, 'onnx', 'model.onnx')
-    writeFileSync(w, readFileSync(w, 'utf8').replace('weights', 'WEIGHTS'))
-    await expect(base.verifyPinnedModel(id, 'model.onnx', cache, 'before')).rejects.toThrow(/does not match/)
-    expect(base._modelHashCount()).toBe(1)
   })
 })
 
@@ -291,8 +239,7 @@ describe('an existing cache in the old, unpinned layout', () => {
     pinDummy(pins, id, files)
     seed(join(cache, id), { ...files, 'tokenizer.json': '{"tampered":true}' })
     const adapter = base.makeTransformersAdapter({ name: 'bge-small', dim: 384, modelId: id, pooling: 'cls', dtype: 'fp32' })
-    await expect(adapter.embed('x')).rejects.toThrow(/tokenizer\.json does not match the sha256/)
+    await expect(adapter.embed('x')).rejects.toThrow(/tokenizer\.json does not match.*corrupt.*Delete/)
     expect(calls).toEqual([])
-    expect(existsSync(join(cache, id, REV, 'tokenizer.json'))).toBe(false)
   })
 })

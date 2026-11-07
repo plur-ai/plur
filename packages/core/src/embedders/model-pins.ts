@@ -1,39 +1,7 @@
 /**
- * Integrity pins for every model PLUR can load (security audit 2026-11-06,
- * hardening H-x03-1).
- *
- * PLUR downloads its ONNX models from third-party Hugging Face repositories.
- * Without a pin, transformers.js fetches `resolve/main`, a moving branch: a
- * new commit to that repository (or anything that answers in its place) is
- * loaded on the next fresh download, and a cached file was reused without
- * any check at all. So each model is pinned here to an immutable commit, and
- * every file a load reads is checked against the sha256 recorded for it
- * before the model is used (see verifyPinnedModel in transformers-base.ts).
- *
- * `files` lists exactly the files transformers.js 4.2.0 reads for the dtype
- * PLUR loads each model with: the ONNX weights, their external-data chunks
- * (from the pinned config.json's `transformers.js_config`), config.json,
- * tokenizer.json and tokenizer_config.json. The feature-extraction and
- * sequence-classification heads of these architectures read no other file
- * (no generation_config.json: bert, xlm-roberta and gemma3_text-without-head
- * declare no optional configs in transformers.js' session_config.js).
- *
- * How the values were obtained, on 2026-11-07:
- *   - `revision`: the `sha` of
- *     `https://huggingface.co/api/models/<id>/revision/main`.
- *   - LFS files (all ONNX weights, and the two large tokenizer.json files):
- *     the `lfs.oid` (the file's sha256) listed by
- *     `https://huggingface.co/api/models/<id>/tree/<revision>?recursive=1`.
- *   - Non-LFS files (config.json, tokenizer_config.json and the small
- *     tokenizer.json files): sha256 of the bytes served by
- *     `https://huggingface.co/<id>/resolve/<revision>/<file>`, whose length
- *     was checked against the size in the same tree listing.
- *   - Xenova/bge-small-en-v1.5 was additionally downloaded through PLUR at
- *     this revision and every file re-hashed locally; the values matched.
- *
- * To move a model to a new commit: repeat the steps above for the new
- * revision and replace the whole entry. Never edit a hash by hand to make a
- * load pass.
+ * Integrity pins (security audit 2026-11-06, H-x03-1): each model PLUR loads, at a fixed commit, with the sha256 of every file the load reads.
+ * Values: `revision` from the HF API `revision/main` sha; hashes from the tree listing's `lfs.oid`, or of the bytes at `resolve/<revision>`.
+ * To move a pin, repeat that for the new revision and replace the whole entry; never edit a hash to make a load pass.
  */
 
 export interface ModelPin {
