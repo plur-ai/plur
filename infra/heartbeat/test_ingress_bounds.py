@@ -73,6 +73,15 @@ def test_units_are_sandboxed_and_deploy_refuses_root():
     assert '${DEPLOY_USER:-$(whoami)}' not in deploy
 
 
+def test_nginx_error_log_keeps_no_client_addresses():
+    here = os.path.dirname(__file__)
+    for conf in ("nginx-heartbeat.conf", "nginx-heartbeat-http.conf"):
+        text = open(os.path.join(here, conf)).read()
+        servers = sum(1 for line in text.splitlines() if line.strip() == "server {")
+        assert text.count("error_log /var/log/nginx/heartbeat.error.log crit;") == servers, conf
+        assert "limit_req_log_level info;" in text, conf
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):
