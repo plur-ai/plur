@@ -11,6 +11,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync, existsSync, realpathSync } from 'fs'
 import { join } from 'path'
+import { execFileSync } from 'child_process'
 import { tmpdir } from 'os'
 import { runCli } from './helpers/spawn.js'
 import { builtCliPath } from './helpers/built-cli.js'
@@ -71,6 +72,17 @@ describe('plur init does not turn a repo-shipped PLUR hook into a folder decisio
       expect(text(join(repo, '.claude', 'settings.json'))).not.toContain('hook-inject')
     }, 60_000)
   }
+
+  it("a committed settings file naming this home's own shim is not a decision (the path can be guessed)", () => {
+    const repo = repoWithHook('guessrepo', `${join(home, '.plur', 'bin', 'plur-hook')} hook-inject`)
+    rmSync(join(repo, '.git'), { recursive: true, force: true })
+    const git = (...a: string[]) => execFileSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@example.invalid', ...a], { stdio: 'ignore' })
+    git('init', '-q'); git('add', '.claude/settings.json'); git('commit', '-q', '-m', 'ship hooks')
+    const out = init(repo)
+    expect(text(join(plurRoot, 'folders.yaml'))).not.toContain(repo)
+    expect(out).toContain('not recorded in the folder map')
+    expect(text(join(repo, '.claude', 'settings.json'))).not.toContain('hook-inject')
+  }, 60_000)
 
   it("this machine's own shim (what an older local init wrote) is still recorded as on", () => {
     const repo = repoWithHook('ownrepo', `${join(home, '.plur', 'bin', 'plur-hook')} hook-inject`)

@@ -891,15 +891,16 @@ function migrateRepoHooks(flags: GlobalFlags, userPath: string): string | null {
         'so the folder question asks on the next prompt and can trust it'
     } else if (loadFolderMap(root).folders.some(e => e.path === folder || canonicalize(e.path) === target)) {
       recorded = 'the folder map already has it, left as is'
-    } else if (!repoHooksAreThisMachines(settings)) {
+    } else if (!repoHooksAreThisMachines(settings) || repoFileIsTracked(folder, repoPath)) {
       // A PLUR-looking hook a repository ships (the npx fallback, or a
       // plur-hook shim outside this home) proves nothing about who wrote it.
       // Recording `on` from it made the repo's own .plur store a shared,
       // writable store read in every folder, without the user deciding
       // (security audit 2026-11-06; #1588: nothing a repository ships is the
       // user's decision). The hooks still move; the folder question asks.
-      recorded = 'not recorded in the folder map: its PLUR hooks do not name this machine\'s own plur-hook, ' +
-        'so they may have come with the repository; the folder question asks on the next prompt'
+      recorded = 'not recorded in the folder map: its PLUR hooks may have come with the repository ' +
+        '(they do not name this machine\'s own plur-hook, or the file is committed to git); ' +
+        'the folder question asks on the next prompt'
     } else {
       setFolderEntry(root, folder, { mode: 'on' }, { configuredScopes: [] })
       mapWritten = true
@@ -962,6 +963,23 @@ function isPlurHook(entry: HookEntry): boolean {
   // PLUR's launcher (shim, npx fallback, or the Windows exec form) plus any
   // hook-* (decisions H2, H3) — see isPlurHookSpec.
   return (entry?.hooks ?? []).some(isPlurHookSpec)
+}
+
+/**
+ * The repo settings file is committed to git. An older local `plur init` wrote
+ * `.claude/settings.json` as an untracked local file; a cloned repository can
+ * only deliver files it commits. So a tracked file came with the repository,
+ * and even a hook naming this home's own plur-hook (the path can be guessed)
+ * is not the user's decision (security audit 2026-11-06). No git, or a folder
+ * that is not a repository, counts as untracked.
+ */
+function repoFileIsTracked(folder: string, file: string): boolean {
+  try {
+    execFileSync('git', ['-C', folder, 'ls-files', '--error-unmatch', '--', file], { stdio: 'ignore', timeout: 5000 })
+    return true
+  } catch {
+    return false
+  }
 }
 
 /** Every PLUR hook in `settings` is bound to this machine's own install (see isThisMachinesPlurHookSpec). */
