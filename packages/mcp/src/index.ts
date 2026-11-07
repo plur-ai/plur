@@ -409,7 +409,7 @@ export function hooksShapeProblem(hooks: unknown): string | null {
     if (!Array.isArray(entries)) return `hooks.${event} is not a list`
     for (const [i, entry] of entries.entries()) {
       if (!isObject(entry)) return `hooks.${event}[${i}] is not an object`
-      if (entry.hooks === undefined) continue
+      if (entry.hooks == null) continue
       if (!Array.isArray(entry.hooks)) return `hooks.${event}[${i}].hooks is not a list`
       const bad = entry.hooks.findIndex(h => !isObject(h))
       if (bad !== -1) return `hooks.${event}[${i}].hooks[${bad}] is not an object`

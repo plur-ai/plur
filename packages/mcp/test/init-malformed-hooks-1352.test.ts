@@ -85,6 +85,17 @@ describe('plur-mcp init with a malformed hooks section (#1352)', { timeout: 300_
 })
 
 describe('hooksShapeProblem (#1352)', () => {
+  it('an entry whose hooks is null: hooks installed, the entry kept, init completes', () => {
+    writeFileSync(settingsPath(), JSON.stringify({ hooks: { Stop: [{ matcher: '*', hooks: null }] } }, null, 2) + '\n')
+    const { status, out } = init()
+    expect(out).not.toMatch(/TypeError/)
+    expect(status, out).toBe(0)
+    expect(out).not.toMatch(/Hooks:\s+skipped/)
+    const after = JSON.parse(readFileSync(settingsPath(), 'utf8'))
+    expect(after.hooks.Stop[0]).toEqual({ matcher: '*', hooks: null })
+    expect(Object.keys(after.hooks).length).toBeGreaterThan(1)
+  })
+
   it('names the first offending path', () => {
     for (const [, hooks, where] of MALFORMED) expect(hooksShapeProblem(hooks)).toContain(where)
     expect(hooksShapeProblem([])).toContain('hooks')
@@ -98,6 +109,8 @@ describe('hooksShapeProblem (#1352)', () => {
     expect(hooksShapeProblem({ Stop: null })).toBeNull()
     expect(hooksShapeProblem({ Stop: [] })).toBeNull()
     expect(hooksShapeProblem({ Stop: [{ matcher: '*' }] })).toBeNull()
+    // `(entry.hooks ?? [])` tolerated null before #1352; absent and null are one rule at every level.
+    expect(hooksShapeProblem({ Stop: [{ hooks: null }] })).toBeNull()
     expect(hooksShapeProblem({
       Stop: [{ hooks: [{ type: 'prompt', prompt: 'be nice' }, { type: 'command', command: 42 }] }],
       PostCompact: [{ matcher: 'auto', hooks: [{ type: 'agent', agent: 'x' }] }],
