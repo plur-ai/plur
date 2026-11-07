@@ -1,5 +1,5 @@
 import { type GlobalFlags } from '../plur.js'
-import { hookFolderOn } from '../lib/folder-gate.js'
+import { agyHookFolder, isWorkingMode } from '../lib/folder-gate.js'
 import {
   readStdinJson,
   runAgyHook,
@@ -56,9 +56,10 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   await runAgyHook('agy guard', async () => {
     const input = readStdinJson()
 
-    const workspaces = Array.isArray(input.workspacePaths) ? input.workspacePaths as string[] : []
-    // With a workspace, silent unless the folder map says on (#1347).
-    if (workspaces.length > 0 && typeof workspaces[0] === 'string' && !hookFolderOn(workspaces[0], flags)) return
+    // With a workspace, silent unless the folder map says on (#1347) — for
+    // every root, not only the first (security audit 2026-11-06).
+    const folder = agyHookFolder(input.workspacePaths, flags)
+    if (folder && !isWorkingMode(folder.policy)) return
 
     const toolCall = (input.toolCall && typeof input.toolCall === 'object')
       ? input.toolCall as Record<string, unknown>

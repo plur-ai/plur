@@ -322,6 +322,13 @@ describe('lastUserMessage — reads the last human prompt from a Claude Code tra
     expect(lastUserMessage(path)?.id).toBe('intr')
   })
 
+  it('cuts a huge message to its last 20,000 characters before scanning it', () => {
+    const path = transcript([human('<command-name>'.repeat(5000) + 'x'.repeat(19_000) + ' always use pnpm', { uuid: 'big' })])
+    const text = lastUserMessage(path)?.text ?? ''
+    expect(text.length).toBeLessThanOrEqual(20_000)
+    expect(text.endsWith('always use pnpm')).toBe(true)
+  })
+
   it('a plur_learn call in a sidechain does not count as learned in this reply', () => {
     const path = transcript([
       human('from now on use pnpm', { uuid: 'm' }),
