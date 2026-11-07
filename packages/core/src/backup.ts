@@ -52,7 +52,7 @@ import { createHash, randomUUID } from 'crypto'
 import * as yaml from 'js-yaml'
 import { parseEngramEntry } from './engrams.js'
 import { logger } from './logger.js'
-import { atomicWrite, storeDirMode, storeFileMode, withLock } from './sync.js'
+import { atomicWrite, storeFileMode, withLock } from './sync.js'
 
 /** Directory under the plur root holding snapshots and their state. */
 export const BACKUP_DIR = 'backups'
@@ -117,7 +117,7 @@ function readState(root: string): BackupState {
 
 function writeState(root: string, state: BackupState, mode?: number): void {
   const p = statePath(root)
-  fs.mkdirSync(path.dirname(p), { recursive: true, mode: storeDirMode(mode) })
+  fs.mkdirSync(path.dirname(p), { recursive: true })
   atomicWrite(p, JSON.stringify(state, null, 2) + '\n', { mode })
 }
 
@@ -304,9 +304,7 @@ export function maybeDailyBackup(root: string, storePath: string, now = new Date
     if (!fs.existsSync(storePath)) {
       return { taken: false, skipped: 'no-store' }
     }
-    // Snapshots, sidecars, state and backups/ follow the live store's mode, so
-    // an owner-only engrams.yaml is never copied into a wider file (security
-    // audit 2026-11-06).
+    // security audit 2026-11-06: snapshots, sidecars and state follow the live store's mode
     const fileMode = storeFileMode(storePath)
     const state = readState(root)
     const stamp = todayStamp(now)
@@ -382,7 +380,7 @@ export function maybeDailyBackup(root: string, storePath: string, now = new Date
     }
 
     const dest = snapshotPath(root, stamp)
-    fs.mkdirSync(path.dirname(dest), { recursive: true, mode: storeDirMode(fileMode) })
+    fs.mkdirSync(path.dirname(dest), { recursive: true })
     writeFileDurable(dest, bytes, fileMode)
     // Sidecar is what makes a restore verifiable rather than hopeful.
     //
@@ -416,11 +414,7 @@ export function maybeDailyBackup(root: string, storePath: string, now = new Date
 
 /**
  * Atomic, durable publication: temp file, fsync, rename, directory fsync.
- *
- * `mode` is the live store's own mode (storeFileMode). A snapshot holds the
- * whole corpus, including scope:local engrams, so it must never be readable by
- * more accounts than engrams.yaml: it used to be born at the umask default,
- * 0644, beside an owner-tightened 0600 store (security audit 2026-11-06).
+ * `mode` is the live store's own mode (storeFileMode).
  */
 function writeFileDurable(dest: string, bytes: Buffer, mode: number | undefined): void {
   atomicWrite(dest, bytes, { mode })
@@ -688,7 +682,7 @@ export function restoreBackup(
     if (fs.existsSync(storePath)) {
       // Same mode as the store it copies (copyFileSync did this before): it
       // holds the whole corpus, including scope:local engrams.
-      atomicWrite(superseded, fs.readFileSync(storePath), { mode: fs.statSync(storePath).mode & 0o777 })
+      atomicWrite(superseded, fs.readFileSync(storePath), { mode: storeFileMode(storePath) })
     }
     // tmp + fsync + rename, rather than truncating the live file in place.
     atomicWrite(storePath, snapshot.bytes)

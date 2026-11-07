@@ -49,8 +49,7 @@ export function captureEpisode(path: string, summary: string, context?: CaptureC
     // queries without being deleted by the next capture.
     const { valid, quarantined } = loadEpisodesWithQuarantine(path)
     const out = [...valid, episode, ...(quarantined as Episode[])]
-    // Same mode as the store's engrams.yaml: episode summaries must never be
-    // readable by more accounts than the store (security audit 2026-11-06).
+    // security audit 2026-11-06: never wider than the store's engrams.yaml
     atomicWrite(path, yaml.dump(out, { lineWidth: 120, noRefs: true }), { mode: storeFileMode(join(dirname(path), 'engrams.yaml')) })
   })
   return episode

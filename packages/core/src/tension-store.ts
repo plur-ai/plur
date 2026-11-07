@@ -49,8 +49,7 @@ export function loadTensions(path: string): TensionRecord[] {
  */
 export function saveTensions(path: string, records: TensionRecord[], quarantined: unknown[] = []): void {
   const out = quarantined.length > 0 ? [...records, ...(quarantined as TensionRecord[])] : records
-  // Same mode as the store's engrams.yaml: tensions name engrams and must never
-  // be readable by more accounts than the store (security audit 2026-11-06).
+  // security audit 2026-11-06: never wider than the store's engrams.yaml
   atomicWrite(path, yaml.dump(out, { lineWidth: 120, noRefs: true }), { mode: storeFileMode(join(dirname(path), 'engrams.yaml')) })
 }
 
