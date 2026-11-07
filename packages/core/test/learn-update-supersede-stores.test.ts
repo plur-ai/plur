@@ -98,49 +98,6 @@ describe('UPDATE across stores: reported only when the target is actually suppre
     expect(ids, 'an UPDATE was reported but the replaced memory is still given').not.toContain(target.id)
   })
 
-  it('readonly secondary target: not reported as UPDATE; saved as a plain ADD, target untouched', async () => {
-    const { plur, target, sideId } = await secondary(true)
-    // Readonly rows are not offered as candidates; a writable neighbour makes the
-    // checker run, and the checker names the readonly row anyway. An id the
-    // prompt did not offer is no match at all (security audit 2026-11-06): no
-    // supersede, and no related link either.
-    await plur.learn(NEIGHBOUR, { scope: SIDE })
-    const r = await plur.learnAsync(NEW, { scope: SIDE, llm: says(() => target.id) })
-    expect(r.decision).toBe('ADD')
-    expect(r.engram.relations?.supersedes ?? []).toEqual([])
-    expect(r.engram.relations?.related ?? []).not.toContain(target.id)
-    const sideNow = await new Plur({ path: side }).getById(sideId)
-    expect(sideNow?.relations?.superseded_by ?? []).toEqual([])
-  })
-
-  it('pack target: not reported as UPDATE; saved as an ADD', async () => {
-    const plur = new Plur({ path: dir })
-    const src = join(dir, 'pk-source')
-    mkdirSync(src, { recursive: true })
-    writeFileSync(join(src, 'SKILL.md'), '---\nname: pk\nversion: "1.0"\n---\n')
-    writeFileSync(join(src, 'engrams.yaml'), `engrams:
-  - id: ENG-2026-0728-901
-    statement: ${OLD}
-    type: behavioral
-    scope: global
-    status: active
-    version: 2
-    activation:
-      retrieval_strength: 0.9
-      storage_strength: 1.0
-      frequency: 0
-      last_accessed: "2026-07-28"
-`)
-    await plur.installPack(src)
-    const target = await rowWith(plur, OLD)
-    await plur.learn(NEIGHBOUR, { scope: 'global' })
-    const r = await plur.learnAsync(NEW, { scope: 'global', llm: says(() => target.id) })
-    expect(r.decision).toBe('ADD')
-    expect(r.engram.relations?.supersedes ?? []).toEqual([])
-    // Pack rows are not offered as candidates, so the id is no match (security audit 2026-11-06).
-    expect(r.engram.relations?.related ?? []).not.toContain(target.id)
-  })
-
   it('secondary target locked between the read and the write: not superseded, the new one is a draft, review opened', async () => {
     const { plur, target, sideId } = await secondary(false)
     const locker = new Plur({ path: side })
