@@ -41,8 +41,7 @@ export const RemoteRowSchema = z.object({
   rationale: z.string().nullish(),
   summary: z.string().nullish(),
   domain: z.string().nullish(),
-  // Rendered by contraindicationLines; a drifted type is stripped by salvage
-  // rather than reaching the formatter (security audit 2026-11-06).
+  // security audit 2026-11-06: rendered by contraindicationLines, so a drifted type is stripped by salvage
   contraindications: z.array(z.string()).nullish(),
 }).passthrough()
 

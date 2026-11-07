@@ -266,11 +266,7 @@ function skipForApproval(engram: Engram): boolean {
 function expiredMarker(engram: WireEngram): string {
   const until = engram.temporal?.valid_until
   if (until && isExpired(engram.temporal, Date.now())) {
-    // valid_until is row-controlled (a remote store's row is passthrough-validated
-    // and Date.parse accepts a parenthesised comment carrying line terminators),
-    // so it is folded like every other rendered value: a raw newline here minted
-    // a separate, forged `[ENG-…]` entry with its own Scope line (security audit
-    // 2026-11-06).
+    // security audit 2026-11-06: valid_until is row-controlled, so it is folded like every rendered value
     return `⚠ EXPIRED ${entrySafe(String(until))} — verify before use: `
   }
   return ''
@@ -1503,9 +1499,7 @@ export function formatLayer1(engram: WireEngram): string {
  */
 function contraindicationLines(engram: WireEngram, indent: string): string[] {
   const c = engram.contraindications
-  // A remote row's contraindications is not type-checked on every leg; a string
-  // or `{length: 1}` used to throw `c.map is not a function` and fail the whole
-  // injection for every reader of that scope (security audit 2026-11-06).
+  // security audit 2026-11-06: a remote row's contraindications may not be an array
   if (!Array.isArray(c) || c.length === 0) return []
   return [`${indent}Does NOT apply when: ${c.filter(x => typeof x === 'string').map(entrySafe).join('; ')}`]
 }

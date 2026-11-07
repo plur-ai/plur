@@ -11748,9 +11748,7 @@ export class Plur {
         if (!captured || captured.length < 5) continue
         if (seen.has(captured.toLowerCase())) continue
         if (!this.config.allow_secrets && detectSecrets(captured).length > 0) continue
-        // Ingest harvests text the agent merely read (a page, a file, tool
-        // output) — the D4 case. Drop instruction-override text here so
-        // extract_only previews never offer it either (security audit 2026-11-06).
+        // security audit 2026-11-06: harvested text the agent merely read never carries an injection, not even in previews
         if (detectPromptInjection(captured).length > 0) continue
         seen.add(captured.toLowerCase())
         candidates.push({
@@ -11895,16 +11893,7 @@ export class Plur {
     // (Found by writing this fix's first regression test as a nested call and
     // watching it hang; see async-lock's "NOT REENTRANT" header.)
     //
-    // Security audit 2026-11-06: the pull path also resets and rewrites the
-    // sibling stores (episodes, tensions, candidates — holdWithheld /
-    // restoreWithheld, the rebase itself, the merge fallback), and their
-    // writers lock only `<file>.lock`, never the engram lock. Holding just the
-    // engram lock let a capture or a tension claim land mid-sync, be reported
-    // as saved, and then be overwritten. So the sync also holds each sibling
-    // file's own lock, the same `withLock` its writers take. Fixed order after
-    // the engram lock; no writer takes the engram lock while holding a sibling
-    // lock, so this cannot deadlock. A writer that arrives meanwhile waits out
-    // its short retry budget and then fails loudly rather than being lost.
+    // security audit 2026-11-06: the pull rewrites the sibling stores too, so their own locks are held (fixed order, no deadlock)
     const result = await this._withStoreLock(this.paths.engrams, async () => {
       return withLock(this.paths.tensions, () =>
         withLock(this.paths.episodes, () =>
@@ -14376,8 +14365,7 @@ Generate an improved version of the procedure that prevents this failure. Return
     if (!scope || typeof scope !== 'string') {
       throw new Error(`addStore: scope must be a non-empty string, got ${typeof scope}`)
     }
-    // Security audit 2026-11-06: a scope is copied into id prefixes, config
-    // and routing keys; hold it to the scope grammar /me answers already obey.
+    // security audit 2026-11-06: a scope feeds id prefixes, config and routing keys, so it must match the scope grammar
     if (!/^[A-Za-z0-9][A-Za-z0-9:._@/-]{0,199}$/.test(scope)) {
       throw new Error(`addStore: scope "${scope}" has characters a scope cannot contain (letters, digits and : . _ @ / - only)`)
     }
@@ -16327,10 +16315,7 @@ Generate an improved version of the procedure that prevents this failure. Return
       // verbatim; sensitivity = local entry's policy (incl. any hand-edited
       // `allow` + nested unknowns) with only `forbid` taken from the server,
       // sanitized to the category enum. No server sensitivity → local untouched.
-      // The persisted forbid is the UNION of the local effective forbid (the
-      // default categories when unset) and the server's: replacing it let a
-      // server answer forbid:['secrets'] drop 'infra' and disarm the guard for
-      // that scope, a loosening the trust rule forbids (security audit 2026-11-06).
+      // security audit 2026-11-06: the persisted forbid is the union of the local effective forbid and the server's, never narrower
       const localForbid: readonly SensitivityCategory[] = entry.sensitivity?.forbid?.length ? entry.sensitivity.forbid : SENSITIVITY_CATEGORIES
       const nextSensitivity = meta.sensitivity !== undefined
         ? { ...(entry.sensitivity ?? { allow: [] }), forbid: [...new Set([...localForbid, ...sanitizeForbidCategories(meta.sensitivity.forbid)])] }

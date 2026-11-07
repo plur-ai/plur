@@ -844,10 +844,7 @@ function rewriteLocalSiblingRefs(root: string, renamed: ReadonlyMap<string, stri
   return rewrote
 }
 
-/**
- * security audit 2026-11-06: git pull would check out (and overwrite ignored) paths outside the store, so a pull whose
- * incoming commits add or change anything but allowlisted regular files is refused.
- */
+/** security audit 2026-11-06: refuse a pull whose incoming commits add or change anything but allowlisted regular files. */
 export function assertIncomingAllowlisted(root: string): void {
   const branch = gitSafe(['rev-parse', '--abbrev-ref', 'HEAD'], root) || 'main'
   const ref = `origin/${branch}`
