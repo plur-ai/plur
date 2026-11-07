@@ -41,6 +41,7 @@
 import type { RerankerAdapter } from './types.js'
 import {
   importTransformers, resolveLoadCacheDir, envOf, weightsFileFor, refuseMissingModelOffline, localOnlyOptions,
+  verifyPinnedModel, pinnedLoadOptions, disposeQuietly,
 } from '../embedders/transformers-base.js'
 
 export const BGE_RERANKER_V2_M3_MODEL_ID = 'onnx-community/bge-reranker-v2-m3-ONNX'
@@ -88,12 +89,23 @@ async function loadPipeline(modelId: string, dtype: Dtype): Promise<LoadedPipeli
       const cacheDir = await resolveLoadCacheDir(modelId, weights)
       const env = envOf(transformers)
       if (cacheDir && env) env.cacheDir = cacheDir
+      // Pinned revision and verified files (security audit 2026-11-06,
+      // H-x03-1): checked before the load, and again after it for what it
+      // downloaded, before the model is used. A mismatch is reported as a
+      // corrupt cache (classifyRerankerFailure), naming the folder to delete.
+      await verifyPinnedModel(modelId, weights, cacheDir, 'before', 'reranker model')
       await refuseMissingModelOffline(modelId, weights, 'reranker model')
-      const offline = localOnlyOptions()
+      const offline = { ...pinnedLoadOptions(modelId), ...localOnlyOptions() }
       const [tokenizer, model] = await Promise.all([
         AutoTokenizer.from_pretrained(modelId, offline),
         AutoModelForSequenceClassification.from_pretrained(modelId, { dtype, ...offline }),
       ])
+      try {
+        await verifyPinnedModel(modelId, weights, cacheDir, 'after', 'reranker model')
+      } catch (err) {
+        await disposeQuietly(model)
+        throw err
+      }
       return {
         tokenizer: tokenizer as unknown as LoadedPipeline['tokenizer'],
         model: model as unknown as LoadedPipeline['model'],
