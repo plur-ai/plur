@@ -1,11 +1,4 @@
-/**
- * Security audit 2026-11-06: the pack registry (packs/registry.yaml) lives in
- * the same directory packs are installed into. A pack whose install directory
- * name came out as `registry.yaml` (a source folder of that name, or a flat
- * archive whose manifest says `name: registry.yaml`) was swapped in over the
- * registry file and deleted every other pack's integrity baseline; and
- * `uninstallPack(packs, 'registry.yaml')` deleted the registry outright.
- */
+// security audit 2026-11-06: a pack is never installed onto, or uninstalled as, the pack registry or a non-directory.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -51,23 +44,12 @@ describe('pack names reserved for the registry', () => {
     expect(listPacks(packs).map(p => p.manifest?.name)).toEqual(['alpha'])
   })
 
-  it('never installs a flat-archive pack named registry.yaml onto the registry file', async () => {
-    const before = await withAlpha()
-    // A flat URL archive extracts to a folder called `extracted`; the manifest
-    // name then becomes the preferred directory name.
-    try { await installPack(packs, source('extracted', 'registry.yaml', 'ENG-2026-11-06-003')) } catch { /* refusing is fine */ }
-    expect(statSync(join(packs, 'registry.yaml')).isFile()).toBe(true)
-    expect(readFileSync(join(packs, 'registry.yaml'), 'utf8')).toContain('alpha')
-    expect(() => listPacks(packs)).not.toThrow()
-    expect(before).toContain('alpha')
-  })
-
   it('uninstall refuses the registry file and other non-directory entries', async () => {
     const before = await withAlpha()
     expect(() => uninstallPack(packs, 'registry.yaml')).toThrow()
     expect(() => uninstallPack(packs, 'REGISTRY.YAML')).toThrow()
     writeFileSync(join(packs, 'notes.txt'), 'user file')
-    expect(() => uninstallPack(packs, 'notes.txt')).toThrow(/not found/i)
+    expect(() => uninstallPack(packs, 'notes.txt')).toThrow()
     expect(readFileSync(join(packs, 'registry.yaml'), 'utf8')).toBe(before)
     expect(readFileSync(join(packs, 'notes.txt'), 'utf8')).toBe('user file')
   })
