@@ -27,6 +27,7 @@ plugin), the lifecycle methods operate independently.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 import os
@@ -394,6 +395,57 @@ def _detect_injection_signal(engram_text: str, response: str) -> tuple[str | Non
     return None, 0.0
 
 
+# -- Recall indicator ---------------------------------------------------------
+
+# Label and glyph for Hermes's recall line ("🧠 PLUR — recalled 3 memories").
+# The glyph matches Hermes's default INDICATOR_GLYPH.
+_RECALL_PROVIDER_LABEL = "PLUR"
+_RECALL_GLYPH = "\U0001f9e0"
+_RECALL_STATUS_FIELDS = frozenset({"provider_label", "count", "glyph"})
+
+
+@dataclasses.dataclass(frozen=True)
+class _RecallStatus:
+    """Local stand-in for Hermes's ``RecallStatus`` (same fields and defaults).
+
+    ``MemoryManager.describe_recall()`` reads ``provider_label``, ``count`` and
+    ``glyph`` by attribute, so this works when Hermes's class cannot be imported.
+    """
+
+    provider_label: str
+    count: int
+    glyph: str = _RECALL_GLYPH
+
+
+# Resolved once, on the first recall_status() call; None means not yet resolved.
+_recall_status_cls: Optional[type] = None
+
+
+def _resolve_recall_status_cls() -> type:
+    """Return Hermes's ``RecallStatus`` when importable, else ``_RecallStatus``.
+
+    The Hermes class is accepted when it is a dataclass with the three fields
+    ``describe_recall()`` reads; a top-level ``agent`` package outside Hermes
+    could be unrelated.  Any import or inspection error selects the fallback.
+    The result is cached at module level.
+    """
+    global _recall_status_cls
+    if _recall_status_cls is not None:
+        return _recall_status_cls
+    cls: type = _RecallStatus
+    try:
+        from agent.memory_provider import RecallStatus  # type: ignore[import-not-found]
+
+        if dataclasses.is_dataclass(RecallStatus) and isinstance(RecallStatus, type):
+            names = {f.name for f in dataclasses.fields(RecallStatus)}
+            if _RECALL_STATUS_FIELDS <= names:
+                cls = RecallStatus
+    except Exception:
+        cls = _RecallStatus
+    _recall_status_cls = cls
+    return cls
+
+
 class PlurMemoryProvider:
     """Hermes MemoryProvider ABC adapter for PLUR persistent memory.
 
@@ -419,6 +471,11 @@ class PlurMemoryProvider:
 
     Pending-engram state is keyed by ``session_id`` so interleaved sessions do
     not cross-contaminate each other's injection lists.
+
+    ``recall_status()`` reports what the most recent ``prefetch()`` on this
+    instance injected, tagged with that prefetch's session.  Each ``prefetch()``
+    and ``on_turn_start()`` clears it, and a generation counter discards a
+    prefetch that finishes after a newer one or a newer turn has started.
     """
 
     def __init__(
@@ -441,7 +498,26 @@ class PlurMemoryProvider:
         self._pending_by_session: dict[str, list[dict]] = {}
         self._learn_by_session: dict[str, int] = {}
         self._injected_lock = threading.Lock()
+        # Recall indicator: (session_key, count) of the last prefetch that
+        # injected engrams, or None.  Guarded by _injected_lock.
+        self._recall: Optional[tuple[str, int]] = None
+        self._recall_generation = 0
         self._meta_pipeline: Any = None  # lazily created
+
+    # -- Recall indicator state ----------------------------------------------
+
+    def _begin_recall_generation(self) -> int:
+        """Clear the recall indicator and return a fresh generation token."""
+        with self._injected_lock:
+            self._recall_generation += 1
+            self._recall = None
+            return self._recall_generation
+
+    def _clear_recall_for(self, session_key: str) -> None:
+        """Clear the recall indicator if it belongs to ``session_key``."""
+        with self._injected_lock:
+            if self._recall is not None and self._recall[0] == session_key:
+                self._recall = None
 
     # -- Lazy bridge construction --------------------------------------------
 
@@ -541,7 +617,13 @@ class PlurMemoryProvider:
 
         Returns formatted text for Hermes to include as context, or empty
         string if nothing relevant or on any bridge failure.
+
+        Every call clears the recall indicator first; it is set again
+        when this call returns a non-empty block for a positive engram count
+        and no newer prefetch or turn has started meanwhile (see
+        ``recall_status``).
         """
+        generation = self._begin_recall_generation()
         if self._standalone_hooks_active:
             return ""
         if not query:
@@ -573,7 +655,14 @@ class PlurMemoryProvider:
                 lines.append(result["constraints"])
             if result.get("consider"):
                 lines.append(result["consider"])
-            return "\n".join(lines) if lines else ""
+            block = "\n".join(lines) if lines else ""
+
+            count = result.get("count", 0)
+            if block and isinstance(count, int) and not isinstance(count, bool) and count > 0:
+                with self._injected_lock:
+                    if self._recall_generation == generation:
+                        self._recall = (session_key, count)
+            return block
         except Exception as e:
             logger.debug("PLUR prefetch failed (non-fatal): %s", e)
             return ""
@@ -620,6 +709,7 @@ class PlurMemoryProvider:
         # or when the bridge is unavailable.
         with self._injected_lock:
             snapshot = self._pending_by_session.pop(session_key, [])
+        self._clear_recall_for(session_key)
 
         response = assistant_content or ""
 
@@ -695,6 +785,7 @@ class PlurMemoryProvider:
             self._session_id = ""
             with self._injected_lock:
                 self._pending_by_session.pop(sid, None)
+            self._clear_recall_for(sid)
             self._learn_by_session.pop(sid, None)
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
@@ -874,15 +965,16 @@ class PlurMemoryProvider:
         an idle session; without this method it logs a "shutdown failed" warning.
         """
 
-    # -- Optional Hermes MemoryProvider methods (no-ops) ----------------------
+    # -- Optional Hermes MemoryProvider methods --------------------------------
     #
     # PlurMemoryProvider is duck-typed against Hermes's MemoryProvider base
     # class, so it does not inherit the base class's empty defaults.  Hermes
     # calls these on every provider; a missing method raises AttributeError,
     # which Hermes catches and logs.  Each one below has the base-class
-    # signature and returns the base-class default, so Hermes picks the same
-    # call shape it uses for the base class.  They do nothing whether or not
-    # ``standalone_hooks_active`` is set.
+    # signature, so Hermes picks the same call shape it uses for the base
+    # class.  recall_status and on_turn_start drive the recall indicator (see
+    # recall_status); the rest return the base-class default and do nothing
+    # whether or not ``standalone_hooks_active`` is set.
 
     def unavailable_reason(self) -> str:
         """No extra hint for Hermes's "provider unavailable" warning."""
@@ -892,11 +984,39 @@ class PlurMemoryProvider:
         """No-op: ``prefetch()`` recalls synchronously, so nothing is queued."""
 
     def recall_status(self) -> Optional[Any]:
-        """No recall indicator yet; returns ``None`` (see plur-ai/plur#1853)."""
-        return None
+        """Report what the most recent provider-path ``prefetch()`` injected.
+
+        Hermes's ``MemoryManager.describe_recall()`` calls this right after
+        ``prefetch_all()`` and prints e.g. "🧠 PLUR — recalled 3 memories".
+        Returns a ``RecallStatus`` (Hermes's class when importable, else a local
+        stand-in with the same fields) whose ``count`` is the number of engrams
+        the last ``prefetch()`` on this instance injected, or ``None`` when that
+        prefetch injected nothing, failed, was skipped, or a newer turn has
+        started.  A count of zero is not reported: Hermes reads 0 as "content
+        without a discrete count".
+
+        This reflects the provider-path ``prefetch()``.  With
+        ``standalone_hooks_active=True`` the pre_llm_call hook injects instead
+        and this returns ``None``.  The base signature takes no session, so the
+        status belongs to the session of the latest prefetch; Hermes builds one
+        provider per agent and calls this on the same turn as the prefetch.
+        """
+        with self._injected_lock:
+            recall = self._recall
+        if recall is None:
+            return None
+        cls = _resolve_recall_status_cls()
+        return cls(provider_label=_RECALL_PROVIDER_LABEL, count=recall[1])
 
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
-        """No-op: PLUR keeps no per-turn state outside ``prefetch``/``sync_turn``."""
+        """Clear the recall indicator at the start of each Hermes turn.
+
+        Hermes calls this before ``prefetch_all()``.  Clearing here keeps the
+        previous turn's count out of the recall line when this turn's prefetch
+        is skipped (trivial prompt, stuck-call gate) or times out, and the
+        generation bump discards a timed-out prefetch that finishes later.
+        """
+        self._begin_recall_generation()
 
     def identity_signature(self) -> Dict[str, Any]:
         """No identity-mapping values, so no cached gateway agent is busted."""
