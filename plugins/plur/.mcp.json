@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "plur": {
+      "command": "npx",
+      "args": ["-y", "@plur-ai/mcp@0.23.0"],
+      "env": {
+        "PLUR_INSTRUCTIONS": "neutral"
+      }
+    }
+  }
+}

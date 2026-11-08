@@ -1,0 +1,18 @@
+{
+  "name": "plur",
+  "displayName": "PLUR Memory",
+  "version": "0.23.0",
+  "description": "Local memory you own, for Claude Code. Save corrections, preferences and conventions when you ask, and find them again in later sessions. Stored as plain YAML on your disk.",
+  "author": {
+    "name": "PLUR",
+    "url": "https://plur.ai"
+  },
+  "homepage": "https://plur.ai",
+  "repository": "https://github.com/plur-ai/plur",
+  "license": "Apache-2.0",
+  "keywords": ["memory", "local-first", "yaml", "knowledge"],
+  "icon": "./icon.svg",
+  "documentationUrl": "https://docs.plur.ai",
+  "supportUrl": "https://github.com/plur-ai/plur/issues",
+  "privacyPolicyUrl": "https://plur.ai/privacy"
+}
