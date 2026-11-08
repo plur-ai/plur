@@ -53,7 +53,7 @@ export const NEUTRAL_INSTRUCTIONS = `PLUR stores memory notes, called engrams, a
 
 plur_learn saves a note the user wants remembered. plur_recall searches saved notes. plur_forget retires a note. plur_feedback rates whether a recalled note was useful. plur_status reports the store's location and size. plur_admin with { "action": "help" } lists less common operations.
 
-Nothing is saved or recalled unless one of these tools is called.
+Hooks, where installed, add relevant notes to the conversation automatically. Otherwise nothing is saved or recalled unless one of these tools is called.
 
 In a folder where memory has not been decided, these tools save and return nothing and answer with a question about that folder. Show the question to the user and run only the answer they choose. Its commands start with plur; if that command is not installed, run the same command with npx -y @plur-ai/cli@${VERSION} in place of plur.`
 

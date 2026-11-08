@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest'
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'fs'
+import { execFileSync } from 'child_process'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs'
 import { join, relative } from 'path'
 import { tmpdir } from 'os'
 import { Plur } from '@plur-ai/core'
@@ -98,9 +99,72 @@ describe('plugins/plur meets the directory checks', () => {
     expect(mcp().env.PLUR_INSTRUCTIONS).toBe('neutral')
   })
 
-  it('installs no hooks', () => {
-    expect(existsSync(join(PLUGIN, 'hooks'))).toBe(false)
-    expect(manifest().hooks).toBeUndefined()
+  describe('automatic memory', () => {
+    const SCRIPT = join(PLUGIN, 'scripts', 'run-hook.sh')
+    const hooks = () => JSON.parse(readFileSync(join(PLUGIN, 'hooks', 'hooks.json'), 'utf-8')).hooks as Record<string, Array<{ hooks: Array<{ command: string }> }>>
+    const commands = () => Object.values(hooks()).flat().flatMap(g => g.hooks.map(h => h.command))
+
+    it('ships the hooks that make memory automatic', () => {
+      const all = commands().join('\n')
+      expect(all).toContain('hook-inject')
+      expect(all).toContain('hook-inject --rehydrate')
+      expect(all).toContain('hook-session-end')
+      expect(hooks().UserPromptSubmit).toBeDefined()
+    })
+
+    it('leaves out hooks that block or nudge other work', () => {
+      const all = commands().join('\n')
+      for (const h of ['hook-session-guard', 'hook-learn-check', 'hook-observe']) expect(all).not.toContain(h)
+    })
+
+    it('runs every hook through the bundled script', () => {
+      for (const c of commands()) expect(c.startsWith('"${CLAUDE_PLUGIN_ROOT}"/scripts/run-hook.sh ')).toBe(true)
+    })
+
+    it('offers one switch, on by default', () => {
+      const o = manifest().userConfig.automatic_memory
+      expect(o.type).toBe('boolean')
+      expect(o.default).toBe(true)
+    })
+
+    it('falls back to the same value as the manifest default', () => {
+      // Claude Code leaves the variable empty for a setting at its default, so
+      // flipping the default without the script would leave hooks running.
+      const fallback = String(manifest().userConfig.automatic_memory.default)
+      expect(readFileSync(SCRIPT, 'utf-8')).toContain(`AUTOMATIC_MEMORY:-${fallback}}`)
+    })
+
+    function run(env: Record<string, string>, makeMeta = false): string {
+      dir = mkdtempSync(join(tmpdir(), 'plur-hook-'))
+      const bin = join(dir, 'bin')
+      mkdirSync(bin)
+      const log = join(dir, 'called')
+      writeFileSync(join(bin, 'npx'), `#!/bin/sh\necho "$@" > "${log}"\n`, { mode: 0o755 })
+      if (makeMeta) {
+        mkdirSync(join(dir, '.plur', 'bin'), { recursive: true })
+        writeFileSync(join(dir, '.plur', 'bin', 'plur-hook.meta.json'), '{}')
+      }
+      execFileSync('sh', [SCRIPT, 'hook-inject'], { env: { PATH: `${bin}:/usr/bin:/bin`, HOME: dir, ...env } })
+      return existsSync(log) ? readFileSync(log, 'utf-8').trim() : ''
+    }
+    let dir = ''
+    afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }); dir = '' })
+
+    it('runs the pinned CLI when the switch is on', () => {
+      expect(run({ CLAUDE_PLUGIN_OPTION_AUTOMATIC_MEMORY: 'true' })).toBe(`-y @plur-ai/cli@${MCP_VERSION} hook-inject`)
+    })
+
+    it('does nothing when the switch is off', () => {
+      expect(run({ CLAUDE_PLUGIN_OPTION_AUTOMATIC_MEMORY: 'false' })).toBe('')
+    })
+
+    it('leaves it to the hooks plur init already installed', () => {
+      expect(run({ CLAUDE_PLUGIN_OPTION_AUTOMATIC_MEMORY: 'true' }, true)).toBe('')
+    })
+
+    it('tells the reader the switch exists', () => {
+      expect(readFileSync(join(PLUGIN, 'README.md'), 'utf-8')).toContain('automatic_memory')
+    })
   })
 
   it('has a README of at least 40 words outside code blocks, disclosing what it runs and sends', () => {
@@ -130,5 +194,6 @@ describe('release script keeps the plugin pinned', () => {
     const release = readFileSync(join(REPO, 'scripts', 'release.sh'), 'utf-8')
     expect(release).toContain('plugins/plur/.claude-plugin/plugin.json')
     expect(release).toContain('plugins/plur/.mcp.json')
+    expect(release).toContain('plugins/plur/scripts/run-hook.sh')
   })
 })

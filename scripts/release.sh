@@ -686,7 +686,8 @@ node -e "
   c.mcpServers.plur.args = ['-y', '@plur-ai/mcp@$VERSION'];
   fs.writeFileSync(mcp, JSON.stringify(c, null, 2) + '\n');
 "
-echo "  ✓ plugins/plur (Claude directory plugin version and npx pin)"
+sed -i '' "s#@plur-ai/cli@[^ ]*#@plur-ai/cli@$VERSION#" plugins/plur/scripts/run-hook.sh
+echo "  ✓ plugins/plur (Claude directory plugin version and npx pins)"
 
 # Hermes pyproject.toml
 sed -i '' "s/^version = \".*\"/version = \"$VERSION\"/" packages/hermes/pyproject.toml
