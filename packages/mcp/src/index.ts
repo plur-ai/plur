@@ -492,7 +492,10 @@ function installHooks(): string {
   }
   const shapeProblem = hooksShapeProblem(settingsRead.data.hooks)
   if (shapeProblem) {
-    return `skipped — in ${settingsPath}, ${shapeProblem}; Claude Code expects lists of hook objects there. Fix it by hand, then re-run \`plur-mcp init\``
+    const expected = shapeProblem.startsWith('`hooks` ')
+      ? 'Claude Code expects an object mapping each event to a list of hook entries'
+      : 'Claude Code expects lists of hook objects there'
+    return `skipped — in ${settingsPath}, ${shapeProblem}; ${expected}. Fix it by hand, then re-run \`plur-mcp init\``
   }
   const settings = settingsRead.data as Settings
 

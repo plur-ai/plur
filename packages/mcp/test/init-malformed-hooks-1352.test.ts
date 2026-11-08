@@ -82,9 +82,18 @@ describe('plur-mcp init with a malformed hooks section (#1352)', { timeout: 300_
   it('an entry whose hooks is a string: hooks skipped and named, file unchanged, init completes', () => expectSkipped('an entry whose hooks is a string'))
   it('a hook that is null: hooks skipped and named, file unchanged, init completes', () => expectSkipped('a hook that is null'))
   it('a hook that is a string: hooks skipped and named, file unchanged, init completes', () => expectSkipped('a hook that is a string'))
-})
 
-describe('hooksShapeProblem (#1352)', () => {
+  it('a top-level hooks value that is not an object: skipped, and the message says what is expected there', () => {
+    const raw = JSON.stringify({ hooks: [] }, null, 2) + '\n'
+    writeFileSync(settingsPath(), raw)
+    const { status, out } = init()
+    expect(status, out).toBe(0)
+    expect(out).toMatch(/Hooks:\s+skipped.*`hooks` is not an object; Claude Code expects an object mapping each event/)
+    expect(readFileSync(settingsPath(), 'utf8')).toBe(raw)
+  })
+
+  // Not refused: `(entry.hooks ?? [])` already tolerated it before #1352. Guards against
+  // the refusal rule growing to cover null, which the old code accepted.
   it('an entry whose hooks is null: hooks installed, the entry kept, init completes', () => {
     writeFileSync(settingsPath(), JSON.stringify({ hooks: { Stop: [{ matcher: '*', hooks: null }] } }, null, 2) + '\n')
     const { status, out } = init()
@@ -95,7 +104,9 @@ describe('hooksShapeProblem (#1352)', () => {
     expect(after.hooks.Stop[0]).toEqual({ matcher: '*', hooks: null })
     expect(Object.keys(after.hooks).length).toBeGreaterThan(1)
   })
+})
 
+describe('hooksShapeProblem (#1352)', () => {
   it('names the first offending path', () => {
     for (const [, hooks, where] of MALFORMED) expect(hooksShapeProblem(hooks)).toContain(where)
     expect(hooksShapeProblem([])).toContain('hooks')
