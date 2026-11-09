@@ -33,7 +33,7 @@ With the `automatic_memory` setting on, which is the default, these hooks run in
 
 Turn it off in `/config`, under this plugin. PLUR then acts only when its tools are called, and you can turn it back on at any time. Removing the plugin removes the hooks, and your notes stay in `~/.plur/`.
 
-If you already ran `plur init`, those hooks stay in charge and this plugin's hooks do nothing, so nothing is added twice. `plur init` is also how to use the same memory in Cursor, Codex and other tools.
+If `plur init` has put PLUR's hooks in the Claude Code settings used for a project, those hooks stay in charge there and this plugin's hooks do nothing, so nothing is added twice. If those hooks are removed later, this plugin's hooks take over. `plur init` is also how to use the same memory in Cursor, Codex and other tools.
 
 ## What it runs
 

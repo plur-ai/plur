@@ -149,19 +149,35 @@ describe('plugins/plur meets the directory checks', () => {
       expect(readFileSync(SCRIPT, 'utf-8')).toContain(`AUTOMATIC_MEMORY:-${fallback}}`)
     })
 
-    function run(env: Record<string, string>, makeMeta = false): string {
+    type Setup = (home: string) => Record<string, string> | void
+
+    function run(env: Record<string, string>, setup?: Setup): string {
       dir = mkdtempSync(join(tmpdir(), 'plur-hook-'))
       const bin = join(dir, 'bin')
       mkdirSync(bin)
       const log = join(dir, 'called')
       writeFileSync(join(bin, 'npx'), `#!/bin/sh\necho "$@" > "${log}"\n`, { mode: 0o755 })
-      if (makeMeta) {
-        mkdirSync(join(dir, '.plur', 'bin'), { recursive: true })
-        writeFileSync(join(dir, '.plur', 'bin', 'plur-hook.meta.json'), '{}')
-      }
-      execFileSync('sh', [SCRIPT, 'hook-inject'], { env: { PATH: `${bin}:/usr/bin:/bin`, HOME: dir, ...env } })
+      const extra = setup?.(dir) ?? {}
+      execFileSync('sh', [SCRIPT, 'hook-inject'], { cwd: dir, env: { PATH: `${bin}:/usr/bin:/bin`, HOME: dir, ...env, ...extra } })
       return existsSync(log) ? readFileSync(log, 'utf-8').trim() : ''
     }
+
+    /** What `plur init` leaves behind whether or not its hooks are still there. */
+    function leaveMarker(home: string): void {
+      mkdirSync(join(home, '.plur', 'bin'), { recursive: true })
+      writeFileSync(join(home, '.plur', 'bin', 'plur-hook.meta.json'), '{}')
+    }
+
+    function writeSettings(path: string, hook: object): void {
+      mkdirSync(join(path, '..'), { recursive: true })
+      writeFileSync(path, JSON.stringify({ hooks: { UserPromptSubmit: [{ hooks: [{ type: 'command', timeout: 20, ...hook }] }] } }))
+    }
+
+    const SHELL_FORM = { command: '/home/u/.plur/bin/plur-hook hook-inject' }
+    const EXEC_FORM = { command: '/usr/bin/node', args: ['/opt/plur/dist/index.js', 'hook-inject'] }
+    const OTHER_HOOK = { command: '/usr/local/bin/my-own-hook' }
+    const ON = { CLAUDE_PLUGIN_OPTION_AUTOMATIC_MEMORY: 'true' }
+    const PINNED = `-y @plur-ai/cli@${MCP_VERSION} hook-inject`
     let dir = ''
     afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }); dir = '' })
 
@@ -173,8 +189,31 @@ describe('plugins/plur meets the directory checks', () => {
       expect(run({ CLAUDE_PLUGIN_OPTION_AUTOMATIC_MEMORY: 'false' })).toBe('')
     })
 
-    it('leaves it to the hooks plur init already installed', () => {
-      expect(run({ CLAUDE_PLUGIN_OPTION_AUTOMATIC_MEMORY: 'true' }, true)).toBe('')
+    it.each([['shell', SHELL_FORM], ['exec', EXEC_FORM]])('leaves it to hooks plur init installed in user settings (%s form)', (_, hook) => {
+      expect(run(ON, h => { leaveMarker(h); writeSettings(join(h, '.claude', 'settings.json'), hook) })).toBe('')
+    })
+
+    it('leaves it to hooks installed for this project alone', () => {
+      expect(run(ON, h => { writeSettings(join(h, 'repo', '.claude', 'settings.json'), SHELL_FORM); return { CLAUDE_PROJECT_DIR: join(h, 'repo') } })).toBe('')
+    })
+
+    it('leaves it to hooks in a project\'s local settings', () => {
+      expect(run(ON, h => { writeSettings(join(h, 'repo', '.claude', 'settings.local.json'), SHELL_FORM); return { CLAUDE_PROJECT_DIR: join(h, 'repo') } })).toBe('')
+    })
+
+    it('looks in the settings Claude Code actually reads when the config folder moved', () => {
+      expect(run(ON, h => { writeSettings(join(h, 'cfg', 'settings.json'), SHELL_FORM); return { CLAUDE_CONFIG_DIR: join(h, 'cfg') } })).toBe('')
+      // ~/.claude is not read in that case, so hooks left there do not run.
+      expect(run(ON, h => { writeSettings(join(h, '.claude', 'settings.json'), SHELL_FORM); return { CLAUDE_CONFIG_DIR: join(h, 'cfg'), CLAUDE_PROJECT_DIR: join(h, 'repo') } })).toBe(PINNED)
+    })
+
+    it('still runs when plur init\'s marker outlived its hooks', () => {
+      expect(run(ON, leaveMarker)).toBe(PINNED)
+      expect(run(ON, h => { leaveMarker(h); writeSettings(join(h, '.claude', 'settings.json'), OTHER_HOOK) })).toBe(PINNED)
+    })
+
+    it('still runs in a project other than the one holding project-only hooks', () => {
+      expect(run(ON, h => { leaveMarker(h); writeSettings(join(h, 'other', '.claude', 'settings.json'), SHELL_FORM); mkdirSync(join(h, 'repo')); return { CLAUDE_PROJECT_DIR: join(h, 'repo') } })).toBe(PINNED)
     })
 
     it('tells the reader the switch exists', () => {
