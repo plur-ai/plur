@@ -14,7 +14,9 @@ Open source under Apache-2.0: [github.com/plur-ai/plur](https://github.com/plur-
 
 The first time PLUR runs in a folder, it asks whether memory should be on there, and loads and saves nothing until you answer. Your answer is recorded by a one-line command. If the `plur` command is not installed, Claude runs the same command through `npx -y @plur-ai/cli`, at the same version as the server.
 
-Once a folder is on, relevant notes reach Claude by themselves. To save something on purpose, name PLUR, because Claude also has its own memory: "save to PLUR that this project uses pnpm".
+Once a folder is on, relevant notes reach Claude by themselves. To be sure something is saved to PLUR, name it, because Claude also has its own memory: "save to PLUR that this project uses pnpm".
+
+Notes about a project stay with that project, named after its repository. Preferences you want everywhere, such as "across all my projects, end commit messages with [gs]", follow you into every project where PLUR is on.
 
 The server is a local program, so it runs in Claude Code and in Cowork sessions on your computer. It does not run in claude.ai chat.
 

@@ -1,6 +1,6 @@
 ---
 name: plur-memory
-description: Save something to PLUR memory, or search, correct and remove what is saved, when the user asks PLUR to remember, recall or forget something.
+description: Save a correction, preference or convention the user wants kept for later sessions to PLUR, and search, correct or remove what is saved. Use when the user states something to keep, or asks to remember, recall or forget something.
 ---
 
 # PLUR Memory
@@ -9,7 +9,7 @@ PLUR keeps memory notes, called engrams, as plain YAML files in `~/.plur/` on th
 
 ## When the user asks to remember something
 
-Call `plur_learn` with one clear statement a reader could act on later. Report what was saved.
+Call `plur_learn` with one clear statement a reader could act on later. Leave `scope` unset for a note about this project. Set `scope` to `global` only for a preference the user wants in all their projects. Report what was saved.
 
 ## When the user asks what is remembered
 

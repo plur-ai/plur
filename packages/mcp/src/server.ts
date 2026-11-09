@@ -51,7 +51,7 @@ export function clearPendingReload(): void {
 // decision to save or recall with the person.
 export const NEUTRAL_INSTRUCTIONS = `PLUR stores memory notes, called engrams, as plain YAML files in ~/.plur/ on this computer, and finds them again across sessions and tools.
 
-plur_learn saves a note the user wants remembered. plur_recall searches saved notes. plur_forget retires a note. plur_feedback rates whether a recalled note was useful. plur_status reports the store's location and size. plur_admin with { "action": "help" } lists less common operations.
+plur_learn saves a lasting correction, preference or convention. A note about this project keeps the folder's default scope; set scope to global only for a preference that applies across all of the user's projects. plur_recall searches saved notes. plur_forget retires a note. plur_feedback rates whether a recalled note was useful. plur_status reports the store's location and size. plur_admin with { "action": "help" } lists less common operations.
 
 Hooks, where installed, add relevant notes to the conversation automatically. Otherwise nothing is saved or recalled unless one of these tools is called.
 

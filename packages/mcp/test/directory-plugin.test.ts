@@ -51,6 +51,16 @@ describe('neutral server instructions', () => {
     for (const tool of ['plur_recall', 'plur_learn', 'plur_forget']) expect(NEUTRAL_INSTRUCTIONS).toContain(tool)
   })
 
+  it('says when a note belongs to one project and when it follows the person', () => {
+    // Measured: with no folder scope a project's convention reached every other
+    // project (15/15), and a preference only followed the person when global.
+    expect(NEUTRAL_INSTRUCTIONS).toMatch(/scope.{0,20}global/)
+  })
+
+  it('names lasting corrections, preferences and conventions as what plur_learn is for', () => {
+    expect(NEUTRAL_INSTRUCTIONS).toMatch(/plur_learn saves .*correction.*preference.*convention/)
+  })
+
   it('says how to answer the folder question when the plur command is not installed', () => {
     // The plugin installs the server, not the CLI, and a new folder starts
     // undecided: without this a plugin user cannot turn memory on at all.
@@ -97,6 +107,11 @@ describe('plugins/plur meets the directory checks', () => {
   it('runs the server in neutral mode', () => {
     expect(mcp().command).toBe('npx')
     expect(mcp().env.PLUR_INSTRUCTIONS).toBe('neutral')
+  })
+
+  it('keeps each project\'s notes to that project, for both the server and the hooks', () => {
+    expect(mcp().env.PLUR_FOLDER_SCOPE).toBe('project')
+    expect(readFileSync(join(PLUGIN, 'scripts', 'run-hook.sh'), 'utf-8')).toContain('PLUR_FOLDER_SCOPE=project')
   })
 
   describe('automatic memory', () => {

@@ -6,4 +6,7 @@
 [ "${CLAUDE_PLUGIN_OPTION_AUTOMATIC_MEMORY:-true}" = "false" ] && exit 0
 [ -f "$HOME/.plur/bin/plur-hook.meta.json" ] && exit 0
 
+# Keeps each project's notes to that project, matching the server's setting.
+export PLUR_FOLDER_SCOPE=project
+
 exec npx -y @plur-ai/cli@0.23.0 "$@"

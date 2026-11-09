@@ -833,6 +833,24 @@ export function folderOffEntries(dir: string, opts: FolderPolicyOptions): Folder
  *  5. otherwise ask (including `$HOME`).
  */
 export function resolveFolderPolicy(dir: string, opts: FolderPolicyOptions): FolderPolicy {
+  return withRepositoryScope(dir, opts, resolveMappedFolderPolicy(dir, opts))
+}
+
+/**
+ * With PLUR_FOLDER_SCOPE=project, a folder that is on and has no scope of its
+ * own gets one named after its repository. Without a scope, injection applies
+ * no filter, so one project's notes reach every other. Only adds a missing
+ * scope: never turns a folder on and never replaces a scope already chosen.
+ */
+function withRepositoryScope(dir: string, opts: FolderPolicyOptions, policy: FolderPolicy): FolderPolicy {
+  if (process.env.PLUR_FOLDER_SCOPE !== 'project' || policy.mode !== 'on' || policy.scope || policy.reason) return policy
+  const base = findGitRoot(dir) ?? dir
+  if (coversHomeOrRoot(base, opts.home ?? homedir())) return policy
+  const name = basename(base).replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '')
+  return name ? { ...policy, scope: `project:${name}` } : policy
+}
+
+function resolveMappedFolderPolicy(dir: string, opts: FolderPolicyOptions): FolderPolicy {
   const policy = resolveExplicitFolderPolicy(dir, opts)
   // Only fill an absent default. Never bypass a refusal, a user's explicit
   // ask, or a remote-only choice; legacy trusted settings keep precedence.
