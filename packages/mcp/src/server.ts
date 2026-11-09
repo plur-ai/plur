@@ -46,6 +46,22 @@ export function clearPendingReload(): void {
   _pendingReload = false
 }
 
+// Used by the plugin listed in Claude's directory, whose review rejects text
+// that tells Claude how to behave: it says what the tools do and leaves the
+// decision to save or recall with the person.
+export const NEUTRAL_INSTRUCTIONS = `PLUR stores memory notes, called engrams, as plain YAML files in ~/.plur/ on this computer, and finds them again across sessions and tools.
+
+plur_learn saves a lasting correction, preference or convention. A note about this project keeps the folder's default scope; set scope to global only for a preference that applies across all of the user's projects. plur_recall searches saved notes. plur_forget retires a note. plur_feedback rates whether a recalled note was useful. plur_status reports the store's location and size. plur_admin with { "action": "help" } lists less common operations.
+
+Hooks, where installed, add relevant notes to the conversation automatically. Otherwise nothing is saved or recalled unless one of these tools is called.
+
+In a folder where memory has not been decided, these tools save and return nothing and answer with a question about that folder. Show the question to the user and run only the answer they choose. Its commands start with plur; if that command is not installed, run the same command with npx -y @plur-ai/cli@${VERSION} in place of plur.`
+
+/** Instructions for this server. Only PLUR_INSTRUCTIONS=neutral changes them. */
+export function resolveInstructions(env: NodeJS.ProcessEnv = process.env): string {
+  return env.PLUR_INSTRUCTIONS === 'neutral' ? NEUTRAL_INSTRUCTIONS : INSTRUCTIONS
+}
+
 export const INSTRUCTIONS = `PLUR is your persistent memory. Corrections, preferences, and conventions persist across sessions as engrams.
 
 PLUR is a GLOBAL tool — one MCP server, one engram store (~/.plur/), available in every project. Multi-project scoping uses domain/scope fields on engrams, not separate installations.
@@ -253,7 +269,7 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
         prompts: {},
         logging: {},
       },
-      instructions: INSTRUCTIONS,
+      instructions: resolveInstructions(),
     },
   )
 

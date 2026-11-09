@@ -67,6 +67,7 @@ pnpm --filter @plur-ai/core build
 13. `packages/python/plur_ai/bridge.py` — `_NPX_CLI_VERSION`
 14. `skills/plur-memory/SKILL.md` — frontmatter `version:` (standalone skills.sh copy)
 15. `server.json` — both top-level `version` and `packages[0].version` (MCP Registry / ClawHub listing)
+16. `plugins/plur/.claude-plugin/plugin.json` and `plugins/plur/.mcp.json` — plugin version and exact `npx` pin (Claude directory listing; `directory-plugin.test.ts` guards them)
 
 **Claw track** (independent — only bumped when `--claw <ver>` is passed to release.sh):
 

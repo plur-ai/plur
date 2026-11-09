@@ -1,0 +1,26 @@
+{
+  "name": "plur",
+  "displayName": "PLUR Memory",
+  "version": "0.23.0",
+  "description": "Memory you own for Claude Code. Corrections, preferences and conventions carry over between sessions and come back when they are relevant. Stored as plain YAML on your disk.",
+  "author": {
+    "name": "PLUR",
+    "url": "https://plur.ai"
+  },
+  "homepage": "https://plur.ai",
+  "repository": "https://github.com/plur-ai/plur",
+  "license": "Apache-2.0",
+  "keywords": ["memory", "local-first", "yaml", "knowledge"],
+  "icon": "./icon.svg",
+  "documentationUrl": "https://docs.plur.ai",
+  "supportUrl": "https://github.com/plur-ai/plur/issues",
+  "privacyPolicyUrl": "https://plur.ai/privacy",
+  "userConfig": {
+    "automatic_memory": {
+      "type": "boolean",
+      "title": "Automatic memory",
+      "description": "Add relevant saved notes to your prompts automatically, in folders where you have turned PLUR on. When off, PLUR acts only when its tools are called.",
+      "default": true
+    }
+  }
+}

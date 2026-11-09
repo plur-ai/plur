@@ -672,6 +672,23 @@ node -e "
 "
 echo "  ✓ server.json (MCP Registry version)"
 
+# Claude directory plugin: the manifest version and the exact npx pin. The
+# directory refuses an unpinned launcher, so a stale pin would keep plugin users
+# on the old server. packages/mcp/test/directory-plugin.test.ts guards the pair.
+node -e "
+  const fs = require('fs');
+  const manifest = './plugins/plur/.claude-plugin/plugin.json';
+  const m = JSON.parse(fs.readFileSync(manifest, 'utf8'));
+  m.version = '$VERSION';
+  fs.writeFileSync(manifest, JSON.stringify(m, null, 2) + '\n');
+  const mcp = './plugins/plur/.mcp.json';
+  const c = JSON.parse(fs.readFileSync(mcp, 'utf8'));
+  c.mcpServers.plur.args = ['-y', '@plur-ai/mcp@$VERSION'];
+  fs.writeFileSync(mcp, JSON.stringify(c, null, 2) + '\n');
+"
+sed -i '' "s#@plur-ai/cli@[^ ]*#@plur-ai/cli@$VERSION#" plugins/plur/scripts/run-hook.sh
+echo "  ✓ plugins/plur (Claude directory plugin version and npx pins)"
+
 # Hermes pyproject.toml
 sed -i '' "s/^version = \".*\"/version = \"$VERSION\"/" packages/hermes/pyproject.toml
 echo "  ✓ packages/hermes/pyproject.toml"
