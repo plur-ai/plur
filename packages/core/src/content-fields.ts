@@ -53,6 +53,8 @@ export const LEARN_CONTEXT_FIELD_ROLES = {
   // Pinned two-tier model: an enum and a validated integer, not text.
   pin_tier: 'control',
   pinned_priority: 'control',
+  // Who is writing (D2): an enum, never persisted.
+  actor: 'control',
   valid_from: 'control',
   valid_until: 'control',
   session: 'control',

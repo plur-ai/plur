@@ -140,11 +140,26 @@ export function getLastPlurInstance(): Plur | null {
  * store, which otherwise registers that store in config.yaml. The folder
  * question passes it: asking about a folder must change nothing (#1418 review).
  */
+/**
+ * Who the CLI writes for (overhaul D2). A person at a terminal is the owner,
+ * so the pinning policy (`pinning.agents`) does not restrict `plur pin` or
+ * `plur pins review`. Two exceptions make the CLI an agent: the `hook-*`
+ * commands (an editor runs them inside an agent session — set by the entry
+ * point through {@link setCliActor}), and `PLUR_ACTOR=agent` in the
+ * environment, for a wrapper that drives the CLI on an agent's behalf.
+ */
+let cliActor: 'owner' | 'agent' = 'owner'
+export function setCliActor(actor: 'owner' | 'agent'): void { cliActor = actor }
+export function resolveCliActor(env: NodeJS.ProcessEnv = process.env): 'owner' | 'agent' {
+  return env.PLUR_ACTOR === 'agent' ? 'agent' : cliActor
+}
+
 export function createPlur(flags: GlobalFlags, options?: { readonly?: boolean; autoDiscover?: boolean }): Plur {
   const path = flags.path || process.env.PLUR_PATH || undefined
   lastInstance = new Plur({
     path,
     readonly: options?.readonly,
+    actor: resolveCliActor(),
     ...(options?.autoDiscover !== undefined ? { autoDiscover: options.autoDiscover } : {}),
   })
   // Every command is bound to the folder it runs in (audit of #1521, S1), so

@@ -183,6 +183,12 @@ describe('every public Plur method in a remote-only folder', () => {
       planRescope: [], applyRescopePlan: [{ version: 1, kind: 'plur.rescope-plan', created_at: '2026-11-10', considered: 0, items: [], unmapped: { count: 0, ids: [] } }],
       planEnrichment: [{ llm: async () => '[]', model: 'm' }],
       applyEnrichmentPlan: [{ version: 1, kind: 'plur.enrich-plan', created_at: '2026-11-10', enricher: { model: 'm', version: 'v' }, items: [], skipped: { already_enriched: 0, unlabelled: 0 } }],
+      // Agent pinning and the pinned set (overhaul D2, D3, W3): requests and the
+      // fit report read what the folder may see; approve/reject/audit/apply act
+      // on the personal store and are refused.
+      setDefaultActor: [undefined], pinPolicyFor: [], pendingPinRequests: [], pinFitReport: [],
+      setPinPriority: [pid, 60], approvePinRequest: [pid], rejectPinRequest: [pid], auditPins: [llm],
+      applyPinAudit: [{ kind: 'plur.pins.audit', version: 1, created_at: '2026-11-10T00:00:00.000Z', items: [], unanswered: [] }],
     }
     const names = Object.getOwnPropertyNames(Plur.prototype).filter(n => n !== 'constructor' && !n.startsWith('_'))
     const getters = names.filter(n => Object.getOwnPropertyDescriptor(Plur.prototype, n)!.get)
@@ -218,6 +224,8 @@ describe('every public Plur method in a remote-only folder', () => {
       'consolidatePlan', 'consolidateApply', 'storeHealth',
       // Rescope plans and enrichment read personal rows (W7, W10); enrichment sends them to a model.
       'planRescope', 'applyRescopePlan', 'planEnrichment', 'applyEnrichmentPlan',
+      // Pin requests, the pin audit and its apply act on the personal store (overhaul D2, W3).
+      'approvePinRequest', 'rejectPinRequest', 'auditPins', 'applyPinAudit',
     ])
     const unexpected: string[] = []
     const leaks: string[] = []

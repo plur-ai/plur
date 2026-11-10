@@ -81,6 +81,8 @@ export interface ImportFromOptions {
   mapping?: FieldMapping
   dryRun?: boolean
   scope?: string
+  /** Who is importing (overhaul D2): pinned records follow `pinning.agents` unless `owner`. */
+  actor?: 'owner' | 'agent'
 }
 
 /** File → parse → dedup-gated learn, in one call. Used by the CLI command. */
@@ -93,5 +95,6 @@ export async function importFrom(plur: Plur, opts: ImportFromOptions): Promise<M
     dryRun: opts.dryRun,
     scope: opts.scope,
     defaultSource: `import:${opts.from}:${basename(opts.path)}`,
+    ...(opts.actor ? { actor: opts.actor } : {}),
   })
 }

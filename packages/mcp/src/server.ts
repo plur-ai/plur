@@ -205,6 +205,10 @@ let versionRecheckTimer: ReturnType<typeof setInterval> | undefined
 
 export async function createServer(plur?: Plur, options?: { profile?: ToolProfile; folder?: string; discovery?: boolean }): Promise<Server> {
   const instance = plur ?? new Plur()
+  // Overhaul D2: every write through the MCP server is an agent's, so the
+  // pinning policy (`pinning.agents`) applies to it. An embedder that set an
+  // actor on the instance it passes keeps its choice.
+  if (instance.defaultActor === undefined) instance.setDefaultActor('agent')
   const profile = options?.profile ?? 'lean'
   // The folder this server serves (the editor starts it there): its folder-map
   // decision is re-read before every tool call, so a `remote-only` folder

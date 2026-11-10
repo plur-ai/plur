@@ -69,7 +69,8 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   // write — was the one command whose instance the drain could not see.
   // createPlur honours --store by mapping it onto flags.path.
   const plur = createPlur({ ...flags, path: store || flags.path })
-  const report = await importFrom(plur, { from, path: file, mapping, dryRun, scope })
+  // The importer is whoever runs the CLI (overhaul D2): the owner, unless PLUR_ACTOR=agent.
+  const report = await importFrom(plur, { from, path: file, mapping, dryRun, scope, actor: plur.defaultActor })
 
   if (shouldOutputJson(flags)) {
     outputJson(report)

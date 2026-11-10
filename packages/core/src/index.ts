@@ -10,7 +10,7 @@ import { detectPlurStorage, type PlurPaths } from './storage.js'
 import { IndexedStorage } from './storage-indexed.js'
 import { PGLiteAdapter } from './storage-pglite.js'
 import { loadConfig, storeEntryForDisk, tokenFromEnv } from './config.js'
-import { ServerStoreEntrySchema, resolveInjectionOverhaul, resolveConsolidateConfig, resolveLearnConfig } from './schemas/config.js'
+import { ServerStoreEntrySchema, resolveInjectionOverhaul, resolveConsolidateConfig, resolveLearnConfig, resolvePinningConfig } from './schemas/config.js'
 import { collapseExpandedStores, isServerStoreEntry, serverEntryIdentities, identityBaseOf, EXPANDED_FROM, safeOrigin, withCompatScope, isSafeScopeName } from './store-expand.js'
 import { mergeSensitivityForWriteback } from './sensitivity-writeback.js'
 import { canonicalize } from './project-config.js'
@@ -100,6 +100,15 @@ import {
   type ConsolidationPlan, type PlanCluster, type ConsolidationItem,
   type ConsolidatePlanOptions, type ConsolidateApplyOptions, type ConsolidateApplyResult, type StoreHealth,
 } from './consolidate.js'
+import {
+  pinDecision, pinRequestOf, buildPinRequest, asPinRequested, withoutPinRequest, isPinTransition,
+  computePinFitReport, PinDeniedError,
+  type PinActor, type PinDecision, type PinRequest, type PendingPinRequest, type PinFitReport,
+} from './pin-policy.js'
+import {
+  auditPins as auditPinsImpl, planPinApply,
+  type PinAuditProposal, type PinApplyOutcome,
+} from './pin-audit.js'
 import { SessionScopeRegistry, NO_SESSION } from './session-scopes.js'
 import { loadGitScopeSources, readGitOrigin, DISCOVERY_MAX_AGE_MS, DISCOVERY_FUTURE_SKEW_MS, type OriginRead, type GitScopeSource, type GitScopeOutcome } from './git-origin.js'
 import { checkOwnerOnly } from './owner-only.js'
@@ -325,6 +334,7 @@ export { recallAuto, type AutoSearchResult, type SearchStrategy } from './search
 export { generateProfile, getProfileForInjection, loadProfileCache, saveProfileCache, markProfileDirty, profileNeedsRegeneration, type ProfileCache } from './profile.js'
 export { formatLayer1, formatLayer2, formatLayer3, formatWithLayer, assignLayer, type InjectionLayer } from './inject.js'
 export { selectUnified, buildUnifiedPool, buildInjectionQuery, rankForInjection, packUnified, type RelevanceSignals, type RelevanceSignalName, type UnifiedConfig, type UnifiedResult } from './inject-unified.js'
+export { estimateTokens, pinnedShareRatio, pinnedHardCap, effectivePinnedPriority } from './inject.js'
 export { computeRecordHash, buildSessionManifest, verifySessionManifest, canonicalManifestBytes, SESSION_MANIFEST_SCHEMA, RECORD_HASH_FIELDS, type SessionManifest, type ManifestEntry, type ManifestRole, type ManifestCheck, type ManifestVerification, type WormStore, type WormPutResult } from './session-manifest.js'
 export { appendHistory, readHistory, listHistoryMonths, readHistoryForEngram, generateEventId, generateInjectionId, computeQueryHash, findLatestInjectionFor, countInjectionEvents, readCoInjections, computeEventHash, canonicalEventBytes, sortKeysDeep, tailSeekLastHash, readChainHead, clearChainHeadMemCache, hashEngramsFile, attestStore, countEngramsInStore, emitCheckpoint, appendHistoryStamped, type HistoryEvent, type CheckpointData, type CheckpointSigningOptions, type InjectionEventCounts, type InjectionSource, type CoInjectionData, type CoInjectionEvent, type CoInjectionReadResult } from './history.js'
 export { computeReceipt } from './receipt.js'
@@ -504,6 +514,17 @@ export {
   validateLearnStructuredData, StructuredDataError, buildEnrichPrompt, parseEnrichReply, isEnriched, enrichRow,
   type EngramKind, type TaskFamily, type Outcome, type LearnStructuredData, type EnrichLabel, type EnrichmentBlock,
 } from './enrich.js'
+export {
+  pinDecision, pinRequestOf, buildPinRequest, asPinRequested, withoutPinRequest, isPinTransition,
+  computePinFitReport, formatPinOverflowLine, formatPendingPinRequestsLine, comparePinTiebreak, isProhibition,
+  PinDeniedError,
+  type PinActor, type PinDecision, type PinRequest, type PendingPinRequest, type PinFitReport, type PinFitEntry,
+} from './pin-policy.js'
+export {
+  auditPins, buildPinAuditPrompt, parsePinAuditResponse, validatePinAuditProposal, planPinApply,
+  PIN_AUDIT_PROPOSAL_KIND, PIN_AUDIT_PROPOSAL_VERSION, PIN_AUDIT_BATCH,
+  type PinAuditProposal, type PinAuditItem, type PinAuditClass, type PinApplyOutcome,
+} from './pin-audit.js'
 export type { ManifestSummary, PayloadDescriptor, Producer, Signer, CapsuleHeader, CapsulePreamble } from './schemas/capsule.js'
 export {
   CAPSULE_MAGIC,
@@ -1741,6 +1762,8 @@ export class Plur {
    *      public mutators gate on {@link _assertWritable} before routing.
    */
   private readonly _readonly: boolean = false
+  /** Who this instance writes for when a call names no actor (overhaul D2). */
+  private _defaultActor: PinActor | undefined
   /** Unsubscribes this instance from its store's id-rename reports (P1); see `close()`. */
   private _unsubscribeRenames: (() => void) | null = null
 
@@ -1788,9 +1811,16 @@ export class Plur {
      * stranding anyone who genuinely knows what their store does.
      */
     allowUnprotectedStore?: boolean
+    /**
+     * Who this instance writes for when a call names no actor (overhaul D2):
+     * the MCP server sets `agent`, the CLI `owner`. Absent: the pinning
+     * policy (`pinning.agents`) applies to every pin, as for an agent.
+     */
+    actor?: PinActor
   }) {
     this.paths = detectPlurStorage(options?.path)
     this._readonly = options?.readonly === true
+    if (options?.actor !== undefined) this.setDefaultActor(options.actor)
     const baseStore = options?.store ?? new YamlPrimaryStore(this.paths.engrams)
     this._basePrimaryStore = this._readonly ? new ReadonlyStoreGuard(baseStore) : baseStore
     // Owner decision P1 (2026-09-27, "keep both, rename one — nothing lost or
@@ -4862,6 +4892,15 @@ export class Plur {
     // W10: body / kind / outcome only, validated before any lock or routing.
     // `_buildEngramShape` validates again, so a direct call cannot skip it.
     validateLearnStructuredData(context?.structured_data)
+    if (context?.actor !== undefined && context.actor !== 'owner' && context.actor !== 'agent') {
+      throw new TypeError(`plur.${fn}: actor must be "owner" or "agent", got ${String(context.actor)}`)
+    }
+    // Agent pinning (overhaul D2): `deny` refuses before anything is stored;
+    // `request` is applied where the row is built (_buildEngramShape), so
+    // every write path that builds a row records the request the same way.
+    if (context?.pinned === true && this._pinDecisionFor(context.actor) === 'deny') {
+      throw new PinDeniedError(null, 'learn')
+    }
     if (!this.config.allow_secrets) {
       // Scan the statement AND every caller-supplied content field (#381,
       // #389, #1002 review). The field set comes from ONE table,
@@ -6168,6 +6207,9 @@ export class Plur {
       ?? (structured?.kind ? KIND_TO_MEMORY_CLASS[structured.kind] : undefined)
       ?? TYPE_TO_MEMORY_CLASS[type] ?? 'semantic'
     const commitment = context?.commitment ?? 'leaning'
+    // Agent pinning (overhaul D2): `request` stores the row unpinned with a
+    // pin request; `deny` was refused in _validateLearnInput.
+    const pinRequested = context?.pinned === true && this._pinDecisionFor(context.actor) === 'request'
     const shape: Engram = {
       // Placeholder id — learn() overwrites it with the id it minted and
       // learnRouted with the server's assigned id before anything observes it.
@@ -6240,9 +6282,9 @@ export class Plur {
         broader: [], narrower: [], related: relatedIds(context?.related), conflicts: [],
         supersedes: [...(context?.supersedes ?? [])], superseded_by: [],
       } : undefined,
-      pinned: context?.pinned === true ? true : undefined,
-      pinned_tier: context?.pin_tier,
-      pinned_priority: context?.pinned_priority,
+      pinned: context?.pinned === true && !pinRequested ? true : undefined,
+      pinned_tier: pinRequested ? undefined : context?.pin_tier,
+      pinned_priority: pinRequested ? undefined : context?.pinned_priority,
       // #869: measurement context — present only when the caller supplies it.
       measured_under: this._validatedMeasuredUnder(context),
     }
@@ -6264,6 +6306,12 @@ export class Plur {
         ? { _expiry_extracted: { valid_until: validity.extracted.valid_until, phrase: validity.extracted.phrase } }
         : {}),
       _scopeSource: scopeSource,
+      // Agent pinning (overhaul D2): stored unpinned, the request kept for the owner.
+      ...(pinRequested ? {
+        pin_request: buildPinRequest(context?.actor ?? this._defaultActor, 'learn', {
+          tier: context?.pin_tier, priority: context?.pinned_priority,
+        }),
+      } : {}),
     }
     return shape
   }
@@ -9807,8 +9855,8 @@ export class Plur {
    * `true` means the write happened. {@link updateEngramAsync} is the same
    * operation returning the written engram.
    */
-  async updateEngram(updated: Engram): Promise<boolean> {
-    return (await this._updateEngramReturning(updated)) !== null
+  async updateEngram(updated: Engram, options?: { actor?: PinActor }): Promise<boolean> {
+    return (await this._updateEngramReturning(updated, options)) !== null
   }
 
   /**
@@ -9819,8 +9867,8 @@ export class Plur {
    * (2026-09 audit): the two bodies had drifted on how a refusing remote is
    * handled; both now try the next writable store rather than throwing.
    */
-  async updateEngramAsync(updated: Engram): Promise<Engram | null> {
-    return await this._updateEngramReturning(updated)
+  async updateEngramAsync(updated: Engram, options?: { actor?: PinActor }): Promise<Engram | null> {
+    return await this._updateEngramReturning(updated, options)
   }
 
   // ── Shared change journal (overhaul W0, plan revisions D1/R2) ─────────────
@@ -10387,6 +10435,26 @@ export class Plur {
       }
       await fn(tx)
 
+      // Agent pinning (overhaul D2): a staged row that turns into a pin
+      // follows `pinning.agents` for the change's actor (`meta.actor`). An
+      // undo restores its before-snapshot as it was and is not policed.
+      if (kind !== 'undo') {
+        const actor = meta.actor === 'owner' || meta.actor === 'agent' ? meta.actor : undefined
+        for (const rid of order) {
+          const s = staged.get(rid)!
+          const i = position.get(rid)
+          if (!s.row || !isPinTransition(i === undefined ? null : corpus[i], s.row)) continue
+          const decision = this._pinDecisionFor(actor)
+          if (decision === 'deny') throw new PinDeniedError(rid, `change:${kind}`)
+          if (decision === 'request') {
+            s.row = asPinRequested(s.row, buildPinRequest(actor ?? this._defaultActor, `change:${kind}`, {
+              tier: (s.row as { pinned_tier?: 'hard' | 'soft' }).pinned_tier,
+              priority: (s.row as { pinned_priority?: number }).pinned_priority,
+            }))
+          }
+        }
+      }
+
       const at = new Date().toISOString()
       const rows: ChangeRowSnapshot[] = order.map(rid => {
         const i = position.get(rid)
@@ -10445,7 +10513,7 @@ export class Plur {
     })
   }
 
-  private async _updateEngramReturning(updated: Engram): Promise<Engram | null> {
+  private async _updateEngramReturning(updated: Engram, options?: { actor?: PinActor }): Promise<Engram | null> {
     this._assertWritable()
     await this._remoteOnlyRefuseLocalRow(updated.id, 'Updating')
     // Guards and routing below read the current config (core-index#9).
@@ -10520,7 +10588,20 @@ export class Plur {
       // because it reads as authoritative. The spec added alongside it names
       // statement, scope, commitment, relations and retirement as the tracked
       // mutations, and this is where four of the five actually happen.
-      const toWrite = { ...(demote ? { ...updated, ...demote } : updated), updated_at: new Date().toISOString() }
+      let toWrite = { ...(demote ? { ...updated, ...demote } : updated), updated_at: new Date().toISOString() }
+      // Agent pinning (overhaul D2): an update that turns the row into a pin
+      // follows `pinning.agents` like learn does. Re-writing a row that is
+      // already pinned is not a new pin and is never restricted.
+      if (isPinTransition(engrams[idx], toWrite)) {
+        const decision = this._pinDecisionFor(options?.actor)
+        if (decision === 'deny') throw new PinDeniedError(toWrite.id, 'update')
+        if (decision === 'request') {
+          toWrite = asPinRequested(toWrite, buildPinRequest(options?.actor ?? this._defaultActor, 'update', {
+            tier: (toWrite as { pinned_tier?: 'hard' | 'soft' }).pinned_tier,
+            priority: (toWrite as { pinned_priority?: number }).pinned_priority,
+          }))
+        }
+      }
       // A whole-engram update can set `pinned` and `pinned_tier` — a write path
       // that can produce a hard-tier engram, so it passes the same cap. Checked
       // before the queued-scope reconcile so a refused update has no side effects.
@@ -10648,6 +10729,13 @@ export class Plur {
         // records a real transition only. `getById` answers null for both a
         // 404 and an unreachable store, so null or a throw is "unknown" — then
         // the event is still written, flagged, rather than dropped.
+        // Agent pinning (overhaul D2) on a team-store row: the PATCH carries
+        // only pinned/status/statement, so a pin request cannot ride along.
+        // A restricted caller's NEW pin is refused rather than lost.
+        if (updated.pinned === true && this._pinDecisionFor(options?.actor) !== 'allow') {
+          const prior = await driver.getById(serverId).catch(() => null)
+          if (prior && (prior as { pinned?: unknown }).pinned !== true) throw this._remotePinRefusal(updated.id, 'update')
+        }
         let previous: { status?: string } | null | undefined
         if (updated.status === 'retired') {
           try { previous = await driver.getById(serverId) } catch { previous = null }
@@ -10769,8 +10857,9 @@ export class Plur {
    * is awaited and its result returned, so the value is the real engram rather
    * than a placeholder — {@link setPinnedAsync} is the same call.
    */
-  async setPinned(id: string, pinned: boolean, options?: { scope?: string }): Promise<Engram | null> {
+  async setPinned(id: string, pinned: boolean, options?: { scope?: string; actor?: PinActor; reason?: string }): Promise<Engram | null> {
     this._assertWritable()
+    const pinPolicy = pinned === true ? this._pinDecisionFor(options?.actor) : 'allow'
     await this._remoteOnlyRefuseLocalRow(id, 'Pinning', options?.scope)
     // Which store holds it (0.21.1). Ids are minted per store, so a bare id
     // can name a local engram AND an unrelated remote one; pinning went
@@ -10825,9 +10914,21 @@ export class Plur {
       const idx = engrams.findIndex(e => e.id === id)
       if (idx === -1) return null
       const e = engrams[idx]
+      // Agent pinning (overhaul D2): a NEW pin by a restricted caller is
+      // refused (deny) or recorded as a request for the owner (request).
+      if (pinned === true && e.pinned !== true && pinPolicy !== 'allow') {
+        if (pinPolicy === 'deny') throw new PinDeniedError(e.id, 'pin')
+        const asked = asPinRequested({ ...e, updated_at: new Date().toISOString() } as Engram,
+          buildPinRequest(options?.actor ?? this._defaultActor, 'pin', { reason: options?.reason }))
+        engrams[idx] = asked
+        await this._updateEngrams(engrams, [asked])
+        await this._syncIndex()
+        return asked
+      }
       // #1138 review: pinning is a mutation, so it moves `updated_at`.
+      // A pin (or unpin) settles any pending request for it.
       const updated: Engram = {
-        ...e,
+        ...(e.pinned !== true ? withoutPinRequest(e as unknown as Record<string, unknown>) as unknown as Engram : e),
         pinned: pinned === true ? true : undefined,
         updated_at: new Date().toISOString(),
       }
@@ -10850,6 +10951,9 @@ export class Plur {
     })
     if (localResult) return localResult
     if (targetScope === 'primary') return null
+    // A team-store row cannot carry a pin request (the PATCH sends `pinned`
+    // only), so a restricted caller's pin there is refused, not lost (D2).
+    if (pinPolicy !== 'allow') throw this._remotePinRefusal(id, 'pin')
 
     let remotePatched: {
       patched: Engram; driver: RemoteStore; serverId: string; scope: string
@@ -10974,8 +11078,152 @@ export class Plur {
    * awaits the remote PATCH too. Kept so existing callers keep compiling; it
    * IS setPinned (2026-09 audit), so the two cannot drift apart.
    */
-  async setPinnedAsync(id: string, pinned: boolean, options?: { scope?: string }): Promise<Engram | null> {
+  async setPinnedAsync(id: string, pinned: boolean, options?: { scope?: string; actor?: PinActor; reason?: string }): Promise<Engram | null> {
     return await this.setPinned(id, pinned, options)
+  }
+
+  // ── Agent pinning and the pinned set (overhaul D2, D3, W3) ───────────────
+
+  /** Who this instance writes for when a call names no actor (overhaul D2). */
+  get defaultActor(): PinActor | undefined { return this._defaultActor }
+
+  /**
+   * Set who this instance writes for when a call names no actor: the MCP
+   * server sets `agent`, the CLI `owner`. `undefined` clears it (the pinning
+   * policy then applies to every pin).
+   */
+  setDefaultActor(actor: PinActor | undefined): void {
+    if (actor !== undefined && actor !== 'owner' && actor !== 'agent') {
+      throw new TypeError(`plur.setDefaultActor: actor must be "owner" or "agent", got ${String(actor)}`)
+    }
+    this._defaultActor = actor
+  }
+
+  /** What `pinning.agents` decides for a pin by this caller (`owner` is always allowed). */
+  pinPolicyFor(actor?: PinActor): PinDecision {
+    return this._pinDecisionFor(actor)
+  }
+
+  private _pinDecisionFor(actor: PinActor | undefined): PinDecision {
+    return pinDecision(this.config, actor ?? this._defaultActor)
+  }
+
+  private _remotePinRefusal(id: string, via: string): PinDeniedError {
+    return new PinDeniedError(id, `${via}:remote`,
+      `${id} is a team-store row, and this install reserves pinning for the owner (pinning.agents: `
+      + `${resolvePinningConfig(this.config).agents}); a pin request cannot be recorded on a team-store row, so it was not pinned. `
+      + 'Ask the owner to pin it with `plur pin <id>`.')
+  }
+
+  /**
+   * Engrams waiting for the owner to approve a pin (`pinning.agents:
+   * request`), oldest request first. The session-start notice prints
+   * `formatPendingPinRequestsLine(await plur.pendingPinRequests())`.
+   */
+  async pendingPinRequests(): Promise<PendingPinRequest[]> {
+    const out: PendingPinRequest[] = []
+    for (const e of await this._readCorpus()) {
+      if (e.status !== 'active') continue
+      const request = pinRequestOf(e)
+      if (request) out.push({ id: e.id, statement: e.statement, scope: e.scope, request })
+    }
+    return out.sort((a, b) => a.request.requested_at < b.request.requested_at ? -1 : a.request.requested_at > b.request.requested_at ? 1 : 0)
+  }
+
+  /**
+   * Approve a pending pin request: pin the engram (with the tier and
+   * priority the request asked for) and clear the request. An owner action;
+   * a restricted actor's approval is itself only a request.
+   */
+  async approvePinRequest(id: string, options?: { actor?: PinActor }): Promise<Engram | null> {
+    this._remoteOnlyRefuseLocalStore('Approving a pin request (run it outside the remote-only folder)')
+    const actor = options?.actor ?? 'owner'
+    const row = (await this._loadTargeted([id])).find(e => e.id === id)
+    if (!row) return null
+    const request = pinRequestOf(row)
+    if (!request) throw new Error(`${id} has no pending pin request.`)
+    const pinned = await this.setPinned(id, true, { scope: 'primary', actor })
+    if (!pinned || pinned.pinned !== true) return pinned
+    if (request.tier === undefined && request.priority === undefined) return pinned
+    return await this._updateEngramReturning({
+      ...pinned,
+      ...(request.tier ? { pinned_tier: request.tier } : {}),
+      ...(request.priority !== undefined ? { pinned_priority: request.priority } : {}),
+    } as Engram, { actor })
+  }
+
+  /** Reject a pending pin request: clear it, leaving the engram unpinned. */
+  async rejectPinRequest(id: string, options?: { actor?: PinActor }): Promise<Engram | null> {
+    this._remoteOnlyRefuseLocalStore('Rejecting a pin request (run it outside the remote-only folder)')
+    const row = (await this._loadTargeted([id])).find(e => e.id === id)
+    if (!row) return null
+    if (!pinRequestOf(row)) throw new Error(`${id} has no pending pin request.`)
+    return await this._updateEngramReturning(
+      withoutPinRequest(row as unknown as Record<string, unknown>) as unknown as Engram, { actor: options?.actor ?? 'owner' })
+  }
+
+  /**
+   * Set the injection priority of a pin (1–100, higher loads first; default
+   * 50). Refuses an engram that is not pinned.
+   */
+  async setPinPriority(id: string, priority: number, options?: { actor?: PinActor }): Promise<Engram | null> {
+    if (typeof priority !== 'number' || !Number.isInteger(priority) || priority < 1 || priority > 100) {
+      throw new TypeError(`plur.setPinPriority: priority must be an integer from 1 to 100, got ${String(priority)}`)
+    }
+    const row = await this.getById(id)
+    if (!row) return null
+    if (row.pinned !== true) throw new Error(`${id} is not pinned; pin it first (plur pin ${id}).`)
+    return await this._updateEngramReturning({ ...row, pinned_priority: priority } as Engram, { actor: options?.actor })
+  }
+
+  /**
+   * The pinned set against its share of the injection budget (overhaul D3):
+   * each pin's priority and cost, and which do not fit. Computed with the
+   * injection's own selector; `budget` defaults to `injection_budget`.
+   */
+  async pinFitReport(options?: { budget?: number }): Promise<PinFitReport> {
+    this.reloadConfigIfChanged()
+    return computePinFitReport(await this.listPinned(), {
+      budget: options?.budget ?? this.config.injection_budget ?? 2000,
+      pinnedRatio: this.config.injection?.pinned_ratio ?? 0.5,
+      hardRatio: this.config.injection?.pinned_hard_ratio ?? DEFAULT_PINNED_HARD_RATIO,
+    })
+  }
+
+  /**
+   * Pin audit (overhaul W3): ask the host model (`llm`) to sort each pin of
+   * the LOCAL store into every-task or situational and propose short forms.
+   * Changes nothing; returns the proposal.
+   */
+  async auditPins(llm: LlmFunction, options?: { model?: string; batchSize?: number; onProgress?: (done: number, total: number) => void }): Promise<PinAuditProposal> {
+    // It sends the personal store's pins to a model (a pin audit acts on locally owned pins only).
+    this._remoteOnlyRefuseLocalStore('A pin audit (run it outside the remote-only folder)')
+    const local = (await this.listPinned()).filter(e => !parseNamespacedId(e.id)
+      && (e as { _pack?: unknown })._pack === undefined && (e as { _storeScope?: unknown })._storeScope === undefined)
+    return await auditPinsImpl(local, llm, options)
+  }
+
+  /**
+   * Apply a reviewed pin audit proposal as ONE journalled change (undo with
+   * `undoChange(change.id)`). Unpins situational pins and sets short forms
+   * (original kept in `structured_data.original_statement`); a prohibition's
+   * short form needs `approved: true` on its item. `limit` caps the applied
+   * items (the one-item trial is `limit: 1`).
+   */
+  async applyPinAudit(proposal: PinAuditProposal, options?: { limit?: number; actor?: PinActor }): Promise<{ change: ChangeRecord | null; outcomes: PinApplyOutcome[] }> {
+    let outcomes: Array<PinApplyOutcome & { row?: Engram }> = []
+    const record = await this.beginChange('pins.apply', {
+      actor: options?.actor ?? this._defaultActor ?? null,
+      proposal_created_at: proposal.created_at,
+      ...(options?.limit !== undefined ? { limit: options.limit } : {}),
+    }).apply(tx => {
+      outcomes = planPinApply(proposal, id => tx.get(id), { limit: options?.limit })
+      for (const o of outcomes) if (o.row) tx.put(o.row)
+    })
+    return {
+      change: record.rows.length > 0 ? record : null,
+      outcomes: outcomes.map(({ row: _row, ...o }) => o),
+    }
   }
 
   /** List engrams that have pinned: true. */

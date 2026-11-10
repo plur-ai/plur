@@ -5,6 +5,7 @@ import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateP
 import { folderMapAdvice } from './folder-map-advice.js'
 import type { LlmFunction, MetaField, TensionStatus, RerankerEvalResult, HistoryEvent, Receipt, RemoteStoreStatusEntry, RecallRemoteReport, RemoteOnlyStatus } from '@plur-ai/core'
 import { RemoteOnlyWriteError, remoteOnlySessionLine, remoteOnlyUnservedNotice } from '@plur-ai/core'
+import { PinDeniedError, pinRequestOf } from '@plur-ai/core'
 import { enterpriseRecoveryHint } from '@plur-ai/core'
 import { emitCheckpoint, signWithActorKey, keysDirFor } from '@plur-ai/core'
 import { anchorManifest, notaryClaim, EXPERIMENTAL_NOTE } from '@plur-ai/gateway'
@@ -860,6 +861,24 @@ function learnDecision(engram: { id: string; write_count?: number }, plur?: { re
 export const MCP_REINFORCE_EXACT_DEFAULT = true
 
 /**
+ * Overhaul D2: what an agent's pin turned into. MCP tools write as `agent`;
+ * with `pinning.agents: request` the engram is stored unpinned and carries a
+ * pin request, and the reply must say so — an agent told nothing would report
+ * a pin that does not exist, or retry it.
+ */
+const PIN_REQUEST_NOTE =
+  'Stored UNPINNED: on this install pinning is reserved for the owner (pinning.agents: request). '
+  + 'A pin request was recorded; the owner reviews it with `plur pins review`. Do not retry the pin, '
+  + 'and tell the user it is waiting for their approval.'
+function pinRequestReply(engram: unknown): Record<string, unknown> {
+  const request = pinRequestOf(engram as never)
+  return request ? { pinned: false, pin_request: request, pin_note: PIN_REQUEST_NOTE } : {}
+}
+function pinDeniedReply(err: PinDeniedError): Record<string, unknown> {
+  return { success: false, error: 'pin_denied', note: err.message }
+}
+
+/**
  * The `.plur.yaml` scope/domain this server may adopt (decision E3, 2026-09-26).
  *
  * A project config is honoured only from a directory the user trusted with
@@ -1639,7 +1658,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
             },
             additionalProperties: false,
           },
-          pinned: { type: 'boolean', description: 'Always-load flag. If true, this engram bypasses the keyword-relevance gate at injection time. Use sparingly: meta-rules, safety conventions, core operating principles only.' },
+          pinned: { type: 'boolean', description: 'Always-load flag. If true, this engram bypasses the keyword-relevance gate at injection time. Use sparingly: meta-rules, safety conventions, core operating principles only. Pin only on the user\'s word. Where the owner reserved pinning (pinning.agents: request) the engram is stored unpinned with a pin request the owner reviews (the reply says so); with pinning.agents: deny the write is refused.' },
           commitment: { type: 'string', enum: ['exploring', 'leaning', 'decided', 'locked', 'draft'], description: 'How firmly the user has committed to this belief (default: leaning). `draft` marks the engram as pending human approval: core stores and RECALLS it normally but NEVER injects it (#1141), so an unapproved rule cannot shape agent behaviour. Retrieval stays open because reviewing something requires reading it.' },
           locked_reason: { type: 'string', description: 'Why this engram is locked (only meaningful when commitment=locked)' },
           valid_from: { type: 'string', description: 'ISO date (YYYY-MM-DD) the knowledge becomes valid — inject/recall skip the engram before this date (#347)' },
@@ -1750,6 +1769,8 @@ function getAllToolDefinitions(): ToolDefinition[] {
           // guarded entry point, and writing a NEW pinned engram is the other
           // normal way to create a pin (#1138 review).
           pinned: args.pinned as boolean | undefined,
+          // Overhaul D2: an MCP caller is an agent; core applies pinning.agents.
+          actor: 'agent' as const,
           valid_from: args.valid_from as string | undefined,
           valid_until: args.valid_until as string | undefined,
           supersedes: args.supersedes as string[] | undefined,
@@ -1869,7 +1890,11 @@ function getAllToolDefinitions(): ToolDefinition[] {
         // there is no room at all — which is the state the reported store was
         // in, three times over quota. An exact pre-check would mean predicting
         // the cost of a record that has not been built.
-        if (context.pinned === true) {
+        // Overhaul D2: a pin this caller may not make is refused (deny) or
+        // becomes a request (request) in core; neither costs quota.
+        const pinPolicy = context.pinned === true ? plur.pinPolicyFor('agent') : 'allow'
+        if (pinPolicy === 'deny') return pinDeniedReply(new PinDeniedError(null, 'learn'))
+        if (context.pinned === true && pinPolicy === 'allow') {
           const q = await plur.pinnedQuota()
           if (q.free <= 0) {
             return {
@@ -1967,6 +1992,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
             ...(delivered.warning ? { delivery_warning: delivered.warning, warning: delivered.warning } : {}),
             ...(dedup?.near_duplicates?.length ? { dedup } : {}),
             ...(redraft ? { redraft } : {}),
+            ...(context.pinned === true ? pinRequestReply(engram) : {}),
             ...(() => { const c = composeHints(statement, context?.rationale, context?.source); return c ? { composition: c } : {} })(),
             ...temporalEcho(engram),
             ...scopeHint(engram.scope, !!routed, delivered.delivery),
@@ -1988,6 +2014,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
           // A remote-only folder's refusal is the answer, not a failure to
           // retry locally: nothing may be kept on this machine there.
           if (err instanceof RemoteOnlyWriteError) throw err
+          if (err instanceof PinDeniedError) return pinDeniedReply(err)
 // learnRouted now saves to outbox on remote failure, so this
           // path should rarely be reached. Keep as defense-in-depth.
           const engram = await plur.learn(statement, context)
@@ -2004,6 +2031,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
             // Outbox engrams stay local-form (same rule as line 1149).
             id: isOutbox ? engram.id : plur.readIdFor(engram), statement: engram.statement,
             scope: engram.scope, type: engram.type, ...learnDecision(engram, plur),
+            ...(context.pinned === true ? pinRequestReply(engram) : {}),
             delivery: delivered.delivery,
             destination: delivered.destination,
             ...(delivered.host ? { delivered_to: delivered.host } : {}),
@@ -2118,6 +2146,8 @@ function getAllToolDefinitions(): ToolDefinition[] {
             rationale: e.rationale as string | undefined,
             commitment: e.commitment,
             pinned: e.pinned as boolean | undefined,
+            // Overhaul D2: an MCP caller is an agent; core applies pinning.agents.
+            actor: 'agent' as const,
             valid_from: e.valid_from as string | undefined,
             valid_until: e.valid_until as string | undefined,
             measured_under: e.measured_under as Record<string, string> | undefined,
@@ -2139,7 +2169,9 @@ function getAllToolDefinitions(): ToolDefinition[] {
         // item is a per-item failure, the rest of the batch is still written.
         const gateFailures: Array<{ index: number; statement: string; error: string }> = []
         let admitted: number[] = items.map((_, i) => i)
-        if (items.some(it => it.context.pinned === true)) {
+        // Overhaul D2: only a pin this caller may make costs quota; a denied
+        // one fails in core per item, a requested one is stored unpinned.
+        if (items.some(it => it.context.pinned === true) && plur.pinPolicyFor('agent') === 'allow') {
           const q = await plur.pinnedQuota()
           let free = q.free
           admitted = []
@@ -2259,8 +2291,13 @@ function getAllToolDefinitions(): ToolDefinition[] {
             `there, or move them with plur_rescope.`)
         }
 
+        // Overhaul D2: pinned items stored unpinned with a pin request.
+        const pinRequests = results
+          .filter(r => r.input_index !== undefined && (raw[r.input_index] as { pinned?: unknown })?.pinned === true && pinRequestOf(r.engram as never))
+          .map(r => ids[r.input_index!]!)
         return {
           ids,
+          ...(pinRequests.length > 0 ? { pin_requests: pinRequests, pin_note: PIN_REQUEST_NOTE } : {}),
           results: results.map((r) => {
             const isOutbox = !!(r.engram as any).structured_data?._outbox
             // #1115: the batch mirror of what plur_learn already reports.
@@ -2557,6 +2594,11 @@ function getAllToolDefinitions(): ToolDefinition[] {
         }
         if (!args.id) throw new Error('Provide id (or list:true to list pinned)')
         const target = (args.pinned as boolean | undefined) ?? true
+        // Overhaul D2: an MCP caller is an agent. A pin it may not make is
+        // refused (deny) or recorded as a request by core (request), and
+        // neither is charged against the quota.
+        const pinPolicy = target === true ? plur.pinPolicyFor('agent') : 'allow'
+        if (pinPolicy === 'deny') return pinDeniedReply(new PinDeniedError(args.id as string, 'pin'))
 
         // Quota is enforced HERE, not at injection time (#1142). The spec calls
         // `pinned` an always-load flag; honouring that means refusing to
@@ -2564,7 +2606,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
         // the user already pinned. Pinning is a deliberate act with a human
         // present — this is the only moment where "unpin one or raise the
         // limit" is a question someone can actually answer.
-        if (target === true) {
+        if (target === true && pinPolicy === 'allow') {
           // Cost the engram this pin will change (#1532 review F6): with a
           // scope, the one that scope holds, not a local id twin.
           const q = await plur.pinnedQuota(args.id as string, args.scope ? { scope: args.scope as string } : undefined)
@@ -2609,12 +2651,19 @@ function getAllToolDefinitions(): ToolDefinition[] {
         // a synthesized {id, pinned} object — caller observes stale state on
         // immediate getById. The async variant awaits and returns the real
         // server response.
-        const updated = await plur.setPinnedAsync(args.id as string, target, args.scope ? { scope: args.scope as string } : undefined)
+        let updated
+        try {
+          updated = await plur.setPinnedAsync(args.id as string, target, { ...(args.scope ? { scope: args.scope as string } : {}), actor: 'agent' })
+        } catch (err) {
+          if (err instanceof PinDeniedError) return pinDeniedReply(err)
+          throw err
+        }
         if (!updated) throw new Error(`Engram not found: ${args.id}`)
         return {
           id: updated.id,
           statement: updated.statement,
           pinned: (updated as any).pinned === true,
+          ...(target === true ? pinRequestReply(updated) : {}),
         }
       },
     },
@@ -3207,7 +3256,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
         const retiredNow = !wasRetired && meta.status === 'retired'
 
         // validateMetaEngram mutates domain_coverage + confidence in-place — persist changes
-        await plur.updateEngram(meta)
+        await plur.updateEngram(meta, { actor: 'agent' })
 
         return {
           ...(retiredNow ? {
@@ -5046,7 +5095,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
           // it reported a promotion that never happened — for an engram that
           // vanished, changed concurrently, or lives in a read-only store
           // (#813, audit finding 17).
-          const written = await plur.updateEngram(engram)
+          const written = await plur.updateEngram(engram, { actor: 'agent' })
           if (!written) {
             errors.push({ id, error: 'Not persisted — the engram may have been removed or its store is read-only' })
             continue
