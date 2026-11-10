@@ -32,7 +32,7 @@
 import type { Engram } from './schemas/engram.js'
 import type { LoadedPack } from './engrams.js'
 import { parseNamespacedId } from './engrams.js'
-import { classifyPolarity } from './polarity.js'
+import { comparePinTiebreak, isProhibition } from './pin-policy.js'
 import { searchEngramsScored } from './fts.js'
 import { rewriteLexicalQuery } from './intent/rewrite.js'
 import {
@@ -276,13 +276,6 @@ function signalValue(s: RelevanceSignals, name: RelevanceSignalName): number | n
   }
 }
 
-const isProhibition = (e: Engram): boolean => (e.polarity ?? classifyPolarity(e.statement)) === 'dont'
-
-/** Sort key for "oldest first": creation time, then learned_at; unknown last. */
-function ageKey(e: Engram): string {
-  return (e as { created_at?: string }).created_at ?? e.temporal?.learned_at ?? '￿'
-}
-
 const asScored = (e: Engram, score: number): ScoredEngram => ({ ...e, keyword_match: score, raw_score: score, score })
 
 /**
@@ -304,11 +297,9 @@ export function packUnified(
 
   // ── 2. Always-on slot. fillTokenBudget orders pins by origin, hard tier and
   // priority, then score; the score here encodes D3's default for pins with
-  // equal priority: prohibitions first, then oldest first, then id.
-  const pinOrder = [...pool.pins].sort((a, b) =>
-    (isProhibition(a) ? 0 : 1) - (isProhibition(b) ? 0 : 1)
-    || ageKey(a).localeCompare(ageKey(b))
-    || a.id.localeCompare(b.id))
+  // equal priority — pin-policy's comparePinTiebreak (prohibitions first,
+  // then oldest first, then id), the same order `plur pins` reports.
+  const pinOrder = [...pool.pins].sort(comparePinTiebreak)
   const pinScored = pinOrder.map((e, i) => asScored(e, pinOrder.length - i))
   const ledger = {
     spent: 0,
