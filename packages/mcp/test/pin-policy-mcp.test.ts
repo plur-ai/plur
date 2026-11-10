@@ -82,3 +82,33 @@ describe('MCP pinning under pinning.agents (D2)', () => {
     expect(res.pin_request).toBeUndefined()
   })
 })
+
+describe('MCP reinforcement (D8) and the agent actor (D2) together', () => {
+  it('an exact restatement with pinned:true reinforces and never creates a pin request', async () => {
+    const plur = open('request')
+    const first = await tool('plur_learn').handler({ statement: 'Run the linter before every commit', scope: 'global' }, plur) as any
+    const again = await tool('plur_learn').handler({ statement: 'run the linter before every commit.', pinned: true, scope: 'global' }, plur) as any
+    expect(again.decision).toBe('REINFORCE')
+    expect(again.id).toBe(first.id)
+    expect(again.pin_request).toBeUndefined()
+    const stored = (await plur.getById(first.id))!
+    expect(stored.pinned).toBeUndefined()
+    expect(pinRequestOf(stored)).toBeNull()
+    expect(await plur.pendingPinRequests()).toEqual([])
+    expect(await plur.list()).toHaveLength(1)
+  })
+
+  it('a pending request survives a reinforcement unchanged — kept, never renewed or duplicated', async () => {
+    const plur = open('request')
+    const first = await tool('plur_learn').handler({ statement: 'Never push directly to main', pinned: true, scope: 'global' }, plur) as any
+    const before = pinRequestOf((await plur.getById(first.id))!)
+    expect(before).not.toBeNull()
+    const again = await tool('plur_learn').handler({ statement: 'Never push directly to main', pinned: true, scope: 'global' }, plur) as any
+    expect(again.decision).toBe('REINFORCE')
+    expect(again.id).toBe(first.id)
+    const after = (await plur.getById(first.id))!
+    expect(after.pinned).toBeUndefined()
+    expect(pinRequestOf(after)).toEqual(before)
+    expect((await plur.pendingPinRequests()).map(p => p.id)).toEqual([first.id])
+  })
+})
