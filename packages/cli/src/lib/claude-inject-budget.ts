@@ -1,6 +1,9 @@
 /**
  * The Claude Code timeout for the synchronous `hook-inject` registrations
  * (UserPromptSubmit and SessionStart matcher "compact"), in seconds (#1313).
+ * Since the retrieval and injection overhaul (W2+4) the event registrations
+ * (plan mode, skill, agent, subagent) use it too; an event run still bounds
+ * itself inside the old 10s (`EVENT_CEILING_DEFAULT_MS` in hook-inject.ts).
  *
  * Both are sync so the first reply of a session, a one-shot `claude -p`, and
  * the first reply after compaction see memory. A sync hook blocks the prompt,

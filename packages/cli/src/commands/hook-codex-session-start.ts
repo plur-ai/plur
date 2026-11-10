@@ -61,8 +61,12 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
       // gate, so this cannot reintroduce the exfiltration path.
       const projectRemote = resolveProjectRemote(plur, dir)
       const projectConfig = sessionSettings(policy, projectRemote.config)
+      // Pins once per context (overhaul R7) applies to Claude Code's skill,
+      // agent and plan-mode events. Codex has no such event and no signal for
+      // a compacted context, so every injection offers the pins (fail open).
       const injectOpts = {
         budget: 3000,
+        include_pinned: true,
         ...(projectConfig.scope ? { scope: projectConfig.scope } : {}),
         ...(projectRemote.remoteProject ? { remote_project: projectRemote.remoteProject } : {}),
       }

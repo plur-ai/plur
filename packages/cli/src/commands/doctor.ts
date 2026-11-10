@@ -35,6 +35,7 @@ import type { ServerStoreCheck } from '@plur-ai/core'
 import { repairAdvice, repairCommandFor } from './folders.js'
 import { codexInstalled } from '../lib/codex-binary.js'
 import { commandSpawn } from '../lib/command-spawn.js'
+import { CLAUDE_INJECT_TIMEOUT_S } from '../lib/claude-inject-budget.js'
 
 /**
  * plur doctor — diagnose a Claude Code / Claude Desktop / Cursor installation.
@@ -95,6 +96,12 @@ interface DoctorReport {
   claudeCodeMcp: ClaudeCodeMcpReport
   datacoreCollision: boolean
   staleNpxHooks: boolean
+  /**
+   * Claude Code event hooks (`hook-inject --event`) installed with a timeout
+   * below what `plur init` writes now (overhaul W2+4), with the settings file
+   * each is in. Absent when none.
+   */
+  staleEventTimeouts?: Array<{ path: string; event: string; timeout?: number }>
   staleNpxMcp: boolean
   /**
    * Config files whose `plur` entry is PLUR's own Windows node form
@@ -409,6 +416,31 @@ function windowsHookFallbackEditors(configs: ConfigFileReport[]): string[] {
       return /\s/.test(launcher)
     })
     if (fallback) out.push(name)
+  }
+  return out
+}
+
+/**
+ * Claude Code event hooks (`plur hook-inject --event <type>`) installed with a
+ * timeout below what `plur init` writes now (overhaul W2+4: 20 s, the main
+ * hook's). The hook works within the old 10 s — a shorter soft deadline and a
+ * keyword fallback — but a stale entry gives the hybrid leg less room. An
+ * entry with no timeout gets Claude Code's default and is not stale.
+ */
+export function staleEventHookTimeouts(config: Record<string, unknown>): Array<{ event: string; hookEvent: string; matcher?: string; timeout?: number }> {
+  const out: Array<{ event: string; hookEvent: string; matcher?: string; timeout?: number }> = []
+  const hooks = (config.hooks ?? {}) as Record<string, Array<{ matcher?: string; hooks?: Array<{ command?: string; timeout?: number }> }>>
+  for (const [hookEvent, entries] of Object.entries(hooks)) {
+    if (!Array.isArray(entries)) continue
+    for (const entry of entries) {
+      for (const h of entry?.hooks ?? []) {
+        const m = typeof h?.command === 'string' ? h.command.match(/\bhook-inject\s+--event\s+([a-z_]+)/) : null
+        if (!m) continue
+        if (typeof h.timeout === 'number' && h.timeout < CLAUDE_INJECT_TIMEOUT_S) {
+          out.push({ event: m[1], hookEvent, ...(entry.matcher ? { matcher: entry.matcher } : {}), timeout: h.timeout })
+        }
+      }
+    }
   }
   return out
 }
@@ -1330,6 +1362,13 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
     return hasStaleNpxHooks(config)
   })
 
+  // Event hooks installed with the old 10s timeout (overhaul W2+4).
+  const staleEventTimeouts: NonNullable<DoctorReport['staleEventTimeouts']> = []
+  for (const c of configs) {
+    if (!c.exists) continue
+    for (const s of staleEventHookTimeouts(readConfig(c.path))) staleEventTimeouts.push({ path: c.path, event: s.event, timeout: s.timeout })
+  }
+
   // Check for stale npx-based MCP server registration (#234)
   const staleNpxMcp = configs.some((c) => {
     if (!c.exists) return false
@@ -1565,7 +1604,7 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
     const skippedProjectStores = findSkippedProjectStores(flags)
 
     return {
-      configs, hooksInstalled, mcpRegistered, claudeCodeMcp, datacoreCollision, staleNpxHooks, staleNpxMcp, brokenNodeMcp,
+      configs, hooksInstalled, mcpRegistered, claudeCodeMcp, datacoreCollision, staleNpxHooks, ...(staleEventTimeouts.length ? { staleEventTimeouts } : {}), staleNpxMcp, brokenNodeMcp,
       hookShim, mcpShim, handshake, cursorHandshake, embedder,
       cursorProjectDetected, cursorWired, codexDetected, codexWired, codexCmdShimMcp, windowsHookFallback, agyDetected, agyWired,
       pgliteGemmaReembedNeeded, staleContentHashes, pgliteOrphan, ignoredDuplicateStores, skippedProjectStores, tokenEnvUnset, tokenEnvFound, opencode, outbox, folderMap, overall, serverStores, hookTrust,
@@ -1754,6 +1793,13 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
     outputText(`✓ Hook shim: ${report.hookShim.shimPath}`)
   } else {
     outputText(`✗ Hook shim: ${report.hookShim.error}`)
+  }
+
+  if (report.staleEventTimeouts?.length) {
+    outputText('')
+    const list = report.staleEventTimeouts.map(s => `${s.event} (${s.timeout}s)`).join(', ')
+    outputText(`⚠  Event hooks have a timeout below ${CLAUDE_INJECT_TIMEOUT_S}s: ${list}.`)
+    outputText('   They still inject (keyword fallback inside the old timeout); run `plur init` to give the meaning-model search its full time.')
   }
 
   if (report.staleNpxHooks) {

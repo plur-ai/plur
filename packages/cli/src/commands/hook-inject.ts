@@ -18,6 +18,8 @@ import { recordHookRun } from '../lib/hook-runs.js'
 import { cachedServerLines } from '../lib/server-session.js'
 import { cleanupLegacyProjectAtSessionStart } from '../lib/legacy-plur-yaml.js'
 import { hookSessionDir, readSessionTask, writeSessionTask } from '../lib/session-task.js'
+import { readPinMarker, bumpPinEpoch, recordPinsDelivered, shouldIncludePins, isEpochBumpStart } from '../lib/pin-marker.js'
+import { buildHookQueryContext, contentWordCount, isEventLabel, readGitBranch, readLastUserTurns } from '../lib/hook-query.js'
 
 // Remote budget for the recall leg inside injectHybrid (#776). The hook is
 // on the hot path of every prompt; slow networks make this a perceptible
@@ -644,6 +646,21 @@ export const WATCHDOG_LOCK_WAIT_MS = 3_000
 const HOOK_CEILING_MS = parseInt(process.env.PLUR_HOOK_CEILING_MS ?? '', 10) || HOOK_CEILING_DEFAULT_MS
 
 /**
+ * Event injections (plan mode, skill, agent, subagent) run the same pipeline
+ * as the first prompt since the overhaul (W2+4): hybrid on a soft deadline,
+ * then the keyword search. `plur init` now registers them with the main
+ * hook's 20s, but installs made before keep 10s and nothing relies on users
+ * re-running init (D6), so an event run bounds itself inside the OLD 10s:
+ * a 4s hybrid deadline, then BM25, under a 9s self-watchdog.
+ */
+export const EVENT_HYBRID_DEADLINE_DEFAULT_MS = 4_000
+export const EVENT_CEILING_DEFAULT_MS = 9_000
+const EVENT_HYBRID_DEADLINE_MS = parseInt(process.env.PLUR_HOOK_EVENT_DEADLINE_MS ?? '', 10) || EVENT_HYBRID_DEADLINE_DEFAULT_MS
+const EVENT_CEILING_MS = Math.min(HOOK_CEILING_MS, parseInt(process.env.PLUR_HOOK_EVENT_CEILING_MS ?? '', 10) || EVENT_CEILING_DEFAULT_MS)
+// The watchdog ceiling of THIS run: the event ceiling for --event runs.
+let runCeilingMs = HOOK_CEILING_MS
+
+/**
  * The first-prompt / rehydrate retrieval (#1313). The hook is sync, so it
  * cannot wait on an embedder for as long as it takes: hybrid races a soft
  * deadline (PLUR_HOOK_HYBRID_DEADLINE_MS, default 8s) and BM25 serves the
@@ -852,6 +869,12 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     return
   }
 
+  // R7: SessionStart with source compact, clear or resume starts a context
+  // whose earlier injections may be gone — a new pin epoch, recorded before
+  // any work, so a run cut short leaves the epoch undelivered (fail open).
+  if (isEpochBumpStart(input)) bumpPinEpoch(input.session_id)
+  runCeilingMs = event ? EVENT_CEILING_MS : HOOK_CEILING_MS
+
   // Watchdog: guarantee this process exits even if something in the hook run
   // hangs (#504) — remote calls are individually budgeted since #776, so this
   // is the ceiling on the WHOLE run (embedder load, fs stalls, stray async).
@@ -874,7 +897,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       if (hybridInFlight && storeRoot) startEmbeddingWarmup(storeRoot, runFlags)
       process.exit(0)
     })
-  }, Math.max(0, runStartedAt + HOOK_CEILING_MS - Date.now()))
+  }, Math.max(0, runStartedAt + runCeilingMs - Date.now()))
   watchdog.unref()
 
   const key = sessionKey(input)
@@ -890,34 +913,54 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     const plur = createPlur(flags)
     bindHookFolder(plur, dir, policy)
     const label = `[PLUR Memory — ${event}]`
+    storeRoot = plur.storageRoot
+    runFlags = flags
 
-    // BM25-only, deliberately. Event hooks are SYNC — their whole point is
-    // context arriving BEFORE the tool runs — and they're installed with a
-    // 10s timeout. Hybrid search needs the BGE embedder, which costs ~20s
-    // to load in a cold CLI process once the store is a few thousand
-    // engrams: the hook got killed at the timeout on EVERY invocation,
-    // burning CPU and injecting nothing. BM25 completes in a few seconds,
-    // and event task strings ("skill: X", "agent: Y") are short keyword-ish
-    // queries where BM25 holds its own against embeddings anyway. The main
-    // first-message injection keeps hybrid, but it is sync too since #1313:
-    // hybrid on an 8s soft deadline, then BM25, under a 20s hook timeout.
+    // The same pipeline as the first prompt (overhaul W2+4): hybrid on a soft
+    // deadline sized for the old 10s event timeout, then the keyword search.
     // Attribute the retrieval to this session when the marker is readable, so
     // the memory receipt can count (engram, session) pairs from hook traffic —
     // which is the large majority of all injections.
     let eventSessionId: string | undefined
     if (marker) try { eventSessionId = JSON.parse(readFileSync(marker, 'utf8')).sessionId } catch { /* fail-open */ }
-    const result = await plur.inject(task, { budget: 3000, source: 'hook', session_id: eventSessionId })
+    // R7: pins once per context. A skill, agent or plan-mode event leaves them
+    // out only when this context's epoch records a delivery; a subagent is a
+    // new context and always gets them.
+    const pinMarker = readPinMarker(input.session_id)
+    const includePinned = shouldIncludePins(event, pinMarker)
+    const pinEpoch = pinMarker?.epoch ?? 0
+    // Scope and remote routing as on the first prompt, so an event and a
+    // prompt with the same query see the same memories.
+    const projectRemote = resolveProjectRemote(plur, dir)
+    const projectConfig = sessionSettings(policy, projectRemote.config)
+    // W5: an event label is a poor query on its own — add session context.
+    const queryContext = hookQueryContext(plur, input, task, true, projectConfig.scope, dir)
+    const eventOpts = {
+      budget: 3000,
+      source: 'hook' as const,
+      remote_timeout_ms: REMOTE_TIMEOUT_MS,
+      include_pinned: includePinned,
+      ...(projectConfig.scope ? { scope: projectConfig.scope } : {}),
+      ...(eventSessionId ? { session_id: eventSessionId } : {}),
+      ...(projectRemote.remoteProject ? { remote_project: projectRemote.remoteProject } : {}),
+      ...(queryContext.length > 0 ? { query_context: queryContext } : {}),
+    }
+    const { result, mode, hybrid } = await injectForHook(plur, task, eventOpts, EVENT_HYBRID_DEADLINE_MS)
+    abandonedHybrid = mode === 'bm25' && hybridEnabled() ? hybrid : null
     recordInjected('claude', input.session_id, result.injected_ids) // #1310 auto-rate
     if (result.count > 0) {
       const parts: string[] = []
       if (result.directives) parts.push(result.directives)
       if (result.constraints) parts.push(result.constraints)
       if (result.consider) parts.push(result.consider)
-      emitContext(
+      const delivered = await emitContextConfirmed(
         claudeHookEventName(input, { rehydrate: false, event }),
         `${label} ${result.count} engrams\n\n${parts.join('\n')}`,
       )
+      // The main context now holds the pins (a subagent's context is its own).
+      if (delivered && includePinned && event !== 'subagent') recordPinsDelivered(input.session_id, pinEpoch)
     }
+    await exitIfAbandonedHybrid(flags)
     return
   }
 
@@ -983,16 +1026,22 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     releaseInjectLock(lock.hold)
     heldInjectLock = null
   }
-  // #1313: the output (if any) has been flushed — emitContextConfirmed waits
-  // for it. Exit now rather than let the abandoned hybrid search keep a
-  // synchronous hook, and the user's prompt, waiting. But not while this
-  // process may be inside a store write: exiting there leaves the lock file
-  // behind, and every writer (the next hook, the MCP server) then waits on it.
-  // Checking for the lock file alone is not enough — the abandoned search's
-  // O_EXCL create can be in flight at the check and land after it — so wait
-  // for the search itself, bounded, then for any lock of ours still on disk.
+  await exitIfAbandonedHybrid(flags)
+}
+
+/**
+ * #1313: the output (if any) has been flushed — emitContextConfirmed waits
+ * for it. Exit now rather than let the abandoned hybrid search keep a
+ * synchronous hook, and the user's prompt, waiting. But not while this
+ * process may be inside a store write: exiting there leaves the lock file
+ * behind, and every writer (the next hook, the MCP server) then waits on it.
+ * Checking for the lock file alone is not enough — the abandoned search's
+ * O_EXCL create can be in flight at the check and land after it — so wait
+ * for the search itself, bounded, then for any lock of ours still on disk.
+ */
+async function exitIfAbandonedHybrid(flags: GlobalFlags): Promise<void> {
   if (abandonedHybrid) {
-    const left = () => Math.max(0, runStartedAt + HOOK_CEILING_MS - 1_000 - Date.now())
+    const left = () => Math.max(0, runStartedAt + runCeilingMs - 1_000 - Date.now())
     const settled = await settleWithin(abandonedHybrid, Math.min(ABANDONED_HYBRID_WAIT_MS, left()))
     // Then the general guard (#1343): no lock operation of this process in
     // flight and no lock file of ours on disk, checked in the same step as
@@ -1148,12 +1197,20 @@ async function injectSession(
   // user marked `dial: always` in config.yaml is dialed from any CWD. That
   // is an explicit per-store opt-in to send (truncated) prompt text to that
   // host, not something a project can turn on.
+  // R7: the epoch this injection delivers pins into (a compaction bumped it
+  // already, in run()); recorded as delivered only once the output is out.
+  const pinEpoch = readPinMarker(input.session_id)?.epoch ?? 0
+  // W5: a vague first prompt is extended with session context. The rehydrate
+  // task is the stored task plus the compaction summary already.
+  const queryContext = isRehydrate ? [] : hookQueryContext(plur, input, task, false, projectConfig.scope, dir)
   const injectOpts = {
     source: 'hook' as const,
     remote_timeout_ms: REMOTE_TIMEOUT_MS,
+    include_pinned: true,
     ...(projectConfig.scope ? { scope: projectConfig.scope } : {}),
     ...(injectSessionId ? { session_id: injectSessionId } : {}),
     ...(projectRemote.remoteProject ? { remote_project: projectRemote.remoteProject } : {}),
+    ...(queryContext.length > 0 ? { query_context: queryContext } : {}),
   }
   let context: string | null = null
   let count = 0
@@ -1197,6 +1254,9 @@ async function injectSession(
     if (projectConfig.domain) parts.push(`Project domain: ${projectConfig.domain}`)
     // remote-only: the remote-only line below names the scope, escaped (gate review of #1663).
     if (projectConfig.scope && !plur.remoteOnlyFolder()) parts.push(`Project scope: ${projectConfig.scope} — use this scope for plur_learn calls`)
+    // D3: pins over their share are never dropped invisibly — one line.
+    const overflow = pinOverflowNotice(result)
+    if (overflow) parts.push(overflow)
 
     // A memory store here that was found but not added (#1589 audit round 3):
     // one line, once per session and folder, with the paste-safe command.
@@ -1234,4 +1294,45 @@ async function injectSession(
   const delivered = await emitContextConfirmed(hookEventName, parts.join('\n'))
   // Fail-open: an unwritable state dir just means the next prompt re-injects.
   if (delivered && pendingMarker && marker) try { writeFileSync(marker, pendingMarker, { mode: 0o600 }) } catch { /* fail-open */ }
+  // R7: this context now holds the pins.
+  if (delivered) recordPinsDelivered(input.session_id, pinEpoch)
+}
+
+/**
+ * One session-start line when pins overflowed their share (overhaul D3), or
+ * null. Names the first few left out; `plur pins` shows the full fit.
+ */
+export function pinOverflowNotice(result: { omitted_pinned?: Array<{ id: string; cost: number }>; pinned_share_tokens?: number }): string | null {
+  const omitted = result.omitted_pinned ?? []
+  if (omitted.length === 0) return null
+  const tokens = omitted.reduce((a, o) => a + o.cost, 0)
+  const shown = omitted.slice(0, 5).map(o => o.id).join(', ')
+  const more = omitted.length > 5 ? ` and ${omitted.length - 5} more` : ''
+  const share = result.pinned_share_tokens !== undefined ? ` of ${result.pinned_share_tokens} tokens` : ''
+  return `[PLUR] ${omitted.length} pinned engram${omitted.length === 1 ? '' : 's'} (${tokens} tokens) did not fit the pinned share${share} and ${omitted.length === 1 ? 'was' : 'were'} left out: ${shown}${more}. Without priorities, prohibitions and older pins go first; \`plur pins\` shows the fit.`
+}
+
+/**
+ * W5: the session context to extend a vague prompt or an event label with —
+ * the stored session task, the project scope label, the git branch, the last
+ * two user turns from the payload's transcript. Empty when the prompt is
+ * specific enough. Never throws.
+ */
+function hookQueryContext(plur: Plur, input: Record<string, unknown>, task: string, isEvent: boolean, scope: string | undefined, dir: string): string[] {
+  try {
+    const minTerms = plur.injectionSettings().query_min_terms
+    if (!isEvent && !isEventLabel(task) && contentWordCount(task) >= minTerms) return []
+    const q = buildHookQueryContext({
+      prompt: task,
+      isEvent,
+      sessionTask: readSessionTask(input.session_id),
+      scope,
+      branch: readGitBranch(dir),
+      turns: readLastUserTurns(input.transcript_path, 2),
+      minTerms,
+    })
+    return q.extended ? q.context : []
+  } catch {
+    return []
+  }
 }

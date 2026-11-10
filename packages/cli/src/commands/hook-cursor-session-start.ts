@@ -117,7 +117,9 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
     const legacyLines = cleanupLegacyProjectAtSessionStart(dir, plur.storageRoot)
     const projectRemote = resolveProjectRemote(plur, dir)
     const projectConfig = sessionSettings(policy, projectRemote.config)
-    const injectOpts = { budget: 3000, ...(projectConfig.scope ? { scope: projectConfig.scope } : {}) }
+    // Cursor injects once, at session start: a new context, so the pins are
+    // offered (overhaul R7 has no Cursor event that shares a context).
+    const injectOpts = { budget: 3000, include_pinned: true, ...(projectConfig.scope ? { scope: projectConfig.scope } : {}) }
 
     // NOT hybrid, and therefore NOT remote — see the BM25-only note in this
     // file's header (PR #502's lesson). Cursor's hook schema has no

@@ -151,9 +151,9 @@ export function buildPlurHooks(cli: string): Record<string, HookEntry[]> {
     PreToolUse: [
       // Session guard first, so it runs before any other PreToolUse hook.
       { matcher: '*', hooks: [{ type: 'command', command: `${cli} hook-session-guard`, timeout: 3 }] },
-      { matcher: 'EnterPlanMode', hooks: [{ type: 'command', command: `${cli} hook-inject --event plan_mode`, timeout: 10 }] },
-      { matcher: 'Skill', hooks: [{ type: 'command', command: `${cli} hook-inject --event skill`, timeout: 10 }] },
-      { matcher: 'Agent', hooks: [{ type: 'command', command: `${cli} hook-inject --event agent`, timeout: 10 }] },
+      { matcher: 'EnterPlanMode', hooks: [{ type: 'command', command: `${cli} hook-inject --event plan_mode`, timeout: 20 }] },
+      { matcher: 'Skill', hooks: [{ type: 'command', command: `${cli} hook-inject --event skill`, timeout: 20 }] },
+      { matcher: 'Agent', hooks: [{ type: 'command', command: `${cli} hook-inject --event agent`, timeout: 20 }] },
       { matcher: 'Bash|Edit|Write|Agent', hooks: [{ type: 'command', command: `${cli} hook-observe`, timeout: 3 }] },
     ],
     PostToolUse: [
@@ -162,7 +162,7 @@ export function buildPlurHooks(cli: string): Record<string, HookEntry[]> {
       { matcher: 'Bash|Edit|Write|Agent', hooks: [{ type: 'command', command: `${cli} hook-observe --post`, timeout: 3 }] },
     ],
     SubagentStart: [
-      { matcher: '.*', hooks: [{ type: 'command', command: `${cli} hook-inject --event subagent`, timeout: 10 }] },
+      { matcher: '.*', hooks: [{ type: 'command', command: `${cli} hook-inject --event subagent`, timeout: 20 }] },
     ],
     Stop: [
       { matcher: '*', hooks: [{ type: 'command', command: `${cli} hook-learn-check`, timeout: 2 }] },

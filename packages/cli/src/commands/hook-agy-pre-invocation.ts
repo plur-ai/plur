@@ -163,8 +163,12 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
     const projectRemote = resolveProjectRemote(plur, workspace ?? process.cwd())
     // #1347: with a workspace, the session scope is the folder policy's.
     const projectConfig = policy ? sessionSettings(policy, projectRemote.config) : projectRemote.config
+    // Pins once per context (overhaul R7) applies to Claude Code's skill,
+    // agent and plan-mode events. Antigravity has no such event and no signal
+    // for a compacted context, so every injection offers the pins (fail open).
     const injectOpts = {
       budget: isFirst ? 3000 : 2000,
+      include_pinned: true,
       ...(projectConfig.scope ? { scope: projectConfig.scope } : {}),
       ...(projectRemote.remoteProject ? { remote_project: projectRemote.remoteProject } : {}),
     }

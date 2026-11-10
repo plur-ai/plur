@@ -10,6 +10,7 @@ import { safeSessionKey } from '../lib/session-key.js'
 import { flushOutboxForHook, HOOK_OUTBOX_BUDGET_MS } from '../lib/hook-outbox-flush.js'
 import { hookSessionKey, legacyHookSessionKeys } from '../lib/session-key.js' // decision H1
 import { removeSessionTask } from '../lib/session-task.js'
+import { removePinMarker } from '../lib/pin-marker.js'
 
 /**
  * plur hook-session-end — Claude Code SessionEnd hook (shipped v1.0.85).
@@ -116,6 +117,7 @@ async function closeSession(flags: GlobalFlags): Promise<{ dir: string; policy: 
   // The hook-inject rehydrate query is a copy of the user's latest prompt;
   // it has no use once the session is over.
   removeSessionTask(payload.session_id)
+  removePinMarker(payload.session_id)
 
   // #1347: the ask flow's nonces for this session expire with it, whatever
   // the folder's mode. Only removes this session's own nonce file.

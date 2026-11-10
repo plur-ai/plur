@@ -83,11 +83,17 @@ describe('plur init', () => {
     expect(rehydrateHook?.timeout).toBe(20)
 
     // Event hooks must deliver context BEFORE the tool runs — async would
-    // defeat them. They fit their sync 10s window because hook-inject uses
-    // BM25-only (no embedder load) for the --event path.
+    // defeat them. Overhaul W2+4: they run the same pipeline as the main hook
+    // (hybrid on a soft deadline, keyword fallback) and get its 20s timeout;
+    // the hook still bounds itself inside the old 10s for installs that keep it.
     const planModeEntry = settings.hooks?.PreToolUse?.find((e) => e.matcher === 'EnterPlanMode')
     expect(planModeEntry?.hooks?.[0]?.async).toBeUndefined()
-    expect(planModeEntry?.hooks?.[0]?.timeout).toBe(10)
+    expect(planModeEntry?.hooks?.[0]?.timeout).toBe(20)
+    for (const matcher of ['Skill', 'Agent']) {
+      const entry = settings.hooks?.PreToolUse?.find((e) => e.matcher === matcher && e.hooks?.[0]?.command?.includes('hook-inject'))
+      expect(entry?.hooks?.[0]?.timeout, matcher).toBe(20)
+    }
+    expect(settings.hooks?.SubagentStart?.[0]?.hooks?.[0]?.timeout).toBe(20)
   })
 
   it('writes per-engram scope-selection guidance into CLAUDE.md (#296)', () => {
