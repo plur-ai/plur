@@ -174,6 +174,12 @@ describe('every public Plur method in a remote-only folder', () => {
       refreshServerScopes: [], notNowFolder: [join(base, 'elsewhere'), { nonce: 'not-a-nonce' }],
       // Shared change journal (overhaul W0): beginChange only builds a handle; the rest touch the personal store.
       beginChange: ['test.kind'], undoChange: ['CHG-none'], listChanges: [], getChange: ['CHG-none'],
+      // Agent pinning and the pinned set (overhaul D2, D3, W3): requests and the
+      // fit report read what the folder may see; approve/reject/audit/apply act
+      // on the personal store and are refused.
+      setDefaultActor: [undefined], pinPolicyFor: [], pendingPinRequests: [], pinFitReport: [],
+      setPinPriority: [pid, 60], approvePinRequest: [pid], rejectPinRequest: [pid], auditPins: [llm],
+      applyPinAudit: [{ kind: 'plur.pins.audit', version: 1, created_at: '2026-11-10T00:00:00.000Z', items: [], unanswered: [] }],
     }
     const names = Object.getOwnPropertyNames(Plur.prototype).filter(n => n !== 'constructor' && !n.startsWith('_'))
     const getters = names.filter(n => Object.getOwnPropertyDescriptor(Plur.prototype, n)!.get)
@@ -205,6 +211,8 @@ describe('every public Plur method in a remote-only folder', () => {
       'rerankerSelfEval',
       // The change journal holds personal rows in full (overhaul W0).
       'undoChange', 'listChanges', 'getChange',
+      // Pin requests, the pin audit and its apply act on the personal store (overhaul D2, W3).
+      'approvePinRequest', 'rejectPinRequest', 'auditPins', 'applyPinAudit',
     ])
     const unexpected: string[] = []
     const leaks: string[] = []

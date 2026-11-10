@@ -111,6 +111,11 @@ const ALWAYS_ASYNC = new Set([
   // lock and writes through the async PrimaryStore seam; new, so there is no
   // pre-0.16 call site to rewrite.
   'undoChange',
+  // Born async (overhaul D2/D3/W3) — pin requests, the pin fit report and the
+  // pin audit read or write the store through the async seams; new, so there
+  // is no pre-0.16 call site to rewrite.
+  'pendingPinRequests', 'approvePinRequest', 'rejectPinRequest', 'setPinPriority',
+  'pinFitReport', 'auditPins', 'applyPinAudit',
   // Born async (#1631, plan B Task 5) — registers a company server entry and
   // reads the outbox (listOutbox is async) for the queued-save counts; new in
   // this release, so there is no pre-0.16 call site to rewrite.

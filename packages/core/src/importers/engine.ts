@@ -46,6 +46,8 @@ export interface RunImportOptions {
   scope?: string
   /** Source label for records that carry none (e.g. `import:mem0:memories.json`). */
   defaultSource?: string
+  /** Who is importing (overhaul D2): pinned records follow `pinning.agents` unless `owner`. */
+  actor?: 'owner' | 'agent'
 }
 
 /** Max conflict links recorded per imported record. */
@@ -178,7 +180,7 @@ export async function runImport(plur: Plur, records: ImportRecord[], opts: RunIm
 
       const conflictIds = findConflicts(statement, scope, record.domain, preExisting)
       const patched = applyImportMetadata(engram, record, conflictIds, now)
-      if (patched) await plur.updateEngram(patched)
+      if (patched) await plur.updateEngram(patched, opts.actor ? { actor: opts.actor } : undefined)
 
       imported++
       if (conflictIds.length > 0) conflicts++
@@ -214,6 +216,7 @@ function importContext(record: ImportRecord, scope: string | undefined, opts: Ru
   if (record.valid_from) context.valid_from = record.valid_from.slice(0, 10)
   if (record.valid_until) context.valid_until = record.valid_until.slice(0, 10)
   if (record.pinned) context.pinned = true
+  if (opts.actor) context.actor = opts.actor
   return context
 }
 

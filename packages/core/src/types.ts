@@ -87,6 +87,13 @@ export interface LearnContext {
    */
   pinned_priority?: number
   /**
+   * Who is writing (overhaul D2): `owner` (a person at the CLI) is never
+   * restricted; `agent` and an absent actor follow `pinning.agents`. Only
+   * consulted when the write would pin. Never persisted; defaults to the
+   * instance's actor (`new Plur({ actor })` / `setDefaultActor`).
+   */
+  actor?: 'owner' | 'agent'
+  /**
    * Start of the knowledge's validity window (ISO YYYY-MM-DD, #347). Stored in
    * `temporal.valid_from`; inject/recall skip the engram before this date.
    */

@@ -423,12 +423,15 @@ export const PlurConfigSchema = partialKeepAbsent(z.object({
     min_relevance: z.number().nullable().optional(),
   }).prefault({}),
   /**
-   * Who may pin an engram (overhaul D2, enforced in core's write path once
-   * that lands). `allow` (default for now) is today's behaviour: any caller,
-   * agents included, may set `pinned: true`. `request` stores the engram
-   * unpinned with a `pin_request` for the owner to review. `deny` stores it
-   * unpinned and records nothing. Pins arriving from team stores and packs are
-   * not affected. Nothing reads this key yet.
+   * Who may pin an engram (overhaul D2), enforced in core's write path
+   * (`pin-policy.ts`): learn, updateEngram, setPinned, import and change
+   * journal applies. The owner (`actor: 'owner'`, the CLI) is never
+   * restricted; an agent (`actor: 'agent'`, the MCP server and hooks) or a
+   * caller that names no actor gets this setting. `allow` (default) is
+   * today's behaviour. `request` stores the engram unpinned with
+   * `structured_data.pin_request` for the owner to review (`plur pins
+   * review`). `deny` refuses the write. Pins arriving from team stores are
+   * not affected, and pack installs keep stripping pins as before.
    */
   pinning: partialKeepAbsent(z.object({
     agents: z.enum(['allow', 'request', 'deny']).default('allow'),
