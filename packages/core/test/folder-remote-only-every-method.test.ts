@@ -172,6 +172,8 @@ describe('every public Plur method in a remote-only folder', () => {
       // Added on development after #1521 (merge of #1521 onto development):
       recallWithMeta: ['dentist PERSONALZEBRA'], outboxClaimsProblem: [], skippedProjectStores: [work],
       refreshServerScopes: [], notNowFolder: [join(base, 'elsewhere'), { nonce: 'not-a-nonce' }],
+      // Shared change journal (overhaul W0): beginChange only builds a handle; the rest touch the personal store.
+      beginChange: ['test.kind'], undoChange: ['CHG-none'], listChanges: [], getChange: ['CHG-none'],
     }
     const names = Object.getOwnPropertyNames(Plur.prototype).filter(n => n !== 'constructor' && !n.startsWith('_'))
     const getters = names.filter(n => Object.getOwnPropertyDescriptor(Plur.prototype, n)!.get)
@@ -201,6 +203,8 @@ describe('every public Plur method in a remote-only folder', () => {
       'writeProvenance',
       // It runs the embedder and reranker models over the corpus (Codex round 5 on #1663).
       'rerankerSelfEval',
+      // The change journal holds personal rows in full (overhaul W0).
+      'undoChange', 'listChanges', 'getChange',
     ])
     const unexpected: string[] = []
     const leaks: string[] = []

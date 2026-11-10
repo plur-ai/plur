@@ -387,7 +387,80 @@ export const PlurConfigSchema = partialKeepAbsent(z.object({
      * 2000 and `pinned_ratio` of 0.5, a 500-token hard tier.
      */
     pinned_hard_ratio: z.number().min(0).max(1).default(0.5),
+    // ── Retrieval and injection overhaul (W1, W5, W8, D4). Declared ahead of
+    // the code that reads them, so they are `.optional()` with NO schema
+    // default: an absent key stays absent and is never written back into
+    // config.yaml. The default each comment names lives in
+    // `INJECTION_OVERHAUL_DEFAULTS` and is applied by
+    // `resolveInjectionOverhaul()`. Nothing reads these keys yet.
+    /**
+     * Which selection builds the injected block. `legacy` (default for now) is
+     * today's keyword-overlap selection with the constraints floor and
+     * spreading activation. `unified` packs recall's ranked list behind the
+     * always-on pinned slot (W1). `legacy` is kept for one release as the
+     * rollback path.
+     */
+    mode: z.enum(['legacy', 'unified']).optional(),
+    /** Unified mode: how many of recall's ranked results the task list takes, after the gates. Default 10. */
+    recall_limit: z.number().int().min(1).optional(),
+    /**
+     * Unified mode: share of the budget prohibitions in the search's top 50
+     * may take before the general task list (D4). Default 0.2.
+     */
+    prohibition_ratio: z.number().min(0).max(1).optional(),
+    /**
+     * A prompt with fewer content words than this (or an event label such as
+     * "skill: X") has the query built from session context — the stored
+     * session task, the project scope label, the git branch (W5). Default 4.
+     */
+    query_min_terms: z.number().int().min(0).optional(),
+    /**
+     * Relevance cut-off signal for the task list (W8). `null` (default) means
+     * no cut-off. Lands only if a signal passes the held-out test.
+     */
+    min_relevance_signal: z.enum(['reranker', 'rank_gap', 'keyword', 'cosine', 'combined', 'enrichment_kind']).nullable().optional(),
+    /** Threshold on `min_relevance_signal`. `null` (default) means no cut-off. */
+    min_relevance: z.number().nullable().optional(),
   }).prefault({}),
+  /**
+   * Who may pin an engram (overhaul D2, enforced in core's write path once
+   * that lands). `allow` (default for now) is today's behaviour: any caller,
+   * agents included, may set `pinned: true`. `request` stores the engram
+   * unpinned with a `pin_request` for the owner to review. `deny` stores it
+   * unpinned and records nothing. Pins arriving from team stores and packs are
+   * not affected. Nothing reads this key yet.
+   */
+  pinning: partialKeepAbsent(z.object({
+    agents: z.enum(['allow', 'request', 'deny']).default('allow'),
+  })).prefault({}),
+  /**
+   * Store consolidation, the memory optimiser (overhaul W6, D7). Nothing reads
+   * these keys yet.
+   *
+   * `threshold` (default 0.85) — the similarity every member of a proposed
+   * cluster must reach with every other member (complete linkage, R1).
+   * `apply_enabled` (default false) — `plur consolidate --apply` refuses until
+   * this is set; a one-item trial is mandatory either way.
+   * `nightly_max_changes` (default 25) — the cap on merges one
+   * `plur consolidate --nightly` run may apply.
+   */
+  consolidate: partialKeepAbsent(z.object({
+    threshold: z.number().min(0).max(1).default(0.85),
+    apply_enabled: z.boolean().default(false),
+    nightly_max_changes: z.number().int().min(0).default(25),
+  })).prefault({}),
+  /**
+   * Write-time behaviour of `learn` (overhaul W6 inflow, D8). Nothing reads
+   * this key yet.
+   *
+   * `reinforce_exact` (default false) — when true, a `learn` whose statement
+   * equals an existing active engram's in the same scope after normalising
+   * case, whitespace and punctuation reinforces that engram (`decision:
+   * REINFORCE`) instead of writing a new one. Never similarity-only.
+   */
+  learn: partialKeepAbsent(z.object({
+    reinforce_exact: z.boolean().default(false),
+  })).prefault({}),
   dedup: DedupConfigSchema.prefault({}),
   /**
    * When to write a provenance record (#966).
@@ -569,3 +642,51 @@ export const PlurConfigSchema = partialKeepAbsent(z.object({
 }))
 
 export type PlurConfig = z.infer<typeof PlurConfigSchema>
+
+/**
+ * Runtime defaults for the overhaul's injection keys. The schema leaves an
+ * absent key absent (see `partialKeepAbsent`), so the defaults live here.
+ */
+export const INJECTION_OVERHAUL_DEFAULTS = {
+  mode: 'legacy' as 'legacy' | 'unified',
+  recall_limit: 10,
+  prohibition_ratio: 0.2,
+  query_min_terms: 4,
+  min_relevance_signal: null as NonNullable<NonNullable<PlurConfig['injection']>['min_relevance_signal']> | null,
+  min_relevance: null as number | null,
+}
+export type InjectionOverhaulSettings = typeof INJECTION_OVERHAUL_DEFAULTS
+
+export const PINNING_DEFAULTS = { agents: 'allow' as 'allow' | 'request' | 'deny' }
+export type PinningSettings = typeof PINNING_DEFAULTS
+
+export const CONSOLIDATE_DEFAULTS = { threshold: 0.85, apply_enabled: false, nightly_max_changes: 25 }
+export type ConsolidateSettings = typeof CONSOLIDATE_DEFAULTS
+
+export const LEARN_DEFAULTS = { reinforce_exact: false }
+export type LearnSettings = typeof LEARN_DEFAULTS
+
+function pick<T extends Record<string, unknown>>(defaults: T, block: Record<string, unknown> | undefined): T {
+  const out = { ...defaults }
+  if (block) for (const k of Object.keys(defaults) as (keyof T)[]) {
+    if (block[k as string] !== undefined) out[k] = block[k as string] as T[keyof T]
+  }
+  return out
+}
+
+/** The overhaul's injection settings with defaults applied. */
+export function resolveInjectionOverhaul(config: PlurConfig | undefined): InjectionOverhaulSettings {
+  return pick(INJECTION_OVERHAUL_DEFAULTS, config?.injection as Record<string, unknown> | undefined)
+}
+/** `pinning` with defaults applied. */
+export function resolvePinningConfig(config: PlurConfig | undefined): PinningSettings {
+  return pick(PINNING_DEFAULTS, config?.pinning)
+}
+/** `consolidate` with defaults applied. */
+export function resolveConsolidateConfig(config: PlurConfig | undefined): ConsolidateSettings {
+  return pick(CONSOLIDATE_DEFAULTS, config?.consolidate)
+}
+/** `learn` with defaults applied. */
+export function resolveLearnConfig(config: PlurConfig | undefined): LearnSettings {
+  return pick(LEARN_DEFAULTS, config?.learn)
+}

@@ -81,6 +81,11 @@ import { isRemoteOnlyQueued, withoutRemoteOnlyQueued } from './remote-only-rows.
 import { escapedPath as folderEscaped } from './folder-ask.js'
 import { ReadonlyStoreGuard, ReadonlyStoreError } from './store/readonly-store-guard.js'
 import { withAsyncLock, type AsyncLockOptions } from './store/async-lock.js'
+import {
+  newChangeId, readChangeJournal, journalBegin, journalCommit, findUndoConflicts, canonicalRow,
+  ChangeJournalError, ChangeJournalUnsupportedError, ChangeNotFoundError, ChangeAlreadyUndoneError, ChangeConflictError,
+  type ChangeRecord, type ChangeRowSnapshot, type ChangeTx, type PendingChange, type UndoChangeOptions,
+} from './change-journal.js'
 import { SessionScopeRegistry, NO_SESSION } from './session-scopes.js'
 import { loadGitScopeSources, readGitOrigin, DISCOVERY_MAX_AGE_MS, DISCOVERY_FUTURE_SKEW_MS, type OriginRead, type GitScopeSource, type GitScopeOutcome } from './git-origin.js'
 import { checkOwnerOnly } from './owner-only.js'
@@ -459,6 +464,16 @@ export { shortPackIntegrity, isTransientPackDir } from './packs.js'
 export type { PreviewResult, RegistryEntry, PrivacyScanResult, PrivacyIssue, PackProvenanceView, InstallResult, NeutralizedCounts, PackIntegrityMigrationReport } from './packs.js'
 export type { PlurConfig, StoreEntry, ScopeRoutingConfig } from './schemas/config.js'
 export { ServerStoreEntrySchema } from './schemas/config.js'
+export {
+  resolveInjectionOverhaul, resolvePinningConfig, resolveConsolidateConfig, resolveLearnConfig,
+  INJECTION_OVERHAUL_DEFAULTS, PINNING_DEFAULTS, CONSOLIDATE_DEFAULTS, LEARN_DEFAULTS,
+  type InjectionOverhaulSettings, type PinningSettings, type ConsolidateSettings, type LearnSettings,
+} from './schemas/config.js'
+export {
+  CHANGE_JOURNAL_FILE, changeJournalPath, readChangeJournal, newChangeId, canonicalRow, findUndoConflicts,
+  ChangeJournalError, ChangeJournalUnsupportedError, ChangeNotFoundError, ChangeAlreadyUndoneError, ChangeConflictError,
+  type ChangeRecord, type ChangeRowSnapshot, type ChangeTx, type PendingChange, type UndoChangeOptions, type ChangeConflictRow,
+} from './change-journal.js'
 export type { ManifestSummary, PayloadDescriptor, Producer, Signer, CapsuleHeader, CapsulePreamble } from './schemas/capsule.js'
 export {
   CAPSULE_MAGIC,
@@ -9528,6 +9543,212 @@ export class Plur {
    */
   async updateEngramAsync(updated: Engram): Promise<Engram | null> {
     return await this._updateEngramReturning(updated)
+  }
+
+  // ── Shared change journal (overhaul W0, plan revisions D1/R2) ─────────────
+  // See change-journal.ts for the contract. The wiring here is what makes it
+  // safe: one store lock around snapshot + write, the same write and index
+  // seams every other mutator uses, and refusal for anything that is not a
+  // locally owned YAML row.
+
+  /**
+   * Start an undoable change of the primary store. Nothing happens until
+   * `apply(fn)` runs, which takes the store lock, hands `fn` the current
+   * corpus, journals full before-snapshots of every row `fn` stages, writes
+   * them in one store write, and returns the {@link ChangeRecord}. A change
+   * applies once.
+   */
+  beginChange(kind: string, meta: Record<string, unknown> = {}): PendingChange {
+    const id = newChangeId()
+    let used = false
+    return {
+      id,
+      kind,
+      meta,
+      apply: async (fn) => {
+        if (used) throw new ChangeJournalError(`Change ${id} was already applied.`)
+        used = true
+        return await this._applyChange(id, kind, meta, fn)
+      },
+    }
+  }
+
+  /**
+   * Undo a journalled change: restore the before-snapshot of every row it
+   * touched (remove rows it created, put back rows it removed, in place), in
+   * one write under the store lock. Refuses with {@link ChangeConflictError},
+   * writing nothing, when any of those rows no longer holds what the change
+   * wrote. The undo is itself a change (kind `undo`, `meta.undoes`), returned
+   * here, and can be undone in turn.
+   */
+  async undoChange(changeId: string, options: UndoChangeOptions = {}): Promise<ChangeRecord> {
+    const ignore = options.ignoreFields ?? []
+    const undoId = newChangeId()
+    return await this._applyChange(undoId, 'undo', { undoes: changeId }, (tx) => {
+      // Read under the lock, so a concurrent undo of the same change sees the first one's record.
+      const record = readChangeJournal(this.paths.root).find(r => r.id === changeId)
+      if (!record) throw new ChangeNotFoundError(changeId)
+      if (record.undone_by) throw new ChangeAlreadyUndoneError(changeId, record.undone_by)
+      const current = new Map<string, Engram>()
+      for (const row of record.rows) {
+        const now = tx.get(row.id)
+        if (now) current.set(row.id, now)
+      }
+      const conflicts = findUndoConflicts(record, current, ignore)
+      if (conflicts.length > 0) throw new ChangeConflictError(changeId, conflicts)
+      // Re-inserts go in ascending original position so each lands where it was.
+      const rows = [...record.rows].sort((x, y) => (x.index ?? Infinity) - (y.index ?? Infinity))
+      for (const row of rows) {
+        if (row.before === null) { tx.remove(row.id); continue }
+        const restored = structuredClone(row.before) as Record<string, unknown>
+        const now = current.get(row.id) as Record<string, unknown> | undefined
+        if (now) for (const f of ignore) {
+          if (f in now) restored[f] = now[f]
+          else delete restored[f]
+        }
+        tx.put(restored as Engram, row.index ?? undefined)
+      }
+    })
+  }
+
+  /** Every journalled change, oldest first. */
+  listChanges(): ChangeRecord[] {
+    // The journal holds personal rows in full: never read from a remote-only folder.
+    this._remoteOnlyRefuseLocalStore('Reading the change journal (run it outside the remote-only folder)')
+    return readChangeJournal(this.paths.root)
+  }
+
+  /** One journalled change, or null. */
+  getChange(changeId: string): ChangeRecord | null {
+    this._remoteOnlyRefuseLocalStore('Reading the change journal (run it outside the remote-only folder)')
+    return readChangeJournal(this.paths.root).find(r => r.id === changeId) ?? null
+  }
+
+  private _assertChangeJournalSupported(): void {
+    this._assertWritable()
+    this._remoteOnlyRefuseLocalStore('Applying or undoing a journalled change (run it outside the remote-only folder)')
+    if (this._basePrimaryStore.kind !== 'yaml') {
+      throw new ChangeJournalUnsupportedError(
+        `Undoable changes need the local YAML primary store; this instance uses "${this._basePrimaryStore.kind}".`,
+      )
+    }
+  }
+
+  private _assertChangeRowLocal(row: Engram): void {
+    if (!row || typeof row.id !== 'string' || !row.id) throw new ChangeJournalError('A change row needs an id.')
+    if (parseNamespacedId(row.id)) {
+      throw new ChangeJournalUnsupportedError(`${row.id} names a secondary or team store; changes act on the local primary store only.`)
+    }
+    if ((row as { pack?: unknown }).pack) {
+      throw new ChangeJournalUnsupportedError(`${row.id} belongs to pack "${String((row as { pack?: unknown }).pack)}"; changes act on locally owned rows only.`)
+    }
+    if (typeof row.scope === 'string' && this._isRemoteBackedScope(row.scope)) {
+      throw new ChangeJournalUnsupportedError(`${row.id} has scope "${row.scope}", which a team store serves; changes act on locally owned scopes only.`)
+    }
+  }
+
+  private async _applyChange(
+    id: string,
+    kind: string,
+    meta: Record<string, unknown>,
+    fn: (tx: ChangeTx & { put(engram: Engram, index?: number): void }) => void | Promise<void>,
+  ): Promise<ChangeRecord> {
+    this._assertChangeJournalSupported()
+    this.reloadConfigIfChanged()
+    return await this._withStoreLock(this.paths.engrams, async () => {
+      // Authoritative read under the lock: the snapshots are exactly what this write replaces.
+      const corpus = await this._primaryStore.load()
+      const position = new Map<string, number>()
+      corpus.forEach((e, i) => position.set(e.id, i))
+      const staged = new Map<string, { row: Engram | null; index?: number }>()
+      const order: string[] = []
+      const currentRow = (rid: string): Engram | undefined => {
+        const s = staged.get(rid)
+        if (s) return s.row ?? undefined
+        const i = position.get(rid)
+        return i === undefined ? undefined : corpus[i]
+      }
+      const stage = (rid: string, row: Engram | null, index?: number) => {
+        if (!staged.has(rid)) order.push(rid)
+        staged.set(rid, { row, index })
+      }
+      const tx = {
+        get: (rid: string) => {
+          const r = currentRow(rid)
+          return r ? structuredClone(r) : undefined
+        },
+        all: () => {
+          const out = corpus.map(e => currentRow(e.id)).filter((e): e is Engram => !!e)
+          for (const rid of order) if (!position.has(rid) && staged.get(rid)!.row) out.push(staged.get(rid)!.row!)
+          return out.map(e => structuredClone(e))
+        },
+        put: (engram: Engram, index?: number) => {
+          this._assertChangeRowLocal(engram)
+          stage(engram.id, structuredClone(engram), index)
+        },
+        remove: (rid: string) => {
+          if (currentRow(rid) === undefined) throw new ChangeJournalError(`Cannot remove ${rid}: no such row in the primary store.`)
+          stage(rid, null)
+        },
+      }
+      await fn(tx)
+
+      const at = new Date().toISOString()
+      const rows: ChangeRowSnapshot[] = order.map(rid => {
+        const i = position.get(rid)
+        return {
+          id: rid,
+          index: i ?? staged.get(rid)!.index ?? null,
+          before: i === undefined ? null : structuredClone(corpus[i]),
+          after: staged.get(rid)!.row,
+        }
+      })
+      // Rows that were absent before and are absent after (created then removed) touch nothing.
+      const effective = rows.filter(r => r.before !== null || r.after !== null)
+
+      // Build the new corpus: replace or drop in place, then insert rows that
+      // were absent — at their requested position (an undo putting a removed
+      // row back) or at the end (a create), in staging order.
+      const next: Engram[] = []
+      for (const e of corpus) {
+        const s = staged.get(e.id)
+        if (!s) next.push(e)
+        else if (s.row) next.push(s.row)
+      }
+      const inserts = order.filter(rid => !position.has(rid) && staged.get(rid)!.row)
+      const positioned = inserts.filter(rid => staged.get(rid)!.index !== undefined)
+        .sort((x, y) => staged.get(x)!.index! - staged.get(y)!.index!)
+      for (const rid of positioned) next.splice(Math.min(staged.get(rid)!.index!, next.length), 0, staged.get(rid)!.row!)
+      for (const rid of inserts) if (staged.get(rid)!.index === undefined) next.push(staged.get(rid)!.row!)
+
+      journalBegin(this.paths.root, { id, kind, meta, at, rows: effective })
+      if (effective.length > 0) {
+        const removes = effective.some(r => r.after === null)
+        await this._writeEngrams(this.paths.engrams, next, { allowShrink: removes })
+        await this._syncIndex()
+      }
+      // Record what is really stored now (the loader may normalise a row), so
+      // undo compares against the disk, not against what was staged.
+      const stored = new Map((await this._primaryStore.load()).map(e => [e.id, e]))
+      const adjusted: Record<string, Engram | null> = {}
+      for (const r of effective) {
+        const now = stored.get(r.id) ?? null
+        if (canonicalRow(now) !== canonicalRow(r.after)) { adjusted[r.id] = now; r.after = now }
+      }
+      journalCommit(this.paths.root, id, adjusted)
+      // History is the audit trail, never a gate on the write.
+      for (const r of effective) {
+        try {
+          this._appendHistory({
+            event: r.before === null ? 'engram_created' : r.after === null ? 'engram_retired' : 'engram_updated',
+            engram_id: r.id,
+            timestamp: at,
+            data: { via: kind === 'undo' ? 'change_undo' : 'change', change_id: id, kind, ...(r.after === null ? { removed: true } : {}) },
+          })
+        } catch { /* see above */ }
+      }
+      return { id, kind, meta, at, state: 'committed' as const, rows: effective }
+    })
   }
 
   private async _updateEngramReturning(updated: Engram): Promise<Engram | null> {

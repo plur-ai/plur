@@ -107,6 +107,10 @@ const ALWAYS_ASYNC = new Set([
   // engram through the async PrimaryStore seam, so they could never have been
   // sync; new in 0.23, so there is no pre-0.16 call site to rewrite.
   'sessionManifest', 'verifyManifest',
+  // Born async (overhaul W0) — undoing a journalled change takes the store
+  // lock and writes through the async PrimaryStore seam; new, so there is no
+  // pre-0.16 call site to rewrite.
+  'undoChange',
   // Born async (#1631, plan B Task 5) — registers a company server entry and
   // reads the outbox (listOutbox is async) for the queued-save counts; new in
   // this release, so there is no pre-0.16 call site to rewrite.
