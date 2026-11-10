@@ -52,12 +52,17 @@ export type PinDecision = 'allow' | 'request' | 'deny'
 export interface PinRequest {
   /** ISO timestamp of the request. */
   requested_at: string
-  /** Who asked: `agent`, or `unknown` when the caller did not say. */
-  by: PinActor | 'unknown'
+  /**
+   * Who asked: `agent`, `unknown` when the caller did not say, or
+   * `consolidate` when a merge replaced a pinned original (overhaul R2).
+   */
+  by: PinActor | 'unknown' | 'consolidate'
   /** Why, when the caller said. */
   reason?: string
-  /** The write path that asked (`learn`, `update`, `pin`, `change:<kind>`). */
+  /** The write path that asked (`learn`, `update`, `pin`, `change:<kind>`, `consolidate`). */
   via?: string
+  /** For a merge: the originals whose pin (or pending request) this carries. */
+  from?: string[]
   /** The tier and priority the caller asked for, applied on approval. */
   tier?: 'hard' | 'soft'
   priority?: number
@@ -94,15 +99,16 @@ export function pinRequestOf(e: { pinned?: unknown; structured_data?: unknown } 
 
 /** Build the request record for a refused-to-pin write. */
 export function buildPinRequest(
-  actor: PinActor | undefined,
+  actor: PinActor | 'consolidate' | undefined,
   via: string,
-  extra?: { reason?: string; tier?: 'hard' | 'soft'; priority?: number },
+  extra?: { reason?: string; tier?: 'hard' | 'soft'; priority?: number; from?: string[]; requested_at?: string },
 ): PinRequest {
   return {
-    requested_at: new Date().toISOString(),
+    requested_at: extra?.requested_at ?? new Date().toISOString(),
     by: actor ?? 'unknown',
     ...(extra?.reason ? { reason: extra.reason } : {}),
     via,
+    ...(extra?.from && extra.from.length > 0 ? { from: extra.from } : {}),
     ...(extra?.tier ? { tier: extra.tier } : {}),
     ...(extra?.priority !== undefined ? { priority: extra.priority } : {}),
   }

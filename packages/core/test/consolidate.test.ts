@@ -22,8 +22,11 @@ import {
   seededSample,
   buildConsolidationPrompt,
   parseConsolidationResponse,
+  mergeEngrams,
   type ConsolidationItem,
 } from '../src/consolidate.js'
+import { pinRequestOf, buildPinRequest, asPinRequested } from '../src/pin-policy.js'
+import type { Engram } from '../src/schemas/engram.js'
 import { fromGram, axis, near, dot, randomUnitVectors } from './fixtures/consolidate-vectors.js'
 
 function items(vs: Float32Array[], block = 'global', prefix = 'E'): ConsolidationItem[] {
@@ -205,4 +208,34 @@ describe('candidate generation at scale', () => {
     expect(ms).toBeLessThan(180_000)
     expect(hit / planted.length).toBeGreaterThanOrEqual(0.85)
   }, 600_000)
+})
+
+describe('a merge carries pins as a pin request in pin-policy\'s shape (R2)', () => {
+  const row = (id: string, extra: Record<string, unknown> = {}) => ({
+    id, statement: `statement ${id}`, scope: 'global', status: 'active', type: 'behavioral',
+    activation: { retrieval_strength: 0.5, storage_strength: 0.5, frequency: 1, last_accessed: '2026-11-01' },
+    ...extra,
+  }) as unknown as Engram
+  const m = { id: 'ENG-M', statement: 'merged', now: '2026-11-10T00:00:00.000Z', planId: 'CPL-1', clusterId: 'C1' }
+
+  it('a pinned original becomes structured_data.pin_request {by, via: consolidate}; the merge is not pinned', () => {
+    const merged = mergeEngrams([row('A', { pinned: true, pinned_tier: 'hard', pinned_priority: 70 }), row('B')], m)
+    expect(merged.pinned).toBeUndefined()
+    expect(pinRequestOf(merged)).toEqual({
+      requested_at: m.now, by: 'consolidate', via: 'consolidate', from: ['A'], tier: 'hard', priority: 70,
+      reason: expect.stringContaining('A'),
+    })
+  })
+
+  it('an original\'s pending request is carried over, not dropped with the retired original', () => {
+    const asked = asPinRequested(row('A') as unknown as Record<string, unknown>, buildPinRequest('agent', 'learn', { tier: 'soft' })) as unknown as Engram
+    const merged = mergeEngrams([row('B'), asked], m)
+    expect(pinRequestOf(merged)).toMatchObject({ by: 'consolidate', via: 'consolidate', from: ['A'], tier: 'soft' })
+  })
+
+  it('no pinned or requested original means no request', () => {
+    const merged = mergeEngrams([row('A'), row('B')], m)
+    expect(pinRequestOf(merged)).toBeNull()
+    expect((merged.structured_data as Record<string, unknown>).pin_request).toBeUndefined()
+  })
 })

@@ -29,6 +29,7 @@ import { _setCachedEmbedder, resetEmbedder, setEmbeddingsEnabled } from '../src/
 import { ChangeConflictError } from '../src/change-journal.js'
 import { ConsolidateApplyDisabledError, ConsolidateTrialRequiredError, type ConsolidationPlan } from '../src/consolidate.js'
 import { axis, near } from './fixtures/consolidate-vectors.js'
+import { pinRequestOf } from '../src/pin-policy.js'
 
 const DIM = 32
 
@@ -226,9 +227,16 @@ describe('plur consolidate: plan, apply, undo', () => {
 
     const approved: ConsolidationPlan = { ...plan, clusters: [{ ...cl, approved: true }] }
     const res = await plur.consolidateApply(approved, { limit: 1 })
-    const merged = (await plur.getById(res.applied[0].merged_id))! as Engram & { pin_request?: { from: string[] } }
+    const merged = (await plur.getById(res.applied[0].merged_id))!
     expect(merged.pinned).toBeFalsy()
-    expect(merged.pin_request?.from).toEqual([a.id])
+    // One pin_request shape (pin-policy's), so `plur pins review` lists it.
+    const request = pinRequestOf(merged)
+    expect(request).toMatchObject({ by: 'consolidate', via: 'consolidate', from: [a.id] })
+    expect(typeof request!.requested_at).toBe('string')
+    expect((merged as Engram & { pin_request?: unknown }).pin_request).toBeUndefined()
+    const pending = await plur.pendingPinRequests()
+    expect(pending.map(p => p.id)).toEqual([merged.id])
+    expect(pending[0].request.by).toBe('consolidate')
     expect(b.id).toBeTruthy()
   })
 

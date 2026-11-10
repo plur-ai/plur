@@ -34,6 +34,7 @@ import { classifyPolarity } from './polarity.js'
 import { DEDUP_DECISION_GUIDE } from './dedup.js'
 import { computeContentHash } from './content-hash.js'
 import type { LlmFunction } from './types.js'
+import { buildPinRequest, asPinRequested, pinRequestOf } from './pin-policy.js'
 
 /** Near-paraphrases written by `learn` are queued here for the next plan (D8). */
 export const CONSOLIDATE_QUEUE_FILE = 'consolidate-queue.jsonl'
@@ -559,17 +560,6 @@ function uniq<T>(xs: Iterable<T>): T[] {
 
 const COMMITMENT_RANK: Record<string, number> = { exploring: 0, leaning: 1, decided: 2, locked: 3 }
 
-/** What a merged engram asks the owner instead of being pinned (R2). */
-export interface ConsolidationPinRequest {
-  requested_at: string
-  requested_by: 'consolidate'
-  reason: string
-  /** The pinned originals. */
-  from: string[]
-  tier?: 'hard' | 'soft'
-  priority?: number
-}
-
 /**
  * The merged engram (R2):
  *  - built on the strongest original (highest strength, then most writes);
@@ -578,7 +568,9 @@ export interface ConsolidationPinRequest {
  *    `relations.supersedes` names every original;
  *  - injection count, write count, recurrence count, frequency and feedback
  *    (+, −, neutral) are summed; strength is the highest;
- *  - never pinned: a pinned original becomes a `pin_request`;
+ *  - never pinned: a pinned original (or one with a pending pin request)
+ *    becomes `structured_data.pin_request` in pin-policy's shape
+ *    (by/via `consolidate`), so `plur pins review` lists it;
  *  - `structured_data.consolidation` records where it came from.
  */
 export function mergeEngrams(
@@ -668,28 +660,33 @@ export function mergeEngrams(
   }
 
   const pinned = members.filter(e => (e as { pinned?: boolean }).pinned === true)
+  const requested = members.filter(e => pinRequestOf(e) !== null)
   delete (out as { pinned?: unknown }).pinned
   delete (out as { pinned_tier?: unknown }).pinned_tier
   delete (out as { pinned_priority?: unknown }).pinned_priority
-  delete out.pin_request
-  if (pinned.length > 0) {
-    const tier = pinned.some(e => e.pinned_tier === 'hard') ? 'hard' : pinned.some(e => e.pinned_tier === 'soft') ? 'soft' : undefined
-    const priority = Math.max(...pinned.map(e => e.pinned_priority ?? 0))
-    const req: ConsolidationPinRequest = {
-      requested_at: m.now,
-      requested_by: 'consolidate',
-      reason: `Merged from pinned engram(s) ${pinned.map(e => e.id).join(', ')}; a merged engram is never pinned automatically.`,
-      from: pinned.map(e => e.id),
-      ...(tier ? { tier } : {}),
-      ...(priority > 0 ? { priority } : {}),
-    }
-    out.pin_request = req
-  }
 
   const sd = { ...((base as { structured_data?: Record<string, unknown> }).structured_data ?? {}) }
   delete sd._outbox
+  delete sd.pin_request
   sd.consolidation = { from: members.map(e => e.id), plan_id: m.planId, cluster_id: m.clusterId, at: m.now }
   out.structured_data = sd
+
+  if (pinned.length > 0 || requested.length > 0) {
+    const asked = [
+      ...pinned.map(e => ({ tier: e.pinned_tier, priority: e.pinned_priority })),
+      ...requested.map(e => { const r = pinRequestOf(e)!; return { tier: r.tier, priority: r.priority } }),
+    ]
+    const tier = asked.some(a => a.tier === 'hard') ? 'hard' : asked.some(a => a.tier === 'soft') ? 'soft' : undefined
+    const priority = Math.max(0, ...asked.map(a => a.priority ?? 0))
+    const from = [...new Set([...pinned, ...requested].map(e => e.id))]
+    return asPinRequested(out, buildPinRequest('consolidate', 'consolidate', {
+      requested_at: m.now,
+      reason: `Merged from ${pinned.length > 0 ? 'pinned' : 'pin-requested'} engram(s) ${from.join(', ')}; a merged engram is never pinned automatically.`,
+      from,
+      ...(tier ? { tier } : {}),
+      ...(priority > 0 ? { priority } : {}),
+    })) as Engram
+  }
   return out as Engram
 }
 

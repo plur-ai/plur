@@ -506,7 +506,7 @@ export {
   ConsolidateError, ConsolidateApplyDisabledError, ConsolidateTrialRequiredError, ConsolidatePlanInvalidError,
   CONSOLIDATE_QUEUE_FILE, CONSOLIDATE_STATE_FILE, CONSOLIDATE_CHANGE_KIND, CONSOLIDATION_PLAN_KIND, PARAPHRASE_QUEUE_THRESHOLD,
   type ConsolidationPlan, type PlanCluster, type PlanMember, type ConsolidationItem, type NeighbourPair, type Cluster,
-  type ClusterDecision, type ConsolidationPinRequest,
+  type ClusterDecision,
   type ConsolidatePlanOptions, type ConsolidateApplyOptions, type ConsolidateApplyResult, type StoreHealth, type ConsolidateSkipReason,
 } from './consolidate.js'
 export {
