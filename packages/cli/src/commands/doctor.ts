@@ -28,6 +28,7 @@ import { hasPlurCodexHooks, readCodexHooksConfig } from '../codex-hooks.js'
 import { hasPlurAgyHooks, readAgyHooksConfig } from '../antigravity-hooks.js'
 import { codexHome, missingNodeEntryPaths, readCodexPlurMcpCommand, isOwnWin32CmdShimCommand } from '../mcp-config.js'
 import { opencodeConfigDir, opencodeConfigPath, readOpencodeConfig, PLUR_OPENCODE_PLUGIN } from '../opencode-config.js'
+import { formatPinOverflowLine } from '@plur-ai/core'
 import { computeContentHash, detectPlurStorage, loadEngrams, resolveBackendTier, loadConfig, describeNeedsAction, describeHeld, classifyStoreDuplicates, folderMapProblem, tokenFromEnv, tokenEnvUnsetDetail, tokenEnvUnsetFix, offlineByEnv } from '@plur-ai/core'
 import { plurRoot } from '../lib/folder-gate.js'
 import { readHookInstalls, readHookRuns, type HookTool } from '../lib/hook-runs.js'
@@ -202,6 +203,13 @@ interface DoctorReport {
    * `plur reindex-hashes --apply`.
    */
   staleContentHashes: number
+  /**
+   * Pins against the pinned share of the injection budget (overhaul D3).
+   * Pins that do not fit are not loaded at injection; a pin is never dropped
+   * invisibly, so doctor names the overflow. `null` when it cannot be read.
+   * Advisory only: does not fail the overall check.
+   */
+  pinOverflow?: { count: number; overflow_count: number; total_cost: number; share: number; budget: number; overflow_ids: string[] } | null
   /**
    * A `store.pglite` directory the resolved backend tier no longer uses
    * (#1046) — orphaned disk the user may delete, ideally after `plur migrate`
@@ -520,6 +528,20 @@ function countStaleContentHashes(flags: GlobalFlags): number {
     return count
   } catch {
     return 0
+  }
+}
+
+/** Overhaul D3: pins that do not fit the pinned share. Local read only; never throws. */
+async function checkPinOverflow(flags: GlobalFlags): Promise<DoctorReport['pinOverflow']> {
+  try {
+    const plur = createPlur(flags, { readonly: true, autoDiscover: false })
+    const r = await plur.pinFitReport()
+    return {
+      count: r.count, overflow_count: r.overflow_count, total_cost: r.total_cost, share: r.share, budget: r.budget,
+      overflow_ids: r.entries.filter(e => !e.fits).map(e => e.id),
+    }
+  } catch {
+    return null
   }
 }
 
@@ -1544,6 +1566,7 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
     // non-ASCII letters hashed differently under the old normalizer, leaving
     // those engrams as dedup attractors. Advisory: does not fail overall.
     const staleContentHashes = countStaleContentHashes(flags)
+    const pinOverflow = await checkPinOverflow(flags)
 
     // #1046 orphan advisory — computed HERE, not in the text renderer, so
     // `--json` consumers see it too (#1065). "Selected" goes through the real
@@ -1568,7 +1591,7 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
       configs, hooksInstalled, mcpRegistered, claudeCodeMcp, datacoreCollision, staleNpxHooks, staleNpxMcp, brokenNodeMcp,
       hookShim, mcpShim, handshake, cursorHandshake, embedder,
       cursorProjectDetected, cursorWired, codexDetected, codexWired, codexCmdShimMcp, windowsHookFallback, agyDetected, agyWired,
-      pgliteGemmaReembedNeeded, staleContentHashes, pgliteOrphan, ignoredDuplicateStores, skippedProjectStores, tokenEnvUnset, tokenEnvFound, opencode, outbox, folderMap, overall, serverStores, hookTrust,
+      pgliteGemmaReembedNeeded, staleContentHashes, pinOverflow, pgliteOrphan, ignoredDuplicateStores, skippedProjectStores, tokenEnvUnset, tokenEnvFound, opencode, outbox, folderMap, overall, serverStores, hookTrust,
     }
   })
 }
@@ -1803,6 +1826,14 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
     outputText('   does NOT auto-rebuild — recall keeps serving the old (wrong-prefix) embedding')
     outputText('   space silently. The SQLite/flat-file backend auto-rebuilds; PGLite cannot.')
     outputText('   Fix: run `plur sync --reembed --full` once to rebuild the vectors.')
+  }
+
+  if (report.pinOverflow && report.pinOverflow.overflow_count > 0) {
+    outputText('')
+    outputText(`⚠  ${formatPinOverflowLine(report.pinOverflow)}`)
+    outputText('   Pins over the share are skipped at injection. Fix: `plur pins` shows each pin\'s cost and')
+    outputText('   priority; raise the priority of the ones that matter, unpin situational ones (`plur pins audit`')
+    outputText('   proposes which), or raise injection_budget / injection.pinned_ratio.')
   }
 
   if (report.staleContentHashes > 0) {
