@@ -2,7 +2,7 @@ interface:
   display_name: Create PLUR Engrams
   short_description: Create useful, grounded engrams across the full spectrum
   default_prompt: Use $plur-create-engrams to turn this material into useful PLUR
-    engrams, with justified scope, pinning, provenance, and lifecycle.
+    engrams, with justified scope, a structured body, provenance, and lifecycle; pin only on the owner's word.
   icon_small: assets/icon.svg
   icon_large: assets/icon.svg
 policy:

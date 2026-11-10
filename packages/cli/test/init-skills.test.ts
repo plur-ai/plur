@@ -38,6 +38,30 @@ describe('skills are packaged', () => {
     expect(existsSync(join(refs, 'examples-explained.md'))).toBe(true)
   })
 
+  it('every shipped skill file is byte-identical to its source under skills/ (W10 copies stay in sync)', () => {
+    const SRC = join(__dirname, '..', '..', '..', 'skills')
+    const walk = (dir: string, rel = ''): string[] => readdirSync(join(dir, rel), { withFileTypes: true })
+      .flatMap(d => d.isDirectory() ? walk(dir, join(rel, d.name)) : [join(rel, d.name)])
+    const files = walk(SRC).sort()
+    expect(files).toContain(join('plur-create-engrams', 'SKILL.md'))
+    for (const f of files) {
+      expect(existsSync(join(DIST_SKILLS, f)), f).toBe(true)
+      expect(readFileSync(join(DIST_SKILLS, f), 'utf-8'), f).toBe(readFileSync(join(SRC, f), 'utf-8'))
+    }
+  })
+
+  it('plur-create-engrams teaches the structured form, kinds, outcomes and owner-only pinning (W10)', () => {
+    const skill = readFileSync(join(DIST_SKILLS, 'plur-create-engrams', 'SKILL.md'), 'utf-8')
+    expect(skill).toContain('structured_data.body')
+    for (const part of ['When:', 'Do:', 'Why:', 'Pitfalls:', 'Anchors:']) expect(skill).toContain(part)
+    expect(skill).toMatch(/300 tokens/)
+    for (const kind of ['rule', 'tool', 'fact', 'preference', 'experience', 'failure_lesson']) expect(skill).toContain(`\`${kind}\``)
+    expect(skill).toMatch(/outcome/)
+    expect(skill).toMatch(/Distil failure lessons/)
+    expect(skill).toMatch(/Pin only when the owner explicitly asks/)
+    expect(skill).not.toMatch(/pin it\./i)
+  })
+
   it('carries a version stamp, so release.sh bumping it means something', () => {
     const skill = readFileSync(join(DIST_SKILLS, 'plur-create-engrams', 'SKILL.md'), 'utf-8')
     expect(skill).toMatch(/^version:\s*\d+\.\d+\.\d+$/m)
