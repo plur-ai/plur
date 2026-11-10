@@ -80,6 +80,9 @@ export const LEARN_CONTEXT_FIELD_ROLES = {
   attribution: 'content',
   claim_class: 'content',
   license: 'content',
+  // W10: the structured body (and its kind/outcome labels) lands in
+  // `structured_data` and is indexed — caller text, so scanned.
+  structured_data: 'content',
 } as const satisfies Record<keyof LearnContext, 'content' | 'control'>
 
 /** The `LearnContext` keys the write-time hard scan reads. */

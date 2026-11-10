@@ -1612,6 +1612,16 @@ function getAllToolDefinitions(): ToolDefinition[] {
           tags: { type: 'array', items: { type: 'string' }, description: 'Searchable keyword tags — contribute to BM25/embedding recall, so concrete keywords pay off' },
           rationale: { type: 'string', description: 'The mechanism that makes the statement true, and therefore the condition under which it would STOP being true. One sentence. "Because the user said so on <date>" is a citation, not a mechanism: that belongs in `source`. This text is indexed, so a real mechanism also carries concrete nouns a future query can match. NOTE: constraints render without rationale (plur-ai/plur#1144), so a mechanism a prohibition needs the model to weigh must stay in the statement.' },
           source: { type: 'string', description: 'Origin of this knowledge (URL, conversation ref, etc.)' },
+          structured_data: {
+            type: 'object',
+            description: 'The structured form of the memory (optional). `body`: when to apply, what to do, why, pitfalls, anchors — about 300 tokens at most; it is indexed for recall, so write the words a future task will contain. `kind`: what sort of memory this is (sets memory_class when none is given). `outcome`: only when the source states one. No other keys are accepted.',
+            properties: {
+              body: { type: 'string', description: 'Structured body: "When: … Do: … Why: … Pitfalls: … Anchors: …". At most ~300 tokens (2,000 characters).' },
+              kind: { type: 'string', enum: ['rule', 'tool', 'fact', 'preference', 'experience', 'failure_lesson'], description: 'rule = convention to follow; tool = pointer to a command/script/endpoint/file; fact = how something is; preference = a taste or style choice; experience = what happened in a past attempt; failure_lesson = what went wrong and what to avoid next time.' },
+              outcome: { type: 'string', description: '"success" or "failure", or a short stated result. Only when the source says so — never guess.' },
+            },
+            additionalProperties: false,
+          },
           pinned: { type: 'boolean', description: 'Always-load flag. If true, this engram bypasses the keyword-relevance gate at injection time. Use sparingly: meta-rules, safety conventions, core operating principles only.' },
           commitment: { type: 'string', enum: ['exploring', 'leaning', 'decided', 'locked', 'draft'], description: 'How firmly the user has committed to this belief (default: leaning). `draft` marks the engram as pending human approval: core stores and RECALLS it normally but NEVER injects it (#1141), so an unapproved rule cannot shape agent behaviour. Retrieval stays open because reviewing something requires reading it.' },
           locked_reason: { type: 'string', description: 'Why this engram is locked (only meaningful when commitment=locked)' },
@@ -1715,6 +1725,8 @@ function getAllToolDefinitions(): ToolDefinition[] {
           source: args.source as string | undefined,
           tags: args.tags as string[] | undefined,
           rationale: args.rationale as string | undefined,
+          // W10: validated in core (body/kind/outcome only, body ≤ ~300 tokens).
+          structured_data: args.structured_data as LearnContext['structured_data'],
           commitment: args.commitment as any,
           locked_reason: args.locked_reason as string | undefined,
           // Quota-gated below, before the write — `plur_pin` was the only

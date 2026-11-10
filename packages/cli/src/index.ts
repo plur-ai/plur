@@ -67,6 +67,10 @@ Commands:
   promote <id>            Promote an engram to active
   rescope <id...> --to <scope>  Move engram(s) to another scope (#676)
                           [--keep-local] [--dry-run]; also: promote <id> --to <scope>
+  rescope --plan|--apply <file>|--undo <change>
+                          Propose scopes for global engrams from covers, apply as one undoable change
+  enrich --plan|--apply <file>|--undo <change>
+                          Label memories (kind, outcome, when it applies) with a host model; undoable
   upload                  Preview local memories for authorized team scopes
                           --yes sends; --only <id,…> limits the selection
   migrate [up|down|status] Run schema migrations
@@ -183,6 +187,7 @@ const COMMANDS: Record<string, string> = {
   import: './commands/import.js',
   promote: './commands/promote.js',
   rescope: './commands/rescope.js',
+  enrich: './commands/enrich.js',
   upload: './commands/upload.js',
   'similarity-search': './commands/similarity-search.js',
   stores: './commands/stores.js',

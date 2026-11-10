@@ -56,6 +56,36 @@ export const MIN_TOKEN_LENGTH = 2
  */
 export const TOKENIZER_VERSION = 4
 
+/**
+ * Version of what {@link engramSearchText} composes from an engram (overhaul
+ * D9). Bump on ANY change to which fields feed the search text, or in what
+ * form: the stored tokens (Postgres) and the embedded text were derived from
+ * the old composition and stop agreeing with the new one.
+ *
+ * History:
+ *   1 — statement, domain, tags, entities, temporal, rationale, source,
+ *       dual-coding cues, knowledge-anchor snippets.
+ *   2 — 2026-11-10 (W10). Adds `structured_data.body`, the structured form a
+ *       capture writes (when to apply, what to do, why, pitfalls, anchors).
+ */
+export const SEARCH_TEXT_VERSION = 2
+
+/**
+ * The stamp a store records beside text derived for search (`tokens_version`
+ * in Postgres). It moves when the tokenizer OR the search-text composition
+ * changes, so a row derived under either older contract reads as stale and is
+ * re-derived lazily, in the background, by the existing backfill — never on a
+ * hook's critical path. Embedding caches need no stamp: every one of them keys
+ * a vector on the hash of the exact text embedded (`embeddingContentHash`,
+ * the file cache's per-entry hash), so a changed text re-embeds only the rows
+ * whose text changed, once.
+ *
+ * Encoded so the tokenizer part stays readable: v4 tokenizer + search text v2
+ * = 4002. Never equal to a bare tokenizer version, which is what rows written
+ * before this stamp existed carry.
+ */
+export const SEARCH_INDEX_VERSION = TOKENIZER_VERSION * 1000 + SEARCH_TEXT_VERSION
+
 /** Tokenize text into searchable terms */
 /**
  * Scripts written without spaces between words (#833).
@@ -188,6 +218,8 @@ export interface SearchTextFields {
   source?: string | null
   dual_coding?: Engram['dual_coding']
   knowledge_anchors?: Engram['knowledge_anchors']
+  /** Only `body` is read (W10). */
+  structured_data?: { body?: unknown } | Record<string, unknown> | null
 }
 
 /**
@@ -203,6 +235,7 @@ export function searchTextFrom(fields: SearchTextFields): string {
     domain: fields.domain ?? undefined,
     rationale: fields.rationale ?? undefined,
     source: fields.source ?? undefined,
+    structured_data: fields.structured_data ?? undefined,
   } as unknown as Engram)
 }
 
@@ -248,6 +281,13 @@ export function engramSearchText(engram: Engram): string {
       if (a.snippet) parts.push(a.snippet)
     }
   }
+  // Structured body (W10, search-text v2): the structured form a capture
+  // writes — when to apply, what to do, why, pitfalls, anchors. It is the
+  // situation text a future task will contain, which a one-line statement
+  // usually lacks (C3, 2026-11-09: +7 points top-10 recall). Strings only;
+  // the rest of `structured_data` is bookkeeping or labels, not prose.
+  const body = (engram.structured_data as { body?: unknown } | undefined)?.body
+  if (typeof body === 'string' && body.trim()) parts.push(body)
   return parts.join(' ')
 }
 

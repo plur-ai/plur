@@ -174,6 +174,10 @@ describe('every public Plur method in a remote-only folder', () => {
       refreshServerScopes: [], notNowFolder: [join(base, 'elsewhere'), { nonce: 'not-a-nonce' }],
       // Shared change journal (overhaul W0): beginChange only builds a handle; the rest touch the personal store.
       beginChange: ['test.kind'], undoChange: ['CHG-none'], listChanges: [], getChange: ['CHG-none'],
+      // Rescope plans (W7) and enrichment (W10) read and rewrite personal rows.
+      planRescope: [], applyRescopePlan: [{ version: 1, kind: 'plur.rescope-plan', created_at: '2026-11-10', considered: 0, items: [], unmapped: { count: 0, ids: [] } }],
+      planEnrichment: [{ llm: async () => '[]', model: 'm' }],
+      applyEnrichmentPlan: [{ version: 1, kind: 'plur.enrich-plan', created_at: '2026-11-10', enricher: { model: 'm', version: 'v' }, items: [], skipped: { already_enriched: 0, unlabelled: 0 } }],
     }
     const names = Object.getOwnPropertyNames(Plur.prototype).filter(n => n !== 'constructor' && !n.startsWith('_'))
     const getters = names.filter(n => Object.getOwnPropertyDescriptor(Plur.prototype, n)!.get)
@@ -205,6 +209,8 @@ describe('every public Plur method in a remote-only folder', () => {
       'rerankerSelfEval',
       // The change journal holds personal rows in full (overhaul W0).
       'undoChange', 'listChanges', 'getChange',
+      // Rescope plans and enrichment read personal rows (W7, W10); enrichment sends them to a model.
+      'planRescope', 'applyRescopePlan', 'planEnrichment', 'applyEnrichmentPlan',
     ])
     const unexpected: string[] = []
     const leaks: string[] = []

@@ -78,7 +78,7 @@ import { normalizeEngramInput } from './normalize-engram.js'
 import { duplicateEngramIds, resolveDuplicateIds, type IdRename } from './engrams.js'
 import {
   searchEngrams, ftsTokenize, engramSearchText, embeddingContentHash,
-  MIN_TOKEN_LENGTH, TOKENIZER_VERSION, type CorpusStats,
+  MIN_TOKEN_LENGTH, SEARCH_INDEX_VERSION, type CorpusStats,
 } from './fts.js'
 import { logger } from './logger.js'
 import {
@@ -689,13 +689,13 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
     // `CREATE INDEX IF NOT EXISTS` matches on name alone — an unversioned name
     // would keep the OLD predicate forever after a bump while reporting
     // success, which is precisely the class of silent staleness this whole
-    // change exists to eliminate. Bumping TOKENIZER_VERSION creates a fresh
+    // change exists to eliminate. Bumping SEARCH_INDEX_VERSION (tokenizer or search text) creates a fresh
     // index; the superseded one is dead weight and can be dropped once every
     // writer is past the bump.
     await this.ddl(client,
-      `CREATE INDEX IF NOT EXISTS idx_engrams_tokens_stale_v${TOKENIZER_VERSION}
+      `CREATE INDEX IF NOT EXISTS idx_engrams_tokens_stale_v${SEARCH_INDEX_VERSION}
        ON "${this.schema}".engrams (id)
-       WHERE tokens_version IS DISTINCT FROM ${TOKENIZER_VERSION}`,
+       WHERE tokens_version IS DISTINCT FROM ${SEARCH_INDEX_VERSION}`,
     )
 
     const wantType = this.precision === 'halfvec' ? 'halfvec' : 'vector'
@@ -1275,19 +1275,24 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
       const { rows } = await pool.query(
         `SELECT data FROM "${this.schema}".engrams
          WHERE tokens_version IS DISTINCT FROM $1 LIMIT $2`,
-        [TOKENIZER_VERSION, batchSize],
+        [SEARCH_INDEX_VERSION, batchSize],
       )
       if (rows.length === 0) break
       const engrams = rows.map(parseRow)
       const updated = await pool.query(
         `UPDATE "${this.schema}".engrams AS e
-         SET tokens = t.tokens, search_text = t.search_text, tokens_version = t.tokens_version
+         SET tokens = t.tokens, search_text = t.search_text, tokens_version = t.tokens_version,
+             content_hash = t.content_hash
          FROM jsonb_to_recordset($1::jsonb)
-           AS t(id text, tokens text[], search_text text, tokens_version int)
+           AS t(id text, tokens text[], search_text text, tokens_version int, content_hash text)
          WHERE e.id = t.id`,
         [JSON.stringify(engrams.map((e: Engram) => {
           const r = toRow(e)
-          return { id: r.id, tokens: r.tokens, search_text: r.search_text, tokens_version: r.tokens_version }
+          // content_hash too (D9): a search-text change alters the text the
+          // embedding should be computed from, and the embedding backfill
+          // compares this column against the vector's own hash. Left stale,
+          // the old vector would keep matching it and never be rebuilt.
+          return { id: r.id, tokens: r.tokens, search_text: r.search_text, tokens_version: r.tokens_version, content_hash: r.content_hash }
         }))],
       )
       // Progress, not attempts, is the loop condition. The UPDATE joins on
@@ -1359,14 +1364,14 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
     const { rows } = await pool.query(
       `SELECT 1 FROM "${this.schema}".engrams ${f.where}
          AND tokens_version IS DISTINCT FROM $${f.params.length + 1} LIMIT 1`,
-      [...f.params, TOKENIZER_VERSION],
+      [...f.params, SEARCH_INDEX_VERSION],
     )
     if (rows.length === 0) return false
     if (!this.staleTokensWarned) {
       this.staleTokensWarned = true
       logger.warning(
         `[postgres] some active engrams were tokenized by an older tokenizer than the current one `
-        + `(v${TOKENIZER_VERSION}); their stored tokens no longer match how query terms are tokenized. `
+        + `(v${SEARCH_INDEX_VERSION}); their stored tokens no longer match how query terms are tokenized. `
         + `BM25 is falling back to loading candidates and scoring in core — correct, but slower. `
         + `Re-deriving them in the background; \`plur reindex-tokens\` forces it synchronously.`,
       )
@@ -1969,7 +1974,8 @@ function toRow(e: Engram): Record<string, unknown> {
     // writer for the same reason `content_hash` is: the row records what was
     // actually done to it, so a later reader can tell whether it still agrees
     // with the tokenizer now in force instead of assuming it must.
-    tokens_version: TOKENIZER_VERSION,
+    // Tokenizer AND search-text composition (D9), see SEARCH_INDEX_VERSION.
+    tokens_version: SEARCH_INDEX_VERSION,
     // Derived once, on write, from the RAW search text — the same string the
     // embedder is given. This is the authority the embedding table is compared
     // against (#812; audit 2026-08-03 findings 8 + 9).
