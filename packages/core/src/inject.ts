@@ -83,7 +83,7 @@ export interface InternalInjectionResult {
   omitted_pinned: OmittedPinned[]
 }
 
-const DEFAULT_MAX_TOKENS = 8000
+export const DEFAULT_MAX_TOKENS = 8000
 const DEFAULT_MIN_RELEVANCE = 0.3
 /**
  * Nearby-variant suppression (INJ-1). With the meaning model available, an
@@ -102,8 +102,8 @@ const NEIGHBOUR_SIMILARITY = 0.2
 const NEIGHBOUR_RELEVANCE_RATIO = 0.8
 /** How many kept candidates each later candidate is compared with (bounds the cost on large stores). */
 const NEIGHBOUR_ANCHORS = 50
-const MAX_PER_PACK = 5
-const MAX_PER_DOMAIN = 10
+export const MAX_PER_PACK = 5
+export const MAX_PER_DOMAIN = 10
 // Default share of the injection budget that may be PINNED (owner decision
 // 2026-10-19, INJ-6). Configurable as `injection.pinned_ratio`. The same share
 // is the pin-time quota (`pinnedQuota()`) and the ceiling on pins at
@@ -111,7 +111,7 @@ const MAX_PER_DOMAIN = 10
 // cannot crowd out the memories that match the task, which get the rest of
 // the budget. Every pin that did not fit its share is named in
 // `omitted_pinned`.
-const PINNED_TOKEN_BUDGET_RATIO = 0.5
+export const PINNED_TOKEN_BUDGET_RATIO = 0.5
 /**
  * Default share of the pinned budget the HARD tier may occupy (pinned
  * two-tier model). The hard tier is a sub-cap INSIDE the pinned share, not a
@@ -205,7 +205,7 @@ export interface ExpiryConfig {
   grace_days?: number
 }
 
-const DEFAULT_GRACE_DAYS = 30
+export const DEFAULT_GRACE_DAYS = 30
 
 /**
  * True when the engram must be skipped for temporal validity. Not-yet-valid
@@ -217,7 +217,7 @@ const DEFAULT_GRACE_DAYS = 30
  * so an engram that expired hours ago was still injected, and one that became
  * valid hours ago was not.
  */
-function skipForValidity(
+export function skipForValidity(
   engram: Engram,
   nowMs: number,
   mode: 'hard' | 'soft',
@@ -249,7 +249,7 @@ function skipForValidity(
  * return a draft. Review requires being able to read the thing under review;
  * what is gated is automatic delivery into an agent's context.
  */
-function skipForApproval(engram: Engram): boolean {
+export function skipForApproval(engram: Engram): boolean {
   return (engram as { commitment?: string }).commitment === 'draft'
 }
 
@@ -272,7 +272,7 @@ function expiredMarker(engram: WireEngram): string {
 
 // --- Pack metadata helper ---
 
-function getPackMetadata(manifest: PackManifest) {
+export function getPackMetadata(manifest: PackManifest) {
   const meta = manifest['x-datacore'] || manifest.metadata
   return {
     injection_policy: meta?.injection_policy ?? 'on_match',
@@ -469,12 +469,12 @@ const HISTORICAL_KEYWORD_PATTERNS = HISTORICAL_KEYWORDS.map(
   kw => new RegExp(`\\b${kw.split(/\s+/).map(escapeRegExp).join('\\s+')}\\b`),
 )
 
-function hasHistoricalIntent(prompt: string): boolean {
+export function hasHistoricalIntent(prompt: string): boolean {
   const lower = prompt.toLowerCase()
   return HISTORICAL_KEYWORD_PATTERNS.some(re => re.test(lower))
 }
 
-function isSupersededEngram(engram: ScoredEngram): boolean {
+export function isSupersededEngram(engram: Pick<Engram, 'relations'>): boolean {
   return (engram.relations?.superseded_by?.length ?? 0) > 0
 }
 
@@ -496,7 +496,7 @@ function isSupersededEngram(engram: ScoredEngram): boolean {
  * deliverable and C is, A is not suppressed: it keeps the ×0.3 re-rank and is
  * injected beside C, as before #1232.
  */
-function isReplacedByDeliverable(
+export function isReplacedByDeliverable(
   engram: Engram,
   deliverableIds: ReadonlySet<string>,
   supersededBy: ReadonlyMap<string, readonly string[]>,
@@ -519,7 +519,7 @@ function isReplacedByDeliverable(
  * store, and primary-to-primary supersession keeps working by the reverse edge
  * exactly as before. A primary row is one with no loader marker and a bare id.
  */
-function isPrimaryRow(e: Engram): boolean {
+export function isPrimaryRow(e: Engram): boolean {
   const m = e as { _storeScope?: unknown; _fromRemoteStore?: unknown; _pack?: unknown }
   return m._storeScope === undefined && m._fromRemoteStore === undefined && m._pack === undefined
     && parseNamespacedId(e.id) === null
@@ -545,12 +545,12 @@ function leadsBackTo(
 
 // --- Strip pipeline ---
 
-function stripAssociations(engram: ScoredEngram): AgentEngram {
+export function stripAssociations(engram: ScoredEngram): AgentEngram {
   const { associations: _, ...rest } = engram
   return rest
 }
 
-function stripScoring(engram: AgentEngram): WireEngram {
+export function stripScoring(engram: AgentEngram): WireEngram {
   const { keyword_match: _, raw_score: _r, score: _s, ...rest } = engram
   return { ...rest, confidence_score: computeConfidence(engram) }
 }
@@ -929,15 +929,62 @@ export function fillTokenBudget(
   return { selected: result, tokens_used: tokensUsed, omitted_pinned: omittedPinned }
 }
 
+/**
+ * Route selected wire engrams into the rendered sections: polarity "dont" and
+ * cognitive level apply/analyze → constraints, remember/understand → consider
+ * (`demoted`), the rest → directives. Applies the commitment multiplier to
+ * the confidence score (SP1 Idea 6) on the way. One routine for both
+ * selection modes, so the sections mean the same thing in each; it mirrors
+ * `isConstraintCandidate`.
+ */
+export function splitWireSections(wireAll: WireEngram[]): { directives: WireEngram[]; constraints: WireEngram[]; demoted: WireEngram[] } {
+  // Auto-classify polarity, apply cognitive_level routing (SP1 Idea 5) and commitment scoring (SP1 Idea 6)
+  const directives: WireEngram[] = []
+  const constraints: WireEngram[] = []
+  const demoted: WireEngram[] = []
+  for (const wire of wireAll) {
+    const polarity = wire.polarity ?? classifyPolarity(wire.statement)
+    // Idea 6: Apply commitment multiplier to confidence score
+    const commitment = (wire as any).commitment as string | undefined
+    if (commitment) {
+      const mult: Record<string, number> = { locked: 1.0, decided: 0.9, leaning: 0.7, exploring: 0.5 }
+      wire.confidence_score *= mult[commitment] ?? 1.0
+    }
+    // Idea 5: Cognitive level bucket routing
+    const cogLevel = (wire as any).knowledge_type?.cognitive_level as string | undefined
+    if (cogLevel === 'remember' || cogLevel === 'understand') {
+      demoted.push(wire)
+    } else if (polarity === 'dont') {
+      constraints.push(wire)
+    } else if (cogLevel === 'apply' || cogLevel === 'analyze') {
+      constraints.push(wire)
+    } else {
+      directives.push(wire)
+    }
+  }
+  return { directives, constraints, demoted }
+}
+
 // --- Main injection function ---
 
 export function selectAndSpread(
   ctx: InjectionContext,
   personalEngrams: Engram[],
   packs: LoadedPack[],
-  config?: { spread_cap?: number; spread_budget?: number; expiry?: ExpiryConfig; pinned_hard_ratio?: number; pinned_ratio?: number },
+  config?: {
+    spread_cap?: number; spread_budget?: number; expiry?: ExpiryConfig; pinned_hard_ratio?: number; pinned_ratio?: number
+    /**
+     * `false` leaves every pinned engram out of this injection — not offered,
+     * not reported as omitted — because the context already holds them (the
+     * Claude Code hook's skill, agent and plan-mode events, overhaul W2+4).
+     * Default true. A pin still counts as a deliverable replacement for the
+     * engram it supersedes.
+     */
+    include_pinned?: boolean
+  },
   embeddingBoosts?: Map<string, number>,
 ): InternalInjectionResult {
+  const includePinned = config?.include_pinned !== false
   const spreadCap = config?.spread_cap ?? 3
   const spreadBudget = config?.spread_budget ?? 480
 
@@ -999,6 +1046,9 @@ export function selectAndSpread(
     if (!isInjectVisible(engram.scope, ctx.scope, ctx.grantedScopes)) { scopeExcludedIds.add(engram.id); continue }
     if (deliverable) deliverableIds.add(engram.id)
     if (!deliverable) continue
+    // Pins already in the context (include_pinned: false): not offered, and not
+    // reachable by spreading either.
+    if (!includePinned && (engram as { pinned?: boolean }).pinned === true) { scopeExcludedIds.add(engram.id); continue }
     engramMap.set(engram.id, engram)
     let raw = scoreEngram(engram, promptLower, promptWords, [], ctx.scope, false, ctx.grantedScopes)
     relevance.set(engram.id, raw + (embeddingBoosts?.get(engram.id) ?? 0))
@@ -1044,6 +1094,7 @@ export function selectAndSpread(
       if (!isInjectVisible(engram.scope, ctx.scope, ctx.grantedScopes)) { scopeExcludedIds.add(engram.id); continue }
       if (deliverable) deliverableIds.add(engram.id)
       if (!deliverable) continue
+      if (!includePinned && (engram as { pinned?: boolean }).pinned === true) { scopeExcludedIds.add(engram.id); continue }
       engramMap.set(engram.id, engram)
       let raw = scoreEngram(engram, promptLower, promptWords, matchTerms, ctx.scope, true, ctx.grantedScopes)
       relevance.set(engram.id, raw + (embeddingBoosts?.get(engram.id) ?? 0))
@@ -1355,30 +1406,7 @@ export function selectAndSpread(
   const wireAll = agentDirectives.map(stripScoring)
   const wireConsider = agentConsider.map(stripScoring)
 
-  // Auto-classify polarity, apply cognitive_level routing (SP1 Idea 5) and commitment scoring (SP1 Idea 6)
-  const wireDirectives: WireEngram[] = []
-  const wireConstraints: WireEngram[] = []
-  const cognitiveDemoted: WireEngram[] = []
-  for (const wire of wireAll) {
-    const polarity = wire.polarity ?? classifyPolarity(wire.statement)
-    // Idea 6: Apply commitment multiplier to confidence score
-    const commitment = (wire as any).commitment as string | undefined
-    if (commitment) {
-      const mult: Record<string, number> = { locked: 1.0, decided: 0.9, leaning: 0.7, exploring: 0.5 }
-      wire.confidence_score *= mult[commitment] ?? 1.0
-    }
-    // Idea 5: Cognitive level bucket routing
-    const cogLevel = (wire as any).knowledge_type?.cognitive_level as string | undefined
-    if (cogLevel === 'remember' || cogLevel === 'understand') {
-      cognitiveDemoted.push(wire)
-    } else if (polarity === 'dont') {
-      wireConstraints.push(wire)
-    } else if (cogLevel === 'apply' || cogLevel === 'analyze') {
-      wireConstraints.push(wire)
-    } else {
-      wireDirectives.push(wire)
-    }
-  }
+  const { directives: wireDirectives, constraints: wireConstraints, demoted: cognitiveDemoted } = splitWireSections(wireAll)
 
   const allWireConsider = [...wireConsider, ...cognitiveDemoted]
   const considerTokens = dip19PoolTokens + spreadTokens

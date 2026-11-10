@@ -411,7 +411,38 @@ export interface InjectOptions {
   /** `.plur.yaml` remote endpoint (hook path org context) — see
    *  {@link RemoteProjectConfig}. */
   remote_project?: RemoteProjectConfig
+  /**
+   * Offer the always-on slot (pinned engrams) in this injection. Default true.
+   * `false` when the context already holds them — the Claude Code hook passes
+   * it on skill, agent and plan-mode events in a context whose pins were
+   * delivered (overhaul W2+4). Pins are then neither injected nor reported
+   * as omitted.
+   */
+  include_pinned?: boolean
+  /**
+   * Per-call override of `injection.mode` (overhaul W1): `legacy` is the
+   * keyword-overlap selection with the constraints floor and spreading;
+   * `unified` is the always-on slot plus recall's ranked list.
+   */
+  mode?: 'legacy' | 'unified'
+  /**
+   * Unified mode: rewrite the lexical query as recall does. Default true,
+   * except for `source: 'hook'`, where it is off unless set here or
+   * `PLUR_QUERY_REWRITE` is on (D6).
+   */
+  query_rewrite?: boolean
+  /**
+   * Session context to extend the query with (overhaul W5): the stored
+   * session task, the project scope label, the git branch, the last user
+   * turns. The local search uses the task plus these (`buildInjectionQuery`);
+   * the remote leg is sent the task alone. The query used is then recorded on
+   * the result as `query`.
+   */
+  query_context?: string[]
 }
+
+/** Per-injection relevance signals (overhaul W8 plumbing). See `RelevanceSignals` in inject-unified.ts. */
+export type InjectionRelevance = import('./inject-unified.js').RelevanceSignals
 
 export interface InjectionResult {
   directives: string
@@ -471,6 +502,16 @@ export interface InjectionResult {
    * Absent when nothing was omitted.
    */
   omitted_pinned?: Array<{ id: string; cost: number; reason: 'pinned-sub-budget' | 'total-budget' | 'hard-tier-cap' | 'soft-tier-budget' }>
+  /** The query this injection searched with, exactly, when `query_context` extended it (overhaul W5). */
+  query?: string
+  /** Which selection built the block (`injection.mode` or the per-call `mode`). */
+  selection?: 'legacy' | 'unified'
+  /** Whether the always-on slot was offered (`include_pinned`). */
+  pins_included?: boolean
+  /** The pinned share of the budget in tokens, when pins were offered. */
+  pinned_share_tokens?: number
+  /** Unified mode only: the relevance signals of this injection's ranking (W8). */
+  relevance?: InjectionRelevance
 }
 
 export interface CaptureContext {

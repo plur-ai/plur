@@ -10,7 +10,7 @@ import { detectPlurStorage, type PlurPaths } from './storage.js'
 import { IndexedStorage } from './storage-indexed.js'
 import { PGLiteAdapter } from './storage-pglite.js'
 import { loadConfig, storeEntryForDisk, tokenFromEnv } from './config.js'
-import { ServerStoreEntrySchema } from './schemas/config.js'
+import { ServerStoreEntrySchema, resolveInjectionOverhaul } from './schemas/config.js'
 import { collapseExpandedStores, isServerStoreEntry, serverEntryIdentities, identityBaseOf, EXPANDED_FROM, safeOrigin, withCompatScope, isSafeScopeName } from './store-expand.js'
 import { mergeSensitivityForWriteback } from './sensitivity-writeback.js'
 import { canonicalize } from './project-config.js'
@@ -20,7 +20,8 @@ import { generateEngramId, engramIdDatePrefix, loadAllPacks, loadPack, packEngra
 import { maybeDailyBackup } from './backup.js'
 import { logger } from './logger.js'
 import { searchEngrams, ftsTokenize, extendCorpusStats, searchTextFrom } from './fts.js'
-import { selectAndSpread, scoreEngramsPublic, formatWithLayer, assignLayer, estimateTokens, pinnedHardCap, isHardPinned, DEFAULT_PINNED_HARD_RATIO } from './inject.js'
+import { selectAndSpread, scoreEngramsPublic, formatWithLayer, assignLayer, estimateTokens, pinnedHardCap, isHardPinned, pinnedShareRatio, DEFAULT_PINNED_HARD_RATIO } from './inject.js'
+import { buildUnifiedPool, buildInjectionQuery, rankAndPack, rankForInjection, applyRerankScores, type RankedCandidate } from './inject-unified.js'
 import { reactivate } from './decay.js'
 import { captureEpisode, queryTimeline } from './episodes.js'
 import { agenticSearch } from './agentic-search.js'
@@ -310,6 +311,7 @@ export { selectModel, selectModelForOperation, resolveOperationTier, type ModelT
 export { recallAuto, type AutoSearchResult, type SearchStrategy } from './search-orchestrator.js'
 export { generateProfile, getProfileForInjection, loadProfileCache, saveProfileCache, markProfileDirty, profileNeedsRegeneration, type ProfileCache } from './profile.js'
 export { formatLayer1, formatLayer2, formatLayer3, formatWithLayer, assignLayer, type InjectionLayer } from './inject.js'
+export { selectUnified, buildUnifiedPool, buildInjectionQuery, rankForInjection, packUnified, type RelevanceSignals, type RelevanceSignalName, type UnifiedConfig, type UnifiedResult } from './inject-unified.js'
 export { computeRecordHash, buildSessionManifest, verifySessionManifest, canonicalManifestBytes, SESSION_MANIFEST_SCHEMA, RECORD_HASH_FIELDS, type SessionManifest, type ManifestEntry, type ManifestRole, type ManifestCheck, type ManifestVerification, type WormStore, type WormPutResult } from './session-manifest.js'
 export { appendHistory, readHistory, listHistoryMonths, readHistoryForEngram, generateEventId, generateInjectionId, computeQueryHash, findLatestInjectionFor, countInjectionEvents, readCoInjections, computeEventHash, canonicalEventBytes, sortKeysDeep, tailSeekLastHash, readChainHead, clearChainHeadMemCache, hashEngramsFile, attestStore, countEngramsInStore, emitCheckpoint, appendHistoryStamped, type HistoryEvent, type CheckpointData, type CheckpointSigningOptions, type InjectionEventCounts, type InjectionSource, type CoInjectionData, type CoInjectionEvent, type CoInjectionReadResult } from './history.js'
 export { computeReceipt } from './receipt.js'
@@ -8486,6 +8488,9 @@ export class Plur {
 
   /** Scored injection within token budget (BM25 only). Returns formatted strings. */
   async inject(task: string, options?: InjectOptions): Promise<InjectionResult> {
+    // W5: the query searched with — the task, extended by the caller's
+    // session context when it passed one. Recorded on the result only then.
+    const query = buildInjectionQuery(task, options?.query_context)
     if (this._remoteOnly) {
       // remote-only (owner decisions 2026-10-01): there is no local store to
       // inject from, so even the keyword path dials the folder's team server
@@ -8502,12 +8507,15 @@ export class Plur {
       }, deadlineAt)
       const { result: remoteResult, report } = await this._awaitRemote(remotePromise, deadlineAt)
       const remote = this._remoteInjectCandidates(remoteResult, options)
-      const result = await this._formatInjection(task, options, undefined, remote, deadlineAt)
+      const result = await this._formatInjection(query, options, undefined, remote, deadlineAt)
       result.remote = report
       result.remote_only = this._remoteOnlyStatus(remoteResult)
+      if (query !== task) result.query = query
       return result
     }
-    return await this._formatInjection(task, options)
+    const result = await this._formatInjection(query, options)
+    if (query !== task) result.query = query
+    return result
   }
 
   /**
@@ -8535,6 +8543,10 @@ export class Plur {
 
   /** Scored injection with embedding boost when available. Falls back to BM25 if embeddings not installed. */
   async injectHybrid(task: string, options?: InjectOptions): Promise<InjectionResult> {
+    // W5: local legs search with the task extended by the caller's session
+    // context; the remote leg is sent the task alone (no extra text leaves
+    // this machine because of the extension).
+    const query = buildInjectionQuery(task, options?.query_context)
     // #776: the remote leg starts FIRST — it runs in parallel with the local
     // embedding work below and REPLACES the old hook `tryRemoteInject`
     // remote-first POST /inject path, so a prompt costs at most ONE remote
@@ -8572,6 +8584,11 @@ export class Plur {
     const semanticAbort = new AbortController()
     /** The model is not on disk: keyword only, never a download (#1586 R1). */
     let modelMissing = false
+    // Unified selection (overhaul W1) fuses the raw similarities with the
+    // keyword ranking itself and runs intent routing and the reranker on the
+    // FUSED list; the cosine-stage reranker and intent boosts below are the
+    // legacy selection's.
+    const unifiedSelection = this._injectionMode(options) === 'unified'
     const semanticLeg = async (): Promise<void> => {
     // remote-only: no embedder (Codex round 3; see recallSemantic).
     if (this._remoteOnly) return
@@ -8585,7 +8602,7 @@ export class Plur {
       let results: SimilarityResult[] = []
       if (this.pgliteAdapter && !this._remoteOnly) {
         const { embed } = await import('./embeddings.js')
-        const queryVec = await embed(task, 'query')
+        const queryVec = await embed(query, 'query')
         if (queryVec) {
           try {
             // Scope-restricted in-query, same reason as the recall legs. Less
@@ -8608,17 +8625,17 @@ export class Plur {
         }
       }
       if (results.length === 0) {
-        results = await embeddingSearchWithScores(engrams, task, engrams.length, this.paths.root, { signal: semanticAbort.signal, deadlineAt })
+        results = await embeddingSearchWithScores(engrams, query, engrams.length, this.paths.root, { signal: semanticAbort.signal, deadlineAt })
       }
       // Cross-encoder rerank stage (#220): replace the cosine boosts for the
       // top-K with the reranker's relevance, min-max normalized into [0,1] so
       // the selectAndSpread 0.5 threshold stays meaningful. Off by default.
-      const rerank = await this._resolveRerankOptions(options?.rerank)
+      const rerank = unifiedSelection ? undefined : await this._resolveRerankOptions(options?.rerank)
       if (rerank && results.length > 0) {
         const topK = Math.max(1, Math.min(results.length, rerank.topK ?? 50))
         const head = results.slice(0, topK)
         try {
-          const scores = await rerank.reranker!.scoreBatch(task, head.map(r => r.engram.statement))
+          const scores = await rerank.reranker!.scoreBatch(query, head.map(r => r.engram.statement))
           if (scores.length === head.length) {
             const min = Math.min(...scores)
             const max = Math.max(...scores)
@@ -8642,7 +8659,7 @@ export class Plur {
       }
       // Intent-aware boost (#224): modest (<=1.5x) upweight for engrams matching
       // the query intent. Boost cap stays 1.0 so the 0.5 threshold keeps meaning.
-      const intent = this._resolveIntentProfile(task, options?.intentOverride)
+      const intent = unifiedSelection ? undefined : this._resolveIntentProfile(query, options?.intentOverride)
       if (intent && embeddingBoosts) {
         for (const e of results.map(r => r.engram)) {
           let mult = 1.0
@@ -8693,7 +8710,8 @@ export class Plur {
     // boost exists to resurrect a scope-excluded row.
     const { result: remoteResult, report } = await this._awaitRemote(remotePromise, deadlineAt)
     const remote = this._remoteInjectCandidates(remoteResult, options)
-    const result = await this._formatInjection(task, options, boosts, remote, deadlineAt)
+    const result = await this._formatInjection(query, options, boosts, remote, deadlineAt)
+    if (query !== task) result.query = query
     // #1586 audit L6: what the server leg did on THIS call, as on recall.
     result.remote = report
     if (this._remoteOnly) result.remote_only = this._remoteOnlyStatus(remoteResult)
@@ -8808,8 +8826,15 @@ export class Plur {
         .filter(p => p.engrams.length > 0)
 
     const budget = options?.budget ?? this.config.injection_budget ?? 2000
+    const selection = this._injectionMode(options)
+    const includePinned = options?.include_pinned !== false
+    let relevance: InjectionResult['relevance']
 
-    const result = selectAndSpread(
+    const unifiedResult = selection === 'unified'
+      ? await this._selectUnified(task, options, engrams, packs, budget, embeddingBoosts, deadlineAt)
+      : null
+    if (unifiedResult) relevance = unifiedResult.relevance
+    const result = unifiedResult ?? selectAndSpread(
       {
         prompt: task,
         scope: options?.scope,
@@ -8828,6 +8853,7 @@ export class Plur {
         expiry: this.config.expiry,
         pinned_hard_ratio: this.config.injection?.pinned_hard_ratio,
         pinned_ratio: this.config.injection?.pinned_ratio,
+        include_pinned: includePinned,
       },
       embeddingBoosts,
     )
@@ -9107,7 +9133,92 @@ export class Plur {
       // shape the field was added to close.
       ...(result.omitted_pinned?.length ? { omitted_pinned: result.omitted_pinned } : {}),
       ...(warnings.length > 0 ? { warnings } : {}),
+      selection,
+      pins_included: includePinned,
+      ...(includePinned ? { pinned_share_tokens: Math.floor(budget * pinnedShareRatio(this.config.injection?.pinned_ratio)) } : {}),
+      ...(relevance ? { relevance } : {}),
     }
+  }
+
+  /** The selection mode for an injection: the per-call override, else `injection.mode` (default legacy). */
+  private _injectionMode(options?: InjectOptions): 'legacy' | 'unified' {
+    return options?.mode ?? resolveInjectionOverhaul(this.config).mode
+  }
+
+  /**
+   * The injection's overhaul settings, with defaults applied (W1, W5, W8) —
+   * for adapters that build the query or report the gate (the Claude Code
+   * hook reads `query_min_terms`).
+   */
+  injectionSettings(): ReturnType<typeof resolveInjectionOverhaul> {
+    return resolveInjectionOverhaul(this.config)
+  }
+
+  /**
+   * Unified selection (overhaul W1): the gates over the whole visible store,
+   * recall's ranking — keyword (with the query rewrite) fused with the
+   * meaning similarities when `injectHybrid` computed them, intent routing,
+   * the optional reranker under a hard time cap — then the always-on slot,
+   * the prohibition slice and the task list packed into the budget.
+   *
+   * No bookkeeping here (R5): no reactivation, frequency or co_accessed
+   * writes. `_formatInjection` records the injection itself, once.
+   */
+  private async _selectUnified(
+    task: string,
+    options: InjectOptions | undefined,
+    engrams: Engram[],
+    packs: LoadedPack[],
+    budget: number,
+    meaning: Map<string, number> | undefined,
+    deadlineAt: number | undefined,
+  ): Promise<ReturnType<typeof rankAndPack>> {
+    const s = resolveInjectionOverhaul(this.config)
+    const hook = options?.source === 'hook'
+    // D6: in the hook path the query rewrite is off unless configured.
+    const envRewrite = (process.env.PLUR_QUERY_REWRITE ?? '').toLowerCase()
+    const queryRewrite = options?.query_rewrite
+      ?? (hook ? envRewrite === 'on' || envRewrite === '1' || envRewrite === 'true' : !isQueryRewriteDisabled())
+    const config = {
+      expiry: this.config.expiry,
+      pinned_hard_ratio: this.config.injection?.pinned_hard_ratio,
+      pinned_ratio: this.config.injection?.pinned_ratio,
+      include_pinned: options?.include_pinned !== false,
+      recall_limit: s.recall_limit,
+      prohibition_ratio: s.prohibition_ratio,
+      min_relevance_signal: s.min_relevance_signal,
+      min_relevance: s.min_relevance,
+      query_rewrite: queryRewrite,
+    }
+    const ctx = { prompt: task, scope: options?.scope, grantedScopes: this._grantedScopes(), maxTokens: budget }
+    const pool = buildUnifiedPool(ctx, engrams, packs, config)
+
+    // Intent routing, as recall applies it, on the fused list.
+    const intent = this._remoteOnly ? undefined : this._resolveIntentProfile(task, options?.intentOverride)
+    const route = (ranked: RankedCandidate[]): RankedCandidate[] => {
+      if (!intent) return ranked
+      const byId = new Map(ranked.map(c => [c.engram.id, c]))
+      return applyIntentRouting(ranked.map(c => c.engram), intent.profile).map(e => byId.get(e.id)!)
+    }
+
+    // The reranker runs only when configured (PLUR_RERANKER or rerank: true),
+    // on the fused top-K, under a hard time cap; past it the fused order stands.
+    let rerankScores: Map<string, number> | undefined
+    const rerank = this._remoteOnly ? undefined : await this._resolveRerankOptions(options?.rerank)
+    if (rerank?.reranker && !isRerankerOff(rerank.reranker) && pool.candidates.length > 0) {
+      const head = route(rankForInjection(pool, task, meaning, { query_rewrite: queryRewrite }))
+        .slice(0, Math.max(1, rerank.topK ?? 50))
+      const capMs = parseInt(process.env.PLUR_INJECT_RERANK_CAP_MS ?? '', 10) || (hook ? 1500 : 10_000)
+      const capAt = Math.min(deadlineAt ?? Number.POSITIVE_INFINITY, Date.now() + capMs)
+      const res = await settleBy(rerank.reranker.scoreBatch(task, head.map(c => c.engram.statement)), capAt)
+      if (res.done && res.error === undefined && Array.isArray(res.value) && res.value.length === head.length) {
+        rerankScores = new Map(head.map((c, i) => [c.engram.id, res.value![i]]))
+      }
+    }
+    return rankAndPack(ctx, pool, config, meaning, ranked => {
+      const routed = route(ranked)
+      return rerankScores ? { ranked: applyRerankScores(routed, rerankScores), scores: rerankScores } : { ranked: routed }
+    })
   }
 
   /**

@@ -174,6 +174,8 @@ describe('every public Plur method in a remote-only folder', () => {
       refreshServerScopes: [], notNowFolder: [join(base, 'elsewhere'), { nonce: 'not-a-nonce' }],
       // Shared change journal (overhaul W0): beginChange only builds a handle; the rest touch the personal store.
       beginChange: ['test.kind'], undoChange: ['CHG-none'], listChanges: [], getChange: ['CHG-none'],
+      // Retrieval and injection overhaul (W1/W5): reads config only.
+      injectionSettings: [],
     }
     const names = Object.getOwnPropertyNames(Plur.prototype).filter(n => n !== 'constructor' && !n.startsWith('_'))
     const getters = names.filter(n => Object.getOwnPropertyDescriptor(Plur.prototype, n)!.get)
