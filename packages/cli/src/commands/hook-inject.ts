@@ -7,7 +7,7 @@ import { createPlur, type GlobalFlags } from '../plur.js'
 import { cleanupStaleSessionFiles } from '../lib/codex-hook-io.js'
 import { checkpointRoot } from './hook-learn-check.js'
 import { hookFolderPolicy, payloadDir, sessionSettings, folderAskOnce, createAskPlur, bindHookFolder, remoteOnlyLines } from '../lib/folder-gate.js'
-import { skippedStoreNotice } from '@plur-ai/core'
+import { skippedStoreNotice, formatPinOverflowLine, formatPendingPinRequestsLine } from '@plur-ai/core'
 import type { FolderPolicy } from '@plur-ai/core'
 import { safeSessionKey } from '../lib/session-key.js'
 import { injectWithFallback, hybridEnabled, type Injectable, type InjectOutcome } from '../lib/codex-hook-io.js'
@@ -1254,9 +1254,9 @@ async function injectSession(
     if (projectConfig.domain) parts.push(`Project domain: ${projectConfig.domain}`)
     // remote-only: the remote-only line below names the scope, escaped (gate review of #1663).
     if (projectConfig.scope && !plur.remoteOnlyFolder()) parts.push(`Project scope: ${projectConfig.scope} — use this scope for plur_learn calls`)
-    // D3: pins over their share are never dropped invisibly — one line.
-    const overflow = pinOverflowNotice(result)
-    if (overflow) parts.push(overflow)
+    // D3: pins over their share are never dropped invisibly, and D2: pin
+    // requests waiting for the owner — at most one line each.
+    parts.push(...await sessionStartPinLines(plur))
 
     // A memory store here that was found but not added (#1589 audit round 3):
     // one line, once per session and folder, with the paste-safe command.
@@ -1299,17 +1299,24 @@ async function injectSession(
 }
 
 /**
- * One session-start line when pins overflowed their share (overhaul D3), or
- * null. Names the first few left out; `plur pins` shows the full fit.
+ * The pin lines of the session-start header, each only when non-empty:
+ *  - D3: pins that do not fit their share, from the same fit report
+ *    `plur pins` and `plur doctor` print (`pinFitReport()`), so the CLI and
+ *    the hook agree;
+ *  - D2: pin requests waiting for the owner (`pendingPinRequests()`).
+ * Advisory: a failure leaves the line out, never the session start.
  */
-export function pinOverflowNotice(result: { omitted_pinned?: Array<{ id: string; cost: number }>; pinned_share_tokens?: number }): string | null {
-  const omitted = result.omitted_pinned ?? []
-  if (omitted.length === 0) return null
-  const tokens = omitted.reduce((a, o) => a + o.cost, 0)
-  const shown = omitted.slice(0, 5).map(o => o.id).join(', ')
-  const more = omitted.length > 5 ? ` and ${omitted.length - 5} more` : ''
-  const share = result.pinned_share_tokens !== undefined ? ` of ${result.pinned_share_tokens} tokens` : ''
-  return `[PLUR] ${omitted.length} pinned engram${omitted.length === 1 ? '' : 's'} (${tokens} tokens) did not fit the pinned share${share} and ${omitted.length === 1 ? 'was' : 'were'} left out: ${shown}${more}. Without priorities, prohibitions and older pins go first; \`plur pins\` shows the fit.`
+export async function sessionStartPinLines(plur: Pick<Plur, 'pinFitReport' | 'pendingPinRequests'>): Promise<string[]> {
+  const lines: string[] = []
+  try {
+    const overflow = formatPinOverflowLine(await plur.pinFitReport())
+    if (overflow) lines.push(`[PLUR] ${overflow}`)
+  } catch { /* advisory */ }
+  try {
+    const pending = formatPendingPinRequestsLine(await plur.pendingPinRequests())
+    if (pending) lines.push(`[PLUR] ${pending}`)
+  } catch { /* advisory */ }
+  return lines
 }
 
 /**
