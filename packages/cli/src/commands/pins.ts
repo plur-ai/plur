@@ -25,22 +25,23 @@ import {
 } from '@plur-ai/core'
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { remoteOnlyCommandRefusal } from '../lib/folder-gate.js'
-import { llmFromCommand, resolveLlmCommand, missingLlmCommandMessage } from '../lib/llm-command.js'
+import { resolveLlm, missingLlmMessage, UNSPECIFIED_MODEL } from '../lib/llm-bridge.js'
 import { shouldOutputJson, outputJson, outputText, outputInfo, exit } from '../output.js'
 
-export const FLAGS = ['--budget', '--out', '--llm-cmd', '--limit', '--yes', '--scope']
-export const FLAGS_WITH_VALUES = ['--budget', '--out', '--llm-cmd', '--limit', '--scope']
+export const FLAGS = ['--budget', '--out', '--llm-cmd', '--llm-base-url', '--llm-api-key', '--model', '--limit', '--yes', '--scope']
+export const FLAGS_WITH_VALUES = ['--budget', '--out', '--llm-cmd', '--llm-base-url', '--llm-api-key', '--model', '--limit', '--scope']
 
 const USAGE = [
   'Usage: plur pins [--budget N]',
   '       plur pins priority <id> <1-100>',
   '       plur pins review [approve|reject <id...>]',
   '       plur pins audit [--out <file>] [--llm-cmd "<cmd>"] (or PLUR_LLM_CMD)',
+  '                       [--llm-base-url <url> --llm-api-key <key> --model <name>]',
   '       plur pins apply <proposal-file> [--limit N] --yes',
   '       plur pins undo <change-id>',
 ].join('\n')
 
-interface Parsed { positional: string[]; budget?: number; out?: string; llmCmd?: string; limit?: number; yes: boolean; scope?: string }
+interface Parsed { positional: string[]; budget?: number; out?: string; llmCmd?: string; llmBaseUrl?: string; llmApiKey?: string; model?: string; limit?: number; yes: boolean; scope?: string }
 
 function parse(args: string[]): Parsed {
   const p: Parsed = { positional: [], yes: false }
@@ -56,6 +57,9 @@ function parse(args: string[]): Parsed {
       p.budget = n
     } else if (a === '--out') p.out = value()
     else if (a === '--llm-cmd') p.llmCmd = value()
+    else if (a === '--llm-base-url') p.llmBaseUrl = value()
+    else if (a === '--llm-api-key') p.llmApiKey = value()
+    else if (a === '--model') p.model = value()
     else if (a === '--limit') {
       const n = Number(value())
       if (!Number.isInteger(n) || n < 1) exit(1, '--limit must be a whole number of at least 1')
@@ -187,15 +191,16 @@ async function printOverflowIfAny(plur: ReturnType<typeof createPlur>, flags: Gl
 async function audit(p: Parsed, flags: GlobalFlags): Promise<void> {
   const refused = remoteOnlyCommandRefusal(flags, 'A pin audit sends memories to a model, which is not the team server')
   if (refused) exit(1, refused)
-  const cmd = resolveLlmCommand(p.llmCmd)
-  if (!cmd) exit(1, missingLlmCommandMessage('plur pins audit'))
+  const bridge = resolveLlm({ llmCmd: p.llmCmd, baseUrl: p.llmBaseUrl, apiKey: p.llmApiKey, model: p.model })
+  if (!bridge) exit(1, missingLlmMessage('plur pins audit'))
   const out = p.out ?? `pin-audit-${new Date().toISOString().slice(0, 10)}.json`
   // Read-only engine: the audit changes nothing in the store.
   const plur = createPlur(flags, { readonly: true })
   let proposal
   try {
-    proposal = await plur.auditPins(llmFromCommand(cmd), {
-      model: cmd,
+    proposal = await plur.auditPins(bridge.llm, {
+      // A command bridge with no model name records the command, as before.
+      model: bridge.command && bridge.model === UNSPECIFIED_MODEL ? bridge.command : bridge.model,
       onProgress: (done, total) => outputInfo(`  audited ${done}/${total} pins`, flags),
     })
   } catch (err) {

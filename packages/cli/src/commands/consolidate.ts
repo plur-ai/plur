@@ -10,7 +10,7 @@ import {
 } from '@plur-ai/core'
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { shouldOutputJson, outputJson, outputText, outputInfo, exit } from '../output.js'
-import { resolveCliLlm } from '../lib/llm-bridge.js'
+import { resolveLlm, missingLlmMessage } from '../lib/llm-bridge.js'
 
 export const FLAGS = [
   '--plan', '--out', '--nightly', '--fresh', '--no-model', '--batch-size', '--sample',
@@ -44,8 +44,9 @@ const USAGE = `Usage:
 
   The model: --llm-cmd "<command>" (the prompt goes to its stdin, its stdout
   is the answer, e.g. --llm-cmd "claude -p"), or PLUR_LLM_CMD, or
-  --llm-base-url/--llm-api-key/--model (OpenAI-compatible), or
-  OPENROUTER_API_KEY / OPENAI_API_KEY. --no-model plans without one.`
+  --llm-base-url/--llm-api-key/--model (OpenAI-compatible). An API key in
+  the environment is never used on its own. --no-model plans without one
+  (every cluster stays pending).`
 
 function readPlan(path: string): ConsolidationPlan {
   let raw: unknown
@@ -156,14 +157,14 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
 
   // --plan / --nightly
   const outPath = resolve(out ?? join(plur.getStorageRoot(), 'consolidate-plan.json'))
-  const model = noModel ? undefined : resolveCliLlm(llmFlags)
+  const model = noModel ? undefined : resolveLlm({ llmCmd: llmFlags.llmCmd, baseUrl: llmFlags.llmBaseUrl, apiKey: llmFlags.llmApiKey, model: llmFlags.model })
+  if (!model && !noModel) {
+    exit(1, missingLlmMessage('plur consolidate --plan', { extra: '  or --no-model to plan without one (every cluster stays pending and nothing can be applied until it is decided).' }))
+  }
   let resumeFrom: ConsolidationPlan | undefined
   if (!fresh && existsSync(outPath)) {
     const prior = readPlan(outPath)
     if (!prior.progress?.complete && prior.clusters.some(c => c.decision === 'pending')) resumeFrom = prior
-  }
-  if (!model && !noModel) {
-    outputInfo('No model configured (--llm-cmd, PLUR_LLM_CMD, --llm-base-url or an API key): every cluster stays pending and nothing can be applied until it is decided.', flags)
   }
   const result = await plur.consolidatePlan({
     llm: model?.llm,
@@ -181,7 +182,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     resumed: !!resumeFrom,
     mode: result.mode,
     seed: result.seed,
-    model: model?.source ?? null,
+    model: model?.via ?? null,
     clusters: result.clusters.length,
     merge: merge.length,
     split: result.clusters.filter(c => c.decision === 'split').length,

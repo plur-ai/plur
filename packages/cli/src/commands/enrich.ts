@@ -2,7 +2,7 @@ import { createPlur, type GlobalFlags } from '../plur.js'
 import { remoteOnlyCommandRefusal } from '../lib/folder-gate.js'
 import { shouldOutputJson, outputJson, outputText, exit } from '../output.js'
 import { emitPlan, readPlan, parseLimit, undoCommand } from '../lib/journal-cli.js'
-import { resolveLlm } from '../lib/llm-bridge.js'
+import { resolveLlm, missingLlmMessage } from '../lib/llm-bridge.js'
 import type { EnrichPlan } from '@plur-ai/core'
 
 const USAGE =
@@ -22,7 +22,7 @@ const USAGE =
   '  Model: --llm-cmd / PLUR_LLM_CMD runs a command with the prompt on stdin and\n' +
   '  reads the reply from stdout (e.g. "claude -p --model opus");\n' +
   '  --model / PLUR_LLM_MODEL names the model recorded on each label. Otherwise\n' +
-  '  --llm-base-url + --llm-api-key, or OPENROUTER_API_KEY / OPENAI_API_KEY.'
+  '  --llm-base-url + --llm-api-key. An API key in the environment is never used on its own.'
 
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   let plan = false
@@ -93,11 +93,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const refused = remoteOnlyCommandRefusal(flags, 'Enrichment sends memories to a model, which is not the team server')
   if (refused) exit(1, refused)
   const bridge = resolveLlm({ llmCmd, model, baseUrl, apiKey })
-  if (!bridge) {
-    exit(1, 'plur enrich --plan needs a model.\n'
-      + 'Set PLUR_LLM_CMD (or pass --llm-cmd "<command>"), or pass --llm-base-url + --llm-api-key, '
-      + 'or set OPENROUTER_API_KEY / OPENAI_API_KEY.')
-  }
+  if (!bridge) exit(1, missingLlmMessage('plur enrich --plan'))
   process.stderr.write(`Labelling with ${bridge.model} via ${bridge.via}...\n`)
   try {
     const result = await plur.planEnrichment({
