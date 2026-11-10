@@ -141,6 +141,13 @@ export interface LearnContext {
    * is not part of one. The session recorded in provenance is `session_id`.
    */
   session?: string
+  /**
+   * Write-time reinforcement default for this caller (overhaul D8). Used only
+   * when `learn.reinforce_exact` is absent from config.yaml: the config always
+   * decides when it says something. The MCP server passes `true` (one constant,
+   * `MCP_REINFORCE_EXACT_DEFAULT`); core's own default is off. Never persisted.
+   */
+  reinforce_exact_default?: boolean
 }
 
 /** Extended context for async learn with LLM dedup. */
@@ -160,7 +167,13 @@ export interface DedupConfig {
 
 export interface LearnAsyncResult {
   engram: Engram
-  decision: DedupDecision
+  /**
+   * What happened. `REINFORCE` (overhaul D8): the statement equalled an
+   * existing engram's after normalising case, whitespace and punctuation, and
+   * `learn.reinforce_exact` is on, so that engram (`existing_id`) was
+   * reinforced and nothing new was written.
+   */
+  decision: DedupDecision | 'REINFORCE'
   existing_id?: string
   tensions?: string[]
   /**
@@ -236,7 +249,7 @@ export interface LearnBatchFailure {
 export interface LearnBatchResult {
   /** Successful outcomes, in input order (excludes failed statements). */
   results: LearnAsyncResult[]
-  stats: { added: number; updated: number; merged: number; noops: number; failed: number }
+  stats: { added: number; updated: number; merged: number; noops: number; failed: number; reinforced?: number }
   /** Per-statement failures — a bad item does not abort the whole batch. */
   failures: LearnBatchFailure[]
 }

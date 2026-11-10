@@ -72,6 +72,8 @@ export const LEARN_CONTEXT_FIELD_ROLES = {
   supersedes: 'content',
   // A flag (the duplicate checker's supersede skips a locked target), not text.
   supersedes_unless_locked: 'control',
+  // Selects whether an exact restatement reinforces (D8); never persisted.
+  reinforce_exact_default: 'control',
   // Engram ids written to `relations.related` (batch never-overwrite link).
   related: 'content',
   measured_under: 'content',

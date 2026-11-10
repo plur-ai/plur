@@ -19,6 +19,8 @@ export interface HistoryEvent {
     | 'store_synced'
     /** compact() removed retired rows (code review of 0.23, R2). `data.engram_ids` names them. */
     | 'store_compacted'
+    /** Store consolidation merged this engram into another (overhaul W6, R2). `data.into`, `data.change_id`, `data.plan_id`, `data.cluster_id`. */
+    | 'consolidated_into'
   /**
    * Engram this event belongs to. Session-level events
    * (`session_scope_changed`) carry no engram — they use `''`, which by
