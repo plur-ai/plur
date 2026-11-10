@@ -71,12 +71,14 @@ describe('MCP learn entry points agree (formal Adapters #1)', () => {
     expect(await scopeOf('unpinned batch item')).toBe('global')
   })
 
-  it('plur_learn reports an absorbed duplicate as NOOP with existing_id, not ADD', async () => {
+  it('plur_learn reports an absorbed duplicate with existing_id, not ADD', async () => {
     const first = await call('plur_learn', { statement: 'dup statement', scope: 'global' })
     expect(first.decision).toBe('ADD')
     const second = await call('plur_learn', { statement: 'dup statement', scope: 'global' })
     expect(second.id).toBe(first.id)
-    expect(second.decision).toBe('NOOP')
+    // MCP reinforces an exact restatement by default (overhaul D8); with
+    // reinforcement off the same write is a NOOP (test/learn-reinforce.test.ts).
+    expect(second.decision).toBe('REINFORCE')
     expect(second.existing_id).toBe(first.id)
   })
 
