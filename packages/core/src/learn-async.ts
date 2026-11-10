@@ -501,6 +501,7 @@ export async function learnAsync(
         source: context?.source,
         dual_coding: context?.dual_coding as never,
         knowledge_anchors: context?.knowledge_anchors as never,
+        structured_data: (context as { structured_data?: unknown } | undefined)?.structured_data as never,
       })
       const scores = (await deps.similarityScores(query, candidates))
         .slice()

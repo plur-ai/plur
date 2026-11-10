@@ -92,3 +92,50 @@ export function resolveCliLlm(flags: LlmFlags, env: NodeJS.ProcessEnv = process.
   if (http) return { llm: http, source: env.OPENROUTER_API_KEY ? 'OPENROUTER_API_KEY' : 'OPENAI_API_KEY' }
   return undefined
 }
+
+// ── ws/d (enrichment) API, kept alongside until the bridges are unified ──
+
+/** The env-key HTTP bridge the tension scan has always used. */
+export function getLlmFunction(): LlmFunction | undefined {
+  return getEnvHttpLlm()
+}
+
+/** Default per-call timeout for a command bridge: model calls on a batch can be slow. */
+export const LLM_CMD_TIMEOUT_MS = 10 * 60_000
+
+export interface ResolvedLlm {
+  llm: LlmFunction
+  /** Model name to record on what it produced. */
+  model: string
+  /** Which bridge was chosen, for the user (never a secret). */
+  via: string
+}
+
+/**
+ * Pick the model bridge: `--llm-cmd` / `PLUR_LLM_CMD` first, then explicit
+ * HTTP flags, then the env-key HTTP bridge. Undefined when none is set.
+ */
+export function resolveLlm(opts: { llmCmd?: string; model?: string; baseUrl?: string; apiKey?: string } = {}): ResolvedLlm | undefined {
+  const cmd = opts.llmCmd ?? process.env.PLUR_LLM_CMD
+  if (cmd && cmd.trim()) {
+    return {
+      llm: makeCommandLlm(cmd, { timeoutMs: LLM_CMD_TIMEOUT_MS }),
+      model: opts.model ?? process.env.PLUR_LLM_MODEL ?? 'unspecified',
+      via: opts.llmCmd ? '--llm-cmd' : 'PLUR_LLM_CMD',
+    }
+  }
+  if (opts.baseUrl) {
+    const model = opts.model ?? 'gpt-4o-mini'
+    return { llm: makeHttpLlm(opts.baseUrl, opts.apiKey ?? '', model), model, via: '--llm-base-url' }
+  }
+  const m = opts.model
+  if (process.env.OPENROUTER_API_KEY) {
+    const model = m ?? 'openai/gpt-4o-mini'
+    return { llm: makeHttpLlm('https://openrouter.ai/api/v1', process.env.OPENROUTER_API_KEY, model), model, via: 'OPENROUTER_API_KEY' }
+  }
+  if (process.env.OPENAI_API_KEY) {
+    const model = m ?? 'gpt-4o-mini'
+    return { llm: makeHttpLlm('https://api.openai.com/v1', process.env.OPENAI_API_KEY, model), model, via: 'OPENAI_API_KEY' }
+  }
+  return undefined
+}

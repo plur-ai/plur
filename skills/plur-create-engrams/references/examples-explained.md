@@ -12,6 +12,8 @@ Every one of the 19 records populates nearly every optional field — `provenanc
 
 Two things the catalog *does* model well and worth copying: statement length (median 229 characters across all 19) and the habit of keeping the exception in `contraindications` rather than burying it mid-statement.
 
+**The catalog's pins are illustrations of the field, not a licence.** Where an explanation below says a record "merits a pin", read it as "the owner might ask to pin this". Pin only when the owner explicitly asks.
+
 ## Record index
 
 The example numbers below correspond to `structured_data.example.number`. Use the exact ID to find a record. The descriptive roles are richer than PLUR's four native `type` values; they are not additional enum values.

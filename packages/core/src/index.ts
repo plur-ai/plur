@@ -20,6 +20,10 @@ import { generateEngramId, engramIdDatePrefix, loadAllPacks, loadPack, packEngra
 import { maybeDailyBackup } from './backup.js'
 import { logger } from './logger.js'
 import { searchEngrams, ftsTokenize, extendCorpusStats, searchTextFrom } from './fts.js'
+import {
+  validateLearnStructuredData, KIND_TO_MEMORY_CLASS, ENRICH_KINDS, ENRICHER_VERSION, buildEnrichPrompt, parseEnrichReply, isEnriched, enrichRow,
+  type EnrichLabel, type EngramKind, type TaskFamily, type Outcome,
+} from './enrich.js'
 import { selectAndSpread, scoreEngramsPublic, formatWithLayer, assignLayer, estimateTokens, pinnedHardCap, isHardPinned, pinnedShareRatio, DEFAULT_PINNED_HARD_RATIO } from './inject.js'
 import { buildUnifiedPool, buildInjectionQuery, rankAndPack, rankForInjection, applyRerankScores, type RankedCandidate } from './inject-unified.js'
 import { reactivate } from './decay.js'
@@ -292,7 +296,7 @@ export { SHIPPED_PLUR_SECTIONS, SHIPPED_CURSOR_RULES, SHIPPED_CLAW_SECTIONS } fr
 export { extractLearnings, extractSelfReportedLearnings, isCorrection, type LearnCandidate, type LearnableMessage } from './learner.js'
 export type { MetaField, StructuralTemplate, EvidenceEntry, MetaConfidence, DomainCoverage, HierarchyPosition, Falsification } from './schemas/meta-engram.js'
 export { MetaFieldSchema, StructuralTemplateSchema, EvidenceEntrySchema, MetaConfidenceSchema, DomainCoverageSchema, HierarchyPositionSchema, FalsificationSchema } from './schemas/meta-engram.js'
-export { engramSearchText, termMatches, computeIdf, type CorpusStats } from './fts.js'
+export { engramSearchText, termMatches, computeIdf, SEARCH_TEXT_VERSION, SEARCH_INDEX_VERSION, type CorpusStats } from './fts.js'
 export { EngramStoreUnreadableError, EngramStoreShrinkError } from './engrams.js'
 // Exported for store-repair tooling (#852's `plur reindex-hashes`), which must
 // read the RAW store rows. `Plur.list()` goes through `_filterEngrams`, which
@@ -495,6 +499,11 @@ export {
   type ClusterDecision, type ConsolidationPinRequest,
   type ConsolidatePlanOptions, type ConsolidateApplyOptions, type ConsolidateApplyResult, type StoreHealth, type ConsolidateSkipReason,
 } from './consolidate.js'
+export {
+  ENRICH_KINDS, KIND_TO_MEMORY_CLASS, TASK_FAMILIES, OUTCOMES, ENRICHER_VERSION, MAX_STRUCTURED_BODY_CHARS,
+  validateLearnStructuredData, StructuredDataError, buildEnrichPrompt, parseEnrichReply, isEnriched, enrichRow,
+  type EngramKind, type TaskFamily, type Outcome, type LearnStructuredData, type EnrichLabel, type EnrichmentBlock,
+} from './enrich.js'
 export type { ManifestSummary, PayloadDescriptor, Producer, Signer, CapsuleHeader, CapsulePreamble } from './schemas/capsule.js'
 export {
   CAPSULE_MAGIC,
@@ -817,6 +826,68 @@ export interface RescopeOptions {
   keep_local?: boolean
   /** Report what WOULD happen without mutating anything, local or remote. */
   dry_run?: boolean
+}
+
+/** One proposed move in a rescope plan (W7). */
+export interface RescopePlanItem {
+  id: string
+  from_scope: 'global'
+  to_scope: string
+  /** `local`: applied through the journal. `remote`: a team server holds the target — apply refuses it. `invalid`: the target is not a valid rescope target now. */
+  route: 'local' | 'remote' | 'invalid'
+  confidence: number
+  reason: string
+  domain?: string
+  /** Preview for the reader, at most 120 characters. */
+  statement: string
+}
+
+/** A rescope plan: `plur rescope --plan` writes it, `--apply` reads it. */
+export interface RescopePlan {
+  version: 1
+  kind: 'plur.rescope-plan'
+  created_at: string
+  /** Active global engrams in the local primary store that were routed. */
+  considered: number
+  items: RescopePlanItem[]
+  /** Engrams the router could not place: they stay global. */
+  unmapped: { count: number; ids: string[] }
+}
+
+export interface RescopeApplyResult {
+  /** The journalled change, or null when nothing applied. */
+  change: ChangeRecord | null
+  applied: Array<{ id: string; from_scope: string; to_scope: string }>
+  refused: Array<{ id: string; to_scope: string; reason: string }>
+}
+
+/** One labelled engram in an enrichment plan (W10). */
+export interface EnrichPlanItem {
+  id: string
+  /** Hash of the statement at plan time; apply skips the row if it changed. */
+  statement_hash: string
+  kind: EngramKind
+  task_family: TaskFamily
+  outcome: Outcome | null
+  applies_when: string | null
+  memory_class_from: string | null
+  memory_class_to: string
+  statement: string
+}
+
+export interface EnrichPlan {
+  version: 1
+  kind: 'plur.enrich-plan'
+  created_at: string
+  enricher: { model: string; version: string }
+  items: EnrichPlanItem[]
+  skipped: { already_enriched: number; unlabelled: number }
+}
+
+export interface EnrichApplyResult {
+  change: ChangeRecord | null
+  applied: Array<{ id: string; kind: string; memory_class: string }>
+  skipped: Array<{ id: string; reason: string }>
 }
 
 /** Per-engram outcome of {@link Plur.rescope} (#676). */
@@ -4788,6 +4859,9 @@ export class Plur {
         throw new TypeError(`plur.${fn}: pinned_priority must be an integer from 1 to 100, got ${String(p)}`)
       }
     }
+    // W10: body / kind / outcome only, validated before any lock or routing.
+    // `_buildEngramShape` validates again, so a direct call cannot skip it.
+    validateLearnStructuredData(context?.structured_data)
     if (!this.config.allow_secrets) {
       // Scan the statement AND every caller-supplied content field (#381,
       // #389, #1002 review). The field set comes from ONE table,
@@ -5555,6 +5629,7 @@ export class Plur {
         source: context?.source,
         dual_coding: context?.dual_coding as never,
         knowledge_anchors: context?.knowledge_anchors as never,
+        structured_data: context?.structured_data,
       })
       const { embeddingSearchWithScores } = await import('./embeddings.js')
       // Dynamic, matching how learn-async is loaded elsewhere in this class —
@@ -6085,7 +6160,13 @@ export class Plur {
   ): Engram {
     const type = context?.type ?? 'behavioral'
     const cogLevel = TYPE_TO_COGNITIVE[type] ?? 'remember'
-    const memoryClass = context?.memory_class ?? TYPE_TO_MEMORY_CLASS[type] ?? 'semantic'
+    // W10: a caller-supplied structured body / kind / outcome. A stated kind
+    // decides memory_class when the caller gave none (experience and failure
+    // lessons are episodic, rules and tool pointers procedural).
+    const structured = validateLearnStructuredData(context?.structured_data)
+    const memoryClass = context?.memory_class
+      ?? (structured?.kind ? KIND_TO_MEMORY_CLASS[structured.kind] : undefined)
+      ?? TYPE_TO_MEMORY_CLASS[type] ?? 'semantic'
     const commitment = context?.commitment ?? 'leaning'
     const shape: Engram = {
       // Placeholder id — learn() overwrites it with the id it minted and
@@ -6178,6 +6259,7 @@ export class Plur {
     // as much an answer as "the router guessed it", and a field present on only
     // some writes cannot be read as an answer on the rest.
     ;(shape as any).structured_data = {
+      ...(structured ?? {}),
       ...(validity.extracted
         ? { _expiry_extracted: { valid_until: validity.extracted.valid_until, phrase: validity.extracted.phrase } }
         : {}),
@@ -11775,6 +11857,24 @@ export class Plur {
 
     // --- Resolve the target route ONCE, before touching any engram, so an
     // invalid target fails the whole batch early (#676 constraint 4). ---
+    const { route, remoteDriver } = this._rescopeRoute(target)
+
+    const opts = { dryRun: options?.dry_run === true, keepLocal: options?.keep_local === true }
+    const results: RescopeResult[] = []
+    for (const id of ids) {
+      results.push(await this._rescopeOne(id, target, route, remoteDriver, opts))
+    }
+    return { results, success: results.every(r => r.status !== 'error') }
+  }
+
+  /**
+   * Which route a rescope to `target` takes (#676 constraint 4): `remote` for
+   * a writable URL-backed store, `local` for a local-family scope or a path
+   * store. Throws for a readonly store or an unmatched scope. Shared by
+   * {@link rescope} and the journalled plan apply (W7), so the two cannot
+   * disagree about what a target is.
+   */
+  private _rescopeRoute(target: string): { route: 'remote'; remoteDriver: RemoteStore } | { route: 'local'; remoteDriver: null } {
     const remoteDriver = this._resolveRemoteStoreForScope(target)
     const storeEntry = (this.config.stores ?? []).find(s => s.scope === target)
     // Case-SENSITIVE on purpose, unlike `isSharedScope`'s case-folded prefix
@@ -11787,9 +11887,8 @@ export class Plur {
     // global, while `isSharedScope` classes `Project:app` as SHARED. Refusing
     // it with the "check for typos" error below is the fail-loud outcome.
     const isLocalFamily = target === 'local' || target === 'global' || target.startsWith('project:')
-    let route: 'remote' | 'local'
     if (remoteDriver) {
-      route = 'remote'
+      return { route: 'remote', remoteDriver }
     } else if (storeEntry?.url && storeEntry.readonly === true) {
       // Authorization: same rule the learnRouted write path applies — a
       // readonly entry never receives writes. Refuse rather than leave the
@@ -11799,7 +11898,7 @@ export class Plur {
         + `Ask for write access or pick another scope.`,
       )
     } else if (isLocalFamily || storeEntry) {
-      route = 'local'
+      return { route: 'local', remoteDriver: null }
     } else {
       const configured = (this.config.stores ?? []).map(s => s.scope)
       throw new Error(
@@ -11809,13 +11908,6 @@ export class Plur {
         + `. Check for typos — an unmatched shared scope would never reach a team store (#676).`,
       )
     }
-
-    const opts = { dryRun: options?.dry_run === true, keepLocal: options?.keep_local === true }
-    const results: RescopeResult[] = []
-    for (const id of ids) {
-      results.push(await this._rescopeOne(id, target, route, remoteDriver, opts))
-    }
-    return { results, success: results.every(r => r.status !== 'error') }
   }
 
   /** One engram's rescope — see {@link rescope} for the contract. */
@@ -11990,12 +12082,7 @@ export class Plur {
       const t = fresh.find(e => e.id === id)
       if (!t || t.status === 'retired') return false
       const from = t.scope
-      t.scope = target
-      const tsd = (t as any).structured_data
-      const nextSd: Record<string, unknown> = {
-        ...(tsd && typeof tsd === 'object' && !Array.isArray(tsd) ? tsd : {}),
-        _rescoped: { from_scope: from, at: now },
-      }
+      const nextSd = Plur._rewriteScopeInPlace(t, target, now)
       // #848: CANCEL any pending delivery to the store we are moving away from.
       //
       // A failed remote write leaves `_outbox` naming the original url + scope.
@@ -12047,6 +12134,287 @@ export class Plur {
     return {
       id, status: 'rescoped', action, from_scope: source.scope, to_scope: target, new_id: id,
       ...(cancelledOutbox ? { cancelled_outbox: cancelledOutbox } : {}),
+    }
+  }
+
+  /**
+   * The in-place half of a local rescope: rewrite `scope` and stamp
+   * `structured_data._rescoped`. Returns the new `structured_data` (also set
+   * on the row) so the caller can apply its own outbox handling. Shared by
+   * `_rescopeOne` and the journalled plan apply (W7).
+   */
+  private static _rewriteScopeInPlace(t: Engram, target: string, now: string): Record<string, unknown> {
+    const from = t.scope
+    t.scope = target
+    const tsd = (t as any).structured_data
+    const nextSd: Record<string, unknown> = {
+      ...(tsd && typeof tsd === 'object' && !Array.isArray(tsd) ? tsd : {}),
+      _rescoped: { from_scope: from, at: now },
+    }
+    ;(t as any).structured_data = nextSd
+    return nextSd
+  }
+
+  // --- W7: rescope plans ---------------------------------------------------
+
+  /**
+   * Propose a scope for every active global engram in the local primary store
+   * (overhaul W7), from the SAME deterministic router the write path uses
+   * (`rankScopes` over the scopes' `covers` + `decideAutoRoute`; a conforming
+   * `<org>.<team>.<area>` domain is the signal it weighs most). Shared scopes
+   * are allowed as targets — unlike an unscoped write, a plan is read by a
+   * person before it is applied. Engrams the router cannot place stay global
+   * and are counted. Reads only; changes nothing.
+   */
+  async planRescope(): Promise<RescopePlan> {
+    this._remoteOnlyRefuseLocalStore('Planning a rescope of personal memories (run it outside the remote-only folder)')
+    this.reloadConfigIfChanged()
+    const cfg = this.config.scope_routing ?? {}
+    const scopes = this._writableScopeMetadata()
+    const rows = await this._loadCached(this.paths.engrams)
+    const items: RescopePlanItem[] = []
+    const unmapped: string[] = []
+    let considered = 0
+    for (const e of rows) {
+      if (e.status !== 'active' || e.scope !== 'global' || Plur._isRemoteOnlyQueued(e)) continue
+      considered++
+      const candidates = rankScopes(
+        { statement: e.statement, domain: e.domain, tags: e.tags },
+        scopes,
+        cfg.weight_tag !== undefined ? { weightTag: cfg.weight_tag } : undefined,
+      )
+      const decision = decideAutoRoute(candidates, {
+        matchThreshold: cfg.match_threshold ?? SCOPE_MATCH_THRESHOLD,
+        allowSharedScope: true,
+        refuseScope: s => this._refuseRemotePersonalAutoRoute(s),
+      })
+      if (decision.action !== 'route' || !decision.scope || !decision.candidate) { unmapped.push(e.id); continue }
+      let route: 'local' | 'remote' | 'invalid'
+      try { route = this._rescopeRoute(decision.scope).route } catch { route = 'invalid' }
+      items.push({
+        id: e.id,
+        from_scope: 'global',
+        to_scope: decision.scope,
+        route,
+        confidence: Math.round(decision.candidate.confidence * 1000) / 1000,
+        reason: decision.candidate.reason,
+        ...(e.domain ? { domain: e.domain } : {}),
+        statement: e.statement.length > 120 ? e.statement.slice(0, 117) + '...' : e.statement,
+      })
+    }
+    return {
+      version: 1,
+      kind: 'plur.rescope-plan',
+      created_at: new Date().toISOString(),
+      considered,
+      items,
+      unmapped: { count: unmapped.length, ids: unmapped },
+    }
+  }
+
+  /**
+   * Apply a rescope plan through the change journal (W7): one journalled
+   * change, undoable with {@link undoChange}. Uses rescope's own local route
+   * (`_rescopeRoute`, `_rewriteScopeInPlace`, the sensitivity guard), so the
+   * moved row keeps its id, activation and history.
+   *
+   * Applies only to locally owned rows moving to scopes kept on this machine
+   * (local-family or a path store). Everything else is REFUSED, per item,
+   * with the reason: a target held on a team server (a remote push cannot be
+   * journalled or undone here — `plur rescope <id> --to <scope>` does it
+   * explicitly), a row with a queued delivery, a row no longer global or
+   * gone since the plan, a sensitivity hit, an identical engram already at
+   * the target. `limit` stops after that many rows have been moved.
+   */
+  async applyRescopePlan(plan: RescopePlan, options: { limit?: number } = {}): Promise<RescopeApplyResult> {
+    this._assertWritable()
+    this._remoteOnlyRefuseLocalStore('Applying a rescope plan (run it outside the remote-only folder)')
+    if (!plan || plan.kind !== 'plur.rescope-plan' || !Array.isArray(plan.items)) {
+      throw new TypeError('applyRescopePlan: not a rescope plan (expected kind "plur.rescope-plan")')
+    }
+    const limit = options.limit ?? Infinity
+    if (!(limit >= 1)) throw new TypeError('applyRescopePlan: limit must be at least 1')
+    this.reloadConfigIfChanged()
+    const refused: RescopeApplyResult['refused'] = []
+    const local: RescopePlanItem[] = []
+    const routes = new Map<string, string | null>()
+    for (const item of plan.items) {
+      if (!routes.has(item.to_scope)) {
+        try {
+          routes.set(item.to_scope, this._rescopeRoute(item.to_scope).route === 'remote'
+            ? `"${item.to_scope}" is held on a team server; a remote move cannot be journalled or undone here. Move it explicitly with: plur rescope ${item.id} --to ${item.to_scope}`
+            : null)
+        } catch (err) { routes.set(item.to_scope, (err as Error).message) }
+      }
+      const why = routes.get(item.to_scope)
+      if (why) refused.push({ id: item.id, to_scope: item.to_scope, reason: why.replace(/plur rescope \S+ --to/, `plur rescope ${item.id} --to`) })
+      else local.push(item)
+    }
+
+    const now = new Date().toISOString()
+    // Decide per row against a corpus; run once outside the lock (to skip an
+    // empty change) and again inside it (authoritative).
+    const decide = (get: (id: string) => Engram | undefined, all: () => Engram[]) => {
+      const moves: Array<{ item: RescopePlanItem; row: Engram }> = []
+      const why: RescopeApplyResult['refused'] = []
+      let byHash: Map<string, Engram[]> | null = null
+      for (const item of local) {
+        if (moves.length >= limit) break
+        const row = get(item.id)
+        const no = (reason: string) => why.push({ id: item.id, to_scope: item.to_scope, reason })
+        if (!row) { no('not in the local primary store (only locally owned rows can be moved here)'); continue }
+        if (row.status !== 'active') { no(`not active (${row.status}) — changed since the plan`); continue }
+        if (row.scope !== item.from_scope) { no(`no longer ${item.from_scope} (now ${row.scope}) — changed since the plan`); continue }
+        if (Plur._isRemoteOnlyQueued(row) || (row as any).structured_data?._outbox) {
+          no(`has a queued delivery to a team server, so it is not locally owned; use plur rescope ${item.id} --to ${item.to_scope}`); continue
+        }
+        const ctx = this._engramContextFields(row)
+        const offending = this._offendingHitsForScope(ctx ? `${row.statement}\n${JSON.stringify(ctx)}` : row.statement, item.to_scope)
+        if (offending.length > 0) {
+          no(`blocked: sensitive content (${[...new Set(offending.map(h => h.pattern))].join(', ')}) must not reach "${item.to_scope}"`); continue
+        }
+        if (!byHash) {
+          byHash = new Map()
+          for (const e of all()) {
+            if (e.status !== 'active') continue
+            const h = (e as any).content_hash as string | undefined
+            if (h) byHash.set(h, [...(byHash.get(h) ?? []), e])
+          }
+        }
+        const hash = (row as any).content_hash ?? computeContentHash(row.statement)
+        const twin = (byHash.get(hash) ?? []).find(e => e.id !== row.id && e.scope === item.to_scope)
+        if (twin) { no(`an identical engram is already in ${item.to_scope} (${twin.id}); use plur rescope ${item.id} --to ${item.to_scope} to retire this copy`); continue }
+        moves.push({ item, row })
+      }
+      return { moves, why }
+    }
+
+    const primary = await this._loadCached(this.paths.engrams)
+    const index = new Map(primary.map(e => [e.id, e]))
+    const preview = decide(id => index.get(id), () => primary)
+    if (preview.moves.length === 0) {
+      return { change: null, applied: [], refused: [...refused, ...preview.why] }
+    }
+
+    let inLock: ReturnType<typeof decide> = { moves: [], why: [] }
+    const change = await this.beginChange('rescope.apply', { plan_created_at: plan.created_at, limit: options.limit ?? null })
+      .apply(tx => {
+        inLock = decide(id => tx.get(id), () => tx.all())
+        for (const { item, row } of inLock.moves) {
+          Plur._rewriteScopeInPlace(row, item.to_scope, now)
+          tx.put(row)
+        }
+      })
+    const applied = inLock.moves.map(({ item }) => ({ id: item.id, from_scope: item.from_scope, to_scope: item.to_scope }))
+    for (const a of applied) {
+      this._appendHistory({
+        event: 'engram_rescoped', engram_id: a.id, timestamp: now,
+        data: { from_scope: a.from_scope, to_scope: a.to_scope, new_id: a.id, routed_to: 'local', change_id: change.id },
+      })
+    }
+    return { change, applied, refused: [...refused, ...inLock.why] }
+  }
+
+  // --- W10: enrichment -------------------------------------------------------
+
+  /**
+   * Ask a host-supplied model to label every active, not-yet-enriched engram
+   * of the local primary store (W10). Returns a plan; changes nothing. The
+   * model is called here, outside any store lock. Core never chooses or calls
+   * a model on its own — `llm` is the caller's.
+   */
+  async planEnrichment(options: { llm: LlmFunction; model: string; limit?: number; batchSize?: number; onBatch?: (done: number, total: number) => void }): Promise<EnrichPlan> {
+    // Memory text goes to a model: never from a remote-only folder.
+    this._remoteOnlyRefuseLocalStore('Enriching personal memories (run it outside the remote-only folder)')
+    const { llm, model } = options
+    if (typeof llm !== 'function') throw new TypeError('planEnrichment: llm is required')
+    const batchSize = Math.max(1, Math.min(100, options.batchSize ?? 20))
+    const primary = await this._loadCached(this.paths.engrams)
+    let todo = primary.filter(e => e.status === 'active' && typeof e.statement === 'string' && e.statement.trim()
+      && !isEnriched(e) && !Plur._isRemoteOnlyQueued(e))
+    const alreadyEnriched = primary.filter(e => e.status === 'active' && isEnriched(e)).length
+    if (options.limit !== undefined) todo = todo.slice(0, Math.max(0, options.limit))
+    const items: EnrichPlanItem[] = []
+    let unlabelled = 0
+    for (let i = 0; i < todo.length; i += batchSize) {
+      const batch = todo.slice(i, i + batchSize)
+      let labels = new Map<string, EnrichLabel>()
+      try {
+        labels = parseEnrichReply(await llm(buildEnrichPrompt(batch)), batch.map(e => e.id))
+      } catch (err) {
+        logger.warning(`[plur] enrich: a model call failed (${(err as Error).message}); ${batch.length} engram(s) left unlabelled`)
+      }
+      for (const e of batch) {
+        const label = labels.get(e.id)
+        if (!label) { unlabelled++; continue }
+        items.push({
+          id: e.id,
+          statement_hash: computeContentHash(e.statement),
+          ...label,
+          memory_class_from: e.knowledge_type?.memory_class ?? null,
+          memory_class_to: KIND_TO_MEMORY_CLASS[label.kind],
+          statement: e.statement.length > 120 ? e.statement.slice(0, 117) + '...' : e.statement,
+        })
+      }
+      options.onBatch?.(Math.min(i + batchSize, todo.length), todo.length)
+    }
+    return {
+      version: 1,
+      kind: 'plur.enrich-plan',
+      created_at: new Date().toISOString(),
+      enricher: { model, version: ENRICHER_VERSION },
+      items,
+      skipped: { already_enriched: alreadyEnriched, unlabelled },
+    }
+  }
+
+  /**
+   * Apply an enrichment plan through the change journal (W10): adds
+   * `structured_data.enrichment` and re-judges `memory_class`; the statement
+   * is never touched. Skips, per item, a row that is gone, not active, already
+   * enriched (so a second run changes nothing) or whose statement changed
+   * since the plan. One journalled change; nothing journalled when nothing
+   * applies. `limit` stops after that many rows.
+   */
+  async applyEnrichmentPlan(plan: EnrichPlan, options: { limit?: number } = {}): Promise<EnrichApplyResult> {
+    this._assertWritable()
+    this._remoteOnlyRefuseLocalStore('Applying an enrichment plan (run it outside the remote-only folder)')
+    if (!plan || plan.kind !== 'plur.enrich-plan' || !Array.isArray(plan.items) || !plan.enricher?.model) {
+      throw new TypeError('applyEnrichmentPlan: not an enrichment plan (expected kind "plur.enrich-plan")')
+    }
+    const limit = options.limit ?? Infinity
+    if (!(limit >= 1)) throw new TypeError('applyEnrichmentPlan: limit must be at least 1')
+    const at = plan.created_at.slice(0, 10)
+    const decide = (get: (id: string) => Engram | undefined) => {
+      const rows: Engram[] = []
+      const skipped: EnrichApplyResult['skipped'] = []
+      for (const item of plan.items) {
+        if (rows.length >= limit) break
+        const row = get(item.id)
+        if (!row) { skipped.push({ id: item.id, reason: 'not in the local primary store' }); continue }
+        if (row.status !== 'active') { skipped.push({ id: item.id, reason: `not active (${row.status})` }); continue }
+        if (isEnriched(row)) { skipped.push({ id: item.id, reason: 'already enriched' }); continue }
+        if (computeContentHash(row.statement) !== item.statement_hash) { skipped.push({ id: item.id, reason: 'statement changed since the plan' }); continue }
+        if (!(ENRICH_KINDS as readonly string[]).includes(item.kind)) { skipped.push({ id: item.id, reason: `invalid kind ${String(item.kind)}` }); continue }
+        const label: EnrichLabel = { kind: item.kind, task_family: item.task_family, outcome: item.outcome ?? null, applies_when: item.applies_when ?? null }
+        rows.push(enrichRow(row, label, plan.enricher, at))
+      }
+      return { rows, skipped }
+    }
+    const primary = await this._loadCached(this.paths.engrams)
+    const index = new Map(primary.map(e => [e.id, e]))
+    const preview = decide(id => index.get(id))
+    if (preview.rows.length === 0) return { change: null, applied: [], skipped: preview.skipped }
+    let inLock: ReturnType<typeof decide> = { rows: [], skipped: [] }
+    const change = await this.beginChange('enrich.apply', { enricher: plan.enricher, plan_created_at: plan.created_at, limit: options.limit ?? null })
+      .apply(tx => {
+        inLock = decide(id => tx.get(id))
+        for (const row of inLock.rows) tx.put(row)
+      })
+    return {
+      change,
+      applied: inLock.rows.map(r => ({ id: r.id, kind: (r.structured_data as any).enrichment.kind, memory_class: r.knowledge_type!.memory_class })),
+      skipped: inLock.skipped,
     }
   }
 

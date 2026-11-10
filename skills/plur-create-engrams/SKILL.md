@@ -47,6 +47,39 @@ Nothing was lost. Each part moved to the field whose job it is. The long version
 
 Length is a symptom, not the rule. Aim for 100–300 characters of `statement`; past ~600 you are almost certainly carrying another field's content. Exceed it when a dependent procedure genuinely needs the steps together.
 
+## The structured form: statement plus body
+
+The statement is the one line an agent acts on. Most memories worth keeping also deserve a **structured body**, written into `structured_data.body`, that carries what the line cannot: the situation it is for, the steps, the reason, the trap. The body is indexed for recall, so it is where the situation words go. In a 2026-11-09 test, replacing one-liners with structured items lifted top-10 recall from 55% to 62%.
+
+```text
+When: <the situation, in the words a future task will contain>
+Do: <the action, or what is true>
+Why: <the mechanism — and so when it stops holding>
+Pitfalls: <the near-miss, what goes wrong if you skip it>
+Anchors: <files, commands, endpoints, ids, names a query will mention>
+```
+
+- **At most ~300 tokens** (2,000 characters; longer is refused). Leave out a part that has nothing in it rather than padding it.
+- **The statement must still stand alone.** Injection renders the statement, not the body; the body helps the memory be found.
+- **`kind`** says what sort of memory it is: `rule` (a convention to follow), `tool` (a pointer to a command, script, endpoint or file), `fact` (how something is), `preference` (a taste or style choice), `experience` (what happened in a past attempt), `failure_lesson` (what went wrong and what to avoid). It sets `memory_class` when you give none: experiences and failure lessons are episodic, rules and tools procedural, facts and preferences semantic.
+- **`outcome`**: `success` or `failure`, or a short stated result ("p95 fell to 2 s"). Only when the source says so. Never guess one.
+- **Distil failure lessons.** When something went wrong, record the lesson, not the transcript: the trigger, the wrong move, the right move, and how to tell next time. `kind: failure_lesson`, `outcome: failure`, the incident date in `source`. One lesson per engram.
+
+```json
+{
+  "statement": "Read a spilled injection file in full before acting; head-and-tail reading skips the rules in the middle.",
+  "domain": "plur.engineering.injection",
+  "source": "2026-09-07 session: 4% of a 115,052-char injection was read",
+  "structured_data": {
+    "kind": "failure_lesson",
+    "outcome": "failure",
+    "body": "When: plur_session_start or a hook returns a pointer to a file instead of the memories.\nDo: read the whole file in ~80,000-char slices before the first action.\nWhy: a pointer reads like a result you already have, so skipping it fails silently.\nPitfalls: reading only the head and tail; the redaction rules sat in the unread middle.\nAnchors: session_start, spilled payload, tool-result limit, truncated injection."
+  }
+}
+```
+
+`plur_learn` accepts `structured_data` with exactly `body`, `kind` and `outcome`; the CLI takes `--body`, `--kind`, `--outcome`. Any other key is refused. `plur enrich` labels existing memories with a kind after the fact, without touching their statements.
+
 ## Findability: write the situation, not the subject
 
 An engram that never surfaces is worth nothing, and relevance is not automatic. Three things decide whether yours floats up.
@@ -57,15 +90,15 @@ Write the words a future *task* will contain, not the words your topic belongs t
 
 **2. One topic per record.** An embedding is a centroid. Two claims in one engram produce a vector between them that matches neither well. Splitting raises the score of both.
 
-**3. A behavioural rule usually cannot be retrieved at all — pin it.** This is the hard limit, and it is measured, not theoretical. Twelve rewritten rules were probed with the situation each one governs, phrased as a real task would phrase it. **R@1 was 2/12 and R@5 was 3/12.**
+**3. A behavioural rule is hard to retrieve — give it a situation, not a pin.** This is the hard limit, and it is measured, not theoretical. Twelve rewritten rules were probed with the situation each one governs, phrased as a real task would phrase it. **R@1 was 2/12 and R@5 was 3/12.**
 
 The failure is structural. For *"publish the new version to npm"*, the top five results were all about npm publishing mechanics — they repeat "npm" and "publish", while a governance rule about sign-off does not. The words that describe a situation are the words that describe its topic, and the topic always has more documents. A rule competes against facts and loses.
 
 Situation-words help only when the situation is lexically distinctive: *"ssh into the client VPS"* ranked #1, *"investor deck, can we mention the pilots"* ranked #5. Generic situations — *"ready to ship"*, *"finished that part"* — ranked nowhere at all.
 
-So: write the situation words anyway, because they are what buys you the distinctive cases. But **do not rely on retrieval for a rule you need obeyed unprompted.** That is what `pinned` is for, and it is the only mechanism that works for this class. A behavioural rule left unpinned is a rule that fires on the rare task whose wording happens to be unusual.
+So: write the situation words — in the statement where they fit, and in the structured body's `When:` and `Anchors:` lines where they do not. They are what buys you the distinctive cases. **Do not pin to compensate.** Pins are loaded into every session whatever the task, and a pinned set grown by agents crowds out the memories a task actually needs. If you believe a rule needs to be always loaded, say so to the owner and let them decide.
 
-`rationale` and `tags` are indexed as well as `statement`, so a concrete mechanism sentence adds retrieval surface at no cost to the statement's length. **Caveat:** for constraints, `rationale` is indexed but *not rendered* to the model (see *What the model actually receives*). It helps findability, not comprehension.
+`rationale`, `tags` and the structured body are indexed as well as `statement`, so a concrete mechanism sentence adds retrieval surface at no cost to the statement's length. **Caveat:** for constraints, `rationale` is indexed but *not rendered* to the model (see *What the model actually receives*). It helps findability, not comprehension.
 
 ## Identify the knowledge worth keeping
 
@@ -110,9 +143,9 @@ For changes, compare the same entity, scope, version and measurement conditions 
 
 Choose the broadest scope the source justifies. A standing preference can be global immediately; a project incident does not become global because its wording sounds general. Set `domain` on every record — it is the primary routing signal, and a record without one falls to `global` regardless of content.
 
-**Pinning is for rules you must obey unprompted.** A fact you need sometimes should be recalled, not pinned. In a real store audited on 2026-09-07, 12 of 46 pinned engrams were facts or history — positioning theses, incident write-ups, architecture notes — none of them things to obey.
+**Pin only when the owner explicitly asks** for that memory to be pinned ("pin this", "always load this"). Do not set `pinned: true` on your own judgement, however important a rule looks — propose it instead and give the reason. A fact you need sometimes should be recalled, not pinned. In a real store audited on 2026-09-07, 12 of 46 pinned engrams were facts or history — positioning theses, incident write-ups, architecture notes — none of them things to obey.
 
-The pinned set has a **quota** (`injection_budget × injection.pinned_ratio`). "Always-load" only means something if the set fits, so `plur_pin` **refuses** a pin that would exceed it and returns current usage plus unpin candidates. Expect refusal; resolve it by unpinning or raising the limit, and put that choice to the user rather than picking one. Candidates are ordered by what they free, which is arithmetic — not by importance, which nothing can rank for you.
+The pinned set has a **quota** (`injection_budget × injection.pinned_ratio`). "Always-load" only means something if the set fits, so `plur_pin` **refuses** a pin that would exceed it and returns current usage plus unpin candidates. Expect refusal; resolve it by unpinning or raising the limit, and put that choice to the owner rather than picking one. Candidates are ordered by what they free, which is arithmetic — not by importance, which nothing can rank for you.
 
 Keep epistemic standing, decision commitment and lifecycle separate. An observed event is not its explanation; an approved experiment is not a proven hypothesis.
 
@@ -151,4 +184,4 @@ Choose cognitive labels to describe the knowledge honestly, not to obtain a stro
 
 For each proposed memory, name one task where it should fire and one plausible near-match where it should not. Check that it contributes information or a decision criterion, stays inside its evidence, and survives its rendered layer. A simple fact does not need a manufactured test suite.
 
-Deliver readable statements plus the requested records, with assumptions and unresolved evidence identified. Prefer the smallest useful set; explain significant merges or scope decisions. Apply store changes when the request or workflow authorises it — creating illustrative examples does not authorise installing them as live memories — and do not add an approval step where the action is already authorised.
+Deliver readable statements plus the requested records, with assumptions and unresolved evidence identified. Give each a `kind`, a structured body when it carries more than one line can, and an `outcome` only when stated. Prefer the smallest useful set; explain significant merges or scope decisions. Apply store changes when the request or workflow authorises it — creating illustrative examples does not authorise installing them as live memories — and do not add an approval step where the action is already authorised.

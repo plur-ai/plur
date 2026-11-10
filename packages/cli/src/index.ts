@@ -71,6 +71,10 @@ Commands:
                           --llm-cmd "<cmd>" (host model: prompt on stdin, answer on stdout)
   consolidate --apply <f> Merge the proposed clusters (--limit 1 first; --yes; consolidate.apply_enabled)
   consolidate --undo <id> Undo one merged cluster by its change id
+  rescope --plan|--apply <file>|--undo <change>
+                          Propose scopes for global engrams from covers, apply as one undoable change
+  enrich --plan|--apply <file>|--undo <change>
+                          Label memories (kind, outcome, when it applies) with a host model; undoable
   upload                  Preview local memories for authorized team scopes
                           --yes sends; --only <id,…> limits the selection
   migrate [up|down|status] Run schema migrations
@@ -188,6 +192,7 @@ const COMMANDS: Record<string, string> = {
   promote: './commands/promote.js',
   rescope: './commands/rescope.js',
   consolidate: './commands/consolidate.js',
+  enrich: './commands/enrich.js',
   upload: './commands/upload.js',
   'similarity-search': './commands/similarity-search.js',
   stores: './commands/stores.js',

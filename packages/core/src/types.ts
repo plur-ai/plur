@@ -2,6 +2,7 @@ import type { RemoteOnlyStatus } from './remote-only.js'
 import type { Engram, MeasuredUnder } from './schemas/engram.js'
 import type { InjectionSource } from './history.js'
 import type { RecallRemoteReport } from './remote-recall.js'
+import type { LearnStructuredData } from './enrich.js'
 export type { Engram, KnowledgeAnchor, Association, MeasuredUnder } from './schemas/engram.js'
 export type { Episode } from './schemas/episode.js'
 export type { PlurConfig } from './schemas/config.js'
@@ -148,6 +149,16 @@ export interface LearnContext {
    * `MCP_REINFORCE_EXACT_DEFAULT`); core's own default is off. Never persisted.
    */
   reinforce_exact_default?: boolean
+  /**
+   * The structured form of the memory (overhaul W10): `body` (when to apply,
+   * what to do, why, pitfalls, anchors — about 300 tokens at most), `kind`
+   * (rule, tool, fact, preference, experience, failure_lesson) and `outcome`
+   * when the source states one. Stored in `structured_data`; the body is
+   * indexed for recall. Any other key is refused (`_`-prefixed keys are
+   * PLUR's own bookkeeping). A stated kind sets `memory_class` when none is
+   * given.
+   */
+  structured_data?: LearnStructuredData
 }
 
 /** Extended context for async learn with LLM dedup. */

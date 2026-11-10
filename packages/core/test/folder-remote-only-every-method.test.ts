@@ -179,6 +179,10 @@ describe('every public Plur method in a remote-only folder', () => {
       // Store consolidation (overhaul W6): planning and health read the personal store; apply writes it.
       consolidatePlan: [{}], consolidateApply: [{ kind: 'plur.consolidate.plan', version: 1, plan_id: 'CPL-none', clusters: [] }],
       storeHealth: [], reinforcementOf: [{}],
+      // Rescope plans (W7) and enrichment (W10) read and rewrite personal rows.
+      planRescope: [], applyRescopePlan: [{ version: 1, kind: 'plur.rescope-plan', created_at: '2026-11-10', considered: 0, items: [], unmapped: { count: 0, ids: [] } }],
+      planEnrichment: [{ llm: async () => '[]', model: 'm' }],
+      applyEnrichmentPlan: [{ version: 1, kind: 'plur.enrich-plan', created_at: '2026-11-10', enricher: { model: 'm', version: 'v' }, items: [], skipped: { already_enriched: 0, unlabelled: 0 } }],
     }
     const names = Object.getOwnPropertyNames(Plur.prototype).filter(n => n !== 'constructor' && !n.startsWith('_'))
     const getters = names.filter(n => Object.getOwnPropertyDescriptor(Plur.prototype, n)!.get)
@@ -212,6 +216,8 @@ describe('every public Plur method in a remote-only folder', () => {
       'undoChange', 'listChanges', 'getChange',
       // Consolidation reads and rewrites personal rows in full (overhaul W6).
       'consolidatePlan', 'consolidateApply', 'storeHealth',
+      // Rescope plans and enrichment read personal rows (W7, W10); enrichment sends them to a model.
+      'planRescope', 'applyRescopePlan', 'planEnrichment', 'applyEnrichmentPlan',
     ])
     const unexpected: string[] = []
     const leaks: string[] = []
