@@ -270,9 +270,14 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     } catch { /* advisory only */ }
   }
 
+  // Overhaul D8: with learn.reinforce_exact on, an exact restatement
+  // reinforced an existing engram instead of writing a new one.
+  const reinforced = plur.reinforcementOf(engram)
+
   if (shouldOutputJson(flags)) {
     outputJson({
       id: reportedId,
+      ...(reinforced ? { decision: 'REINFORCE', existing_id: reinforced.existing_id, swallowed: reinforced.swallowed } : {}),
       statement: engram.statement,
       scope: engram.scope,
       type: engram.type,
@@ -293,7 +298,9 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     })
   } else {
     // Confirmation of a requested mutation → suppressed by --quiet (#730).
-    outputInfo(`Learned: "${engram.statement}"`, flags)
+    outputInfo(reinforced
+      ? `Reinforced the existing engram: "${engram.statement}" (your text "${reinforced.swallowed}" says the same)`
+      : `Learned: "${engram.statement}"`, flags)
     outputInfo(`  ID: ${reportedId} | Scope: ${engram.scope} | Type: ${engram.type}${engram.domain ? ` | Domain: ${engram.domain}` : ''}`, flags)
     if (delivered.delivery === 'outbox') {
       // Not where a reader assumes a team save went — never suppressed.

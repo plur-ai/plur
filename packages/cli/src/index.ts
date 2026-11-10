@@ -67,6 +67,10 @@ Commands:
   promote <id>            Promote an engram to active
   rescope <id...> --to <scope>  Move engram(s) to another scope (#676)
                           [--keep-local] [--dry-run]; also: promote <id> --to <scope>
+  consolidate --plan      Propose merging near-copies (same scope); --out <file>, --nightly,
+                          --llm-cmd "<cmd>" (host model: prompt on stdin, answer on stdout)
+  consolidate --apply <f> Merge the proposed clusters (--limit 1 first; --yes; consolidate.apply_enabled)
+  consolidate --undo <id> Undo one merged cluster by its change id
   upload                  Preview local memories for authorized team scopes
                           --yes sends; --only <id,…> limits the selection
   migrate [up|down|status] Run schema migrations
@@ -183,6 +187,7 @@ const COMMANDS: Record<string, string> = {
   import: './commands/import.js',
   promote: './commands/promote.js',
   rescope: './commands/rescope.js',
+  consolidate: './commands/consolidate.js',
   upload: './commands/upload.js',
   'similarity-search': './commands/similarity-search.js',
   stores: './commands/stores.js',
