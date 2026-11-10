@@ -10,7 +10,7 @@ import { detectPlurStorage, type PlurPaths } from './storage.js'
 import { IndexedStorage } from './storage-indexed.js'
 import { PGLiteAdapter } from './storage-pglite.js'
 import { loadConfig, storeEntryForDisk, tokenFromEnv } from './config.js'
-import { ServerStoreEntrySchema, resolveInjectionOverhaul } from './schemas/config.js'
+import { ServerStoreEntrySchema, resolveInjectionOverhaul, resolveConsolidateConfig, resolveLearnConfig } from './schemas/config.js'
 import { collapseExpandedStores, isServerStoreEntry, serverEntryIdentities, identityBaseOf, EXPANDED_FROM, safeOrigin, withCompatScope, isSafeScopeName } from './store-expand.js'
 import { mergeSensitivityForWriteback } from './sensitivity-writeback.js'
 import { canonicalize } from './project-config.js'
@@ -87,6 +87,15 @@ import {
   ChangeJournalError, ChangeJournalUnsupportedError, ChangeNotFoundError, ChangeAlreadyUndoneError, ChangeConflictError,
   type ChangeRecord, type ChangeRowSnapshot, type ChangeTx, type PendingChange, type UndoChangeOptions,
 } from './change-journal.js'
+import {
+  candidatePairs, completeLinkageClusters, blockKeyFor, polarityOf, mixedPolarity, protectedReasons,
+  nightlySeed, seededSample, buildConsolidationPrompt, parseConsolidationResponse, mergeEngrams, retireInto,
+  remapReferences, newPlanId, assertConsolidationPlan, refreshProgress,
+  ConsolidateApplyDisabledError, ConsolidateTrialRequiredError, ConsolidateError,
+  CONSOLIDATE_QUEUE_FILE, CONSOLIDATE_STATE_FILE, CONSOLIDATE_CHANGE_KIND, CONSOLIDATION_PLAN_KIND, PARAPHRASE_QUEUE_THRESHOLD,
+  type ConsolidationPlan, type PlanCluster, type ConsolidationItem,
+  type ConsolidatePlanOptions, type ConsolidateApplyOptions, type ConsolidateApplyResult, type StoreHealth,
+} from './consolidate.js'
 import { SessionScopeRegistry, NO_SESSION } from './session-scopes.js'
 import { loadGitScopeSources, readGitOrigin, DISCOVERY_MAX_AGE_MS, DISCOVERY_FUTURE_SKEW_MS, type OriginRead, type GitScopeSource, type GitScopeOutcome } from './git-origin.js'
 import { checkOwnerOnly } from './owner-only.js'
@@ -476,6 +485,16 @@ export {
   ChangeJournalError, ChangeJournalUnsupportedError, ChangeNotFoundError, ChangeAlreadyUndoneError, ChangeConflictError,
   type ChangeRecord, type ChangeRowSnapshot, type ChangeTx, type PendingChange, type UndoChangeOptions, type ChangeConflictRow,
 } from './change-journal.js'
+export {
+  candidatePairs, completeLinkageClusters, blockKeyFor, polarityOf, mixedPolarity, protectedReasons,
+  nightlySeed, seededSample, seededRandom, buildConsolidationPrompt, parseConsolidationResponse,
+  mergeEngrams, retireInto, remapReferences, assertConsolidationPlan,
+  ConsolidateError, ConsolidateApplyDisabledError, ConsolidateTrialRequiredError, ConsolidatePlanInvalidError,
+  CONSOLIDATE_QUEUE_FILE, CONSOLIDATE_STATE_FILE, CONSOLIDATE_CHANGE_KIND, CONSOLIDATION_PLAN_KIND, PARAPHRASE_QUEUE_THRESHOLD,
+  type ConsolidationPlan, type PlanCluster, type PlanMember, type ConsolidationItem, type NeighbourPair, type Cluster,
+  type ClusterDecision, type ConsolidationPinRequest,
+  type ConsolidatePlanOptions, type ConsolidateApplyOptions, type ConsolidateApplyResult, type StoreHealth, type ConsolidateSkipReason,
+} from './consolidate.js'
 export type { ManifestSummary, PayloadDescriptor, Producer, Signer, CapsuleHeader, CapsulePreamble } from './schemas/capsule.js'
 export {
   CAPSULE_MAGIC,
@@ -2263,6 +2282,8 @@ export class Plur {
    * file does the same job (decision C3, `_claimOutboxEntry`).
    */
   private _outboxInFlight = new Set<string>()
+  /** Write-time reinforcements (D8), keyed by the engram object `learn` returned. */
+  private _reinforced = new WeakMap<object, { decision: 'REINFORCE'; existing_id: string; existing_statement: string; swallowed: string }>()
   /**
    * What the ambiguity guards (#831 forget, #850 feedback) may conclude from a
    * store's cache WITHOUT a network call (core-index#7, round 2).
@@ -3589,6 +3610,19 @@ export class Plur {
     const currentSources = (target as any).sources ?? []
     target.write_count = currentCount + 1
     ;(target as any).sources = [...currentSources, this._buildSourceEntry(scope, context)]
+    // Overhaul D8: with `learn.reinforce_exact` on, an exact normalised
+    // restatement also REINFORCES the engram it matched — through the
+    // existing feedback and activation fields only (an automatic positive
+    // signal: strength and recency, never commitment) — when that engram is
+    // active, current, in this scope, not locked, not a draft, not a pack row
+    // and not waiting in an outbox. Otherwise the write is absorbed as before.
+    const reinforce = this._reinforceExactEnabled(context) && this._reinforceEligible(target, scope)
+    let reinforced = false
+    const today = new Date().toISOString().slice(0, 10)
+    if (reinforce && idx !== -1) {
+      applyFeedbackSignal(target, 'positive', today, { source: 'auto' })
+      reinforced = true
+    }
     // #852: an absorbed write left NO trace — no engram_created, no
     // recurrence_detected, nothing. That silence is why a misdirected
     // absorption could run for months without anyone seeing it, and it is the
@@ -3603,6 +3637,7 @@ export class Plur {
           matched_on: 'content_hash',
           write_count_after: target.write_count,
           scope,
+          ...(reinforce ? { reinforce: true } : {}),
           // Enough to spot a misdirected absorption without storing the
           // incoming statement verbatim.
           incoming_preview: statement.slice(0, 120),
@@ -3636,15 +3671,36 @@ export class Plur {
           if (!row || row.status !== 'active') return
           row.write_count = (row.write_count ?? (row as any).reference_count ?? 1) + 1
           ;(row as any).sources = [...((row as any).sources ?? []), sourceEntry]
+          if (reinforce && this._reinforceEligible(row, scope)) {
+            applyFeedbackSignal(row, 'positive', today, { source: 'auto' })
+            reinforced = true
+          }
           await this._writeEngrams(storeInfo.path, storeEngrams)
           await this._syncIndex()
           // The caller gets the persisted count, not the pre-lock guess.
           target.write_count = row.write_count
           ;(target as any).sources = (row as any).sources
+          if (reinforced) {
+            target.feedback_signals = row.feedback_signals
+            target.activation = row.activation
+          }
         })
       }
     }
+    if (reinforced) {
+      this._reinforced.set(target, { decision: 'REINFORCE', existing_id: target.id, existing_statement: target.statement, swallowed: statement })
+    }
     return target
+  }
+
+  /** May an exact restatement reinforce this engram (overhaul R8)? */
+  private _reinforceEligible(e: Engram, scope: string): boolean {
+    if (e.status !== 'active' || e.scope !== scope) return false
+    if ((e.relations?.superseded_by?.length ?? 0) > 0) return false
+    if (e.commitment === 'locked' || e.commitment === 'draft') return false
+    if (e.pack || (e as any)._pack) return false
+    if ((e as any).structured_data?._outbox || isRemoteOnlyQueued(e)) return false
+    return true
   }
 
   /**
@@ -5539,6 +5595,19 @@ export class Plur {
           })
         } catch { /* observation only */ }
       }
+      // Overhaul D8: a near-paraphrase of the engram just written (same
+      // scope, cosine >= 0.92) is not merged at write time; it is queued for
+      // the next consolidation plan. Only after a write (`excludeId` names it).
+      if (excludeId && this._reinforceExactEnabled(context)) {
+        try {
+          const own = context?.scope ?? (await this.getById(excludeId))?.scope
+          if (own) {
+            this._queueParaphrases(excludeId, own, scored
+              .filter(s => s.engram.scope === own)
+              .map(s => ({ id: s.engram.id, score: s.score, scope: s.engram.scope })))
+          }
+        } catch { /* queueing is best effort */ }
+      }
       return { mode: 'cosine', near_duplicates: ranked.slice(0, 3) }
     } catch (err) {
       logger.warning(`near-duplicate reporting unavailable: ${err}`)
@@ -6125,7 +6194,8 @@ export class Plur {
     // remote-only (audit of #1521, C1): no LLM UPDATE/MERGE decisions and no
     // similarity pass. Those rewrite rows by id and record statements in the
     // local history; here every item is a hash-checked ADD sent to the team.
-    return { ...deps, isLlmAvailable: () => false, similarityScores: undefined }
+    // No write-time reinforcement there either: matches are team rows.
+    return { ...deps, isLlmAvailable: () => false, similarityScores: undefined, reinforce: undefined, queueParaphrases: undefined }
   }
 
   private async _learnAsyncDepsAll() {
@@ -6189,6 +6259,21 @@ export class Plur {
       holdAsDraft: async (id: string) => {
         const e = await this.getById(id)
         if (e && e.commitment !== 'draft') await this.updateEngram({ ...e, commitment: 'draft' })
+      },
+      // Overhaul D8: an exact restatement goes through the routed write, whose
+      // duplicate path reinforces (the same code learn() and plur_learn use).
+      reinforce: async (hit: Engram, statement: string, context?: LearnContext) => {
+        if (!this._reinforceExactEnabled(context)) return null
+        if (!this._reinforceEligible(hit, context?.scope ?? hit.scope)) return null
+        const engram = await this.learnRouted(statement, context)
+        const decision: 'REINFORCE' | 'NOOP' | 'ADD' = this.reinforcementOf(engram)
+          ? 'REINFORCE'
+          : (engram.write_count ?? 1) > 1 ? 'NOOP' : 'ADD'
+        return { engram, decision }
+      },
+      queueParaphrases: (engram: Engram, neighbours: Array<{ id: string; score: number; scope?: string }>, context?: LearnContext) => {
+        if (!this._reinforceExactEnabled(context)) return
+        this._queueParaphrases(engram.id, engram.scope, neighbours)
       },
     }
   }
@@ -9733,6 +9818,422 @@ export class Plur {
   getChange(changeId: string): ChangeRecord | null {
     this._remoteOnlyRefuseLocalStore('Reading the change journal (run it outside the remote-only folder)')
     return readChangeJournal(this.paths.root).find(r => r.id === changeId) ?? null
+  }
+
+  // ---------------------------------------------------------------------------
+  // Store consolidation (overhaul W6; R1, R2, R9, D7) and store health
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Why a primary-store row is not a consolidation candidate, or null when it
+   * is: only active, current, locally owned rows are merged (D7). Drafts,
+   * superseded and retired rows, pack and secondary-store rows, rows queued
+   * for a team store and rows in a scope a team store serves are left alone.
+   */
+  private _consolidationExclusion(e: Engram): string | null {
+    if (e.status !== 'active') return 'inactive'
+    if ((e.relations?.superseded_by?.length ?? 0) > 0) return 'superseded'
+    if (e.commitment === 'draft') return 'draft'
+    if (e.pack) return 'pack'
+    if (parseNamespacedId(e.id) || (e as { _storeScope?: string })._storeScope !== undefined) return 'other_store'
+    if ((e as { structured_data?: { _outbox?: unknown } }).structured_data?._outbox || isRemoteOnlyQueued(e)) return 'queued'
+    if (typeof e.scope !== 'string' || this._isRemoteBackedScope(e.scope)) return 'team_scope'
+    return null
+  }
+
+  private _readConsolidateState(): { last_nightly_at?: string } {
+    try {
+      return JSON.parse(fs.readFileSync(join(this.paths.root, CONSOLIDATE_STATE_FILE), 'utf8')) ?? {}
+    } catch { return {} }
+  }
+
+  /** Ids queued by `learn` (near-paraphrases, D8) since `since` (all when null). */
+  private _readConsolidateQueue(since: string | null): string[] {
+    let text = ''
+    try { text = fs.readFileSync(join(this.paths.root, CONSOLIDATE_QUEUE_FILE), 'utf8') } catch { return [] }
+    const ids: string[] = []
+    for (const line of text.split('\n')) {
+      if (!line.trim()) continue
+      try {
+        const q = JSON.parse(line) as { at?: string; id?: string; neighbour_id?: string }
+        if (since && (q.at ?? '') <= since) continue
+        if (q.id) ids.push(q.id)
+        if (q.neighbour_id) ids.push(q.neighbour_id)
+      } catch { /* a torn line */ }
+    }
+    return [...new Set(ids)]
+  }
+
+  /**
+   * Append near-paraphrases of a just-written engram to the consolidation
+   * queue (D8): same-scope neighbours at or above
+   * {@link PARAPHRASE_QUEUE_THRESHOLD}. The write itself already happened and
+   * is not changed; the next `plur consolidate --plan` (nightly) looks at
+   * them. Best effort, never throws.
+   */
+  private _queueParaphrases(id: string, scope: string, neighbours: ReadonlyArray<{ id: string; score: number; scope?: string }>): number {
+    const hits = neighbours.filter(n => n.id !== id && n.score >= PARAPHRASE_QUEUE_THRESHOLD && (n.scope === undefined || n.scope === scope))
+    if (hits.length === 0) return 0
+    try {
+      if (this._remoteOnly) return 0
+      const at = new Date().toISOString()
+      const lines = hits.map(n => JSON.stringify({ at, id, neighbour_id: n.id, score: Number(n.score.toFixed(4)), scope })).join('\n') + '\n'
+      fs.appendFileSync(join(this.paths.root, CONSOLIDATE_QUEUE_FILE), lines, { encoding: 'utf8', mode: 0o600 })
+      return hits.length
+    } catch { return 0 }
+  }
+
+  /** Is write-time reinforcement on for this write (D8)? The config decides; the caller's default applies only when it is silent. */
+  private _reinforceExactEnabled(context?: { reinforce_exact_default?: boolean }): boolean {
+    const configured = (this.config as { learn?: { reinforce_exact?: boolean } }).learn?.reinforce_exact
+    if (typeof configured === 'boolean') return configured
+    if (typeof context?.reinforce_exact_default === 'boolean') return context.reinforce_exact_default
+    return resolveLearnConfig(this.config).reinforce_exact
+  }
+
+  /**
+   * Plan a consolidation of the primary store (`plur consolidate --plan`).
+   *
+   * Finds clusters of near-copies (complete linkage at `consolidate.threshold`,
+   * within one scope and, in group scopes, one author; R1, D7), drops clusters
+   * that mix a prohibition with a directive, marks clusters holding a pinned,
+   * locked or prohibition engram as needing the owner's approval, and asks the
+   * host model (`options.llm`) per batch whether each cluster can be merged
+   * and into which statement. Nothing in the store changes. The plan is
+   * returned; `onProgress` sees it after every model batch so a caller can
+   * save it, and `resumeFrom` continues one whose model pass stopped.
+   */
+  async consolidatePlan(options: ConsolidatePlanOptions = {}): Promise<ConsolidationPlan> {
+    this._remoteOnlyRefuseLocalStore('Planning a consolidation (run it outside the remote-only folder)')
+    this.reloadConfigIfChanged()
+    const now = options.now ?? new Date()
+    let plan: ConsolidationPlan
+    if (options.resumeFrom) {
+      assertConsolidationPlan(options.resumeFrom)
+      plan = structuredClone(options.resumeFrom)
+    } else {
+      plan = await this._buildConsolidationPlan(options, now)
+    }
+    if (options.llm) await this._decideClusters(plan, options.llm, options.batchSize ?? 8, options.onProgress)
+    refreshProgress(plan)
+    plan.updated_at = new Date().toISOString()
+    return plan
+  }
+
+  private async _buildConsolidationPlan(options: ConsolidatePlanOptions, now: Date): Promise<ConsolidationPlan> {
+    const cfg = resolveConsolidateConfig(this.config)
+    const threshold = options.threshold ?? cfg.threshold
+    const seed = options.seed ?? nightlySeed(now)
+    const corpus = await this._primaryStore.load()
+    const excluded: Record<string, number> = {}
+    const eligible: Engram[] = []
+    for (const e of corpus) {
+      const why = this._consolidationExclusion(e)
+      if (why) excluded[why] = (excluded[why] ?? 0) + 1
+      else eligible.push(e)
+    }
+    const { engramVectors } = await import('./embeddings.js')
+    const { vectors, missing } = await engramVectors(eligible, this.paths.root, { embedMissing: options.embedMissing ?? true })
+
+    let focus: Set<string> | undefined
+    let nightly: ConsolidationPlan['nightly']
+    if (options.nightly) {
+      const state = this._readConsolidateState()
+      const since = state.last_nightly_at ?? null
+      const changed = since
+        ? eligible.filter(e => (e.updated_at ?? e.created_at ?? '') > since).map(e => e.id)
+        : []
+      const queued = this._readConsolidateQueue(since)
+      const sampled = seededSample(eligible.map(e => e.id).sort(), seed, options.sampleSize ?? 200)
+      focus = new Set([...changed, ...queued, ...sampled])
+      nightly = { date: nightlySeed(now), changed_since: since, sampled_ids: sampled, queued_ids: queued, max_changes: cfg.nightly_max_changes }
+    }
+
+    const byId = new Map(eligible.map(e => [e.id, e]))
+    const items: ConsolidationItem[] = []
+    for (const e of eligible) {
+      const v = vectors.get(e.id)
+      if (v) items.push({ id: e.id, block: blockKeyFor(e), v })
+    }
+    const pairs = candidatePairs(items, { threshold, seed, focus })
+    const found = completeLinkageClusters(vectors, pairs, { threshold, maxSize: options.maxClusterSize ?? 8 })
+
+    let mixed = 0
+    let protectedCount = 0
+    const clusters: PlanCluster[] = []
+    for (const c of found.sort((x, y) => y.min_similarity - x.min_similarity)) {
+      const members = c.members.map(id => byId.get(id)!).sort((x, y) => (x.id < y.id ? -1 : 1))
+      if (mixedPolarity(members)) { mixed++; continue }
+      const reasons = [...new Set(members.flatMap(protectedReasons))]
+      if (reasons.length > 0) protectedCount++
+      clusters.push({
+        id: `K-${String(clusters.length + 1).padStart(4, '0')}`,
+        scope: members[0].scope,
+        members: members.map(e => ({
+          id: e.id,
+          statement: e.statement,
+          statement_hash: computeContentHash(e.statement),
+          pinned: (e as { pinned?: boolean }).pinned === true,
+          locked: e.commitment === 'locked',
+          polarity: polarityOf(e),
+          retrieval_strength: e.activation?.retrieval_strength ?? 0,
+        })),
+        min_similarity: Number(c.min_similarity.toFixed(4)),
+        polarity: polarityOf(members[0]),
+        protected_reasons: reasons,
+        requires_owner_approval: reasons.length > 0,
+        approved: false,
+        decision: 'pending',
+      })
+    }
+    const kept = nightly ? clusters.slice(0, nightly.max_changes) : clusters
+
+    const plan: ConsolidationPlan = {
+      kind: CONSOLIDATION_PLAN_KIND,
+      version: 1,
+      plan_id: newPlanId(now, seed),
+      created_at: now.toISOString(),
+      updated_at: now.toISOString(),
+      mode: options.nightly ? 'nightly' : 'full',
+      threshold,
+      seed,
+      seed_source: options.seed ? 'given' : 'date',
+      ...(nightly ? { nightly } : {}),
+      stats: {
+        rows: corpus.length,
+        eligible: eligible.length,
+        excluded,
+        without_vector: missing.length,
+        candidate_pairs: pairs.length,
+        clusters_found: found.length,
+        mixed_polarity: mixed,
+        protected: protectedCount,
+      },
+      clusters: kept,
+      progress: { decided: 0, pending: kept.length, complete: kept.length === 0, model_calls: 0, model_errors: 0 },
+    }
+    if (options.nightly && !this._readonly) {
+      try {
+        fs.writeFileSync(join(this.paths.root, CONSOLIDATE_STATE_FILE), JSON.stringify({ last_nightly_at: now.toISOString(), last_seed: seed, last_plan_id: plan.plan_id }, null, 2) + '\n', { mode: 0o600 })
+      } catch { /* the next nightly run looks further back; harmless */ }
+    }
+    return plan
+  }
+
+  /** Ask the model about every pending cluster, in batches; stop at the first failed call (the plan stays resumable). */
+  private async _decideClusters(
+    plan: ConsolidationPlan, llm: LlmFunction, batchSize: number,
+    onProgress?: (plan: ConsolidationPlan) => void | Promise<void>,
+  ): Promise<void> {
+    const pending = plan.clusters.filter(c => c.decision === 'pending')
+    const size = Math.max(1, batchSize)
+    for (let i = 0; i < pending.length; i += size) {
+      const batch = pending.slice(i, i + size)
+      let answer: string
+      try {
+        plan.progress.model_calls++
+        answer = await llm(buildConsolidationPrompt(batch.map(c => ({ members: c.members.map(m => ({ id: m.id, statement: m.statement })) }))))
+      } catch (err) {
+        plan.progress.model_errors++
+        plan.progress.last_error = err instanceof Error ? err.message : String(err)
+        refreshProgress(plan)
+        await onProgress?.(plan)
+        return
+      }
+      const parsed = parseConsolidationResponse(answer, batch.length)
+      batch.forEach((c, j) => {
+        const d = parsed[j]
+        if (d.decision === 'merge') { c.decision = 'merge'; c.merged_statement = d.statement; c.reason = d.reason }
+        else if (d.decision === 'split') { c.decision = 'split'; c.reason = d.reason }
+      })
+      refreshProgress(plan)
+      plan.updated_at = new Date().toISOString()
+      await onProgress?.(plan)
+    }
+  }
+
+  /**
+   * Apply a consolidation plan (`plur consolidate --apply <file> --yes`).
+   *
+   * Refuses unless `consolidate.apply_enabled` is true, and refuses an apply
+   * of more than one cluster until one cluster of this plan has been applied
+   * (the one-item trial, D7). Each merged cluster is one journalled change
+   * (`consolidate.merge`), undone with `undoChange(change_id)`: the merged
+   * engram is written (R2 invariants, {@link mergeEngrams}), the originals are
+   * retired with `superseded_by` (never deleted), and other local rows that
+   * referenced an original are pointed at the merged engram. A
+   * `consolidated_into` history event is written for each original.
+   *
+   * A cluster is skipped, with the reason, when the model did not say MERGE,
+   * when it holds a pinned, locked or prohibition engram the owner has not
+   * approved in the file, when a member changed since the plan, or when the
+   * merged statement would leak into its scope or flip its polarity.
+   */
+  async consolidateApply(plan: ConsolidationPlan, options: ConsolidateApplyOptions = {}): Promise<ConsolidateApplyResult> {
+    this._remoteOnlyRefuseLocalStore('Applying a consolidation (run it outside the remote-only folder)')
+    assertConsolidationPlan(plan)
+    this.reloadConfigIfChanged()
+    if (!resolveConsolidateConfig(this.config).apply_enabled) throw new ConsolidateApplyDisabledError()
+    this._assertChangeJournalSupported()
+    const appliedClusters = new Set(
+      readChangeJournal(this.paths.root)
+        .filter(r => r.kind === CONSOLIDATE_CHANGE_KIND && r.state === 'committed' && !r.undone_by && r.meta.plan_id === plan.plan_id)
+        .map(r => String(r.meta.cluster_id)),
+    )
+    if (appliedClusters.size === 0 && options.limit !== 1) throw new ConsolidateTrialRequiredError(plan.plan_id)
+    const limit = options.limit ?? Infinity
+    const result: ConsolidateApplyResult = { plan_id: plan.plan_id, applied: [], skipped: [] }
+    for (const cluster of plan.clusters) {
+      const skip = (reason: ConsolidateApplyResult['skipped'][number]['reason'], detail?: string) =>
+        result.skipped.push({ cluster_id: cluster.id, reason, ...(detail ? { detail } : {}) })
+      if (appliedClusters.has(cluster.id)) { skip('already_applied'); continue }
+      if (cluster.decision === 'split') { skip('split'); continue }
+      if (cluster.decision !== 'merge' || !cluster.merged_statement?.trim()) { skip('not_decided'); continue }
+      if (cluster.requires_owner_approval && cluster.approved !== true) { skip('needs_approval', cluster.protected_reasons.join(', ')); continue }
+      if (result.applied.length >= limit) { skip('limit'); continue }
+      const statement = cluster.merged_statement.trim()
+      if (polarityOf({ statement, polarity: null }) !== cluster.polarity) { skip('polarity_changed'); continue }
+      if (detectSecrets(statement).length > 0 || this._offendingHitsForScope(statement, cluster.scope).length > 0) { skip('sensitive'); continue }
+      if (this._isRemoteBackedScope(cluster.scope)) { skip('not_local', cluster.scope); continue }
+      const outcome = await this._applyConsolidationCluster(plan, cluster, statement, options.now ?? new Date())
+      if ('skip' in outcome) skip(outcome.skip, outcome.detail)
+      else result.applied.push(outcome)
+    }
+    return result
+  }
+
+  private async _applyConsolidationCluster(
+    plan: ConsolidationPlan, cluster: PlanCluster, statement: string, nowDate: Date,
+  ): Promise<ConsolidateApplyResult['applied'][number] | { skip: 'drifted' | 'needs_approval'; detail?: string }> {
+    const now = nowDate.toISOString()
+    const idsInUse = await this._idsInUse()
+    const memberIds = cluster.members.map(m => m.id)
+    const from = new Set(memberIds)
+    let mergedId = ''
+    const touched: string[] = []
+    class Skip extends Error { constructor(readonly reason: 'drifted' | 'needs_approval', readonly detail: string) { super(detail) } }
+    const change = this.beginChange(CONSOLIDATE_CHANGE_KIND, {
+      plan_id: plan.plan_id, cluster_id: cluster.id, members: memberIds, merged_statement: statement,
+    })
+    let record: ChangeRecord
+    try {
+      record = await change.apply(tx => {
+        const members: Engram[] = []
+        for (const m of cluster.members) {
+          const row = tx.get(m.id)
+          if (!row) throw new Skip('drifted', `${m.id} is gone`)
+          if (this._consolidationExclusion(row)) throw new Skip('drifted', `${m.id} is no longer an active, current, local engram`)
+          if (row.scope !== cluster.scope) throw new Skip('drifted', `${m.id} moved to scope ${row.scope}`)
+          if (computeContentHash(row.statement) !== m.statement_hash) throw new Skip('drifted', `${m.id} was edited since the plan`)
+          members.push(row)
+        }
+        if (mixedPolarity(members)) throw new Skip('drifted', 'the members no longer share a polarity')
+        if (members.some(e => protectedReasons(e).length > 0) && cluster.approved !== true) {
+          throw new Skip('needs_approval', 'a member became pinned, locked or a prohibition since the plan')
+        }
+        const all = tx.all()
+        mergedId = generateEngramId(all, idsInUse)
+        const merged = mergeEngrams(members, { id: mergedId, statement, now, planId: plan.plan_id, clusterId: cluster.id })
+        tx.put(merged)
+        for (const e of members) tx.put(retireInto(e, mergedId, now))
+        for (const row of all) {
+          if (from.has(row.id) || row.id === mergedId) continue
+          const remapped = remapReferences(row, from, mergedId)
+          if (!remapped) continue
+          // Only rows the journal can stage: local, not a pack, not a team scope.
+          if (row.pack || parseNamespacedId(row.id) || this._isRemoteBackedScope(row.scope)) continue
+          tx.put(remapped)
+          touched.push(row.id)
+        }
+      })
+    } catch (err) {
+      if (err instanceof Skip) return { skip: err.reason, detail: err.detail }
+      throw err
+    }
+    this._rememberMintedId(mergedId)
+    for (const id of memberIds) {
+      try {
+        this._appendHistory({
+          event: 'consolidated_into',
+          engram_id: id,
+          timestamp: now,
+          data: { into: mergedId, change_id: record.id, plan_id: plan.plan_id, cluster_id: cluster.id },
+          reason: 'store consolidation: merged near-copies into one engram',
+        })
+      } catch { /* history is an audit trail, never a gate on the write */ }
+    }
+    return { cluster_id: cluster.id, change_id: record.id, merged_id: mergedId, retired: memberIds, touched }
+  }
+
+  /**
+   * Store health for `plur status` (overhaul W6): size, the sampled near-copy
+   * share at 0.90 and 0.85, and the pin load against its share of the
+   * injection budget. Read-only and model-free: the near-copy sample uses only
+   * vectors already in the embedding cache (reported as `with_vector`), and
+   * the sample is seeded (default: today's date) so two runs on one day agree.
+   */
+  async storeHealth(options: { sampleSize?: number; seed?: string; now?: Date } = {}): Promise<StoreHealth> {
+    this._remoteOnlyRefuseLocalStore('Reading store health (run it outside the remote-only folder)')
+    const corpus = await this._primaryStore.load()
+    const active = corpus.filter(e => e.status === 'active')
+    const eligible = corpus.filter(e => !this._consolidationExclusion(e))
+    const seed = options.seed ?? nightlySeed(options.now ?? new Date())
+    let near_copy: StoreHealth['near_copy']
+    const { engramVectors } = await import('./embeddings.js')
+    const { vectors, embedder } = await engramVectors(eligible, this.paths.root, { embedMissing: false })
+    if (!embedder) {
+      near_copy = { available: false, reason: 'embeddings are off or the embedder is unavailable' }
+    } else if (vectors.size < 2) {
+      near_copy = { available: false, reason: 'the embedding cache holds no vectors for this store yet (run a recall or `plur consolidate --plan` first)' }
+    } else {
+      const withVector = eligible.filter(e => vectors.has(e.id))
+      const byBlock = new Map<string, Engram[]>()
+      for (const e of withVector) {
+        const k = blockKeyFor(e)
+        const list = byBlock.get(k)
+        if (list) list.push(e)
+        else byBlock.set(k, [e])
+      }
+      const sample = seededSample(withVector.map(e => e.id).sort(), seed, options.sampleSize ?? 100)
+      const byId = new Map(withVector.map(e => [e.id, e]))
+      let at90 = 0
+      let at85 = 0
+      for (const id of sample) {
+        const e = byId.get(id)!
+        const v = vectors.get(id)!
+        let best = -1
+        for (const o of byBlock.get(blockKeyFor(e)) ?? []) {
+          if (o.id === id) continue
+          const w = vectors.get(o.id)!
+          let s = 0
+          for (let d = 0; d < v.length; d++) s += v[d] * w[d]
+          if (s > best) best = s
+        }
+        if (best >= 0.9) at90++
+        if (best >= 0.85) at85++
+      }
+      near_copy = {
+        available: true, seed, sample_size: sample.length, with_vector: withVector.length, eligible: eligible.length,
+        share_090: sample.length ? Number((at90 / sample.length).toFixed(4)) : 0,
+        share_085: sample.length ? Number((at85 / sample.length).toFixed(4)) : 0,
+      }
+    }
+    const q = await this.pinnedQuota()
+    return {
+      rows: corpus.length,
+      active: active.length,
+      near_copy,
+      pins: { count: q.count, tokens: q.used, share_tokens: q.quota, pinned_ratio: this.config.injection?.pinned_ratio ?? 0.5, over_share: q.used > q.quota },
+    }
+  }
+
+  /**
+   * The write-time reinforcement a `learn` reported (D8), or null. Set on the
+   * engram object a `learn`/`learnRouted` returned when the write was an exact
+   * normalised restatement that reinforced an existing engram.
+   */
+  reinforcementOf(engram: object): { decision: 'REINFORCE'; existing_id: string; existing_statement: string; swallowed: string } | null {
+    return this._reinforced.get(engram) ?? null
   }
 
   private _assertChangeJournalSupported(): void {

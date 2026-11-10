@@ -838,9 +838,26 @@ export function _resetSessionTelemetry(): void {
  * when the write was absorbed as a duplicate; a fresh engram has write_count 1
  * (or none). Mirrors plur_learn_batch's `NOOP` + `existing_id`.
  */
-function learnDecision(engram: { id: string; write_count?: number }): { decision: 'ADD' } | { decision: 'NOOP'; existing_id: string } {
+function learnDecision(engram: { id: string; write_count?: number }, plur?: { reinforcementOf?(e: object): { existing_id: string; existing_statement: string; swallowed: string } | null }):
+  | { decision: 'ADD' }
+  | { decision: 'NOOP'; existing_id: string }
+  | { decision: 'REINFORCE'; existing_id: string; reinforced: { existing_statement: string; swallowed: string } } {
+  // Overhaul D8: an exact normalised restatement that reinforced the engram
+  // it matched. The reply carries both texts so the caller sees what was
+  // swallowed and what it was folded into.
+  const r = plur?.reinforcementOf?.(engram)
+  if (r) return { decision: 'REINFORCE', existing_id: r.existing_id, reinforced: { existing_statement: r.existing_statement, swallowed: r.swallowed } }
   return (engram.write_count ?? 1) > 1 ? { decision: 'NOOP', existing_id: engram.id } : { decision: 'ADD' }
 }
+
+/**
+ * Write-time reinforcement default for MCP writes (overhaul D8). The ONE
+ * place the MCP default lives: plur_learn and plur_learn_batch pass it as
+ * `reinforce_exact_default`, which applies only when config.yaml has no
+ * `learn.reinforce_exact`. Core's own default stays off. The release default
+ * is an owner decision; change it here.
+ */
+export const MCP_REINFORCE_EXACT_DEFAULT = true
 
 /**
  * The `.plur.yaml` scope/domain this server may adopt (decision E3, 2026-09-26).
@@ -1589,7 +1606,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
       name: 'plur_learn',
       description:
         'Create an engram — record a reusable learning, preference, or correction. ' +
-        'A write is never suppressed by similarity: exact content-hash duplicates NOOP, and anything merely SIMILAR ' +
+        'A write is never suppressed by similarity: an exact restatement (same text after normalising case, whitespace and punctuation, same scope) REINFORCEs the existing engram (decision REINFORCE with existing_id; NOOP when learn.reinforce_exact is false), and anything merely SIMILAR ' +
         'is written and reported back in `dedup.near_duplicates` (closest existing engrams, their cosine scores, and ' +
         'a preview of each neighbour\'s own statement — read them before moving on; that is what they are for) ' +
         'so you can supersede or merge deliberately. High similarity is a reason to look, not a decision — cosine ' +
@@ -1743,6 +1760,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
           // NO_SESSION and only selects the default scope.
           session_id: _resolveInjectionSession(args),
           llm,
+          reinforce_exact_default: MCP_REINFORCE_EXACT_DEFAULT,
         }
         // Route through learnRouted FIRST so remote-scope writes get
         // the server-assigned engram id (e.g. ENG-2026-05-06-007).
@@ -1923,7 +1941,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
             // hands back the EXISTING engram with write_count bumped; reporting
             // it as 'ADD' told the caller a new memory exists when none was
             // written. Same vocabulary as plur_learn_batch (formal Adapters #1).
-            ...learnDecision(engram),
+            ...learnDecision(engram, plur),
             // #1264: always present. The warning sits BEFORE the others so a
             // more specific `warning` below (outbox, demotion, refusal) still
             // wins that key; `delivery_warning` keeps this one either way.
@@ -1973,7 +1991,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
             // without hitting the collision the id form mismatch causes.
             // Outbox engrams stay local-form (same rule as line 1149).
             id: isOutbox ? engram.id : plur.readIdFor(engram), statement: engram.statement,
-            scope: engram.scope, type: engram.type, ...learnDecision(engram),
+            scope: engram.scope, type: engram.type, ...learnDecision(engram, plur),
             delivery: delivered.delivery,
             destination: delivered.destination,
             ...(delivered.host ? { delivered_to: delivered.host } : {}),
@@ -2094,6 +2112,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
             // Batch writes are session writes too — without this every engram
             // from plur_learn_batch lands with sources[].session_id null.
             session_id: _resolveInjectionSession(args),
+            reinforce_exact_default: MCP_REINFORCE_EXACT_DEFAULT,
           },
         }))
         const maxLlmCalls = typeof args.max_llm_calls === 'number' ? args.max_llm_calls : undefined
@@ -2255,6 +2274,9 @@ function getAllToolDefinitions(): ToolDefinition[] {
             type: r.engram.type,
             decision: r.decision,
             ...(r.existing_id ? { existing_id: r.existing_id } : {}),
+            ...(r.decision === 'REINFORCE' && r.input_index !== undefined
+              ? { reinforced: { existing_statement: r.engram.statement, swallowed: String(raw[r.input_index]?.statement ?? '') } }
+              : {}),
             // Batch learning never overwrites (2026-10-18): the checker's
             // UPDATE/MERGE became a linked ADD, said here in plain words.
             ...(r.likely_duplicate_of ? { likely_duplicate_of: r.likely_duplicate_of } : {}),
@@ -4575,7 +4597,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
         const projectDomain = readTrustedProjectConfig(plur).domain ?? undefined
 
         let engrams_created = 0
-        const engram_results: Array<{ index: number; id: string; scope: string; delivery: string; destination: string }> = []
+        const engram_results: Array<{ index: number; id: string; scope: string; delivery: string; destination: string; decision?: 'REINFORCE' }> = []
         const engrams_failed: Array<{ index: number; statement: string; error: string }> = []
         const unsaved: Array<{ index: number; statement: string } & RootsDisagreeError['refusal']> = []
         for (let i = 0; i < items.length; i++) {
@@ -4603,9 +4625,11 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
               // An end-of-session summary is the model's reading of what
               // happened, not something the user stated outright (#963).
               claim_class: 'inferred',
+              // Same write-time reinforcement as plur_learn (overhaul D8).
+              reinforce_exact_default: MCP_REINFORCE_EXACT_DEFAULT,
             })
             const delivered = plur.deliveryOf(saved)
-            engram_results.push({ index: i, id: delivered.delivery === "outbox" ? saved.id : plur.readIdFor(saved), scope: saved.scope, delivery: delivered.delivery, destination: delivered.destination })
+            engram_results.push({ index: i, id: delivered.delivery === "outbox" ? saved.id : plur.readIdFor(saved), scope: saved.scope, delivery: delivered.delivery, destination: delivered.destination, ...(plur.reinforcementOf(saved) ? { decision: 'REINFORCE' as const } : {}) })
             engrams_created++
           } catch (err) {
             if (err instanceof RootsDisagreeError) { unsaved.push({ index: i, statement, ...err.refusal }); continue }

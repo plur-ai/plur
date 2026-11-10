@@ -176,6 +176,9 @@ describe('every public Plur method in a remote-only folder', () => {
       beginChange: ['test.kind'], undoChange: ['CHG-none'], listChanges: [], getChange: ['CHG-none'],
       // Retrieval and injection overhaul (W1/W5): reads config only.
       injectionSettings: [],
+      // Store consolidation (overhaul W6): planning and health read the personal store; apply writes it.
+      consolidatePlan: [{}], consolidateApply: [{ kind: 'plur.consolidate.plan', version: 1, plan_id: 'CPL-none', clusters: [] }],
+      storeHealth: [], reinforcementOf: [{}],
     }
     const names = Object.getOwnPropertyNames(Plur.prototype).filter(n => n !== 'constructor' && !n.startsWith('_'))
     const getters = names.filter(n => Object.getOwnPropertyDescriptor(Plur.prototype, n)!.get)
@@ -207,6 +210,8 @@ describe('every public Plur method in a remote-only folder', () => {
       'rerankerSelfEval',
       // The change journal holds personal rows in full (overhaul W0).
       'undoChange', 'listChanges', 'getChange',
+      // Consolidation reads and rewrites personal rows in full (overhaul W6).
+      'consolidatePlan', 'consolidateApply', 'storeHealth',
     ])
     const unexpected: string[] = []
     const leaks: string[] = []

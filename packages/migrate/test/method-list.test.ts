@@ -111,6 +111,10 @@ const ALWAYS_ASYNC = new Set([
   // lock and writes through the async PrimaryStore seam; new, so there is no
   // pre-0.16 call site to rewrite.
   'undoChange',
+  // Born async (overhaul W6) — consolidation plans and applies through the
+  // async PrimaryStore seam and the change journal, and store health reads
+  // the embedding cache; new, so there is no pre-0.16 call site to rewrite.
+  'consolidatePlan', 'consolidateApply', 'storeHealth',
   // Born async (#1631, plan B Task 5) — registers a company server entry and
   // reads the outbox (listOutbox is async) for the queued-save counts; new in
   // this release, so there is no pre-0.16 call site to rewrite.

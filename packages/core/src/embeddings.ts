@@ -751,6 +751,47 @@ export async function fillEmbeddingCache(engrams: Engram[], storagePath?: string
   return added
 }
 
+/**
+ * The stored vector of each engram, for whole-store passes (consolidation and
+ * the store-health sample, overhaul W6).
+ *
+ * Reads the embedding cache (the same vectors recall uses, keyed to the same
+ * search text). With `embedMissing` the engrams the cache lacks are embedded
+ * and saved as they go, exactly as {@link fillEmbeddingCache} does; without
+ * it nothing is embedded and nothing is written, so a read-only caller
+ * (`plur status`) never loads the model. `embedder` is null when embeddings
+ * are off or the embedder could not be resolved.
+ */
+export async function engramVectors(
+  engrams: Engram[],
+  storagePath: string,
+  opts: { embedMissing?: boolean } = {},
+): Promise<{ vectors: Map<string, Float32Array>; missing: string[]; embedder: { name: string; dim: number } | null }> {
+  engrams = withoutRemoteOnlyQueued(engrams)
+  const vectors = new Map<string, Float32Array>()
+  const missing: string[] = []
+  const activeMeta = await getActiveEmbedderMeta()
+  if (!activeMeta) return { vectors, missing: engrams.map(e => e.id), embedder: null }
+  const cachePath = join(storagePath, '.embeddings-cache.json')
+  const cache = loadCache(cachePath, activeMeta)
+  const progress = opts.embedMissing ? cacheProgress(cachePath, cache) : null
+  let failed = false
+  for (const engram of engrams) {
+    const text = engramSearchText(engram)
+    const hash = hashStatement(text)
+    const hit = cache.entries[engram.id]
+    if (hit?.hash === hash) { vectors.set(engram.id, new Float32Array(hit.embedding)); continue }
+    if (!progress || failed) { missing.push(engram.id); continue }
+    const v = await embed(text)
+    if (!v) { failed = true; missing.push(engram.id); continue }
+    cache.entries[engram.id] = { hash, embedding: Array.from(v) }
+    progress.added(engram.id)
+    vectors.set(engram.id, v)
+  }
+  progress?.done()
+  return { vectors, missing, embedder: activeMeta }
+}
+
 /** Is the active embedder a remote API (no local model to warm or fill)? */
 export async function activeEmbedderIsRemote(): Promise<boolean> {
   const embedder = await getEmbedder()
