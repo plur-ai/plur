@@ -59,10 +59,23 @@ function branchLabel(branch: string | null | undefined): string {
 }
 
 /** Read at most `max` bytes of a small file, or null. */
+/**
+ * Open `path` for reading only if it is a regular file (H11): checked before
+ * the open, and the open is O_NONBLOCK, so a FIFO or device planted where a
+ * git HEAD or a transcript is expected can never block the hook's
+ * synchronous open (the watchdog cannot fire while the thread is blocked).
+ * Callers still fstat the fd (a swap between the check and the open).
+ */
+function openRegularFile(path: string): number | null {
+  try { if (!statSync(path).isFile()) return null } catch { return null }
+  return openSync(path, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0))
+}
+
 function readSmall(path: string, max = 4096): string | null {
   let fd: number | null = null
   try {
-    fd = openSync(path, constants.O_RDONLY)
+    fd = openRegularFile(path)
+    if (fd === null) return null
     const st = fstatSync(fd)
     if (!st.isFile()) return null
     const buf = Buffer.alloc(Math.min(max, st.size))
@@ -133,7 +146,8 @@ export function readLastUserTurns(transcriptPath: unknown, n = 2, maxBytes = 256
   if (typeof transcriptPath !== 'string' || !transcriptPath) return []
   let fd: number | null = null
   try {
-    fd = openSync(transcriptPath, constants.O_RDONLY)
+    fd = openRegularFile(transcriptPath)
+    if (fd === null) return []
     const st = fstatSync(fd)
     if (!st.isFile() || st.size === 0) return []
     const len = Math.min(maxBytes, st.size)
