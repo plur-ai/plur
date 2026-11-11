@@ -92,7 +92,7 @@ import {
   type ChangeRecord, type ChangeRowSnapshot, type ChangeTx, type PendingChange, type UndoChangeOptions,
 } from './change-journal.js'
 import {
-  candidatePairs, completeLinkageClusters, blockKeyFor, polarityOf, mixedPolarity, protectedReasons,
+  candidatePairs, completeLinkageClusters, blockKeyFor, polarityOf, mixedPolarity, protectedReasons, clusterProtectedReasons, structuredBodyOf,
   nightlySeed, seededSample, buildConsolidationPrompt, parseConsolidationResponse, mergeEngrams, retireInto,
   remapReferences, newPlanId, assertConsolidationPlan, refreshProgress,
   ConsolidateApplyDisabledError, ConsolidateTrialRequiredError, ConsolidateError,
@@ -500,13 +500,13 @@ export {
   type ChangeRecord, type ChangeRowSnapshot, type ChangeTx, type PendingChange, type UndoChangeOptions, type ChangeConflictRow,
 } from './change-journal.js'
 export {
-  candidatePairs, completeLinkageClusters, blockKeyFor, polarityOf, mixedPolarity, protectedReasons,
+  candidatePairs, completeLinkageClusters, blockKeyFor, polarityOf, mixedPolarity, protectedReasons, clusterProtectedReasons, mergeBase, nonBaseMembersCarryContent, structuredBodyOf,
   nightlySeed, seededSample, seededRandom, buildConsolidationPrompt, parseConsolidationResponse,
   mergeEngrams, retireInto, remapReferences, assertConsolidationPlan,
   ConsolidateError, ConsolidateApplyDisabledError, ConsolidateTrialRequiredError, ConsolidatePlanInvalidError,
   CONSOLIDATE_QUEUE_FILE, CONSOLIDATE_STATE_FILE, CONSOLIDATE_CHANGE_KIND, CONSOLIDATION_PLAN_KIND, PARAPHRASE_QUEUE_THRESHOLD,
   type ConsolidationPlan, type PlanCluster, type PlanMember, type ConsolidationItem, type NeighbourPair, type Cluster,
-  type ClusterDecision,
+  type ClusterDecision, type ProtectedReason,
   type ConsolidatePlanOptions, type ConsolidateApplyOptions, type ConsolidateApplyResult, type StoreHealth, type ConsolidateSkipReason,
 } from './consolidate.js'
 export {
@@ -10089,7 +10089,7 @@ export class Plur {
     for (const c of found.sort((x, y) => y.min_similarity - x.min_similarity)) {
       const members = c.members.map(id => byId.get(id)!).sort((x, y) => (x.id < y.id ? -1 : 1))
       if (mixedPolarity(members)) { mixed++; continue }
-      const reasons = [...new Set(members.flatMap(protectedReasons))]
+      const reasons = clusterProtectedReasons(members)
       if (reasons.length > 0) protectedCount++
       clusters.push({
         id: `K-${String(clusters.length + 1).padStart(4, '0')}`,
@@ -10152,12 +10152,21 @@ export class Plur {
   ): Promise<void> {
     const pending = plan.clusters.filter(c => c.decision === 'pending')
     const size = Math.max(1, batchSize)
+    // Rationale and structured body go to the model with the statement, so a
+    // merged statement can keep what only a non-base member said.
+    const rows = pending.length > 0 ? new Map((await this._primaryStore.load()).map(e => [e.id, e])) : new Map<string, Engram>()
+    const promptMember = (m: { id: string; statement: string }) => {
+      const row = rows.get(m.id)
+      const rationale = typeof row?.rationale === 'string' && row.rationale.trim() ? row.rationale : undefined
+      const body = row ? structuredBodyOf(row) : undefined
+      return { id: m.id, statement: m.statement, ...(rationale ? { rationale } : {}), ...(body ? { body } : {}) }
+    }
     for (let i = 0; i < pending.length; i += size) {
       const batch = pending.slice(i, i + size)
       let answer: string
       try {
         plan.progress.model_calls++
-        answer = await llm(buildConsolidationPrompt(batch.map(c => ({ members: c.members.map(m => ({ id: m.id, statement: m.statement })) }))))
+        answer = await llm(buildConsolidationPrompt(batch.map(c => ({ members: c.members.map(promptMember) }))))
       } catch (err) {
         plan.progress.model_errors++
         plan.progress.last_error = err instanceof Error ? err.message : String(err)
@@ -10253,8 +10262,8 @@ export class Plur {
           members.push(row)
         }
         if (mixedPolarity(members)) throw new Skip('drifted', 'the members no longer share a polarity')
-        if (members.some(e => protectedReasons(e).length > 0) && cluster.approved !== true) {
-          throw new Skip('needs_approval', 'a member became pinned, locked or a prohibition since the plan')
+        if (clusterProtectedReasons(members).length > 0 && cluster.approved !== true) {
+          throw new Skip('needs_approval', 'a member is pinned, locked or a prohibition, or a non-base member carries a body, rationale or dual coding')
         }
         const all = tx.all()
         mergedId = generateEngramId(all, idsInUse)

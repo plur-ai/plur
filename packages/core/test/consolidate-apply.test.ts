@@ -240,6 +240,50 @@ describe('plur consolidate: plan, apply, undo', () => {
     expect(b.id).toBeTruthy()
   })
 
+  it('the merge prompt carries every member\'s rationale and structured body, as data (finding 3)', async () => {
+    const [, b] = await teach([
+      { s: 'Run the migrations before deploying', v: axis(0, DIM) },
+      { s: 'Before a deploy, run the migrations', v: near(axis(0, DIM), 5, 0.95) },
+    ])
+    const row = (await plur.getById(b.id))!
+    await plur.updateEngramAsync({ ...row, rationale: 'A missed migration took the API down', structured_data: { body: 'Pitfall: the staging migrator times out after 60s' } } as Engram)
+    const model = mergingModel()
+    await plur.consolidatePlan({ llm: model.llm })
+    expect(model.calls[0]).toContain(JSON.stringify('A missed migration took the API down'))
+    expect(model.calls[0]).toContain(JSON.stringify('Pitfall: the staging migrator times out after 60s'))
+  })
+
+  it('a cluster whose non-base members carry a body, rationale or dual coding needs owner approval (finding 3)', async () => {
+    const [a, b] = await teach([
+      { s: 'Tag releases with the version number', v: axis(0, DIM) },
+      { s: 'Release tags carry the version number', v: near(axis(0, DIM), 5, 0.95) },
+    ])
+    // A is the base (strongest); B carries content the merge would drop.
+    const ra = (await plur.getById(a.id))!
+    await plur.updateEngramAsync({ ...ra, activation: { ...ra.activation, retrieval_strength: 0.99 } })
+    const rb = (await plur.getById(b.id))!
+    await plur.updateEngramAsync({ ...rb, rationale: 'The changelog generator keys on the tag' } as Engram)
+    const plan = await plur.consolidatePlan({ llm: mergingModel().llm })
+    expect(plan.clusters[0].requires_owner_approval).toBe(true)
+    expect(plan.clusters[0].protected_reasons).toContain('member_content')
+    const res = await plur.consolidateApply(plan, { limit: 1 })
+    expect(res.skipped[0]).toMatchObject({ reason: 'needs_approval' })
+  })
+
+  it('the merged engram takes the most restrictive visibility of its members (finding 3)', async () => {
+    const [a, b] = await teach([
+      { s: 'Prefer small pull requests', v: axis(0, DIM) },
+      { s: 'Keep pull requests small', v: near(axis(0, DIM), 5, 0.95) },
+    ])
+    const ra = (await plur.getById(a.id))!
+    await plur.updateEngramAsync({ ...ra, visibility: 'public', activation: { ...ra.activation, retrieval_strength: 0.99 } })
+    const rb = (await plur.getById(b.id))!
+    await plur.updateEngramAsync({ ...rb, visibility: 'private' })
+    const plan = await plur.consolidatePlan({ llm: mergingModel().llm })
+    const res = await plur.consolidateApply(plan, { limit: 1 })
+    expect((await plur.getById(res.applied[0].merged_id))!.visibility).toBe('private')
+  })
+
   it('refuses to apply while consolidate.apply_enabled is false', async () => {
     config('')
     plur = new Plur({ path: dir, autoDiscover: false })
