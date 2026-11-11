@@ -150,6 +150,13 @@ describe('change journal', () => {
     await expect(plur.undoChange(change.id, { ignoreFields: [] })).rejects.toBeInstanceOf(ChangeConflictError)
   })
 
+  it('history logs a change that retires a row as engram_retired, not engram_updated (finding 5)', async () => {
+    const change = plur.beginChange('test.retire')
+    await change.apply(tx => { tx.put({ ...tx.get(b.id)!, status: 'retired' }) })
+    const events = plur.getEngramHistory(b.id).filter(e => (e.data as any)?.change_id === change.id)
+    expect(events.map(e => e.event)).toEqual(['engram_retired'])
+  })
+
   it('undoes a change that created a row by removing that row', async () => {
     const before = storeBytes()
     const newId = 'ENG-2026-1110-901'

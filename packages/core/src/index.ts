@@ -10537,9 +10537,12 @@ export class Plur {
       journalCommit(this.paths.root, id, adjusted)
       // History is the audit trail, never a gate on the write.
       for (const r of effective) {
+        // A row the change took to `retired` (consolidation retiring an
+        // original) is a retirement, not an update.
+        const retiredNow = r.after !== null && r.after.status === 'retired' && r.before?.status !== 'retired'
         try {
           this._appendHistory({
-            event: r.before === null ? 'engram_created' : r.after === null ? 'engram_retired' : 'engram_updated',
+            event: r.before === null ? 'engram_created' : (r.after === null || retiredNow) ? 'engram_retired' : 'engram_updated',
             engram_id: r.id,
             timestamp: at,
             data: { via: kind === 'undo' ? 'change_undo' : 'change', change_id: id, kind, ...(r.after === null ? { removed: true } : {}) },
