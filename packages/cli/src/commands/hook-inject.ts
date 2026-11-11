@@ -7,7 +7,7 @@ import { createPlur, type GlobalFlags } from '../plur.js'
 import { cleanupStaleSessionFiles } from '../lib/codex-hook-io.js'
 import { checkpointRoot } from './hook-learn-check.js'
 import { hookFolderPolicy, payloadDir, sessionSettings, folderAskOnce, createAskPlur, bindHookFolder, remoteOnlyLines } from '../lib/folder-gate.js'
-import { skippedStoreNotice, formatPinOverflowLine, formatPendingPinRequestsLine } from '@plur-ai/core'
+import { skippedStoreNotice, formatPinOverflowLine, formatPendingPinRequestsLine, semanticModelState } from '@plur-ai/core'
 import type { FolderPolicy } from '@plur-ai/core'
 import { safeSessionKey } from '../lib/session-key.js'
 import { injectWithFallback, hybridEnabled, type Injectable, type InjectOutcome } from '../lib/codex-hook-io.js'
@@ -646,19 +646,130 @@ export const WATCHDOG_LOCK_WAIT_MS = 3_000
 const HOOK_CEILING_MS = parseInt(process.env.PLUR_HOOK_CEILING_MS ?? '', 10) || HOOK_CEILING_DEFAULT_MS
 
 /**
- * Event injections (plan mode, skill, agent, subagent) run the same pipeline
- * as the first prompt since the overhaul (W2+4): hybrid on a soft deadline,
- * then the keyword search. `plur init` now registers them with the main
- * hook's 20s, but installs made before keep 10s and nothing relies on users
- * re-running init (D6), so an event run bounds itself inside the OLD 10s:
- * a 4s hybrid deadline, then BM25, under a 9s self-watchdog.
+ * Event injections (plan mode, skill, agent, subagent) run the same unified
+ * selection as the first prompt since the overhaul (W2+4), keyword-first
+ * (H1): the hybrid leg only when `planEventRetrieval` says it is cheap and
+ * safe, on a soft deadline, then the keyword search. `plur init` now
+ * registers them with the main hook's 20s, but installs made before keep 10s
+ * and nothing relies on users re-running init (D6), so an event run bounds
+ * itself inside the OLD 10s: a 4s hybrid deadline, then BM25, under a 9s
+ * self-watchdog whose store-idle wait is 0.5s (H5: 9.5s in all).
  */
 export const EVENT_HYBRID_DEADLINE_DEFAULT_MS = 4_000
 export const EVENT_CEILING_DEFAULT_MS = 9_000
+/** How long the event watchdog, once fired, waits for this process's store lock (H5). */
+export const EVENT_WATCHDOG_LOCK_WAIT_MS = 500
+/** How long an event waits for the "is the model on disk" check before taking the keyword leg (H1). */
+export const EVENT_MODEL_CHECK_MS = 1_500
 const EVENT_HYBRID_DEADLINE_MS = parseInt(process.env.PLUR_HOOK_EVENT_DEADLINE_MS ?? '', 10) || EVENT_HYBRID_DEADLINE_DEFAULT_MS
 const EVENT_CEILING_MS = Math.min(HOOK_CEILING_MS, parseInt(process.env.PLUR_HOOK_EVENT_CEILING_MS ?? '', 10) || EVENT_CEILING_DEFAULT_MS)
 // The watchdog ceiling of THIS run: the event ceiling for --event runs.
 let runCeilingMs = HOOK_CEILING_MS
+
+/** H5: the most an event run can take — its watchdog ceiling plus the store-idle wait after it fires. */
+export function eventWatchdogBudgetMs(): number {
+  return EVENT_CEILING_MS + EVENT_WATCHDOG_LOCK_WAIT_MS
+}
+
+/** Is the embeddings cache warm enough that a hybrid search does not have to embed the store? */
+function embeddingCacheWarm(storeRoot: string): boolean {
+  try { return statSync(join(storeRoot, '.embeddings-cache.json')).size > 0 } catch { return false }
+}
+
+/** A lock file younger than LOCK_STALE_MS: its run is live. */
+function freshLockAt(path: string | null): boolean {
+  if (!path) return false
+  try { return Date.now() - statSync(path).mtimeMs < LOCK_STALE_MS } catch { return false }
+}
+
+/** The model's files are on disk (or it is loaded). Never loads or downloads it. */
+async function modelOnDisk(): Promise<boolean> {
+  try {
+    const state = await semanticModelState()
+    return state === 'ready' || state === 'cached'
+  } catch {
+    return false
+  }
+}
+
+export interface EventRetrievalPlan {
+  mode: 'hybrid' | 'keyword'
+  reason: 'hybrid-off' | 'cache-cold' | 'cache-warming' | 'hybrid-busy' | 'no-lock' | 'model-missing' | 'ok'
+  /** Held only for `hybrid`: the per-session single-flight lock, released by the caller. */
+  hold?: InjectLockHold
+}
+
+/**
+ * H1: which leg an event injection runs. Keyword unless ALL hold:
+ *   - hybrid is not switched off (PLUR_HOOK_HYBRID);
+ *   - the embeddings cache exists, and no cache warm-up is running — a cold
+ *     store would be embedded from scratch inside a hook;
+ *   - the session's first-prompt injection is not running, and this run wins
+ *     the per-session event single-flight lock (`lockPath`, O_EXCL) — N
+ *     concurrent event hooks start at most one hybrid run (each loads the
+ *     embedder, ~160 MB RSS);
+ *   - the model is on disk (checked last, bounded by `modelCheckMs`): an
+ *     event never downloads it.
+ * The cheap file checks run first. The lock is held only for `hybrid`.
+ */
+export async function planEventRetrieval(opts: {
+  lockPath: string | null
+  firstPromptLockPath: string | null
+  storeRoot: string
+  modelReady?: () => Promise<boolean>
+  hybridEnabled?: boolean
+  modelCheckMs?: number
+}): Promise<EventRetrievalPlan> {
+  if (!(opts.hybridEnabled ?? hybridEnabled())) return { mode: 'keyword', reason: 'hybrid-off' }
+  if (!embeddingCacheWarm(opts.storeRoot)) return { mode: 'keyword', reason: 'cache-cold' }
+  if (warmMarkerHeld(join(opts.storeRoot, WARM_MARKER))) return { mode: 'keyword', reason: 'cache-warming' }
+  if (freshLockAt(opts.firstPromptLockPath)) return { mode: 'keyword', reason: 'hybrid-busy' }
+  const lock = takeInjectLock(opts.lockPath)
+  if (lock.status === 'busy') return { mode: 'keyword', reason: 'hybrid-busy' }
+  if (lock.status !== 'acquired' || !lock.hold) return { mode: 'keyword', reason: 'no-lock' }
+  const check = (opts.modelReady ?? modelOnDisk)().catch(() => false)
+  // Referenced, not unref()'d: a check that hangs with no other handle would
+  // otherwise let Node exit 13 (unsettled await) before the bound fires.
+  let timer: NodeJS.Timeout | undefined
+  const ready = await Promise.race([
+    check,
+    new Promise<boolean>(r => { timer = setTimeout(() => r(false), opts.modelCheckMs ?? EVENT_MODEL_CHECK_MS) }),
+  ]).finally(() => { if (timer) clearTimeout(timer) })
+  if (!ready) {
+    releaseInjectLock(lock.hold)
+    return { mode: 'keyword', reason: 'model-missing' }
+  }
+  return { mode: 'hybrid', reason: 'ok', hold: lock.hold }
+}
+
+/**
+ * H3: the inject options of an event injection. An event never dials a team
+ * server (`remote: false`, no `remote_project`): events fire on every skill,
+ * agent and plan-mode tool call, and the first prompt already read the team
+ * store for this context. A remote-only folder is the exception — it has no
+ * local store, so its team-server read is the only read (bounded as on the
+ * first prompt).
+ */
+export function eventInjectOptions(o: {
+  remoteOnly: boolean
+  remoteProject?: ProjectRemote['remoteProject']
+  scope?: string
+  sessionId?: string
+  queryContext?: string[]
+  includePinned?: boolean
+}) {
+  return {
+    budget: 3000,
+    source: 'hook' as const,
+    include_pinned: o.includePinned ?? true,
+    ...(o.remoteOnly
+      ? { remote_timeout_ms: REMOTE_TIMEOUT_MS, ...(o.remoteProject ? { remote_project: o.remoteProject } : {}) }
+      : { remote: false as const }),
+    ...(o.scope ? { scope: o.scope } : {}),
+    ...(o.sessionId ? { session_id: o.sessionId } : {}),
+    ...(o.queryContext && o.queryContext.length > 0 ? { query_context: o.queryContext } : {}),
+  }
+}
 
 /**
  * The first-prompt / rehydrate retrieval (#1313). The hook is sync, so it
@@ -893,8 +1004,9 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     // A hybrid search still running at the ceiling is embedding a cold store:
     // same as a missed deadline, the cache would stay cold (#1313 audit). The
     // check runs at the exit itself, after the store-idle wait (#1343).
-    void exitWhenStoreIdle(WATCHDOG_LOCK_WAIT_MS, () => {
-      if (hybridInFlight && storeRoot) startEmbeddingWarmup(storeRoot, runFlags)
+    // An event never starts the warm-up (H1), and waits less (H5).
+    void exitWhenStoreIdle(event ? EVENT_WATCHDOG_LOCK_WAIT_MS : WATCHDOG_LOCK_WAIT_MS, () => {
+      if (!event && hybridInFlight && storeRoot) startEmbeddingWarmup(storeRoot, runFlags)
       process.exit(0)
     })
   }, Math.max(0, runStartedAt + runCeilingMs - Date.now()))
@@ -916,8 +1028,9 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     storeRoot = plur.storageRoot
     runFlags = flags
 
-    // The same pipeline as the first prompt (overhaul W2+4): hybrid on a soft
-    // deadline sized for the old 10s event timeout, then the keyword search.
+    // The same unified selection as the first prompt (overhaul W2+4),
+    // keyword-first (H1): the hybrid leg only on a warm cache with the model
+    // on disk and no other hybrid run of this session live.
     // Attribute the retrieval to this session when the marker is readable, so
     // the memory receipt can count (engram, session) pairs from hook traffic —
     // which is the large majority of all injections.
@@ -929,38 +1042,61 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     const pinMarker = readPinMarker(input.session_id)
     const includePinned = shouldIncludePins(event, pinMarker)
     const pinEpoch = pinMarker?.epoch ?? 0
-    // Scope and remote routing as on the first prompt, so an event and a
-    // prompt with the same query see the same memories.
+    // Scope routing as on the first prompt, so an event and a prompt with the
+    // same query see the same local memories.
     const projectRemote = resolveProjectRemote(plur, dir)
     const projectConfig = sessionSettings(policy, projectRemote.config)
+    const remoteOnly = !!plur.remoteOnlyFolder()
     // W5: an event label is a poor query on its own — add session context.
     const queryContext = hookQueryContext(plur, input, task, true, projectConfig.scope, dir)
-    const eventOpts = {
-      budget: 3000,
-      source: 'hook' as const,
-      remote_timeout_ms: REMOTE_TIMEOUT_MS,
-      include_pinned: includePinned,
-      ...(projectConfig.scope ? { scope: projectConfig.scope } : {}),
-      ...(eventSessionId ? { session_id: eventSessionId } : {}),
-      ...(projectRemote.remoteProject ? { remote_project: projectRemote.remoteProject } : {}),
-      ...(queryContext.length > 0 ? { query_context: queryContext } : {}),
+    const eventOpts = eventInjectOptions({
+      remoteOnly,
+      remoteProject: projectRemote.remoteProject,
+      scope: projectConfig.scope,
+      sessionId: eventSessionId,
+      queryContext,
+      includePinned,
+    })
+    const plan = await planEventRetrieval({
+      lockPath: sessionStatePath(key, 'event-hybrid'),
+      firstPromptLockPath: sessionStatePath(key, 'injecting'),
+      storeRoot: plur.storageRoot,
+    })
+    heldInjectLock = plan.hold ?? null
+    let outcome: Awaited<ReturnType<typeof injectForHook<typeof eventOpts, Awaited<ReturnType<Plur['inject']>>>>>
+    try {
+      outcome = plan.mode === 'hybrid'
+        ? await injectForHook(plur, task, eventOpts, EVENT_HYBRID_DEADLINE_MS)
+        : { result: await plur.inject(task, eventOpts), mode: 'bm25', hybrid: null }
+    } finally {
+      // Kept while an abandoned hybrid search may still be running: released
+      // at exit (exitIfAbandonedHybrid) or by the watchdog.
+      if (!(outcome! && outcome.mode === 'bm25' && outcome.hybrid)) {
+        releaseInjectLock(plan.hold)
+        heldInjectLock = null
+      }
     }
-    const { result, mode, hybrid } = await injectForHook(plur, task, eventOpts, EVENT_HYBRID_DEADLINE_MS)
-    abandonedHybrid = mode === 'bm25' && hybridEnabled() ? hybrid : null
+    const { result, mode, hybrid } = outcome
+    abandonedHybrid = mode === 'bm25' && hybrid ? hybrid : null
     recordInjected('claude', input.session_id, result.injected_ids) // #1310 auto-rate
-    if (result.count > 0) {
+    // Remote-only folders still read the team server: surface its outcome.
+    const degradation = remoteOnly ? surfaceRemoteOutcomes(plur) : []
+    if (result.count > 0 || degradation.length > 0) {
       const parts: string[] = []
       if (result.directives) parts.push(result.directives)
       if (result.constraints) parts.push(result.constraints)
       if (result.consider) parts.push(result.consider)
+      const body = [...degradation, ...parts].join('\n')
       const delivered = await emitContextConfirmed(
         claudeHookEventName(input, { rehydrate: false, event }),
-        `${label} ${result.count} engrams\n\n${parts.join('\n')}`,
+        `${label} ${result.count} engrams\n\n${body}`,
       )
       // The main context now holds the pins (a subagent's context is its own).
       if (delivered && includePinned && event !== 'subagent') recordPinsDelivered(input.session_id, pinEpoch)
     }
-    await exitIfAbandonedHybrid(flags)
+    await exitIfAbandonedHybrid(flags, false)
+    releaseInjectLock(plan.hold)
+    heldInjectLock = null
     return
   }
 
@@ -1039,7 +1175,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
  * O_EXCL create can be in flight at the check and land after it — so wait
  * for the search itself, bounded, then for any lock of ours still on disk.
  */
-async function exitIfAbandonedHybrid(flags: GlobalFlags): Promise<void> {
+async function exitIfAbandonedHybrid(flags: GlobalFlags, warmup = true): Promise<void> {
   if (abandonedHybrid) {
     const left = () => Math.max(0, runStartedAt + runCeilingMs - 1_000 - Date.now())
     const settled = await settleWithin(abandonedHybrid, Math.min(ABANDONED_HYBRID_WAIT_MS, left()))
@@ -1050,7 +1186,9 @@ async function exitIfAbandonedHybrid(flags: GlobalFlags): Promise<void> {
     // when a search finishes. Build it in the background so the next
     // session's hybrid search meets the deadline (#1313 audit).
     await exitWhenStoreIdle(Math.min(EXIT_LOCK_WAIT_MS, left()), () => {
-      if (!settled && hybridInFlight && storeRoot) startEmbeddingWarmup(storeRoot, flags)
+      // An event never starts the warm-up (H1); its lock goes with the exit.
+      if (heldInjectLock) releaseInjectLock(heldInjectLock)
+      if (warmup && !settled && hybridInFlight && storeRoot) startEmbeddingWarmup(storeRoot, flags)
       process.exit(0)
     })
   }
