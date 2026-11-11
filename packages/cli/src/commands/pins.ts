@@ -26,6 +26,7 @@ import {
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { remoteOnlyCommandRefusal } from '../lib/folder-gate.js'
 import { resolveLlm, missingLlmMessage, UNSPECIFIED_MODEL } from '../lib/llm-bridge.js'
+import { requirePinPolicyConfirmation } from '../lib/pin-confirm.js'
 import { shouldOutputJson, outputJson, outputText, outputInfo, exit } from '../output.js'
 
 export const FLAGS = ['--budget', '--out', '--llm-cmd', '--llm-base-url', '--llm-api-key', '--model', '--limit', '--yes', '--scope']
@@ -161,6 +162,7 @@ async function review(rest: string[], flags: GlobalFlags): Promise<void> {
   }
   if ((verb !== 'approve' && verb !== 'reject') || ids.length === 0) exit(1, 'Usage: plur pins review [approve|reject <id...>]')
   const plur = createPlur(flags)
+  if (verb === 'approve') await requirePinPolicyConfirmation(plur, `Approve ${ids.length} pin request${ids.length === 1 ? '' : 's'}`)
   const results: Array<{ id: string; status: 'pinned' | 'rejected' | 'error' | 'requested'; error?: string }> = []
   for (const id of ids) {
     try {
@@ -222,6 +224,8 @@ async function audit(p: Parsed, flags: GlobalFlags): Promise<void> {
 async function apply(rest: string[], p: Parsed, flags: GlobalFlags): Promise<void> {
   const [file] = rest
   if (!file) exit(1, 'Usage: plur pins apply <proposal-file> [--limit N] --yes')
+  // S1: under a restrictive pinning policy, a terminal confirmation first.
+  if (p.yes) await requirePinPolicyConfirmation(createPlur(flags, { readonly: true }), `Apply the pin audit ${file}`)
   if (!existsSync(file)) exit(1, `No such file: ${file}`)
   let proposal
   try {
@@ -277,6 +281,7 @@ export async function runPinToggle(pinned: boolean, args: string[], flags: Globa
   const verb = pinned ? 'pin' : 'unpin'
   if (!id || p.positional.length > 1) exit(1, `Usage: plur ${verb} <id> [--scope <scope>]`)
   const plur = createPlur(flags)
+  if (pinned) await requirePinPolicyConfirmation(plur, `Pin ${id}`)
   try {
     const e = await plur.setPinned(id, pinned, { ...(p.scope ? { scope: p.scope } : {}), actor: plur.defaultActor })
     if (!e) exit(1, `Engram not found: ${id}`)

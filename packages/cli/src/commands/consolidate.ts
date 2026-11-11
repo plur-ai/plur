@@ -11,6 +11,7 @@ import {
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { shouldOutputJson, outputJson, outputText, outputInfo, exit } from '../output.js'
 import { resolveLlm, missingLlmMessage } from '../lib/llm-bridge.js'
+import { requirePinPolicyConfirmation } from '../lib/pin-confirm.js'
 
 export const FLAGS = [
   '--plan', '--out', '--nightly', '--fresh', '--no-model', '--batch-size', '--sample',
@@ -128,6 +129,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
 
   if (applyFile !== undefined) {
     if (!applyFile) exit(1, USAGE)
+    if (yes) await requirePinPolicyConfirmation(plur, `Apply the consolidation plan ${applyFile}`)
     const path = resolve(applyFile)
     const p = readPlan(path)
     if (!yes) {

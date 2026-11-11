@@ -1,3 +1,4 @@
+import { isatty } from 'tty'
 import { Plur, isDirectoryTrusted, folderMapProblem, type ProjectConfig } from '@plur-ai/core'
 import { join, resolve } from 'path'
 import { homedir } from 'os'
@@ -141,17 +142,45 @@ export function getLastPlurInstance(): Plur | null {
  * question passes it: asking about a folder must change nothing (#1418 review).
  */
 /**
- * Who the CLI writes for (overhaul D2). A person at a terminal is the owner,
- * so the pinning policy (`pinning.agents`) does not restrict `plur pin` or
- * `plur pins review`. Two exceptions make the CLI an agent: the `hook-*`
- * commands (an editor runs them inside an agent session — set by the entry
- * point through {@link setCliActor}), and `PLUR_ACTOR=agent` in the
- * environment, for a wrapper that drives the CLI on an agent's behalf.
+ * Who the CLI writes for (overhaul D2, audit S1). The pinning policy
+ * (`pinning.agents`) restricts an agent, never the owner. A person at a
+ * terminal is the owner. The CLI is an agent when:
+ *   - it runs a `hook-*` command (an editor runs those inside an agent
+ *     session — set by the entry point through {@link setCliActor});
+ *   - `PLUR_ACTOR=agent` is set (a wrapper driving the CLI for an agent);
+ *   - an agent environment is detected ({@link agentEnvironmentMarker}) —
+ *     an agent's shell tool runs the CLI with its harness's variables;
+ *   - stdin is not a terminal — an agent's shell tool, a pipe, a script.
+ * `PLUR_ACTOR=owner` overrides the last two. An agent can set it too, so the
+ * commands that grant pins or apply journalled changes under a restrictive
+ * policy also need a confirmation typed at a terminal (lib/pin-confirm.ts).
  */
 let cliActor: 'owner' | 'agent' = 'owner'
 export function setCliActor(actor: 'owner' | 'agent'): void { cliActor = actor }
-export function resolveCliActor(env: NodeJS.ProcessEnv = process.env): 'owner' | 'agent' {
-  return env.PLUR_ACTOR === 'agent' ? 'agent' : cliActor
+
+/**
+ * Environment variables agent harnesses set in the shells they run commands
+ * in: Claude Code (CLAUDECODE), Codex (CODEX_SANDBOX, CODEX_THREAD_ID), the
+ * Cursor agent (CURSOR_AGENT), Gemini CLI / Antigravity (GEMINI_CLI,
+ * ANTIGRAVITY_AGENT), opencode (OPENCODE). Best effort: a harness that sets
+ * none still runs commands without a terminal, which the stdin check catches.
+ */
+export const AGENT_ENV_MARKERS = ['CLAUDECODE', 'CODEX_SANDBOX', 'CODEX_THREAD_ID', 'CURSOR_AGENT', 'GEMINI_CLI', 'ANTIGRAVITY_AGENT', 'OPENCODE'] as const
+
+/** The first agent marker set (non-empty, not "0") in `env`, or null. */
+export function agentEnvironmentMarker(env: NodeJS.ProcessEnv = process.env): string | null {
+  for (const k of AGENT_ENV_MARKERS) {
+    const v = env[k]
+    if (v !== undefined && v !== '' && v !== '0') return k
+  }
+  return null
+}
+
+export function resolveCliActor(env: NodeJS.ProcessEnv = process.env, stdinIsTTY: boolean = isatty(0)): 'owner' | 'agent' {
+  if (env.PLUR_ACTOR === 'agent' || cliActor === 'agent') return 'agent'
+  if (env.PLUR_ACTOR === 'owner') return 'owner'
+  if (agentEnvironmentMarker(env)) return 'agent'
+  return stdinIsTTY ? 'owner' : 'agent'
 }
 
 export function createPlur(flags: GlobalFlags, options?: { readonly?: boolean; autoDiscover?: boolean }): Plur {

@@ -1,4 +1,5 @@
 import { createPlur, type GlobalFlags } from '../plur.js'
+import { requirePinPolicyConfirmation } from '../lib/pin-confirm.js'
 import { shouldOutputJson, outputJson, outputText, exit } from '../output.js'
 import { emitPlan, readPlan, parseLimit, undoCommand } from '../lib/journal-cli.js'
 import type { RescopePlan } from '@plur-ai/core'
@@ -131,6 +132,7 @@ async function runPlan(out: string | undefined, flags: GlobalFlags): Promise<voi
 }
 
 async function runApply(file: string, limit: number | undefined, yes: boolean, flags: GlobalFlags): Promise<void> {
+  if (yes) await requirePinPolicyConfirmation(createPlur(flags, { readonly: true }), `Apply the rescope plan ${file}`)
   const plan = readPlan<RescopePlan>(file, 'plur.rescope-plan')
   if (!yes) {
     const take = limit ?? plan.items.length

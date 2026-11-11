@@ -2,7 +2,10 @@
  * `plur pin` / `plur unpin` / `plur pins` (overhaul D2, D3, W3) and the
  * `plur doctor` pin-overflow warning.
  *
- * The CLI is the owner: its pins are never turned into requests. The audit
+ * The CLI at a terminal is the owner: its pins are never turned into
+ * requests. Under pinning.agents request/deny, granting pins and applying a
+ * proposal need a confirmation typed at a terminal (S1), so those steps run
+ * under a pseudo-terminal here. The audit
  * asks the host model through `--llm-cmd` / PLUR_LLM_CMD and changes nothing;
  * apply goes through the change journal and undo restores the store.
  */
@@ -14,6 +17,8 @@ import { spawn } from 'child_process'
 import { Plur } from '@plur-ai/core'
 import { builtCliPath } from './helpers/built-cli.js'
 import { isolatedHomeEnv } from './helpers/isolated-env.js'
+import { runInPty, ptyAvailable } from './helpers/pty.js'
+import { AGENT_ENV_MARKERS } from '../src/plur.js'
 import { printText } from '../src/commands/doctor.js'
 import { printReport } from '../src/commands/pins.js'
 
@@ -49,14 +54,23 @@ async function cli(args: string[], env: NodeJS.ProcessEnv = {}) {
     .finally(() => clearTimeout(timer))
   return { stdout, stderr, status }
 }
+/** The CLI at a terminal, answering the S1 confirmation with yes. Agent markers are stripped. */
+async function ttyCli(args: string[], env: NodeJS.ProcessEnv = {}) {
+  const full: NodeJS.ProcessEnv = { ...isolatedHomeEnv(home), PLUR_DISABLE_EMBEDDINGS: '1', ...env }
+  for (const k of AGENT_ENV_MARKERS) if (!(k in env)) delete full[k]
+  if (!('PLUR_ACTOR' in env)) delete full.PLUR_ACTOR
+  const r = await runInPty([process.execPath, builtCliPath(join(__dirname, '..')), ...args], { env: full, cwd: home, answer: 'yes' })
+  const at = r.output.indexOf('{')
+  return { status: r.status, output: r.output, json: () => JSON.parse(r.output.slice(at)) }
+}
 const store = (actor: 'owner' | 'agent' = 'owner') => new Plur({ path: root, autoDiscover: false, actor })
 
-describe('plur pin / unpin (owner)', () => {
+describe.skipIf(!ptyAvailable)('plur pin / unpin (owner)', () => {
   it('the owner pins and unpins under pinning.agents: request', async () => {
     const e = await store('owner').learn('Never push to main')
-    const pinned = await cli(['pin', e.id, '--json'])
-    expect(pinned.status, pinned.stderr).toBe(0)
-    expect(JSON.parse(pinned.stdout).pinned).toBe(true)
+    const pinned = await ttyCli(['pin', e.id, '--json'])
+    expect(pinned.status, pinned.output).toBe(0)
+    expect(pinned.json().pinned).toBe(true)
     expect((await store().getById(e.id))!.pinned).toBe(true)
     const unpinned = await cli(['unpin', e.id, '--json'])
     expect(unpinned.status, unpinned.stderr).toBe(0)
@@ -65,9 +79,9 @@ describe('plur pin / unpin (owner)', () => {
 
   it('PLUR_ACTOR=agent makes the CLI an agent: its pin becomes a request', async () => {
     const e = await store('owner').learn('Never push to main')
-    const r = await cli(['pin', e.id, '--json'], { PLUR_ACTOR: 'agent' })
-    expect(r.status, r.stderr).toBe(0)
-    expect(JSON.parse(r.stdout).pinned).toBe(false)
+    const r = await ttyCli(['pin', e.id, '--json'], { PLUR_ACTOR: 'agent' })
+    expect(r.status, r.output).toBe(0)
+    expect(r.json().pinned).toBe(false)
     expect((await store().getById(e.id))!.pinned).toBeUndefined()
   }, 60_000)
 })
@@ -101,12 +115,12 @@ describe('plur pins (fit report, priority, review)', () => {
     expect((await cli(['pins', 'priority', e.id, '500'])).status).not.toBe(0)
   }, 60_000)
 
-  it('pins review approves and rejects requests as the owner', async () => {
+  it.skipIf(!ptyAvailable)('pins review approves and rejects requests as the owner', async () => {
     const a = await store('agent').learn('Always answer in plain language', { pinned: true })
     const b = await store('agent').learn('Prefer tabs', { pinned: true })
     const listed = await cli(['pins', 'review', '--json'])
     expect(JSON.parse(listed.stdout).pending.map((p: any) => p.id).sort()).toEqual([a.id, b.id].sort())
-    expect((await cli(['pins', 'review', 'approve', a.id])).status).toBe(0)
+    expect((await ttyCli(['pins', 'review', 'approve', a.id])).status).toBe(0)
     expect((await cli(['pins', 'review', 'reject', b.id])).status).toBe(0)
     expect((await store().getById(a.id))!.pinned).toBe(true)
     expect((await store().getById(b.id))!.pinned).toBeUndefined()
@@ -169,7 +183,7 @@ process.stdin.on('end', () => {
     expect(missing.stderr + missing.stdout).toContain('PLUR_LLM_CMD')
   }, 60_000)
 
-  it('apply needs --yes; --limit 1 changes exactly one engram; prohibition needs approved; undo restores', async () => {
+  it.skipIf(!ptyAvailable)('apply needs --yes; --limit 1 changes exactly one engram; prohibition needs approved; undo restores', async () => {
     const { sit, every, proh } = await seed()
     const file = join(home, 'proposal.json')
     expect((await cli(['pins', 'audit', '--out', file, '--llm-cmd', fakeModel()])).status).toBe(0)
@@ -179,16 +193,16 @@ process.stdin.on('end', () => {
     expect(noYes.status).not.toBe(0)
     expect(readFileSync(join(root, 'engrams.yaml'), 'utf8')).toBe(original)
 
-    const trial = await cli(['pins', 'apply', file, '--limit', '1', '--yes', '--json'])
-    expect(trial.status, trial.stderr).toBe(0)
-    const t = JSON.parse(trial.stdout)
+    const trial = await ttyCli(['pins', 'apply', file, '--limit', '1', '--yes', '--json'])
+    expect(trial.status, trial.output).toBe(0)
+    const t = trial.json()
     expect(t.outcomes.filter((o: any) => o.status === 'applied').map((o: any) => o.id)).toEqual([sit.id])
     expect((await store().getById(sit.id))!.pinned).toBeUndefined()
     expect((await store().getById(every.id))!.statement).toBe(every.statement)
 
-    const rest = await cli(['pins', 'apply', file, '--yes', '--json'])
-    expect(rest.status, rest.stderr).toBe(0)
-    const r = JSON.parse(rest.stdout)
+    const rest = await ttyCli(['pins', 'apply', file, '--yes', '--json'])
+    expect(rest.status, rest.output).toBe(0)
+    const r = rest.json()
     expect(r.outcomes.find((o: any) => o.id === proh.id).status).toBe('refused')
     expect((await store().getById(proh.id))!.statement).toBe(proh.statement)
     const short = (await store().getById(every.id))!

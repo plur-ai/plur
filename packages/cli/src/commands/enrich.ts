@@ -3,6 +3,7 @@ import { remoteOnlyCommandRefusal } from '../lib/folder-gate.js'
 import { shouldOutputJson, outputJson, outputText, exit } from '../output.js'
 import { emitPlan, readPlan, parseLimit, undoCommand } from '../lib/journal-cli.js'
 import { resolveLlm, missingLlmMessage } from '../lib/llm-bridge.js'
+import { requirePinPolicyConfirmation } from '../lib/pin-confirm.js'
 import type { EnrichPlan } from '@plur-ai/core'
 
 const USAGE =
@@ -62,6 +63,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
 
   if (applyFile !== undefined) {
     if (!applyFile) exit(1, `--apply needs a plan file.\n${USAGE}`)
+    if (yes) await requirePinPolicyConfirmation(plur, `Apply the enrichment plan ${applyFile}`)
     const p = readPlan<EnrichPlan>(applyFile, 'plur.enrich-plan')
     if (!yes) {
       outputText(
