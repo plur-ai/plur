@@ -3677,6 +3677,27 @@ export class Plur {
     }
   }
 
+  /**
+   * True when a write whose statement matches `hit` carries content `hit`
+   * does not hold: a structured body, kind or outcome, or a rationale, that
+   * differs from the hit's (finding 6). Such a write is not absorbed as a
+   * duplicate — that would drop the body — but written as its own engram,
+   * where consolidation can later merge it with the owner's approval.
+   */
+  private _incomingCarriesNewContent(hit: Engram, context: LearnContext | undefined): boolean {
+    let incoming: ReturnType<typeof validateLearnStructuredData>
+    try { incoming = validateLearnStructuredData(context?.structured_data) } catch { incoming = undefined }
+    const sd = (hit.structured_data ?? {}) as Record<string, unknown>
+    if (incoming) {
+      for (const key of ['body', 'kind', 'outcome'] as const) {
+        const v = incoming[key]
+        if (v !== undefined && v !== sd[key]) return true
+      }
+    }
+    const why = typeof context?.rationale === 'string' ? context.rationale.trim() : ''
+    return why !== '' && why !== (hit.rationale ?? '').trim()
+  }
+
   /** Apply a duplicate-write to an existing engram: increment write_count,
    * append source, persist to primary store if that's where the engram lives.
    * Mutates the engram and (best-effort) writes back. See issue #107. */
@@ -5203,7 +5224,7 @@ export class Plur {
       // this is the branch a Postgres/PGLite install actually takes.
       const { primaryHashMatch, hashMatch, foreign: sameScopeForeign } =
         await this._learnHashMatch(statement, scope, canDelegate, allEngrams)
-      if (hashMatch) {
+      if (hashMatch && !this._incomingCarriesNewContent(hashMatch, context)) {
         // Decision A: `hashMatch` is a row the writer can persist (primary, a
         // writable secondary store, or the writable remote of this very
         // scope); a pack / readonly / other-remote match never gets here.
@@ -5795,7 +5816,7 @@ export class Plur {
     const { hit: hashMatch, foreign: unpersistableHit } = await this._firstPersistableHit(
       allEngrams, this._hashDedupPredicate(statement, scope), scope,
     )
-    if (hashMatch) {
+    if (hashMatch && !this._incomingCarriesNewContent(hashMatch, context)) {
       // Mutate + persist if local; otherwise return mutated (best-effort)
       return await this._withStoreLock(this.paths.engrams, async () => {
         const engrams = await this._primaryStore.load()
