@@ -18,7 +18,7 @@ import { recordHookRun } from '../lib/hook-runs.js'
 import { cachedServerLines } from '../lib/server-session.js'
 import { cleanupLegacyProjectAtSessionStart } from '../lib/legacy-plur-yaml.js'
 import { hookSessionDir, readSessionTask, writeSessionTask } from '../lib/session-task.js'
-import { readPinMarker, bumpPinEpoch, recordPinsDelivered, shouldIncludePins, isEpochBumpStart } from '../lib/pin-marker.js'
+import { readPinMarker, bumpPinEpoch, recordPinsDelivered, pinContext, isEpochBumpStart } from '../lib/pin-marker.js'
 import { buildHookQueryContext, contentWordCount, isEventLabel, readGitBranch, readLastUserTurns } from '../lib/hook-query.js'
 
 // Remote budget for the recall leg inside injectHybrid (#776). The hook is
@@ -980,9 +980,11 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     return
   }
 
-  // R7: SessionStart with source compact, clear or resume starts a context
-  // whose earlier injections may be gone — a new pin epoch, recorded before
-  // any work, so a run cut short leaves the epoch undelivered (fail open).
+  // R7: SessionStart with source compact or resume starts a context whose
+  // earlier injections may be gone — a new pin epoch, recorded before any
+  // work, so a run cut short leaves the epoch undelivered (fail open). For
+  // source clear the payload already carries a new session id, so this only
+  // starts that session's marker (see isEpochBumpStart, H10).
   if (isEpochBumpStart(input)) bumpPinEpoch(input.session_id)
   runCeilingMs = event ? EVENT_CEILING_MS : HOOK_CEILING_MS
 
@@ -1037,11 +1039,11 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     let eventSessionId: string | undefined
     if (marker) try { eventSessionId = JSON.parse(readFileSync(marker, 'utf8')).sessionId } catch { /* fail-open */ }
     // R7: pins once per context. A skill, agent or plan-mode event leaves them
-    // out only when this context's epoch records a delivery; a subagent is a
-    // new context and always gets them.
-    const pinMarker = readPinMarker(input.session_id)
-    const includePinned = shouldIncludePins(event, pinMarker)
-    const pinEpoch = pinMarker?.epoch ?? 0
+    // out only when this context's epoch records a delivery. A subagent is
+    // its own context, keyed per agent id when the payload has one (H7).
+    const pins = pinContext(input, event)
+    const includePinned = pins.include
+    const pinEpoch = pins.contextId ? readPinMarker(pins.contextId)?.epoch ?? 0 : 0
     // Scope routing as on the first prompt, so an event and a prompt with the
     // same query see the same local memories.
     const projectRemote = resolveProjectRemote(plur, dir)
@@ -1091,8 +1093,10 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
         claudeHookEventName(input, { rehydrate: false, event }),
         `${label} ${result.count} engrams\n\n${body}`,
       )
-      // The main context now holds the pins (a subagent's context is its own).
-      if (delivered && includePinned && event !== 'subagent') recordPinsDelivered(input.session_id, pinEpoch)
+      // This context now holds the pins — only when the block had any (H9).
+      if (delivered && includePinned && pins.record && pins.contextId && await resultHasPins(plur, result)) {
+        recordPinsDelivered(pins.contextId, pinEpoch)
+      }
     }
     await exitIfAbandonedHybrid(flags, false)
     releaseInjectLock(plan.hold)
@@ -1432,8 +1436,25 @@ async function injectSession(
   const delivered = await emitContextConfirmed(hookEventName, parts.join('\n'))
   // Fail-open: an unwritable state dir just means the next prompt re-injects.
   if (delivered && pendingMarker && marker) try { writeFileSync(marker, pendingMarker, { mode: 0o600 }) } catch { /* fail-open */ }
-  // R7: this context now holds the pins.
-  if (delivered) recordPinsDelivered(input.session_id, pinEpoch)
+  // R7: this context now holds the pins — only when the block had any (H9).
+  if (delivered && await resultHasPins(plur, result)) recordPinsDelivered(input.session_id, pinEpoch)
+}
+
+/**
+ * H9: did this injection's block hold at least one pinned engram? A delivery
+ * is recorded only then: an injection whose pins did not fit (or a store
+ * with none yet) must not make later events leave out pins they never gave.
+ * Fails toward false (the next event offers the pins again).
+ */
+async function resultHasPins(plur: Pick<Plur, 'listPinned'>, result: { injected_ids?: string[] }): Promise<boolean> {
+  const ids = result.injected_ids ?? []
+  if (ids.length === 0) return false
+  try {
+    const injected = new Set(ids)
+    return (await plur.listPinned()).some(e => injected.has(e.id))
+  } catch {
+    return false
+  }
 }
 
 /**
