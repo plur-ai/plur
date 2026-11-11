@@ -117,7 +117,7 @@ process.stdin.on('end', () => {
     expect(out.applied).toHaveLength(2)
     for (const r of rows()) expect(r.structured_data.enrichment.enricher.model).toBe('fake-model')
     expect(rows().map(r => [r.id, r.statement, r.content_hash])).toEqual(statements)
-    expect(rows().find(r => r.statement.includes('failed')).knowledge_type.memory_class).toBe('episodic')
+    expect(rows().find(r => r.statement.includes('failed')).structured_data.enrichment.kind).toBeTruthy()
 
     const after = readFileSync(join(dir, 'engrams.yaml'), 'utf8')
     const again = run(`enrich --apply ${planFile} --yes --json`)

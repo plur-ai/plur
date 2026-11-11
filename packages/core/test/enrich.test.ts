@@ -1,7 +1,7 @@
 /**
  * Overhaul W10 (b): enrichment. A host model labels each engram's kind, task
  * family, outcome and when it applies; the label is stored in
- * `structured_data.enrichment` and `memory_class` is re-judged from the kind.
+ * `structured_data.enrichment` only; `knowledge_type` is never touched.
  *
  * The safety contract (capture report, C4): statements are never touched, so
  * statement hashes stay the same; a second run changes nothing; undo through
@@ -98,7 +98,7 @@ describe('plur enrich plan / apply / undo', () => {
     expect(storeBytes()).toBe(before)
   })
 
-  it('apply adds enrichment, re-judges memory_class and leaves statements and their hashes alone', async () => {
+  it('apply adds enrichment and leaves statements, their hashes and knowledge_type alone', async () => {
     const before = await plur.list()
     const plan = await plur.planEnrichment({ llm: fakeModel().llm, model: 'test-model' })
     const result = await plur.applyEnrichmentPlan(plan)
@@ -112,11 +112,38 @@ describe('plur enrich plan / apply / undo', () => {
       const en = (a as any).structured_data.enrichment
       expect(ENRICH_KINDS).toContain(en.kind)
       expect(en.enricher).toMatchObject({ model: 'test-model', version: ENRICHER_VERSION })
-      expect(a.knowledge_type!.memory_class).toBe(KIND_TO_MEMORY_CLASS[en.kind as keyof typeof KIND_TO_MEMORY_CLASS])
+      expect(a.knowledge_type).toEqual(b.knowledge_type)
     }
     const lesson = after.find(e => e.statement.startsWith('The staging deploy failed'))!
     expect((lesson as any).structured_data.enrichment).toMatchObject({ kind: 'failure_lesson', outcome: 'failure' })
-    expect(lesson.knowledge_type!.memory_class).toBe('episodic')
+  })
+
+  it('enrichment never moves a rule between injection sections (knowledge_type untouched), both modes', async () => {
+    const learned = await plur.learn('Never print secrets in logs or terminal output', { scope: 'global', domain: 'security' })
+    // Older and imported rows carry no knowledge_type at all.
+    const { knowledge_type: _kt, ...bare } = (await plur.getById(learned.id))! as any
+    await plur.updateEngramAsync(bare)
+    const rule = (await plur.getById(learned.id))!
+    expect(rule.knowledge_type).toBeUndefined()
+    const task = 'print the secrets in the terminal logs'
+    const sectionOf = (r: { directives: string; constraints: string; consider: string }) =>
+      r.constraints.includes(rule.id) ? 'constraints' : r.directives.includes(rule.id) ? 'directives' : r.consider.includes(rule.id) ? 'consider' : 'absent'
+    const before = {
+      legacy: sectionOf(await plur.inject(task, { mode: 'legacy' })),
+      unified: sectionOf(await plur.inject(task, { mode: 'unified' })),
+    }
+    expect(before).toEqual({ legacy: 'constraints', unified: 'constraints' })
+    const ktBefore = (await plur.getById(rule.id))!.knowledge_type
+    const plan = await plur.planEnrichment({ llm: fakeModel().llm, model: 'test-model' })
+    await plur.applyEnrichmentPlan(plan)
+    const enriched = (await plur.getById(rule.id))!
+    expect((enriched as any).structured_data.enrichment.kind).toBe('rule')
+    const after = {
+      legacy: sectionOf(await plur.inject(task, { mode: 'legacy' })),
+      unified: sectionOf(await plur.inject(task, { mode: 'unified' })),
+    }
+    expect(after).toEqual(before)
+    expect(enriched.knowledge_type).toEqual(ktBefore)
   })
 
   it('a second run changes nothing', async () => {

@@ -891,8 +891,6 @@ export interface EnrichPlanItem {
   task_family: TaskFamily
   outcome: Outcome | null
   applies_when: string | null
-  memory_class_from: string | null
-  memory_class_to: string
   statement: string
 }
 
@@ -907,7 +905,7 @@ export interface EnrichPlan {
 
 export interface EnrichApplyResult {
   change: ChangeRecord | null
-  applied: Array<{ id: string; kind: string; memory_class: string }>
+  applied: Array<{ id: string; kind: string }>
   skipped: Array<{ id: string; reason: string }>
 }
 
@@ -12596,8 +12594,6 @@ export class Plur {
           id: e.id,
           statement_hash: computeContentHash(e.statement),
           ...label,
-          memory_class_from: e.knowledge_type?.memory_class ?? null,
-          memory_class_to: KIND_TO_MEMORY_CLASS[label.kind],
           statement: e.statement.length > 120 ? e.statement.slice(0, 117) + '...' : e.statement,
         })
       }
@@ -12615,8 +12611,8 @@ export class Plur {
 
   /**
    * Apply an enrichment plan through the change journal (W10): adds
-   * `structured_data.enrichment` and re-judges `memory_class`; the statement
-   * is never touched. Skips, per item, a row that is gone, not active, already
+   * `structured_data.enrichment` only; the statement and `knowledge_type`
+   * are never touched. Skips, per item, a row that is gone, not active, already
    * enriched (so a second run changes nothing) or whose statement changed
    * since the plan. One journalled change; nothing journalled when nothing
    * applies. `limit` stops after that many rows.
@@ -12658,7 +12654,7 @@ export class Plur {
       })
     return {
       change,
-      applied: inLock.rows.map(r => ({ id: r.id, kind: (r.structured_data as any).enrichment.kind, memory_class: r.knowledge_type!.memory_class })),
+      applied: inLock.rows.map(r => ({ id: r.id, kind: (r.structured_data as any).enrichment.kind })),
       skipped: inLock.skipped,
     }
   }

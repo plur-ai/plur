@@ -18,9 +18,11 @@
  * forge, or an extension nobody validates — so both are refused.
  *
  * Enrichment. A host-supplied model labels existing engrams; the label goes
- * to `structured_data.enrichment` and `memory_class` is re-judged from the
- * kind. The safety contract: the statement is never touched (so its hash is
- * unchanged), an engram that already has an enrichment is skipped (so a second
+ * to `structured_data.enrichment` and nowhere else. `knowledge_type` is never
+ * created or altered: its `cognitive_level` decides the injection section a
+ * row renders in, so an enrichment that wrote it would move rules out of the
+ * constraints. The safety contract: the statement is never touched (so its
+ * hash is unchanged), an engram that already has an enrichment is skipped (so a second
  * run changes nothing), and the apply is one change-journal entry (so undo is
  * exact). The model is called while PLANNING, outside the store lock; this
  * module only builds the prompt and parses the reply — core never calls a
@@ -207,16 +209,13 @@ export function isEnriched(e: Engram): boolean {
 }
 
 /**
- * The row with the enrichment applied: `structured_data.enrichment` added and
- * `memory_class` re-judged. The statement and every other field are left as
- * they are. Returns a new object.
+ * The row with the enrichment applied: `structured_data.enrichment` added.
+ * The statement, `knowledge_type` and every other field are left as they
+ * are, so enrichment never changes how or where a row is injected. Returns a
+ * new object.
  */
 export function enrichRow(e: Engram, label: EnrichLabel, enricher: { model: string; version: string }, at: string): Engram {
   const block: EnrichmentBlock = { ...label, enricher: { model: enricher.model, version: enricher.version, at } }
   const sd = { ...((e.structured_data as Record<string, unknown> | undefined) ?? {}), enrichment: block }
-  const memoryClass = KIND_TO_MEMORY_CLASS[label.kind]
-  const kt = e.knowledge_type
-    ? { ...e.knowledge_type, memory_class: memoryClass }
-    : { memory_class: memoryClass, cognitive_level: 'remember' as const }
-  return { ...e, structured_data: sd, knowledge_type: kt }
+  return { ...e, structured_data: sd }
 }

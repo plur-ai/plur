@@ -11,9 +11,8 @@ const USAGE =
   '       plur enrich --undo <change-id>\n' +
   '  Labels each memory with its kind (rule, tool, fact, preference, experience,\n' +
   '  failure_lesson), task family, stated outcome and when it applies, stored in\n' +
-  '  structured_data.enrichment, and re-judges memory_class from the kind\n' +
-  '  (experiences and failure lessons become episodic). Statements are never\n' +
-  '  changed; already-enriched memories are skipped, so a second run changes\n' +
+  '  structured_data.enrichment. Statements and how a memory is injected are\n' +
+  '  never changed; already-enriched memories are skipped, so a second run changes\n' +
   '  nothing.\n' +
   '  --plan        ask the model and write a plan (to --out, or stdout). Changes nothing.\n' +
   '  --apply       apply a plan as one undoable change. --limit N stops after N\n' +
