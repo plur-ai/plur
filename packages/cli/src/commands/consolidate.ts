@@ -1,7 +1,6 @@
 import { existsSync, readFileSync } from 'fs'
 import { join, resolve } from 'path'
 import {
-  atomicWrite,
   assertConsolidationPlan,
   ConsolidateError,
   ChangeJournalError,
@@ -12,6 +11,7 @@ import { createPlur, type GlobalFlags } from '../plur.js'
 import { shouldOutputJson, outputJson, outputText, outputInfo, exit } from '../output.js'
 import { resolveLlm, missingLlmMessage } from '../lib/llm-bridge.js'
 import { requirePinPolicyConfirmation } from '../lib/pin-confirm.js'
+import { writePrivateFile } from '../lib/private-file.js'
 
 export const FLAGS = [
   '--plan', '--out', '--nightly', '--fresh', '--no-model', '--batch-size', '--sample',
@@ -65,7 +65,8 @@ function readPlan(path: string): ConsolidationPlan {
 }
 
 function savePlan(path: string, plan: ConsolidationPlan): void {
-  atomicWrite(path, JSON.stringify(plan, null, 2) + '\n', { mode: 0o600 })
+  // S6: owner-only also over an existing wider file, never through a symlink.
+  try { writePrivateFile(path, JSON.stringify(plan, null, 2) + '\n') } catch (err) { exit(1, `Cannot write ${path}: ${(err as Error).message}`) }
 }
 
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {

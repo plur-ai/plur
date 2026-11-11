@@ -18,7 +18,9 @@
  * into requests. `plur pin <id>` / `plur unpin <id>` live in pin.ts/unpin.ts
  * and share {@link runPinToggle}.
  */
-import { existsSync, readFileSync, writeFileSync } from 'fs'
+import { existsSync, readFileSync } from 'fs'
+import { join } from 'path'
+import { writePrivateFile } from '../lib/private-file.js'
 import {
   formatPinOverflowLine, formatPendingPinRequestsLine, validatePinAuditProposal, PinDeniedError,
   pinRequestOf, type PinFitReport, type PendingPinRequest,
@@ -195,9 +197,11 @@ async function audit(p: Parsed, flags: GlobalFlags): Promise<void> {
   if (refused) exit(1, refused)
   const bridge = resolveLlm({ llmCmd: p.llmCmd, baseUrl: p.llmBaseUrl, apiKey: p.llmApiKey, model: p.model })
   if (!bridge) exit(1, missingLlmMessage('plur pins audit'))
-  const out = p.out ?? `pin-audit-${new Date().toISOString().slice(0, 10)}.json`
   // Read-only engine: the audit changes nothing in the store.
   const plur = createPlur(flags, { readonly: true })
+  // S6: by default next to the store it audits, never into the current folder
+  // (a repository, where a proposal quoting memory text could be committed).
+  const out = p.out ?? join(plur.storageRoot, `pin-audit-${new Date().toISOString().slice(0, 10)}.json`)
   let proposal
   try {
     proposal = await plur.auditPins(bridge.llm, {
@@ -208,7 +212,7 @@ async function audit(p: Parsed, flags: GlobalFlags): Promise<void> {
   } catch (err) {
     exit(1, `Pin audit failed: ${(err as Error).message}`)
   }
-  writeFileSync(out, JSON.stringify(proposal, null, 2) + '\n', { mode: 0o600 })
+  try { writePrivateFile(out, JSON.stringify(proposal, null, 2) + '\n') } catch (err) { exit(1, `Cannot write ${out}: ${(err as Error).message}`) }
   const count = (a: string) => proposal.items.filter(i => i.action === a).length
   const needApproval = proposal.items.filter(i => i.action === 'shorten' && i.prohibition).length
   if (shouldOutputJson(flags)) { outputJson({ out, ...proposal }); return }
