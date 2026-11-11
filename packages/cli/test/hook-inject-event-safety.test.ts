@@ -131,12 +131,12 @@ describe('planEventRetrieval (H1)', () => {
 
 describe('event inject options (H3)', () => {
   it('an event never dials a team server outside a remote-only folder', () => {
-    expect(eventInjectOptions({ remoteOnly: false }).remote).toBe(false)
+    expect((eventInjectOptions({ remoteOnly: false }) as { remote?: boolean }).remote).toBe(false)
     expect(eventInjectOptions({ remoteOnly: false, remoteProject: { url: 'https://x', token: 't' } as never })).not.toHaveProperty('remote_project')
   })
   it('a remote-only folder keeps its team-server read (no local store)', () => {
     const o = eventInjectOptions({ remoteOnly: true })
-    expect(o.remote).toBeUndefined()
+    expect((o as { remote?: boolean }).remote).toBeUndefined()
   })
 })
 
