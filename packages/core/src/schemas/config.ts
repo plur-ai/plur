@@ -357,6 +357,50 @@ export const TensionsConfigSchema = partialKeepAbsent(z.object({
 }))
 
 
+/**
+ * The overhaul's config keys, strict (H4). The config schema wraps each one
+ * in `.catch(undefined)` so a bad value drops only that key; these strict
+ * forms are what `invalidOverhaulConfigKeys` checks a raw config against, so
+ * `plur doctor` can still say which value was ignored.
+ */
+const OVERHAUL_KEY_SCHEMAS = {
+  injection: {
+    mode: z.enum(['legacy', 'unified']),
+    recall_limit: z.number().int().min(1),
+    prohibition_ratio: z.number().min(0).max(1),
+    query_min_terms: z.number().int().min(0),
+    min_relevance_signal: z.enum(['reranker', 'rank_gap', 'keyword', 'cosine', 'combined', 'enrichment_kind']).nullable(),
+    min_relevance: z.number().nullable(),
+  },
+  pinning: { agents: z.enum(['allow', 'request', 'deny']) },
+  consolidate: {
+    threshold: z.number().min(0).max(1),
+    apply_enabled: z.boolean(),
+    nightly_max_changes: z.number().int().min(0),
+  },
+  learn: { reinforce_exact: z.boolean() },
+} as const
+
+/**
+ * The overhaul keys in a raw (unparsed) config whose value is present but
+ * invalid, as `block.key` names. The parse ignores them (H4); doctor reports
+ * them. A block that is not an object is left to the main parse.
+ */
+export function invalidOverhaulConfigKeys(raw: unknown): string[] {
+  const out: string[] = []
+  if (!raw || typeof raw !== 'object') return out
+  for (const [blockName, keys] of Object.entries(OVERHAUL_KEY_SCHEMAS)) {
+    const block = (raw as Record<string, unknown>)[blockName]
+    if (!block || typeof block !== 'object' || Array.isArray(block)) continue
+    for (const [key, schema] of Object.entries(keys) as [string, z.ZodType][]) {
+      const v = (block as Record<string, unknown>)[key]
+      if (v === undefined) continue
+      if (!schema.safeParse(v).success) out.push(`${blockName}.${key}`)
+    }
+  }
+  return out
+}
+
 export const PlurConfigSchema = partialKeepAbsent(z.object({
   auto_learn: z.boolean().default(true),
   auto_capture: z.boolean().default(true),
@@ -387,12 +431,15 @@ export const PlurConfigSchema = partialKeepAbsent(z.object({
      * 2000 and `pinned_ratio` of 0.5, a 500-token hard tier.
      */
     pinned_hard_ratio: z.number().min(0).max(1).default(0.5),
-    // ── Retrieval and injection overhaul (W1, W5, W8, D4). Declared ahead of
-    // the code that reads them, so they are `.optional()` with NO schema
-    // default: an absent key stays absent and is never written back into
-    // config.yaml. The default each comment names lives in
+    // ── Retrieval and injection overhaul (W1, W5, W8, D4). `.optional()`
+    // with NO schema default: an absent key stays absent and is never written
+    // back into config.yaml. The default each comment names lives in
     // `INJECTION_OVERHAUL_DEFAULTS` and is applied by
-    // `resolveInjectionOverhaul()`. Nothing reads these keys yet.
+    // `resolveInjectionOverhaul()`, which the injection code reads.
+    // Each key is `.catch(undefined)` (H4): an invalid value is dropped on
+    // its own (the default applies, `plur doctor` warns via
+    // `invalidOverhaulConfigKeys`) instead of failing the whole config parse,
+    // which made loadConfig fall back to defaults and drop every store.
     /**
      * Which selection builds the injected block. `legacy` (default for now) is
      * today's keyword-overlap selection with the constraints floor and
@@ -400,28 +447,30 @@ export const PlurConfigSchema = partialKeepAbsent(z.object({
      * always-on pinned slot (W1). `legacy` is kept for one release as the
      * rollback path.
      */
-    mode: z.enum(['legacy', 'unified']).optional(),
+    mode: OVERHAUL_KEY_SCHEMAS.injection.mode.optional().catch(undefined),
     /** Unified mode: how many of recall's ranked results the task list takes, after the gates. Default 10. */
-    recall_limit: z.number().int().min(1).optional(),
+    recall_limit: OVERHAUL_KEY_SCHEMAS.injection.recall_limit.optional().catch(undefined),
     /**
      * Unified mode: share of the budget prohibitions in the search's top 50
      * may take before the general task list (D4). Default 0.2.
      */
-    prohibition_ratio: z.number().min(0).max(1).optional(),
+    prohibition_ratio: OVERHAUL_KEY_SCHEMAS.injection.prohibition_ratio.optional().catch(undefined),
     /**
      * A prompt with fewer content words than this (or an event label such as
      * "skill: X") has the query built from session context — the stored
      * session task, the project scope label, the git branch (W5). Default 4.
      */
-    query_min_terms: z.number().int().min(0).optional(),
+    query_min_terms: OVERHAUL_KEY_SCHEMAS.injection.query_min_terms.optional().catch(undefined),
     /**
      * Relevance cut-off signal for the task list (W8). `null` (default) means
      * no cut-off. Lands only if a signal passes the held-out test.
      */
-    min_relevance_signal: z.enum(['reranker', 'rank_gap', 'keyword', 'cosine', 'combined', 'enrichment_kind']).nullable().optional(),
+    min_relevance_signal: OVERHAUL_KEY_SCHEMAS.injection.min_relevance_signal.optional().catch(undefined),
     /** Threshold on `min_relevance_signal`. `null` (default) means no cut-off. */
-    min_relevance: z.number().nullable().optional(),
-  }).prefault({}),
+    min_relevance: OVERHAUL_KEY_SCHEMAS.injection.min_relevance.optional().catch(undefined),
+    // H12: keys a newer release added are kept, not stripped, so a downgrade
+    // followed by a config write does not erase them.
+  }).passthrough().prefault({}),
   /**
    * Who may pin an engram (overhaul D2), enforced in core's write path
    * (`pin-policy.ts`): learn, updateEngram, setPinned, import and change
@@ -434,11 +483,11 @@ export const PlurConfigSchema = partialKeepAbsent(z.object({
    * not affected, and pack installs keep stripping pins as before.
    */
   pinning: partialKeepAbsent(z.object({
-    agents: z.enum(['allow', 'request', 'deny']).default('allow'),
+    agents: OVERHAUL_KEY_SCHEMAS.pinning.agents.optional().catch(undefined).default('allow'),
   })).prefault({}),
   /**
-   * Store consolidation, the memory optimiser (overhaul W6, D7). Nothing reads
-   * these keys yet.
+   * Store consolidation, the memory optimiser (overhaul W6, D7), read by
+   * `plur consolidate` through `resolveConsolidateConfig()`.
    *
    * `threshold` (default 0.85) — the similarity every member of a proposed
    * cluster must reach with every other member (complete linkage, R1).
@@ -448,13 +497,13 @@ export const PlurConfigSchema = partialKeepAbsent(z.object({
    * `plur consolidate --nightly` run may apply.
    */
   consolidate: partialKeepAbsent(z.object({
-    threshold: z.number().min(0).max(1).default(0.85),
-    apply_enabled: z.boolean().default(false),
-    nightly_max_changes: z.number().int().min(0).default(25),
+    threshold: OVERHAUL_KEY_SCHEMAS.consolidate.threshold.optional().catch(undefined).default(0.85),
+    apply_enabled: OVERHAUL_KEY_SCHEMAS.consolidate.apply_enabled.optional().catch(undefined).default(false),
+    nightly_max_changes: OVERHAUL_KEY_SCHEMAS.consolidate.nightly_max_changes.optional().catch(undefined).default(25),
   })).prefault({}),
   /**
-   * Write-time behaviour of `learn` (overhaul W6 inflow, D8). Nothing reads
-   * this key yet.
+   * Write-time behaviour of `learn` (overhaul W6 inflow, D8), read through
+   * `resolveLearnConfig()`.
    *
    * `reinforce_exact` (default false) — when true, a `learn` whose statement
    * equals an existing active engram's in the same scope after normalising
@@ -462,7 +511,7 @@ export const PlurConfigSchema = partialKeepAbsent(z.object({
    * REINFORCE`) instead of writing a new one. Never similarity-only.
    */
   learn: partialKeepAbsent(z.object({
-    reinforce_exact: z.boolean().default(false),
+    reinforce_exact: OVERHAUL_KEY_SCHEMAS.learn.reinforce_exact.optional().catch(undefined).default(false),
   })).prefault({}),
   dedup: DedupConfigSchema.prefault({}),
   /**

@@ -14,7 +14,12 @@ import {
   resolvePinningConfig,
   resolveConsolidateConfig,
   resolveLearnConfig,
+  invalidOverhaulConfigKeys,
 } from '../src/schemas/config.js'
+import { loadConfig } from '../src/config.js'
+import { mkdtempSync, rmSync, writeFileSync } from 'fs'
+import { join } from 'path'
+import { tmpdir } from 'os'
 
 describe('overhaul config keys', () => {
   it('parse without gaining defaults that were never written', () => {
@@ -69,7 +74,43 @@ describe('overhaul config keys', () => {
     ['consolidate.apply_enabled', { consolidate: { apply_enabled: 'yes' } }],
     ['consolidate.nightly_max_changes', { consolidate: { nightly_max_changes: -5 } }],
     ['learn.reinforce_exact', { learn: { reinforce_exact: 1 } }],
-  ])('rejects an invalid %s', (_name, raw) => {
-    expect(PlurConfigSchema.safeParse(raw).success).toBe(false)
+  ])('drops an invalid %s and keeps the rest of the config (H4)', (name, raw) => {
+    const key = name.split(' ')[0]!
+    const [block, field] = key.split('.') as [string, string]
+    const withStore = { ...raw, stores: [{ path: '/tmp/plur-h4-store', scope: 'project:h4' }], injection_budget: 1234 }
+    const parsed = PlurConfigSchema.safeParse(withStore)
+    expect(parsed.success).toBe(true)
+    const data = parsed.data as Record<string, Record<string, unknown> | undefined>
+    expect(data[block]?.[field]).toBeUndefined()
+    expect((parsed.data as { stores?: unknown[] }).stores).toHaveLength(1)
+    expect((parsed.data as { injection_budget?: number }).injection_budget).toBe(1234)
+    expect(invalidOverhaulConfigKeys(raw)).toEqual([key])
+  })
+
+  it('reports no invalid keys for a valid or absent block (H4)', () => {
+    expect(invalidOverhaulConfigKeys({})).toEqual([])
+    expect(invalidOverhaulConfigKeys({ injection: { mode: 'unified' }, pinning: { agents: 'deny' } })).toEqual([])
+    expect(invalidOverhaulConfigKeys({ injection: 'garbage' })).toEqual([])
+  })
+
+  it('keeps unknown injection keys a newer release wrote (H12 downgrade)', () => {
+    const parsed = PlurConfigSchema.parse({ injection: { future_knob: 7, mode: 'unified' } })
+    expect((parsed.injection as Record<string, unknown>).future_knob).toBe(7)
+  })
+})
+
+describe('loadConfig with one bad overhaul value (H4)', () => {
+  it('keeps every store', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'plur-h4-'))
+    try {
+      const path = join(dir, 'config.yaml')
+      writeFileSync(path, 'stores:\n  - path: /tmp/plur-h4-a\n    scope: project:a\ninjection:\n  mode: hybrid\npinning:\n  agents: maybe\n')
+      const cfg = loadConfig(path)
+      expect(cfg.stores).toHaveLength(1)
+      expect(cfg.injection?.mode).toBeUndefined()
+      expect(cfg.pinning?.agents).toBeUndefined()
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })

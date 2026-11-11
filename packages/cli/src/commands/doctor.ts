@@ -29,6 +29,8 @@ import { hasPlurAgyHooks, readAgyHooksConfig } from '../antigravity-hooks.js'
 import { codexHome, missingNodeEntryPaths, readCodexPlurMcpCommand, isOwnWin32CmdShimCommand } from '../mcp-config.js'
 import { opencodeConfigDir, opencodeConfigPath, readOpencodeConfig, PLUR_OPENCODE_PLUGIN } from '../opencode-config.js'
 import { formatPinOverflowLine } from '@plur-ai/core'
+import { invalidOverhaulConfigKeys } from '@plur-ai/core'
+import yaml from 'js-yaml'
 import { computeContentHash, detectPlurStorage, loadEngrams, resolveBackendTier, loadConfig, describeNeedsAction, describeHeld, classifyStoreDuplicates, folderMapProblem, tokenFromEnv, tokenEnvUnsetDetail, tokenEnvUnsetFix, offlineByEnv } from '@plur-ai/core'
 import { plurRoot } from '../lib/folder-gate.js'
 import { readHookInstalls, readHookRuns, type HookTool } from '../lib/hook-runs.js'
@@ -236,6 +238,12 @@ interface DoctorReport {
    * the overall check.
    */
   ignoredDuplicateStores: Array<{ path: string; scope: string; duplicateOf: string; primary: boolean }>
+  /**
+   * Overhaul config keys (injection.mode, pinning.agents, consolidate.*, …)
+   * whose value in config.yaml is invalid and therefore ignored (H4): the
+   * rest of the config loads and the key's default applies. Advisory only.
+   */
+  invalidConfigKeys?: string[]
   /**
    * Project stores (`.plur/engrams.yaml`) found from this folder but not
    * added, because their folder has no decision of its own (#1588, #1589
@@ -617,6 +625,31 @@ function findIgnoredDuplicateStores(flags: GlobalFlags): DoctorReport['ignoredDu
   } catch {
     return []
   }
+}
+
+/**
+ * H4: the overhaul keys in config.yaml whose value is invalid and so ignored.
+ * Reads the raw YAML only; an unreadable file reports nothing here (the
+ * config loader warns about it already).
+ */
+export function findInvalidConfigKeys(flags: GlobalFlags): string[] {
+  try {
+    const root = flags.path || process.env.PLUR_PATH || join(homedir(), '.plur')
+    const path = join(root, 'config.yaml')
+    if (!existsSync(path)) return []
+    return invalidOverhaulConfigKeys(yaml.load(readFileSync(path, 'utf8')))
+  } catch {
+    return []
+  }
+}
+
+/** The doctor text for `findInvalidConfigKeys`; empty when there is nothing to say. */
+export function invalidConfigKeyLines(keys: string[]): string[] {
+  if (keys.length === 0) return []
+  return [
+    `⚠  config.yaml has ${keys.length} invalid value${keys.length === 1 ? '' : 's'}, ignored (the default applies): ${keys.join(', ')}`,
+    '   Fix the value or remove the key; the rest of config.yaml is in effect.',
+  ]
 }
 
 /**
@@ -1624,13 +1657,14 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
       : null
 
     const ignoredDuplicateStores = findIgnoredDuplicateStores(flags)
+    const invalidConfigKeys = findInvalidConfigKeys(flags)
     const skippedProjectStores = findSkippedProjectStores(flags)
 
     return {
       configs, hooksInstalled, mcpRegistered, claudeCodeMcp, datacoreCollision, staleNpxHooks, ...(staleEventTimeouts.length ? { staleEventTimeouts } : {}), staleNpxMcp, brokenNodeMcp,
       hookShim, mcpShim, handshake, cursorHandshake, embedder,
       cursorProjectDetected, cursorWired, codexDetected, codexWired, codexCmdShimMcp, windowsHookFallback, agyDetected, agyWired,
-      pgliteGemmaReembedNeeded, staleContentHashes, pinOverflow, pgliteOrphan, ignoredDuplicateStores, skippedProjectStores, tokenEnvUnset, tokenEnvFound, opencode, outbox, folderMap, overall, serverStores, hookTrust,
+      pgliteGemmaReembedNeeded, staleContentHashes, pinOverflow, pgliteOrphan, ignoredDuplicateStores, invalidConfigKeys, skippedProjectStores, tokenEnvUnset, tokenEnvFound, opencode, outbox, folderMap, overall, serverStores, hookTrust,
     }
   })
 }
@@ -1909,6 +1943,12 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
     if (report.ignoredDuplicateStores.some(d => !d.primary)) {
       outputText('   Remove an entry that repeats another store\'s file and scope from config.yaml by hand.')
     }
+  }
+
+  const invalidLines = invalidConfigKeyLines(report.invalidConfigKeys ?? [])
+  if (invalidLines.length > 0) {
+    outputText('')
+    for (const line of invalidLines) outputText(line)
   }
 
   for (const line of skippedStoreLines(report.skippedProjectStores, plurRoot(flags))) outputText(line.startsWith('Found') ? `⚠  ${line}` : line)

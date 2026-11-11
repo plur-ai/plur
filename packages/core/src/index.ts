@@ -490,7 +490,7 @@ export type { PreviewResult, RegistryEntry, PrivacyScanResult, PrivacyIssue, Pac
 export type { PlurConfig, StoreEntry, ScopeRoutingConfig } from './schemas/config.js'
 export { ServerStoreEntrySchema } from './schemas/config.js'
 export {
-  resolveInjectionOverhaul, resolvePinningConfig, resolveConsolidateConfig, resolveLearnConfig,
+  resolveInjectionOverhaul, resolvePinningConfig, resolveConsolidateConfig, resolveLearnConfig, invalidOverhaulConfigKeys,
   INJECTION_OVERHAUL_DEFAULTS, PINNING_DEFAULTS, CONSOLIDATE_DEFAULTS, LEARN_DEFAULTS,
   type InjectionOverhaulSettings, type PinningSettings, type ConsolidateSettings, type LearnSettings,
 } from './schemas/config.js'
