@@ -543,6 +543,8 @@ export interface InjectionResult {
   pinned_share_tokens?: number
   /** Unified mode only: the relevance signals of this injection's ranking (W8). */
   relevance?: InjectionRelevance
+  /** Unified mode only: the general task list's engram ids, in recall's rank order (pins and the prohibition slice not included). */
+  task_ids?: string[]
 }
 
 export interface CaptureContext {

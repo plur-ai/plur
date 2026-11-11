@@ -106,17 +106,31 @@ function rrfMerge(resultSets: Engram[][], k = 60): Array<{ engram: Engram; score
  * With only one leg there is nothing to arbitrate: the keyword order is
  * returned as BM25 ranked it.
  */
-function fuseLegs(keyword: ScoredKeywordHit[], meaning: Engram[], k = 60): Array<{ engram: Engram; score: number }> {
-  if (meaning.length === 0) return rrfMerge([keyword.map(h => h.engram)], k)
-  const scores = new Map<string, { engram: Engram; score: number }>()
-  const add = (engram: Engram, s: number) => {
-    const existing = scores.get(engram.id)
-    if (existing) existing.score += s
-    else scores.set(engram.id, { engram, score: s })
+export function fuseLegs(keyword: ScoredKeywordHit[], meaning: Engram[], k = 60): FusedHit[] {
+  const scores = new Map<string, FusedHit>()
+  const entry = (engram: Engram): FusedHit => {
+    let e = scores.get(engram.id)
+    if (!e) { e = { engram, score: 0, keyword: null, coverage: null }; scores.set(engram.id, e) }
+    return e
   }
-  keyword.forEach((h, rank) => add(h.engram, h.coverage / (k + rank + 1)))
-  meaning.forEach((e, rank) => add(e, 1 / (k + rank + 1)))
+  const twoLegs = meaning.length > 0
+  keyword.forEach((h, rank) => {
+    const e = entry(h.engram)
+    e.keyword = h.score
+    e.coverage = h.coverage
+    e.score += (twoLegs ? h.coverage : 1) / (k + rank + 1)
+  })
+  meaning.forEach((m, rank) => { entry(m).score += 1 / (k + rank + 1) })
+  // Stable: ties keep the keyword-then-meaning order they arrived in.
   return Array.from(scores.values()).sort((a, b) => b.score - a.score)
+}
+
+/** One fused candidate: its RRF score and, when the keyword leg found it, its BM25 score and query coverage. */
+export interface FusedHit {
+  engram: Engram
+  score: number
+  keyword: number | null
+  coverage: number | null
 }
 
 /** Plain RRF score of one id across ranked lists (what `topScore` reports). */
@@ -194,6 +208,13 @@ export async function hybridSearchWithMeta(
     /** Called with the fused ranking before the optional rerank, so a caller
      *  that stops waiting keeps it (#1586 round 3). */
     onFused?: (r: HybridSearchResult) => void
+    /** Called with the WHOLE fused list (scores included, past `limit`),
+     *  before the rerank. Injection packs from it (overhaul W1). */
+    onRanking?: (fused: FusedHit[]) => void
+    /** False: keyword leg only, no embedder call (mode `bm25-only`). Default true. */
+    semantic?: boolean
+    /** Override the lexical query rewrite (default: on unless PLUR_QUERY_REWRITE disables it). */
+    queryRewrite?: boolean
   },
 ): Promise<HybridSearchResult> {
   if (engrams.length === 0) {
@@ -209,11 +230,13 @@ export async function hybridSearchWithMeta(
   // query (interrogative scaffolding + relative-temporal anchors stripped).
   // The embedding leg and the reranker keep the original natural-language
   // query — those models are trained on questions; BM25 is not.
-  const lexicalQuery = isQueryRewriteDisabled() ? query : rewriteLexicalQuery(query)
+  const rewrite = opts?.queryRewrite ?? !isQueryRewriteDisabled()
+  const lexicalQuery = rewrite ? rewriteLexicalQuery(query) : query
+  const semantic = opts?.semantic !== false
 
   const [bm25Hits, embResults] = await Promise.all([
     Promise.resolve(searchEngramsScored(engrams, lexicalQuery, bm25Limit)),
-    embeddingSearch(engrams, query, embLimit, storagePath, opts),
+    semantic ? embeddingSearch(engrams, query, embLimit, storagePath, opts) : Promise.resolve([] as Engram[]),
   ])
   const bm25Results = bm25Hits.map(h => h.engram)
 
@@ -226,7 +249,7 @@ export async function hybridSearchWithMeta(
   // threshold", which is normal — don't flag as degraded.
   let mode: 'hybrid' | 'hybrid-degraded' | 'bm25-only'
   let embedderError: string | null = null
-  if (status.disabled) {
+  if (status.disabled || !semantic) {
     mode = 'bm25-only'
   } else if (!status.available || (embResults.length === 0 && !!status.lastError)) {
     mode = 'hybrid-degraded'
@@ -236,6 +259,7 @@ export async function hybridSearchWithMeta(
   }
 
   const merged = fuseLegs(bm25Hits, embResults)
+  opts?.onRanking?.(merged)
   const ranked = merged.slice(0, effectiveLimit)
   // topScore is the plain RRF fusion score of the top candidate (both legs
   // counted in full, the scale the miss-signal threshold is set on), captured

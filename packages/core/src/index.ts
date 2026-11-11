@@ -25,13 +25,13 @@ import {
   type EnrichLabel, type EngramKind, type TaskFamily, type Outcome,
 } from './enrich.js'
 import { selectAndSpread, scoreEngramsPublic, formatWithLayer, assignLayer, estimateTokens, pinnedHardCap, isHardPinned, pinnedShareRatio, DEFAULT_PINNED_HARD_RATIO } from './inject.js'
-import { buildUnifiedPool, buildInjectionQuery, rankAndPack, rankForInjection, applyRerankScores, type RankedCandidate } from './inject-unified.js'
+import { buildUnifiedPool, buildInjectionQuery, packUnified, orderRecallCandidates, UNIFIED_RECALL_LIMIT, type RankedCandidate, type UnifiedPool, type UnifiedResult } from './inject-unified.js'
 import { reactivate } from './decay.js'
 import { captureEpisode, queryTimeline } from './episodes.js'
 import { agenticSearch } from './agentic-search.js'
 import { embeddingSearch, embeddingSearchWithScores, type SimilarityResult } from './embeddings.js'
 import { applyFeedbackSignal, type FeedbackSource } from './feedback.js'
-import { hybridSearch, hybridSearchWithMeta, applyReranker, rrfMergeEngrams as pgliteRrfMerge, type HybridSearchResult, type RerankOptions } from './hybrid-search.js'
+import { hybridSearch, hybridSearchWithMeta, applyReranker, rrfMergeEngrams as pgliteRrfMerge, type HybridSearchResult, type RerankOptions, type FusedHit } from './hybrid-search.js'
 import { getReranker, resolveRerankerName, isRerankerOff, rerankerStatus, resetRerankerStatus, _resetRerankerCache, type RerankerAdapter, type RerankerRuntimeStatus, type RerankerName } from './rerankers/index.js'
 import { checkRerankerFit, type FitCheckResult } from './rerankers/fit-check.js'
 import { runRerankerSelfEval, loadRerankerEvalCache, saveRerankerEvalResult, isRerankerEvalStale, logRerankerEvalAdvisory, type RerankerEvalResult } from './reranker-eval.js'
@@ -6789,32 +6789,7 @@ export class Plur {
       }
       const rerank = await this._resolveRerankOptions(options?.rerank)
       const intent = this._resolveIntentProfile(query, options?.intentOverride)
-      // When intent routing is on we over-fetch from the hybrid call WITHOUT the
-      // reranker, apply intent routing, then run the reranker on the routed set.
-      // When intent is off the hybrid call handles reranking inline so the
-      // PGLite and JSON paths stay symmetric.
-      const intentLimit = intent ? Math.max(limit * 2, limit + 10) : limit
-      // remote-only: the PGLite index mirrors the personal store; rank in memory.
-      const pglite = this._remoteOnly ? null : this.pgliteAdapter
-      let result: HybridSearchResult
-      if (intent) {
-        result = pglite
-          ? await this._pgliteHybridRecall(query, intentLimit, filtered, undefined, options)
-          : await hybridSearchWithMeta(filtered, query, intentLimit, this.paths.root, undefined, searchOpts)
-        let routed = applyIntentRouting(result.engrams, intent.profile)
-        let rerankedCount = result.reranked
-        if (rerank) {
-          const reranked = await applyReranker(routed, query, rerank)
-          routed = reranked.engrams
-          rerankedCount = reranked.count
-        }
-        result = { ...result, engrams: routed.slice(0, limit), reranked: rerankedCount }
-      } else if (pglite) {
-        result = await this._pgliteHybridRecall(query, limit, filtered, rerank, options)
-      } else {
-        result = await hybridSearchWithMeta(filtered, query, limit, this.paths.root, rerank, searchOpts)
-      }
-      return result
+      return await this._localHybridRanking(query, filtered, limit, { rerank, intent, searchOpts, restrict: options })
     }
     // #1586: the local pipeline (store load, embedder, reranker) is bounded by
     // the same deadline. Past it the reply carries the remote rows and says
@@ -6878,6 +6853,55 @@ export class Plur {
         resultCount: result.engrams.length,
         topScore: result.topScore ?? null,
       }).catch(() => {})
+    }
+    return result
+  }
+
+  /**
+   * Recall's local ranking (the search `recall` runs, and the one unified
+   * injection runs, overhaul W1): BM25 over the rewritten query and the
+   * meaning leg fused by RRF (PGLite's vector leg when that index is active),
+   * intent routing, then the reranker when one is given. Writes nothing to
+   * the store. Returns the top `limit`; `searchOpts.onRanking` sees the whole
+   * fused list (YAML path; the PGLite path returns the top `limit` only).
+   */
+  private async _localHybridRanking(
+    query: string,
+    filtered: Engram[],
+    limit: number,
+    opts: {
+      rerank?: RerankOptions
+      intent?: { intent: QueryIntent; profile: IntentRoutingProfile }
+      searchOpts?: Parameters<typeof hybridSearchWithMeta>[5]
+      restrict?: Pick<RecallOptions, 'scope' | 'scopes'>
+    },
+  ): Promise<HybridSearchResult> {
+    const { rerank, intent, searchOpts } = opts
+    // When intent routing is on we over-fetch from the hybrid call WITHOUT the
+    // reranker, apply intent routing, then run the reranker on the routed set.
+    // When intent is off the hybrid call handles reranking inline so the
+    // PGLite and JSON paths stay symmetric.
+    const intentLimit = intent ? Math.max(limit * 2, limit + 10) : limit
+    // remote-only: the PGLite index mirrors the personal store; rank in memory.
+    // A keyword-only ranking (semantic: false) never needs the vector index.
+    const pglite = this._remoteOnly || searchOpts?.semantic === false ? null : this.pgliteAdapter
+    let result: HybridSearchResult
+    if (intent) {
+      result = pglite
+        ? await this._pgliteHybridRecall(query, intentLimit, filtered, undefined, opts.restrict)
+        : await hybridSearchWithMeta(filtered, query, intentLimit, this.paths.root, undefined, searchOpts)
+      let routed = applyIntentRouting(result.engrams, intent.profile)
+      let rerankedCount = result.reranked
+      if (rerank) {
+        const reranked = await applyReranker(routed, query, rerank)
+        routed = reranked.engrams
+        rerankedCount = reranked.count
+      }
+      result = { ...result, engrams: routed.slice(0, limit), reranked: rerankedCount }
+    } else if (pglite) {
+      result = await this._pgliteHybridRecall(query, limit, filtered, rerank, opts.restrict)
+    } else {
+      result = await hybridSearchWithMeta(filtered, query, limit, this.paths.root, rerank, searchOpts)
     }
     return result
   }
@@ -9063,11 +9087,12 @@ export class Plur {
     const selection = this._injectionMode(options)
     const includePinned = options?.include_pinned !== false
     let relevance: InjectionResult['relevance']
+    let taskIds: string[] | undefined
 
     const unifiedResult = selection === 'unified'
       ? await this._selectUnified(task, options, engrams, packs, budget, embeddingBoosts, deadlineAt)
       : null
-    if (unifiedResult) relevance = unifiedResult.relevance
+    if (unifiedResult) { relevance = unifiedResult.relevance; taskIds = unifiedResult.task_ids }
     const result = unifiedResult ?? selectAndSpread(
       {
         prompt: task,
@@ -9371,6 +9396,7 @@ export class Plur {
       pins_included: includePinned,
       ...(includePinned ? { pinned_share_tokens: Math.floor(budget * pinnedShareRatio(this.config.injection?.pinned_ratio)) } : {}),
       ...(relevance ? { relevance } : {}),
+      ...(taskIds ? { task_ids: taskIds } : {}),
     }
   }
 
@@ -9390,13 +9416,20 @@ export class Plur {
 
   /**
    * Unified selection (overhaul W1): the gates over the whole visible store,
-   * recall's ranking — keyword (with the query rewrite) fused with the
-   * meaning similarities when `injectHybrid` computed them, intent routing,
-   * the optional reranker under a hard time cap — then the always-on slot,
-   * the prohibition slice and the task list packed into the budget.
+   * then recall's own ranking — the SAME local search `recallHybridWithMeta`
+   * runs (`_localHybridRanking`: BM25 over the rewritten query and the
+   * meaning leg fused by RRF, intent routing, the reranker when configured,
+   * here under a hard time cap) over recall's candidate set — then the
+   * always-on slot, the prohibition slice and the task list packed into the
+   * budget. The task list is recall's top-K after the gates; when gates and
+   * caps leave it short, the search is asked deeper and the new candidates
+   * are appended after recall's order (never re-sorted into it).
    *
    * No bookkeeping here (R5): no reactivation, frequency or co_accessed
    * writes. `_formatInjection` records the injection itself, once.
+   * `meaning` (raw cosine per id, from `injectHybrid`) feeds only the W8
+   * signals and the prohibition floor; its presence also says the meaning
+   * leg may run.
    */
   private async _selectUnified(
     task: string,
@@ -9406,7 +9439,7 @@ export class Plur {
     budget: number,
     meaning: Map<string, number> | undefined,
     deadlineAt: number | undefined,
-  ): Promise<ReturnType<typeof rankAndPack>> {
+  ): Promise<UnifiedResult> {
     const s = resolveInjectionOverhaul(this.config)
     const hook = options?.source === 'hook'
     // D6: in the hook path the query rewrite is off unless configured.
@@ -9425,34 +9458,67 @@ export class Plur {
       query_rewrite: queryRewrite,
     }
     const ctx = { prompt: task, scope: options?.scope, grantedScopes: this._grantedScopes(), maxTokens: budget }
-    const pool = buildUnifiedPool(ctx, engrams, packs, config)
+    const pool: UnifiedPool = buildUnifiedPool(ctx, engrams, packs, config)
+    const limit = Math.max(0, config.recall_limit ?? UNIFIED_RECALL_LIMIT)
+    if (pool.candidates.length === 0) return packUnified(ctx, pool, [], config)
 
-    // Intent routing, as recall applies it, on the fused list.
+    // Recall's candidate set, so BM25's statistics and the meaning leg's
+    // centring are recall's; pool candidates recall would not load (rows the
+    // injection's remote leg brought) are ranked with them.
+    const recallCorpus = await this._hybridCandidates(task, { scope: options?.scope, scopes: options?.scopes })
+    const inCorpus = new Set(recallCorpus.map(e => e.id))
+    const corpus = [...recallCorpus, ...pool.candidates.filter(e => !inCorpus.has(e.id))]
+
+    const semantic = meaning !== undefined && !this._remoteOnly
     const intent = this._remoteOnly ? undefined : this._resolveIntentProfile(task, options?.intentOverride)
-    const route = (ranked: RankedCandidate[]): RankedCandidate[] => {
-      if (!intent) return ranked
-      const byId = new Map(ranked.map(c => [c.engram.id, c]))
-      return applyIntentRouting(ranked.map(c => c.engram), intent.profile).map(e => byId.get(e.id)!)
+    // The reranker runs only when configured (PLUR_RERANKER or rerank: true),
+    // as recall runs it, but under a hard time cap; past it the fused order stands.
+    const rerankOpts = this._remoteOnly ? undefined : await this._resolveRerankOptions(options?.rerank)
+    const rerankByText = new Map<string, number>()
+    let rerank: RerankOptions | undefined
+    if (rerankOpts?.reranker && !isRerankerOff(rerankOpts.reranker)) {
+      const inner = rerankOpts.reranker
+      const capMs = parseInt(process.env.PLUR_INJECT_RERANK_CAP_MS ?? '', 10) || (hook ? 1500 : 10_000)
+      const capped = Object.create(inner) as typeof inner & { scoreBatch: typeof inner.scoreBatch }
+      capped.scoreBatch = async (q: string, docs: string[]) => {
+        const capAt = Math.min(deadlineAt ?? Number.POSITIVE_INFINITY, Date.now() + capMs)
+        const res = await settleBy(inner.scoreBatch(q, docs), capAt)
+        if (!res.done) throw new Error(`reranker did not answer within the ${capMs} ms injection cap`)
+        if (res.error !== undefined) throw res.error
+        const scores = res.value!
+        docs.forEach((d, i) => rerankByText.set(d, scores[i]))
+        return scores
+      }
+      rerank = { ...rerankOpts, reranker: capped }
     }
 
-    // The reranker runs only when configured (PLUR_RERANKER or rerank: true),
-    // on the fused top-K, under a hard time cap; past it the fused order stands.
-    let rerankScores: Map<string, number> | undefined
-    const rerank = this._remoteOnly ? undefined : await this._resolveRerankOptions(options?.rerank)
-    if (rerank?.reranker && !isRerankerOff(rerank.reranker) && pool.candidates.length > 0) {
-      const head = route(rankForInjection(pool, task, meaning, { query_rewrite: queryRewrite }))
-        .slice(0, Math.max(1, rerank.topK ?? 50))
-      const capMs = parseInt(process.env.PLUR_INJECT_RERANK_CAP_MS ?? '', 10) || (hook ? 1500 : 10_000)
-      const capAt = Math.min(deadlineAt ?? Number.POSITIVE_INFINITY, Date.now() + capMs)
-      const res = await settleBy(rerank.reranker.scoreBatch(task, head.map(c => c.engram.statement)), capAt)
-      if (res.done && res.error === undefined && Array.isArray(res.value) && res.value.length === head.length) {
-        rerankScores = new Map(head.map((c, i) => [c.engram.id, res.value![i]]))
+    let depth = Math.max(1, limit)
+    const order: string[] = []
+    const fusedById = new Map<string, FusedHit>()
+    for (;;) {
+      let fusedAll: FusedHit[] = []
+      const res = await this._localHybridRanking(task, corpus, depth, {
+        rerank, intent, restrict: { scope: options?.scope, scopes: options?.scopes },
+        searchOpts: { semantic, queryRewrite, deadlineAt, onRanking: f => { fusedAll = f } },
+      })
+      const grewFrom = order.length
+      const seen = new Set(order)
+      for (const f of fusedAll) if (!fusedById.has(f.engram.id)) fusedById.set(f.engram.id, f)
+      for (const id of [...res.engrams.map(e => e.id), ...fusedAll.map(f => f.engram.id)]) {
+        if (!seen.has(id)) { seen.add(id); order.push(id) }
       }
+      const ranked = orderRecallCandidates(order, pool, fusedById, meaning)
+      const scores = rerankByText.size > 0
+        ? new Map(ranked.filter(c => rerankByText.has(c.engram.statement)).map(c => [c.engram.id, rerankByText.get(c.engram.statement)!]))
+        : undefined
+      const out = packUnified(ctx, pool, ranked, config, scores)
+      // Stop when the task list is full, gated, nothing new came back, or both
+      // legs have offered every candidate (the meaning leg fetches 2× the
+      // depth, the keyword leg 3×), so meaning-only candidates are never cut.
+      const exhausted = (semantic ? depth * 2 : depth * 3) >= corpus.length
+      if (out.task_count >= limit || out.relevance.gated || order.length === grewFrom || exhausted) return out
+      depth *= 4
     }
-    return rankAndPack(ctx, pool, config, meaning, ranked => {
-      const routed = route(ranked)
-      return rerankScores ? { ranked: applyRerankScores(routed, rerankScores), scores: rerankScores } : { ranked: routed }
-    })
   }
 
   /**
