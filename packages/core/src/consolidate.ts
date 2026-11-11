@@ -526,6 +526,10 @@ export interface ConsolidationPlan {
     changed_since: string | null
     sampled_ids: string[]
     queued_ids: string[]
+    /** Ids carried in from the previous finished nightly plan (members of clusters its cap dropped). */
+    carried_in_ids?: string[]
+    /** Members of clusters this plan dropped over `max_changes`; the next nightly plan looks at them again. */
+    carried_ids?: string[]
     max_changes: number
   }
   stats: {

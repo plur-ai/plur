@@ -363,6 +363,63 @@ describe('plur consolidate: plan, apply, undo', () => {
     expect(p1.nightly?.max_changes).toBe(25)
   })
 
+  it('nightly: an unfinished plan does not move last_nightly_at, so nothing changed since is skipped (finding 4)', async () => {
+    await teach([
+      { s: 'Use UTC timestamps in logs', v: axis(0, DIM) },
+      { s: 'Log timestamps in UTC', v: near(axis(0, DIM), 5, 0.95) },
+    ])
+    const first = await plur.consolidatePlan({ nightly: true, now: new Date('2026-11-09T03:00:00Z'), llm: mergingModel().llm, sampleSize: 0 })
+    expect(first.progress.complete).toBe(true)
+    // The next night the model fails: the plan is unfinished.
+    const failed = await plur.consolidatePlan({ nightly: true, now: new Date('2026-11-10T03:00:00Z'), llm: mergingModel({ failAfter: 0 }).llm, sampleSize: 0 })
+    expect(failed.nightly?.changed_since).toBe('2026-11-09T03:00:00.000Z')
+    const next = await plur.consolidatePlan({ nightly: true, now: new Date('2026-11-11T03:00:00Z'), sampleSize: 0 })
+    expect(next.nightly?.changed_since).toBe('2026-11-09T03:00:00.000Z')
+  })
+
+  it('nightly: clusters over the cap are carried to the next plan (finding 4)', async () => {
+    config('consolidate:\n  apply_enabled: true\n  nightly_max_changes: 1\n')
+    plur = new Plur({ path: dir, autoDiscover: false })
+    await teach([
+      { s: 'Use UTC timestamps in logs', v: axis(0, DIM) },
+      { s: 'Log timestamps in UTC', v: near(axis(0, DIM), 5, 0.95) },
+      { s: 'Name branches after the issue number', v: axis(1, DIM) },
+      { s: 'Branch names carry the issue number', v: near(axis(1, DIM), 6, 0.95) },
+    ])
+    // Queue every row, so the first plan finds both clusters and keeps one.
+    const all = await plur.list()
+    writeFileSync(join(dir, 'consolidate-queue.jsonl'), all.map(e => JSON.stringify({ at: '2026-11-01T00:00:00.000Z', id: e.id, neighbour_id: e.id, score: 0.95, scope: 'global' })).join('\n') + '\n')
+    // Dates after the rows were written, so the second plan sees none as changed.
+    const later = (days: number) => new Date(Date.now() + days * 86_400_000)
+    const first = await plur.consolidatePlan({ nightly: true, now: later(1), llm: mergingModel().llm, sampleSize: 0 })
+    expect(first.clusters).toHaveLength(1)
+    const keptIds = new Set(first.clusters[0].members.map(m => m.id))
+    const droppedIds = all.map(e => e.id).filter(id => !keptIds.has(id))
+    const second = await plur.consolidatePlan({ nightly: true, now: later(2), llm: mergingModel().llm, sampleSize: 0 })
+    expect(second.clusters).toHaveLength(1)
+    expect(second.clusters[0].members.map(m => m.id).sort()).toEqual(droppedIds.sort())
+  })
+
+  it('nightly: a finished plan removes the queue entries it consumed by id, and keeps ones queued meanwhile (finding 4)', async () => {
+    const [a, b] = await teach([
+      { s: 'Use UTC timestamps in logs', v: axis(0, DIM) },
+      { s: 'Log timestamps in UTC', v: near(axis(0, DIM), 5, 0.95) },
+    ])
+    const queue = join(dir, 'consolidate-queue.jsonl')
+    writeFileSync(queue, JSON.stringify({ at: '2026-11-01T00:00:00.000Z', id: b.id, neighbour_id: a.id, score: 0.95, scope: 'global' }) + '\n')
+    const inner = mergingModel().llm
+    const llm = async (prompt: string) => {
+      // A learn queues a paraphrase while the model is thinking.
+      writeFileSync(queue, readFileSync(queue, 'utf8') + JSON.stringify({ at: '2026-11-01T00:00:00.000Z', id: 'ENG-LATER', neighbour_id: a.id, score: 0.95, scope: 'global' }) + '\n')
+      return inner(prompt)
+    }
+    const plan = await plur.consolidatePlan({ nightly: true, now: new Date('2026-11-10T03:00:00Z'), llm, sampleSize: 0 })
+    expect(plan.nightly?.queued_ids).toEqual([b.id, a.id])
+    expect(plan.progress.complete).toBe(true)
+    const left = readFileSync(queue, 'utf8').trim().split('\n').map(l => JSON.parse(l).id)
+    expect(left).toEqual(['ENG-LATER'])
+  })
+
   it('a plan interrupted by a model failure resumes where it stopped', async () => {
     const rows: Array<{ s: string; v: Float32Array }> = []
     for (let g = 0; g < 3; g++) {

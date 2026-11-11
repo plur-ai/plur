@@ -9966,28 +9966,63 @@ export class Plur {
     return null
   }
 
-  private _readConsolidateState(): { last_nightly_at?: string } {
+  private _readConsolidateState(): { last_nightly_at?: string; carry_ids?: string[] } {
     try {
       return JSON.parse(fs.readFileSync(join(this.paths.root, CONSOLIDATE_STATE_FILE), 'utf8')) ?? {}
     } catch { return {} }
   }
 
-  /** Ids queued by `learn` (near-paraphrases, D8) since `since` (all when null). */
-  private _readConsolidateQueue(since: string | null): string[] {
+  /**
+   * Every id queued by `learn` (near-paraphrases, D8). Entries stay queued
+   * until a nightly plan that looked at them finishes
+   * ({@link _finishNightlyPlan} removes them by id), so a plan that stopped
+   * part-way loses none.
+   */
+  private _readConsolidateQueue(): string[] {
     let text = ''
     try { text = fs.readFileSync(join(this.paths.root, CONSOLIDATE_QUEUE_FILE), 'utf8') } catch { return [] }
     const ids: string[] = []
     for (const line of text.split('\n')) {
       if (!line.trim()) continue
       try {
-        const q = JSON.parse(line) as { at?: string; id?: string; neighbour_id?: string }
-        if (since && (q.at ?? '') <= since) continue
+        const q = JSON.parse(line) as { id?: string; neighbour_id?: string }
         if (q.id) ids.push(q.id)
         if (q.neighbour_id) ids.push(q.neighbour_id)
-      } catch { /* a torn line */ }
+      } catch { /* skip a torn line */ }
     }
     return [...new Set(ids)]
   }
+
+  /**
+   * A nightly plan finished (every cluster decided): record it. Only now does
+   * `last_nightly_at` move (to the plan's start, so rows changed while it ran
+   * are looked at next time); member ids of clusters dropped by the
+   * `nightly_max_changes` cap are carried to the next plan; and the queue
+   * entries this plan read are removed by id, keeping ones queued meanwhile.
+   */
+  private _finishNightlyPlan(plan: ConsolidationPlan): void {
+    if (plan.mode !== 'nightly' || !plan.nightly || !plan.progress.complete || this._readonly) return
+    const root = this.paths.root
+    try {
+      fs.writeFileSync(join(root, CONSOLIDATE_STATE_FILE), JSON.stringify({
+        last_nightly_at: plan.created_at, last_seed: plan.seed, last_plan_id: plan.plan_id,
+        carry_ids: plan.nightly.carried_ids ?? [],
+      }, null, 2) + '\n', { mode: 0o600 })
+    } catch { return /* the next nightly run looks further back; harmless */ }
+    const consumed = new Set(plan.nightly.queued_ids)
+    if (consumed.size === 0) return
+    const path = join(root, CONSOLIDATE_QUEUE_FILE)
+    try {
+      const kept = fs.readFileSync(path, 'utf8').split('\n').filter(line => {
+        if (!line.trim()) return false
+        try { return !consumed.has((JSON.parse(line) as { id?: string }).id ?? '') } catch { return false }
+      })
+      const tmp = `${path}.${process.pid}.tmp`
+      fs.writeFileSync(tmp, kept.length > 0 ? kept.join('\n') + '\n' : '', { mode: 0o600 })
+      fs.renameSync(tmp, path)
+    } catch { /* a stale entry is looked at again next time; harmless */ }
+  }
+
 
   /**
    * Append near-paraphrases of a just-written engram to the consolidation
@@ -10042,6 +10077,7 @@ export class Plur {
     if (options.llm) await this._decideClusters(plan, options.llm, options.batchSize ?? 8, options.onProgress)
     refreshProgress(plan)
     plan.updated_at = new Date().toISOString()
+    this._finishNightlyPlan(plan)
     return plan
   }
 
@@ -10068,10 +10104,11 @@ export class Plur {
       const changed = since
         ? eligible.filter(e => (e.updated_at ?? e.created_at ?? '') > since).map(e => e.id)
         : []
-      const queued = this._readConsolidateQueue(since)
+      const queued = this._readConsolidateQueue()
+      const carried = (state.carry_ids ?? []).filter(id => typeof id === 'string')
       const sampled = seededSample(eligible.map(e => e.id).sort(), seed, options.sampleSize ?? 200)
-      focus = new Set([...changed, ...queued, ...sampled])
-      nightly = { date: nightlySeed(now), changed_since: since, sampled_ids: sampled, queued_ids: queued, max_changes: cfg.nightly_max_changes }
+      focus = new Set([...changed, ...queued, ...carried, ...sampled])
+      nightly = { date: nightlySeed(now), changed_since: since, sampled_ids: sampled, queued_ids: queued, carried_in_ids: carried, max_changes: cfg.nightly_max_changes }
     }
 
     const byId = new Map(eligible.map(e => [e.id, e]))
@@ -10112,6 +10149,7 @@ export class Plur {
       })
     }
     const kept = nightly ? clusters.slice(0, nightly.max_changes) : clusters
+    if (nightly) nightly.carried_ids = clusters.slice(kept.length).flatMap(c => c.members.map(m => m.id))
 
     const plan: ConsolidationPlan = {
       kind: CONSOLIDATION_PLAN_KIND,
@@ -10136,11 +10174,6 @@ export class Plur {
       },
       clusters: kept,
       progress: { decided: 0, pending: kept.length, complete: kept.length === 0, model_calls: 0, model_errors: 0 },
-    }
-    if (options.nightly && !this._readonly) {
-      try {
-        fs.writeFileSync(join(this.paths.root, CONSOLIDATE_STATE_FILE), JSON.stringify({ last_nightly_at: now.toISOString(), last_seed: seed, last_plan_id: plan.plan_id }, null, 2) + '\n', { mode: 0o600 })
-      } catch { /* the next nightly run looks further back; harmless */ }
     }
     return plan
   }
