@@ -115,15 +115,45 @@ export interface PendingChange {
   apply(fn: (tx: ChangeTx) => void | Promise<void>): Promise<ChangeRecord>
 }
 
+/**
+ * Pseudo-field naming the `co_accessed` entries of `associations`, which
+ * recall adds and strengthens as bookkeeping. Ignoring it compares (and
+ * restores) the other associations only and keeps the current co-access edges.
+ */
+export const CO_ACCESS_FIELD = 'associations:co_accessed'
+
+/**
+ * Top-level engram fields that ordinary use rewrites after any change: inject
+ * counts (`injection_count`), recall activation and usage stats, feedback
+ * (and the `commitment` step positive feedback takes),
+ * re-learn counters and their provenance (`write_count`, `recurrence_count`,
+ * `sources`), and recall's co-access edges ({@link CO_ACCESS_FIELD}). They are not content, so by default they never block an undo:
+ * an engram injected once after a merge must still be undoable.
+ */
+export const UNDO_BOOKKEEPING_FIELDS: readonly string[] = Object.freeze([
+  'injection_count',
+  'activation',
+  'usage',
+  'feedback_signals',
+  // Positive feedback advances it (exploring/leaning -> decided).
+  'commitment',
+  'write_count',
+  'recurrence_count',
+  'sources',
+  CO_ACCESS_FIELD,
+])
+
 /** Options for `undoChange`. */
 export interface UndoChangeOptions {
   /**
    * Top-level engram fields to leave out of the "changed since the apply"
-   * check, e.g. `['activation']` so recall's bookkeeping does not block an
-   * undo. For those fields the CURRENT value is kept on restore, so the undo
-   * is then exact for every other field. Default: none — every field counts.
+   * check. For a field that moved after the apply the CURRENT value is kept
+   * on restore (the bookkeeping that happened since is not lost); a field
+   * that did not move is restored to its before-value, so an undo with no
+   * drift is still exact. Default: {@link UNDO_BOOKKEEPING_FIELDS}. Pass `[]`
+   * to make every field count.
    */
-  ignoreFields?: string[]
+  ignoreFields?: readonly string[]
 }
 
 /** Base class for change journal errors. */
@@ -181,8 +211,48 @@ export function newChangeId(now: Date = new Date()): string {
 export function canonicalRow(row: Engram | null | undefined, ignoreFields: readonly string[] = []): string | null {
   if (!row) return null
   const copy: Record<string, unknown> = { ...(row as Record<string, unknown>) }
-  for (const f of ignoreFields) delete copy[f]
+  for (const f of ignoreFields) {
+    if (f === CO_ACCESS_FIELD) copy.associations = withoutCoAccess(copy.associations)
+    else delete copy[f]
+  }
   return JSON.stringify(sortKeysDeep(JSON.parse(JSON.stringify(copy))))
+}
+
+/** `associations` without recall's `co_accessed` edges. */
+export function withoutCoAccess(assocs: unknown): unknown {
+  return Array.isArray(assocs) ? assocs.filter(a => (a as { type?: string })?.type !== 'co_accessed') : assocs
+}
+
+/** `associations` with only recall's `co_accessed` edges. */
+export function coAccessOnly(assocs: unknown): unknown[] {
+  return Array.isArray(assocs) ? assocs.filter(a => (a as { type?: string })?.type === 'co_accessed') : []
+}
+
+/**
+ * Apply the ignored fields to a row being restored to `before`: a field that
+ * did not move since the change (`now` equals `after`) keeps its before-value,
+ * so an undo with no drift is exact; a field that moved keeps its current
+ * value, so bookkeeping made since the change is not lost.
+ */
+export function carryIgnoredFields(
+  restored: Record<string, unknown>,
+  now: Record<string, unknown>,
+  after: Record<string, unknown> | undefined,
+  ignoreFields: readonly string[],
+): void {
+  const canon = (v: unknown) => JSON.stringify(sortKeysDeep(JSON.parse(JSON.stringify(v ?? null))))
+  for (const f of ignoreFields) {
+    if (f === CO_ACCESS_FIELD) {
+      const cur = coAccessOnly(now.associations)
+      if (canon(cur) === canon(coAccessOnly(after?.associations))) continue
+      const kept = withoutCoAccess(restored.associations)
+      restored.associations = [...(Array.isArray(kept) ? kept : []), ...cur]
+      continue
+    }
+    if (canon(now[f]) === canon(after?.[f])) continue
+    if (f in now) restored[f] = now[f]
+    else delete restored[f]
+  }
 }
 
 /** Rows whose current state differs from what the change wrote. */

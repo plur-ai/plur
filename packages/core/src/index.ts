@@ -87,7 +87,7 @@ import { escapedPath as folderEscaped } from './folder-ask.js'
 import { ReadonlyStoreGuard, ReadonlyStoreError } from './store/readonly-store-guard.js'
 import { withAsyncLock, type AsyncLockOptions } from './store/async-lock.js'
 import {
-  newChangeId, readChangeJournal, journalBegin, journalCommit, findUndoConflicts, canonicalRow,
+  newChangeId, readChangeJournal, UNDO_BOOKKEEPING_FIELDS, carryIgnoredFields, journalBegin, journalCommit, findUndoConflicts, canonicalRow,
   ChangeJournalError, ChangeJournalUnsupportedError, ChangeNotFoundError, ChangeAlreadyUndoneError, ChangeConflictError,
   type ChangeRecord, type ChangeRowSnapshot, type ChangeTx, type PendingChange, type UndoChangeOptions,
 } from './change-journal.js'
@@ -495,7 +495,7 @@ export {
   type InjectionOverhaulSettings, type PinningSettings, type ConsolidateSettings, type LearnSettings,
 } from './schemas/config.js'
 export {
-  CHANGE_JOURNAL_FILE, changeJournalPath, readChangeJournal, newChangeId, canonicalRow, findUndoConflicts,
+  CHANGE_JOURNAL_FILE, changeJournalPath, UNDO_BOOKKEEPING_FIELDS, CO_ACCESS_FIELD, readChangeJournal, newChangeId, canonicalRow, findUndoConflicts,
   ChangeJournalError, ChangeJournalUnsupportedError, ChangeNotFoundError, ChangeAlreadyUndoneError, ChangeConflictError,
   type ChangeRecord, type ChangeRowSnapshot, type ChangeTx, type PendingChange, type UndoChangeOptions, type ChangeConflictRow,
 } from './change-journal.js'
@@ -9908,7 +9908,7 @@ export class Plur {
    * here, and can be undone in turn.
    */
   async undoChange(changeId: string, options: UndoChangeOptions = {}): Promise<ChangeRecord> {
-    const ignore = options.ignoreFields ?? []
+    const ignore = options.ignoreFields ?? UNDO_BOOKKEEPING_FIELDS
     const undoId = newChangeId()
     return await this._applyChange(undoId, 'undo', { undoes: changeId }, (tx) => {
       // Read under the lock, so a concurrent undo of the same change sees the first one's record.
@@ -9928,10 +9928,7 @@ export class Plur {
         if (row.before === null) { tx.remove(row.id); continue }
         const restored = structuredClone(row.before) as Record<string, unknown>
         const now = current.get(row.id) as Record<string, unknown> | undefined
-        if (now) for (const f of ignore) {
-          if (f in now) restored[f] = now[f]
-          else delete restored[f]
-        }
+        if (now) carryIgnoredFields(restored, now, (row.after ?? undefined) as Record<string, unknown> | undefined, ignore)
         tx.put(restored as Engram, row.index ?? undefined)
       }
     })
