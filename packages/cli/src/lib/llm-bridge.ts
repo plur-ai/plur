@@ -11,7 +11,10 @@
  *     lends PLUR its own model and login without PLUR holding an API key.
  *     Per-call limit: `PLUR_LLM_TIMEOUT_MS`, default 10 minutes.
  *  2. An explicit OpenAI-compatible endpoint — `--llm-base-url` +
- *     `--llm-api-key` (+ `--model`).
+ *     `--llm-api-key-env <VAR>` (the key read from that environment variable;
+ *     `--llm-api-key <key>` still works and warns: argv lands in shell
+ *     history and the process list) (+ `--model`). The base URL must be
+ *     https, or plain http to a loopback address only (S13).
  *  3. ONLY for callers that opt in with `allowEnvKeys` (`plur tensions`, whose
  *     existing users rely on it): `OPENROUTER_API_KEY`, else `OPENAI_API_KEY`.
  *     The newer commands never pick up an API key from the environment on
@@ -95,8 +98,10 @@ export interface LlmBridgeOptions {
   llmCmd?: string
   /** `--llm-base-url`. */
   baseUrl?: string
-  /** `--llm-api-key`. */
+  /** `--llm-api-key` (warned: visible in shell history and the process list). */
   apiKey?: string
+  /** `--llm-api-key-env`: the NAME of the environment variable holding the key. */
+  apiKeyEnv?: string
   /** `--model`: the endpoint's model, or the name recorded for a command bridge. */
   model?: string
   /**
@@ -116,8 +121,34 @@ export interface ResolvedLlm {
   command?: string
 }
 
-/** Pick the model bridge by the precedence above. Undefined when none applies. */
-export function resolveLlm(opts: LlmBridgeOptions = {}, env: NodeJS.ProcessEnv = process.env): ResolvedLlm | undefined {
+/**
+ * S13: why `url` may not carry an API key, or null when it may. https is
+ * required; plain http only to a loopback host (localhost, 127.0.0.0/8, ::1),
+ * where the key never leaves the machine.
+ */
+export function checkLlmBaseUrl(url: string): string | null {
+  let u: URL
+  try { u = new URL(url) } catch { return `--llm-base-url is not a valid URL: ${url}` }
+  if (u.protocol === 'https:') return null
+  if (u.protocol === 'http:') {
+    const host = u.hostname.replace(/^\[|\]$/g, '').toLowerCase()
+    if (host === 'localhost' || host === '::1' || /^127(?:\.\d{1,3}){3}$/.test(host)) return null
+    return `--llm-base-url must use https (plain http is allowed only to localhost / 127.0.0.1 / ::1): the API key would be sent in clear text to ${u.host}`
+  }
+  return `--llm-base-url must be an https URL, got ${u.protocol}`
+}
+
+/**
+ * Pick the model bridge by the precedence above. Undefined when none applies.
+ * Throws (message safe to print, never a key) on an unusable endpoint: a
+ * base URL that is not https or loopback http, a named key variable that is
+ * unset, or both key options at once.
+ */
+export function resolveLlm(
+  opts: LlmBridgeOptions = {},
+  env: NodeJS.ProcessEnv = process.env,
+  io: { warn?: (line: string) => void } = {},
+): ResolvedLlm | undefined {
   const flagCmd = opts.llmCmd?.trim()
   const envCmd = env[LLM_CMD_ENV]?.trim()
   const command = flagCmd || envCmd
@@ -130,8 +161,20 @@ export function resolveLlm(opts: LlmBridgeOptions = {}, env: NodeJS.ProcessEnv =
     }
   }
   if (opts.baseUrl) {
+    const bad = checkLlmBaseUrl(opts.baseUrl)
+    if (bad) throw new Error(bad)
+    if (opts.apiKey !== undefined && opts.apiKeyEnv !== undefined) throw new Error('Give either --llm-api-key or --llm-api-key-env, not both.')
+    let apiKey = opts.apiKey ?? ''
+    if (opts.apiKeyEnv !== undefined) {
+      const v = env[opts.apiKeyEnv]
+      if (!v) throw new Error(`--llm-api-key-env ${opts.apiKeyEnv}: that environment variable is not set (or empty).`)
+      apiKey = v
+    } else if (opts.apiKey) {
+      (io.warn ?? (l => process.stderr.write(l + '\n')))(
+        'Warning: --llm-api-key puts the key in your shell history and the process list. Use --llm-api-key-env <VAR> instead.')
+    }
     const model = opts.model ?? 'gpt-4o-mini'
-    return { llm: makeHttpLlm(opts.baseUrl, opts.apiKey ?? '', model), model, via: '--llm-base-url' }
+    return { llm: makeHttpLlm(opts.baseUrl, apiKey, model), model, via: '--llm-base-url' }
   }
   if (opts.allowEnvKeys) {
     // The tension scan's long-standing env-key bridge, model defaults as before.
@@ -153,10 +196,20 @@ export function missingLlmMessage(command: string, opts: { allowEnvKeys?: boolea
     `${command} needs a model. Give it one of:`,
     `  --llm-cmd "<command>"  or  ${LLM_CMD_ENV}="<command>"   the prompt goes to its stdin, its stdout is the answer`,
     `                                                     (for example ${LLM_CMD_ENV}="claude -p --model opus")`,
-    '  --llm-base-url <url> --llm-api-key <key> [--model <name>]   an OpenAI-compatible endpoint',
+    '  --llm-base-url <https-url> --llm-api-key-env <VAR> [--model <name>]   an OpenAI-compatible endpoint, key read from $VAR',
   ]
   if (opts.allowEnvKeys) lines.push('  or set OPENROUTER_API_KEY / OPENAI_API_KEY')
-  else lines.push('An API key in the environment (OPENROUTER_API_KEY / OPENAI_API_KEY) is not used on its own; pass it with --llm-base-url and --llm-api-key.')
+  else lines.push('An API key in the environment (OPENROUTER_API_KEY / OPENAI_API_KEY) is not used on its own; name it with --llm-base-url and --llm-api-key-env.')
   if (opts.extra) lines.push(opts.extra)
   return lines.join('\n')
+}
+
+/** resolveLlm for a command: an unusable endpoint exits 1 with the reason. */
+export function resolveLlmOrExit(opts: LlmBridgeOptions, env: NodeJS.ProcessEnv = process.env): ResolvedLlm | undefined {
+  try {
+    return resolveLlm(opts, env)
+  } catch (err) {
+    process.stderr.write(`${(err as Error).message}\n`)
+    process.exit(1)
+  }
 }

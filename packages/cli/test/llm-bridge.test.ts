@@ -23,7 +23,8 @@ describe('resolveLlm', () => {
     const env = { PLUR_LLM_CMD: 'echo env' }
     expect(resolveLlm({ llmCmd: 'echo flag', baseUrl: 'http://x' }, env)).toMatchObject({ via: '--llm-cmd', command: 'echo flag' })
     expect(resolveLlm({ baseUrl: 'http://x' }, env)).toMatchObject({ via: 'PLUR_LLM_CMD', command: 'echo env' })
-    expect(resolveLlm({ baseUrl: 'http://x', model: 'm1' }, {})).toMatchObject({ via: '--llm-base-url', model: 'm1' })
+    // https (S13: plain http only to a loopback host).
+    expect(resolveLlm({ baseUrl: 'https://x', model: 'm1' }, {})).toMatchObject({ via: '--llm-base-url', model: 'm1' })
   })
 
   it('never uses an environment API key unless the caller opts in (tensions only)', () => {

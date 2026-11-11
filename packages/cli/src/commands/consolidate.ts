@@ -9,16 +9,16 @@ import {
 } from '@plur-ai/core'
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { shouldOutputJson, outputJson, outputText, outputInfo, exit } from '../output.js'
-import { resolveLlm, missingLlmMessage } from '../lib/llm-bridge.js'
+import { resolveLlmOrExit, missingLlmMessage } from '../lib/llm-bridge.js'
 import { requirePinPolicyConfirmation } from '../lib/pin-confirm.js'
 import { writePrivateFile } from '../lib/private-file.js'
 
 export const FLAGS = [
   '--plan', '--out', '--nightly', '--fresh', '--no-model', '--batch-size', '--sample',
   '--apply', '--limit', '--yes', '--undo',
-  '--llm-cmd', '--llm-base-url', '--llm-api-key', '--model',
+  '--llm-cmd', '--llm-base-url', '--llm-api-key', '--llm-api-key-env', '--model',
 ]
-export const FLAGS_WITH_VALUES = ['--out', '--batch-size', '--sample', '--apply', '--limit', '--undo', '--llm-cmd', '--llm-base-url', '--llm-api-key', '--model']
+export const FLAGS_WITH_VALUES = ['--out', '--batch-size', '--sample', '--apply', '--limit', '--undo', '--llm-cmd', '--llm-base-url', '--llm-api-key', '--llm-api-key-env', '--model']
 
 const USAGE = `Usage:
   plur consolidate --plan [--out <file>] [--nightly] [--fresh] [--no-model]
@@ -45,7 +45,7 @@ const USAGE = `Usage:
 
   The model: --llm-cmd "<command>" (the prompt goes to its stdin, its stdout
   is the answer, e.g. --llm-cmd "claude -p"), or PLUR_LLM_CMD, or
-  --llm-base-url/--llm-api-key/--model (OpenAI-compatible). An API key in
+  --llm-base-url (https)/--llm-api-key-env/--model (OpenAI-compatible). An API key in
   the environment is never used on its own. --no-model plans without one
   (every cluster stays pending).`
 
@@ -81,7 +81,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   let limit: number | undefined
   let yes = false
   let undo: string | undefined
-  const llmFlags: { llmCmd?: string; llmBaseUrl?: string; llmApiKey?: string; model?: string } = {}
+  const llmFlags: { llmCmd?: string; llmBaseUrl?: string; llmApiKey?: string; llmApiKeyEnv?: string; model?: string } = {}
   const num = (name: string, v: string | undefined): number => {
     const n = Number(v)
     if (!v || !Number.isInteger(n) || n < 1) exit(1, `${name} needs a whole number of at least 1.\n${USAGE}`)
@@ -103,6 +103,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     else if (a === '--llm-cmd') llmFlags.llmCmd = args[++i]
     else if (a === '--llm-base-url') llmFlags.llmBaseUrl = args[++i]
     else if (a === '--llm-api-key') llmFlags.llmApiKey = args[++i]
+    else if (a === '--llm-api-key-env') llmFlags.llmApiKeyEnv = args[++i]
     else if (a === '--model') llmFlags.model = args[++i]
     else exit(1, `Unknown argument: ${a}\n${USAGE}`)
   }
@@ -160,7 +161,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
 
   // --plan / --nightly
   const outPath = resolve(out ?? join(plur.getStorageRoot(), 'consolidate-plan.json'))
-  const model = noModel ? undefined : resolveLlm({ llmCmd: llmFlags.llmCmd, baseUrl: llmFlags.llmBaseUrl, apiKey: llmFlags.llmApiKey, model: llmFlags.model })
+  const model = noModel ? undefined : resolveLlmOrExit({ llmCmd: llmFlags.llmCmd, baseUrl: llmFlags.llmBaseUrl, apiKey: llmFlags.llmApiKey, apiKeyEnv: llmFlags.llmApiKeyEnv, model: llmFlags.model })
   if (!model && !noModel) {
     exit(1, missingLlmMessage('plur consolidate --plan', { extra: '  or --no-model to plan without one (every cluster stays pending and nothing can be applied until it is decided).' }))
   }
