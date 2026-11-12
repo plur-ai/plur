@@ -73,7 +73,7 @@ import {
   remoteRecall, isRemoteRecallDisabled, resolveRemoteRecallTimeoutMs, scopeOrg, tokenHealthKey, MAX_REMOTE_QUERY_CHARS,
   REMOTE_STATUS_TTL_MS, PROBE_CLEARABLE_STATES,
   resolveRecallDeadlineMs, buildRecallRemoteReport, RECALL_BOOKKEEPING_LOCK_WAIT_MS, settleBy,
-  type RecallRemoteReport,
+  type RecallRemoteReport, type RecallRemoteSkip,
   type RemoteRecallHost, type RemoteRecallResult, type HostRecallOutcome, type RemoteStoreStatusEntry, isHostInCooldown, recordWriteOutcome, stampStoreRow} from './remote-recall.js'
 import { YamlPrimaryStore } from './store/yaml-primary-store.js'
 import { RemoteOnlyStoreGuard, QueueHoldStore, isQueuedForFolder } from './store/remote-only-store-guard.js'
@@ -524,7 +524,7 @@ export {
   startBudgetTimer, BUDGET_TICK_MS, MAX_STARVATION_CREDIT_MS,
   BREAKER_HALF_OPEN_AFTER_MS, DEFAULT_RECALL_DEADLINE_MS, RECALL_BOOKKEEPING_LOCK_WAIT_MS,
   resolveRecallDeadlineMs, buildRecallRemoteReport,
-  type BudgetExpiry, type RecallRemoteReport, type RecallRemoteHostReport,
+  type BudgetExpiry, type RecallRemoteReport, type RecallRemoteHostReport, type RecallRemoteSkip,
   type RemoteRecallHost, type RemoteRecallResult, type HostRecallOutcome,
   type RemoteHostState, type RemoteStoreStatusEntry, type RemoteRecallOptions,
 } from './remote-recall.js'
@@ -7773,7 +7773,7 @@ export class Plur {
     /** The recall's deadline (#1586 audit L7): requests still in flight are
      *  aborted at it, and hosts that answered keep their rows. */
     deadlineAt?: number,
-  ): (Promise<RemoteRecallResult> & { hostUrls: string[] }) | null {
+  ): (Promise<RemoteRecallResult> & { hostUrls: string[]; skipped?: RecallRemoteSkip }) | null {
     if (options?.remote === false) return null
     // An origin-derived local/unknown default is a privacy boundary even for
     // always-dial stores. Explicit call/session scopes remain deliberate choices.
@@ -7791,7 +7791,17 @@ export class Plur {
     // security audit 2026-11-06: a query a write to these scopes would refuse never leaves the machine
     const text = query.length > MAX_REMOTE_QUERY_CHARS ? query.slice(0, MAX_REMOTE_QUERY_CHARS) : query
     const scopes = [...new Set(hosts.flatMap(h => h.scopes))]
-    if (detectSecrets(text).length > 0 || scopes.some(scope => this._offendingHitsForScope(text, scope).length > 0)) return null
+    // The skip is reported (categories only) so a caller can tell it from "no hosts".
+    const categories = new Set<'secrets' | 'infra'>()
+    if (detectSecrets(text).length > 0) categories.add('secrets')
+    for (const scope of scopes) for (const h of this._offendingHitsForScope(text, scope)) categories.add(sensitivityCategory(h.pattern))
+    if (categories.size > 0) {
+      const empty: RemoteRecallResult = { engrams: [], scores: new Map(), outcomes: [] }
+      return Object.assign(Promise.resolve(empty), {
+        hostUrls: [] as string[],
+        skipped: { reason: 'sensitive_query' as const, categories: [...categories].sort() },
+      })
+    }
     return Object.assign(remoteRecall(hosts, query, {
       timeoutMs: resolveRemoteRecallTimeoutMs(options?.remote_timeout_ms),
       limit: options?.limit,
@@ -7842,10 +7852,11 @@ export class Plur {
    * after the deadline, reports every dialed host as cut by the deadline.
    */
   private async _awaitRemote(
-    remotePromise: (Promise<RemoteRecallResult> & { hostUrls?: string[] }) | null,
+    remotePromise: (Promise<RemoteRecallResult> & { hostUrls?: string[]; skipped?: RecallRemoteSkip }) | null,
     deadlineAt: number,
   ): Promise<{ result?: RemoteRecallResult; report: RecallRemoteReport }> {
     if (!remotePromise) return { report: { state: 'not_dialed', hosts: [] } }
+    if (remotePromise.skipped) return { report: { state: 'not_dialed', hosts: [], skipped: remotePromise.skipped } }
     const waited = Number.isFinite(deadlineAt)
       ? await settleBy(remotePromise, deadlineAt + Plur.REMOTE_SETTLE_GRACE_MS)
       : { done: true as const, value: await remotePromise }
@@ -7908,7 +7919,7 @@ export class Plur {
 
   private async _mergeRemoteRecall(
     local: Engram[],
-    remotePromise: (Promise<RemoteRecallResult> & { hostUrls?: string[] }) | null,
+    remotePromise: (Promise<RemoteRecallResult> & { hostUrls?: string[]; skipped?: RecallRemoteSkip }) | null,
     options: (RecallOptions & { include_expired?: boolean }) | undefined,
     limit: number,
     /** Epoch ms past which this recall stops waiting for the server (#1586). */

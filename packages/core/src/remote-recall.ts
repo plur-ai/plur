@@ -397,6 +397,16 @@ export interface RecallRemoteHostReport {
 export interface RecallRemoteReport {
   state: RemoteHostState | 'not_dialed'
   hosts: RecallRemoteHostReport[]
+  /** Set when hosts were implicated but the query was kept on this machine
+   *  because it matched a category the dialed scopes forbid (state stays
+   *  `not_dialed`). Categories only, never the matched text. */
+  skipped?: RecallRemoteSkip
+}
+
+/** Why a recall did not dial its implicated hosts. */
+export interface RecallRemoteSkip {
+  reason: 'sensitive_query'
+  categories: Array<'secrets' | 'infra'>
 }
 
 /** Build the per-call report from host outcomes. */

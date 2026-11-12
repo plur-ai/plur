@@ -54,4 +54,20 @@ describe('remote recall query redaction (security audit 2026-11-06)', () => {
     await plur.recallHybrid('how do we tag releases', { scope: SCOPE } as any)
     expect(recallPosts().map(p => p.body.query)).toEqual(['how do we tag releases'])
   })
+
+  it('reports a withheld query in the remote report, with the categories and not the text', async () => {
+    const plur = new Plur({ path: dir })
+    const infra = 'why does the staging server 192.168.1.10:22 refuse ssh'
+    const meta = await plur.recallWithMeta(infra, { scope: SCOPE } as any)
+    expect(meta.remote).toEqual({ state: 'not_dialed', hosts: [], skipped: { reason: 'sensitive_query', categories: ['infra'] } })
+    const hybrid = await plur.recallHybridWithMeta(`token ${GHP} on 192.168.1.10:22`, { scope: SCOPE } as any)
+    expect(hybrid.remote?.skipped).toEqual({ reason: 'sensitive_query', categories: ['infra', 'secrets'] })
+    const injected = await plur.injectHybrid(infra, { scope: SCOPE, source: 'hook' } as any)
+    expect(injected.remote?.skipped?.categories).toEqual(['infra'])
+    expect(recallPosts()).toEqual([])
+    // A clean query is dialed and carries no skip marker.
+    const clean = await plur.recallWithMeta('how do we tag releases', { scope: SCOPE } as any)
+    expect(clean.remote.skipped).toBeUndefined()
+    expect(clean.remote.hosts.length).toBe(1)
+  })
 })
