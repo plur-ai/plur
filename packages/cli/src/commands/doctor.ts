@@ -753,7 +753,8 @@ function resolveProbeTarget(): { entry: McpServerEntry; source: string } {
   // settings.json entry, which nothing launches, only as a last resort.
   // security audit 2026-11-06: a project entry is run only once ~/.claude.json records the user's approval.
   const cwd = process.cwd()
-  const projectPaths = new Set([join(cwd, '.claude', 'settings.json'), join(cwd, '.mcp.json'), cursorProjectMcpConfigPath(cwd)])
+  // Run from the home folder, the "project" settings.json and .cursor/mcp.json ARE the global files.
+  const projectPaths = new Set([join(cwd, '.mcp.json'), ...(isHomeDir(cwd) ? [] : [join(cwd, '.claude', 'settings.json'), cursorProjectMcpConfigPath(cwd)])])
   const files = knownConfigFiles().filter(cf => cf.exists && cf.kind !== 'cursor-hooks' && !projectPaths.has(cf.path))
   const cc = claudeCodePlurEntry(cwd)
   const ccEntry = cc ? readPlurMcpEntry(cc.config) : null
@@ -1284,13 +1285,26 @@ function localScopePlur(config: Record<string, unknown>, cwd: string): Record<st
 /**
  * Has the user approved the `plur` server of this project `.mcp.json` in
  * Claude Code? Claude Code records that in ~/.claude.json under
- * projects[<dir>].enabledMcpjsonServers. Anything else is unapproved.
+ * projects[<dir>]: `plur` in enabledMcpjsonServers, or
+ * enableAllProjectMcpServers: true (also honoured in the user's own
+ * ~/.claude/settings.json, never in the repository's files). `plur` in
+ * disabledMcpjsonServers wins. Anything else is unapproved.
  */
 function projectMcpServerApproved(mcpJsonPath: string): boolean {
+  type Approval = { enabledMcpjsonServers?: unknown; disabledMcpjsonServers?: unknown; enableAllProjectMcpServers?: unknown }
   const projects = (readConfig(claudeCodeUserConfigPath()) as Record<string, unknown>).projects
-  if (!projects || typeof projects !== 'object') return false
-  const p = (projects as Record<string, unknown>)[dirname(mcpJsonPath)] as { enabledMcpjsonServers?: unknown } | undefined
-  return Array.isArray(p?.enabledMcpjsonServers) && p!.enabledMcpjsonServers.includes('plur')
+  const p = (projects && typeof projects === 'object' ? (projects as Record<string, unknown>)[dirname(mcpJsonPath)] : undefined) as Approval | undefined
+  const userSettings = readConfig(claudeCodeGlobalSettingsPath()) as Approval
+  const lists = (key: 'enabledMcpjsonServers' | 'disabledMcpjsonServers') =>
+    [p?.[key], userSettings[key]].some(v => Array.isArray(v) && v.includes('plur'))
+  if (lists('disabledMcpjsonServers')) return false
+  return lists('enabledMcpjsonServers') || p?.enableAllProjectMcpServers === true || userSettings.enableAllProjectMcpServers === true
+}
+
+/** Is `dir` the user's home folder (compared after resolving symlinks, e.g. /var -> /private/var)? */
+function isHomeDir(dir: string): boolean {
+  const canonical = (d: string) => { try { return realpathSync(d) } catch { return resolve(d) } }
+  return canonical(dir) === canonical(homedir())
 }
 
 /** The nearest `.mcp.json` with a plur entry, walking up from `cwd` as Claude Code does (#1564 review M1). */

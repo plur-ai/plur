@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, chmodSync, readFileSync, existsSync } from 'fs'
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, chmodSync, readFileSync, existsSync, realpathSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { execSync } from 'child_process'
@@ -422,6 +422,49 @@ describe('plur doctor', () => {
       expect(existsSync(marker), `doctor in ${cwd} must not run the repo's command`).toBe(false)
       expect(report.handshake.command).toContain(user)
     }
+  }, 80000)
+
+  function doctorJsonIn(cwd: string): any {
+    let stdout = ''
+    try {
+      stdout = execSync(`node ${CLI} doctor --json`, {
+        encoding: 'utf-8', timeout: 30000, cwd,
+        env: { ...isolatedHomeEnv(home), PLUR_DISABLE_EMBEDDINGS: '1' },
+      })
+    } catch (err: any) { stdout = err.stdout?.toString() ?? '' }
+    return JSON.parse(stdout)
+  }
+
+  it('run from the home folder, still probes the global ~/.cursor/mcp.json and ~/.claude/settings.json', () => {
+    // From $HOME the "project" .cursor/mcp.json and .claude/settings.json are the
+    // global files; the project-file exclusion must not drop them.
+    const cursorServer = join(home, 'cursor-server.sh')
+    writeFileSync(cursorServer, '#!/bin/sh\nsleep 0.5\nexit 0\n', { mode: 0o755 })
+    mkdirSync(join(home, '.cursor'), { recursive: true })
+    writeFileSync(join(home, '.cursor', 'mcp.json'), JSON.stringify({ mcpServers: { plur: { command: cursorServer, args: [] } } }))
+    expect(doctorJsonIn(home).handshake.command).toContain(cursorServer)
+
+    rmSync(join(home, '.cursor'), { recursive: true, force: true })
+    const settingsServer = join(home, 'settings-server.sh')
+    writeFileSync(settingsServer, '#!/bin/sh\nsleep 0.5\nexit 0\n', { mode: 0o755 })
+    mkdirSync(join(home, '.claude'), { recursive: true })
+    writeFileSync(join(home, '.claude', 'settings.json'), JSON.stringify({ mcpServers: { plur: { command: settingsServer, args: [] } } }))
+    expect(doctorJsonIn(home).handshake.command).toContain(settingsServer)
+  }, 80000)
+
+  it('runs a project .mcp.json approved with enableAllProjectMcpServers, but not one disabled by name', () => {
+    const repoServer = join(home, 'repo-server.sh')
+    writeFileSync(repoServer, '#!/bin/sh\nsleep 0.5\nexit 0\n', { mode: 0o755 })
+    const repo = join(home, 'approved-repo')
+    mkdirSync(join(repo, '.git'), { recursive: true })
+    writeFileSync(join(repo, '.mcp.json'), JSON.stringify({ mcpServers: { plur: { command: repoServer, args: [] } } }))
+    // Claude Code keys projects by the folder it ran in; doctor sees cwd canonicalised.
+    const key = realpathSync(repo)
+    writeFileSync(join(home, '.claude.json'), JSON.stringify({ projects: { [key]: { enableAllProjectMcpServers: true } } }))
+    expect(doctorJsonIn(repo).handshake.command).toContain(repoServer)
+
+    writeFileSync(join(home, '.claude.json'), JSON.stringify({ projects: { [key]: { enableAllProjectMcpServers: true, disabledMcpjsonServers: ['plur'] } } }))
+    expect(doctorJsonIn(repo).handshake.command).not.toContain(repoServer)
   }, 80000)
 
   it('fails overall when the live handshake is enabled and the server never completes initialize', () => {
