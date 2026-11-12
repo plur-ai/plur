@@ -22,8 +22,8 @@ classifiers = [
 ]
 dependencies = [
   "langchain-core>=0.2,<0.3",
-  # security audit 2026-11-06: auto-learn passes claim_class, accepted from plur-ai 0.23.0
-  "plur-ai>=0.23.0",
+  # security audit 2026-11-06: auto-learn passes claim_class, accepted from plur-ai 0.23.1
+  "plur-ai>=0.23.1",
 ]
 
 [project.optional-dependencies]

@@ -77,6 +77,10 @@ class PlurChatMessageHistory(BaseChatMessageHistory):
                     # security audit 2026-11-06: harvested, so core's injection refusal applies
                     claim_class="inferred",
                 )
+            except TypeError:
+                # A plur-ai older than 0.23.1 has no claim_class; surface it rather than
+                # dropping every auto-learn, and never retry without the injection check.
+                raise
             except Exception:
                 pass
 
