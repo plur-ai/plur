@@ -467,6 +467,29 @@ describe('plur doctor', () => {
     expect(doctorJsonIn(repo).handshake.command).not.toContain(repoServer)
   }, 80000)
 
+  it('honours approval in the project .claude/settings.local.json only while git does not track it', () => {
+    const repoServer = join(home, 'local-approved-server.sh')
+    writeFileSync(repoServer, '#!/bin/sh\nsleep 0.5\nexit 0\n', { mode: 0o755 })
+    const repo = join(home, 'local-approved-repo')
+    mkdirSync(join(repo, '.claude'), { recursive: true })
+    execSync('git init -q', { cwd: repo, env: isolatedHomeEnv(home) })
+    writeFileSync(join(repo, '.mcp.json'), JSON.stringify({ mcpServers: { plur: { command: repoServer, args: [] } } }))
+    const local = join(repo, '.claude', 'settings.local.json')
+
+    // (a) untracked approval, nothing in ~/.claude.json → the project entry is probed
+    writeFileSync(local, JSON.stringify({ enabledMcpjsonServers: ['plur'] }))
+    expect(doctorJsonIn(repo).handshake.command).toContain(repoServer)
+
+    // (c) plur disabled by name in the same file → not approved, even with enable-all
+    writeFileSync(local, JSON.stringify({ enableAllProjectMcpServers: true, disabledMcpjsonServers: ['plur'] }))
+    expect(doctorJsonIn(repo).handshake.command).not.toContain(repoServer)
+
+    // (b) the same approval committed to the repository → repository content, not approval
+    writeFileSync(local, JSON.stringify({ enableAllProjectMcpServers: true }))
+    execSync('git add .claude/settings.local.json', { cwd: repo, env: isolatedHomeEnv(home) })
+    expect(doctorJsonIn(repo).handshake.command).not.toContain(repoServer)
+  }, 120000)
+
   it('fails overall when the live handshake is enabled and the server never completes initialize', () => {
     // doctor probes the entry the CONFIG declares (#764), so pointing
     // mcpServers.plur at this fake script is what makes the handshake spawn it.

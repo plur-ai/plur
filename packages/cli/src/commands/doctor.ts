@@ -33,6 +33,7 @@ import { plurRoot } from '../lib/folder-gate.js'
 import { readHookInstalls, readHookRuns, type HookTool } from '../lib/hook-runs.js'
 import type { ServerStoreCheck } from '@plur-ai/core'
 import { repairAdvice, repairCommandFor } from './folders.js'
+import { repoFileIsTracked } from './init.js'
 import { codexInstalled } from '../lib/codex-binary.js'
 import { commandSpawn } from '../lib/command-spawn.js'
 
@@ -1287,18 +1288,24 @@ function localScopePlur(config: Record<string, unknown>, cwd: string): Record<st
  * Claude Code? Claude Code records that in ~/.claude.json under
  * projects[<dir>]: `plur` in enabledMcpjsonServers, or
  * enableAllProjectMcpServers: true (also honoured in the user's own
- * ~/.claude/settings.json, never in the repository's files). `plur` in
- * disabledMcpjsonServers wins. Anything else is unapproved.
+ * ~/.claude/settings.json, and in the project's .claude/settings.local.json
+ * while git does not track it; a tracked file, like .claude/settings.json, is
+ * repository content and never approves). `plur` in disabledMcpjsonServers
+ * wins. Anything else is unapproved.
  */
 function projectMcpServerApproved(mcpJsonPath: string): boolean {
   type Approval = { enabledMcpjsonServers?: unknown; disabledMcpjsonServers?: unknown; enableAllProjectMcpServers?: unknown }
+  const dir = dirname(mcpJsonPath)
   const projects = (readConfig(claudeCodeUserConfigPath()) as Record<string, unknown>).projects
-  const p = (projects && typeof projects === 'object' ? (projects as Record<string, unknown>)[dirname(mcpJsonPath)] : undefined) as Approval | undefined
+  const p = (projects && typeof projects === 'object' ? (projects as Record<string, unknown>)[dir] : undefined) as Approval | undefined
   const userSettings = readConfig(claudeCodeGlobalSettingsPath()) as Approval
+  const localPath = join('.claude', 'settings.local.json')
+  const local = (existsSync(join(dir, localPath)) && !repoFileIsTracked(dir, localPath) ? readConfig(join(dir, localPath)) : {}) as Approval
+  const sources = [p, userSettings, local]
   const lists = (key: 'enabledMcpjsonServers' | 'disabledMcpjsonServers') =>
-    [p?.[key], userSettings[key]].some(v => Array.isArray(v) && v.includes('plur'))
+    sources.some(src => Array.isArray(src?.[key]) && (src![key] as unknown[]).includes('plur'))
   if (lists('disabledMcpjsonServers')) return false
-  return lists('enabledMcpjsonServers') || p?.enableAllProjectMcpServers === true || userSettings.enableAllProjectMcpServers === true
+  return lists('enabledMcpjsonServers') || sources.some(src => src?.enableAllProjectMcpServers === true)
 }
 
 /** Is `dir` the user's home folder (compared after resolving symlinks, e.g. /var -> /private/var)? */

@@ -964,7 +964,7 @@ function isPlurHook(entry: HookEntry): boolean {
  * is not the user's decision (security audit 2026-11-06). No git, or a folder
  * that is not a repository, counts as untracked.
  */
-function repoFileIsTracked(folder: string, file: string): boolean {
+export function repoFileIsTracked(folder: string, file: string): boolean {
   try {
     execFileSync('git', ['-C', folder, 'ls-files', '--error-unmatch', '--', file], { stdio: 'ignore', timeout: 5000 })
     return true
