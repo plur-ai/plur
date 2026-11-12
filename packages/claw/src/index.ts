@@ -153,6 +153,10 @@ const plugin = {
 
       api.registerCommand({
         name: 'recall',
+        // OpenClaw passes ctx.senderIsOwner only to commands that declare requiredScopes;
+        // without it the owner check below never sees true. operator.read is the least scope,
+        // and chat-channel owners pass it without a gateway scope context.
+        requiredScopes: ['operator.read'],
         description: 'Search PLUR memories',
         acceptsArgs: true,
         handler: async (ctx: any) => {
