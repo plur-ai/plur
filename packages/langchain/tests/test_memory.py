@@ -68,3 +68,10 @@ def test_save_context_still_swallows_other_learn_errors():
     memory, bridge = _make_memory()
     bridge.learn.side_effect = RuntimeError("cli failed")
     memory.save_context({"input": "x"}, {"response": "I was wrong. The correct way is to use PUT not POST."})
+
+
+def test_save_context_still_swallows_unrelated_type_errors():
+    memory, bridge = _make_memory()
+    bridge.learn.side_effect = TypeError("unsupported operand type(s) for +: 'int' and 'str'")
+    memory.save_context({"input": "x"}, {"response": "I was wrong. The correct way is to use PUT not POST."})
+    assert bridge.learn.call_count == 1

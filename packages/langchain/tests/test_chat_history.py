@@ -70,3 +70,10 @@ def test_ai_message_still_swallows_other_learn_errors():
     history, bridge = _make_history()
     bridge.learn.side_effect = RuntimeError("cli failed")
     history.add_message(AIMessage(content="I was wrong. The right approach is blue-green."))
+
+
+def test_ai_message_still_swallows_unrelated_type_errors():
+    history, bridge = _make_history()
+    bridge.learn.side_effect = TypeError("unsupported operand type(s) for +: 'int' and 'str'")
+    history.add_message(AIMessage(content="I was wrong. The right approach is blue-green."))
+    assert bridge.learn.call_count == 1
