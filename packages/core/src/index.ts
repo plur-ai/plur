@@ -11274,12 +11274,13 @@ export class Plur {
 
   /**
    * Approve a pending pin request: pin the engram (with the tier and
-   * priority the request asked for) and clear the request. An owner action;
-   * a restricted actor's approval is itself only a request.
+   * priority the request asked for) and clear the request. An owner action:
+   * the actor is the one given, else this instance's default actor, and one
+   * the pin policy restricts is refused (S4) — pass `actor: 'owner'`.
    */
   async approvePinRequest(id: string, options?: { actor?: PinActor }): Promise<Engram | null> {
     this._remoteOnlyRefuseLocalStore('Approving a pin request (run it outside the remote-only folder)')
-    const actor = options?.actor ?? 'owner'
+    const actor = this._pinReviewActor(id, 'approve', options?.actor)
     const row = (await this._loadTargeted([id])).find(e => e.id === id)
     if (!row) return null
     const request = pinRequestOf(row)
@@ -11297,11 +11298,27 @@ export class Plur {
   /** Reject a pending pin request: clear it, leaving the engram unpinned. */
   async rejectPinRequest(id: string, options?: { actor?: PinActor }): Promise<Engram | null> {
     this._remoteOnlyRefuseLocalStore('Rejecting a pin request (run it outside the remote-only folder)')
+    const actor = this._pinReviewActor(id, 'reject', options?.actor)
     const row = (await this._loadTargeted([id])).find(e => e.id === id)
     if (!row) return null
     if (!pinRequestOf(row)) throw new Error(`${id} has no pending pin request.`)
     return await this._updateEngramReturning(
-      withoutPinRequest(row as unknown as Record<string, unknown>) as unknown as Engram, { actor: options?.actor ?? 'owner' })
+      withoutPinRequest(row as unknown as Record<string, unknown>) as unknown as Engram, { actor })
+  }
+
+  /**
+   * The actor reviewing a pin request (S4): the one given, else this
+   * instance's default actor — never an assumed owner. Reviewing is an owner
+   * action, so a caller the pin policy restricts is refused.
+   */
+  private _pinReviewActor(id: string, verb: 'approve' | 'reject', given?: PinActor): PinActor | undefined {
+    const actor = given ?? this._defaultActor
+    if (this._pinDecisionFor(actor) !== 'allow') {
+      throw new PinDeniedError(id, `${verb}:pin_request`,
+        `Reviewing a pin request is an owner action on this install (pinning.agents: ${resolvePinningConfig(this.config).agents}), `
+        + `so ${id}'s request was not ${verb === 'approve' ? 'approved' : 'rejected'}. The owner runs \`plur pins ${verb} ${id}\`.`)
+    }
+    return actor
   }
 
   /**
