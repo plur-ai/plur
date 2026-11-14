@@ -121,7 +121,10 @@ describe('plur pins (fit report, priority, review)', () => {
     const listed = await cli(['pins', 'review', '--json'])
     expect(JSON.parse(listed.stdout).pending.map((p: any) => p.id).sort()).toEqual([a.id, b.id].sort())
     expect((await ttyCli(['pins', 'review', 'approve', a.id])).status).toBe(0)
-    expect((await cli(['pins', 'review', 'reject', b.id])).status).toBe(0)
+    // Without a terminal the CLI is an agent (S1), and an agent may not review
+    // pin requests (S4): a piped reject is refused, the owner's goes through.
+    expect((await cli(['pins', 'review', 'reject', b.id])).status).not.toBe(0)
+    expect((await ttyCli(['pins', 'review', 'reject', b.id])).status).toBe(0)
     expect((await store().getById(a.id))!.pinned).toBe(true)
     expect((await store().getById(b.id))!.pinned).toBeUndefined()
     expect(await store().pendingPinRequests()).toEqual([])
