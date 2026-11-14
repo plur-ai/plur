@@ -6,7 +6,7 @@ import { randomUUID, randomBytes } from 'crypto'
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { cleanupStaleSessionFiles } from '../lib/codex-hook-io.js'
 import { checkpointRoot } from './hook-learn-check.js'
-import { hookFolderPolicy, payloadDir, sessionSettings, folderAskOnce, createAskPlur, bindHookFolder, remoteOnlyLines } from '../lib/folder-gate.js'
+import { hookFolderPolicy, payloadDir, sessionSettings, folderAskOnce, untrustedPlurYamlAsk, createAskPlur, bindHookFolder, remoteOnlyLines } from '../lib/folder-gate.js'
 import { skippedStoreNotice } from '@plur-ai/core'
 import type { FolderPolicy } from '@plur-ai/core'
 import { safeSessionKey } from '../lib/session-key.js'
@@ -901,8 +901,9 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
 }
 
 /**
- * The folder has no decision yet (or its `.plur.yaml` is untrusted).
- * On the first prompt of the session, print the one question and no memories;
+ * The folder has no decision yet. (An untrusted `.plur.yaml` is `on` since the
+ * owner decision of 2026-11-14: its question rides with the memories, see
+ * injectSession.) On the first prompt of the session, print the one question and no memories;
  * every later prompt of the session prints nothing. Keyed on the payload
  * `session_id` (then CLAUDE_SESSION_ID), never ppid: a ppid key changes on
  * every prompt and would ask every time.
@@ -1093,6 +1094,15 @@ async function injectSession(
     // one line, once per session and folder, with the paste-safe command.
     const hint = skippedStoreNotice(plur, typeof input.session_id === 'string' ? input.session_id : '', dir)
     if (hint) parts.push(hint)
+
+    // An untrusted .plur.yaml: memories are loaded without its settings, and
+    // the trust question rides along, once per session (owner, 2026-11-14).
+    const trustAsk = untrustedPlurYamlAsk({
+      dir, policy, flags, plur,
+      sessionId: (typeof input.session_id === 'string' && input.session_id) || process.env.CLAUDE_SESSION_ID || '',
+      prompt: typeof input.prompt === 'string' ? input.prompt : '',
+    })
+    if (trustAsk) parts.push('', trustAsk)
 
     // Deferred wrap-up: notify about orphaned previous sessions.
     const deferredNotice = processDeferredWrapups(plur, checkpointRoot(flags))

@@ -92,20 +92,24 @@ describe('existing .plur.yaml behaviour is unchanged by the folder map (#1347)',
     check('trusted-scope-hint', seedAndInject())
   }, 60_000)
 
-  // D1: an UNTRUSTED .plur.yaml that requests a scope resolves to ask; the
-  // hooks turn that into the one-time question (hook-folder-map.test.ts).
-  it('an UNTRUSTED scope/domain .plur.yaml resolves to ask (D1)', () => {
+  // D1, revised (owner, 2026-11-14: "load memories but ignore untrusted
+  // settings"): an UNTRUSTED .plur.yaml that requests a scope resolves to on
+  // without any of its settings; the hooks add the one-time trust question
+  // (untrusted-plur-yaml-loads-memory.test.ts).
+  it('an UNTRUSTED scope/domain .plur.yaml resolves to on, without its settings (D1, revised)', () => {
     writeFileSync(join(repo, '.plur.yaml'), 'scope: project:fixture\ndomain: fixture.deploy\n')
     expect(resolveFolderPolicy(repo, { root: join(dir, '.plur'), home: dir })).toEqual({
-      mode: 'ask', remoteAllowed: false, source: 'plur-yaml', reason: 'untrusted-plur-yaml',
+      mode: 'on', remoteAllowed: false, source: 'plur-yaml', reason: 'untrusted-plur-yaml',
       requested: { scope: 'project:fixture', domain: 'fixture.deploy' },
     })
   })
 
   // Changed on purpose by the hook integration (#1347, decision D1): main
   // printed a refusal line and applied the scope; now the untrusted request is
-  // ignored and the session asks once. No dial either way.
-  it('an untrusted remote .plur.yaml: asks once instead of the refusal notice (D1), no dial', () => {
+  // ignored and the session asks once. D1 as revised by the owner on
+  // 2026-11-14: memories load next to the question, without its scope. No
+  // dial either way.
+  it('an untrusted remote .plur.yaml: memories without its scope, plus the trust question (D1, revised), no dial', () => {
     // Port 9 (discard) on loopback: nothing listens, and an untrusted remote
     // must not be dialled anyway.
     writeFileSync(join(repo, '.plur.yaml'), [
@@ -120,9 +124,11 @@ describe('existing .plur.yaml behaviour is unchanged by the folder map (#1347)',
       '--scope', 'project:fixture', '--domain', 'fixture.deploy', '--json'])
     const out = cli(['hook-inject'], JSON.stringify({ session_id: 'fixture-untrusted', prompt: 'how do fixture deploys reach release' }))
     expect(out).toContain('.plur.yaml is not trusted')
+    expect(out).toContain('memories were loaded')
+    expect(out).toContain('session started')
     expect(out).toContain('127.0.0.1:9')
     expect(out).not.toContain('fixture-token')
-    expect(out).not.toContain('blue staging lane')
+    expect(out).not.toContain('Project scope: project:fixture')
   }, 60_000)
 
   it('a remote .plur.yaml trusted in a legacy trust.yaml: same output as main (no refusal)', () => {

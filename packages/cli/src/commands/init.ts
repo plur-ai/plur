@@ -576,14 +576,15 @@ function migrateRepoHooks(flags: GlobalFlags, userPath: string): string | null {
     const policy = resolveFolderPolicy(folder, { root })
     if (policy.mode === 'off') {
       recorded = 'the folder map has it off, left as is'
-    } else if (policy.mode === 'ask' && policy.reason === 'untrusted-plur-yaml') {
+    } else if (policy.reason === 'untrusted-plur-yaml') {
       // An `on` entry would count as a decision: the question that offers to
-      // trust the .plur.yaml (and so keep its scope) would never run, and
-      // memory would go to the default scope. Leave the map alone; the folder
-      // question asks on the next prompt.
+      // trust the .plur.yaml (and so keep its scope) would never run. Leave
+      // the map alone. Since the owner decision of 2026-11-14 the folder is
+      // already on without the file's settings, and the trust question rides
+      // with the memories on the next prompt.
       const wanted = policy.requested?.scope ? ` for scope ${policy.requested.scope}` : ''
       recorded = `not recorded in the folder map: its .plur.yaml asks${wanted} and is not trusted, ` +
-        'so the folder question asks on the next prompt and can trust it'
+        'so memory stays on without its settings and the next prompt asks whether to trust it'
     } else if (loadFolderMap(root).folders.some(e => e.path === folder || canonicalize(e.path) === target)) {
       recorded = 'the folder map already has it, left as is'
     } else {

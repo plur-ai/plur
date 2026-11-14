@@ -1,6 +1,6 @@
 import { skippedStoreNotice } from '@plur-ai/core'
 import { createPlur, type GlobalFlags } from '../plur.js'
-import { hookFolderPolicy, payloadDir, sessionSettings, folderAskOnce, createAskPlur, bindHookFolder, remoteOnlyLines } from '../lib/folder-gate.js'
+import { hookFolderPolicy, payloadDir, sessionSettings, folderAskOnce, untrustedPlurYamlAsk, createAskPlur, bindHookFolder, remoteOnlyLines } from '../lib/folder-gate.js'
 import { readStdinJson, runCodexHook, codexSessionId, markSessionStarted, isSessionStarted, emitContext, injectWithFallback } from '../lib/codex-hook-io.js'
 import { resolveProjectRemote, projectRemoteRefusalNotice } from '../lib/project-remote.js'
 import { recordInjected } from '../lib/auto-rate.js'
@@ -71,6 +71,9 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
         // remote-only: where memory goes, and that the team server did not answer
         // (first prompt of the session only).
         ...remoteOnlyLines(plur, result, firstForSession),
+        // An untrusted .plur.yaml: memories load without its settings, and the
+        // trust question rides along once per session (owner, 2026-11-14).
+        untrustedPlurYamlAsk({ dir, policy, sessionId, flags, plur, prompt }),
       ].filter((n): n is string => n !== null)
       if (result.count === 0 || !body) {
         if (notices.length > 0) emitContext('UserPromptSubmit', notices.join('\n'))

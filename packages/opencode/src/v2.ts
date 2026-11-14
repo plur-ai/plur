@@ -186,6 +186,14 @@ export const setupV2: Plugin.Plugin['setup'] = async ctx => {
           }
         } else {
           s.block = await recall(s, query, p)
+          // An untrusted .plur.yaml: memories load without its settings, and
+          // the trust question comes with them once per session (owner, 2026-11-14).
+          if (p.decision.reason === 'untrusted-plur-yaml' && !s.asked && plurOnPath()) {
+            const question = folderAskOnce({ dir:s.folder,policy:p.decision,sessionId:s.id,root:s.plur.storageRoot,
+              plur:s.plur,prompt:query,claim:()=>{if(s.asked)return false;s.asked=true;return true},
+              bindSession:true,commandSession:true,host:{pid:process.pid,startedAt:Date.now()-process.uptime()*1000} })
+            if (question) s.block = s.block ? `${question}\n\n${s.block}` : question
+          }
         }
       }
       if (batch.length) queueLearning(s, batch.map(m=>m.id), batch.map(m=>m.text), 'user', p)
