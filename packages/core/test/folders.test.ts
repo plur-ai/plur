@@ -92,18 +92,21 @@ describe('resolveFolderPolicy', () => {
 
   // Decision D1 (owner, 2026-09-29: "ignore-ask", matching #1228's E3): an
   // UNTRUSTED .plur.yaml's scope/domain hints are ignored and the folder asks.
-  it('D1: an untrusted .plur.yaml that requests settings asks, with the reason and what it requests', () => {
+  // Revised by the owner on 2026-11-14 ("load memories but ignore untrusted
+  // settings"): the hints are still ignored, but the folder is on (memory
+  // loads) and the reason stays so the hooks can offer the trust question.
+  it('D1: an untrusted .plur.yaml that requests settings is on without them, with the reason and what it requests', () => {
     const repo = mk('src', 'repo')
     mkdirSync(join(repo, '.git'))
     writeFileSync(join(repo, '.plur.yaml'), 'scope: project:hint\ndomain: x.y\n')
     expect(policy(repo)).toEqual({
-      mode: 'ask', remoteAllowed: false, source: 'plur-yaml',
+      mode: 'on', remoteAllowed: false, source: 'plur-yaml',
       reason: 'untrusted-plur-yaml', requested: { scope: 'project:hint', domain: 'x.y' },
     })
     // A remote request is named too (the URL, never the token).
     writeFileSync(join(repo, '.plur.yaml'), 'remote_url: http://127.0.0.1:9\nremote_token: secret-token\n')
     const p = policy(repo)
-    expect(p).toMatchObject({ mode: 'ask', reason: 'untrusted-plur-yaml', requested: { remote_url: 'http://127.0.0.1:9' } })
+    expect(p).toMatchObject({ mode: 'on', remoteAllowed: false, reason: 'untrusted-plur-yaml', requested: { remote_url: 'http://127.0.0.1:9' } })
     expect(JSON.stringify(p)).not.toContain('secret-token')
   })
 
@@ -151,7 +154,9 @@ describe('resolveFolderPolicy', () => {
     mkdirSync(join(repo, '.git'))
     writeFileSync(join(repo, '.plur.yaml'),
       'scope: project:r\nremote_url: http://127.0.0.1:9\nremote_token: t\nremote_scopes:\n  - project:r\n')
-    expect(policy(repo)).toMatchObject({ mode: 'ask', remoteAllowed: false, reason: 'untrusted-plur-yaml' })
+    // Untrusted: on without its settings (D1, revised 2026-11-14), never its remote.
+    expect(policy(repo)).toMatchObject({ mode: 'on', remoteAllowed: false, reason: 'untrusted-plur-yaml' })
+    expect(policy(repo).scope).toBeUndefined()
 
     writeMap([{ path: repo, trusted: true }])
     expect(policy(repo)).toEqual({ mode: 'on', scope: 'project:r', remoteAllowed: true, source: 'plur-yaml' })
@@ -483,8 +488,9 @@ describe('resolveFolderPolicy', () => {
 
     // #1428 / D1: an untrusted .plur.yaml is ignored unless a covering entry
     // is trusted. A grant recorded in the TYPED case no longer covers the
-    // folder (compared as written), so the repo must fail CLOSED — ask — never
-    // open with the repo's requested scope.
+    // folder (compared as written), so the repo must fail CLOSED — never
+    // open with the repo's requested scope (D1, revised 2026-11-14: on
+    // without its settings, which is what "the repo asks" now means).
     it('D1: a trusted entry in the typed case does not trust a .plur.yaml; the repo asks', ({ skip }) => {
       if (!caseInsensitive()) skip()
       const repo = mk('CaseRepo')
@@ -492,7 +498,7 @@ describe('resolveFolderPolicy', () => {
       writeMap([{ path: join(home, 'caserepo'), trusted: true }])
       for (const d of [repo, join(home, 'caserepo'), join(home, 'CASEREPO')]) {
         expect(policy(d)).toEqual({
-          mode: 'ask', remoteAllowed: false, source: 'plur-yaml', reason: 'untrusted-plur-yaml',
+          mode: 'on', remoteAllowed: false, source: 'plur-yaml', reason: 'untrusted-plur-yaml',
           requested: { scope: 'project:caserepo' },
         })
       }

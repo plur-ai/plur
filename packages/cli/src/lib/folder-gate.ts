@@ -35,6 +35,8 @@ export {
 /**
  * The folder map in the editor hooks — what has the user decided about this folder?
  *   - `on`  → normal work; the policy's `scope` (map entry, else a trusted `.plur.yaml`) is the session scope.
+ *     An untrusted `.plur.yaml` that requests settings is `on` without them, and the hooks add the
+ *     trust question once per session ({@link untrustedPlurYamlAsk}).
  *   - `off` → silent, does nothing.
  *   - `ask` → silent, except each editor's prompt-level inject hook asks {@link folderAskOnce} once per session.
  *   - `remote-only` → as `on`, bound to the folder ({@link bindHookFolder}): only the team scope and packs; if the
@@ -400,6 +402,19 @@ export interface FolderAskOptions extends Omit<CoreFolderAskOptions, 'root'> {
 export function folderAskOnce(opts: FolderAskOptions): string | null {
   const { flags, ...rest } = opts
   return coreFolderAskOnce({ ...rest, root: plurRoot(flags) })
+}
+
+/**
+ * The trust question for an `on` folder whose `.plur.yaml` requests settings
+ * and is not trusted (`reason: 'untrusted-plur-yaml'`), or null. Owner
+ * decision 2026-11-14 ("load memories but ignore untrusted settings"): such a
+ * folder loads memories without the file's settings, and the hook adds this
+ * question next to them, once per session and folder (the same marker and
+ * per-answer nonces as the `ask` question).
+ */
+export function untrustedPlurYamlAsk(opts: FolderAskOptions): string | null {
+  if (opts.policy.mode !== 'on' || opts.policy.reason !== 'untrusted-plur-yaml') return null
+  return folderAskOnce(opts)
 }
 
 /** The raw hook payload on stdin ('' when there is none). */

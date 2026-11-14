@@ -1,6 +1,6 @@
 import { skippedStoreNotice } from '@plur-ai/core'
 import { createPlur, type GlobalFlags } from '../plur.js'
-import { hookFolderPolicy, sessionSettings, folderAskOnce, createAskPlur, bindHookFolder, remoteOnlyLines } from '../lib/folder-gate.js'
+import { hookFolderPolicy, sessionSettings, folderAskOnce, untrustedPlurYamlAsk, createAskPlur, bindHookFolder, remoteOnlyLines } from '../lib/folder-gate.js'
 import type { FolderPolicy } from '@plur-ai/core'
 import {
   readStdinJson,
@@ -150,6 +150,13 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
       // per conversation and workspace folder.
       const hint = workspace ? skippedStoreNotice(plur, conversationId, workspace) : null
       if (hint) message = message ? `${hint}\n${message}` : hint
+      // An untrusted .plur.yaml: memories load without its settings, and the
+      // trust question rides along once per conversation (owner, 2026-11-14).
+      // Cached with this turn's message, so mid-turn invocations replay it.
+      const trustAsk = workspace && policy
+        ? untrustedPlurYamlAsk({ dir: workspace, policy, sessionId: conversationId, flags, plur, prompt: user?.text ?? '' })
+        : null
+      if (trustAsk) message = message ? `${message}\n\n${trustAsk}` : trustAsk
     } catch (err: unknown) {
       // Only worth a message on the FIRST turn — an honest "memory is broken"
       // beats silence there. Mid-session, stderr is enough.

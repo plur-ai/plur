@@ -1,7 +1,7 @@
 import { skippedStoreNotice } from '@plur-ai/core'
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { existsSync, readFileSync, unlinkSync } from 'fs'
-import { cursorHookFolder, sessionSettings, folderAskOnce, isFolderAskText, createAskPlur, bindHookFolder, remoteOnlyLines } from '../lib/folder-gate.js'
+import { cursorHookFolder, sessionSettings, folderAskOnce, untrustedPlurYamlAsk, isFolderAskText, createAskPlur, bindHookFolder, remoteOnlyLines } from '../lib/folder-gate.js'
 import { cursorContextRulePath } from '../mcp-config.js'
 import { readStdinJson, cursorConversationId, markSessionStarted, writeContextRule, removeGeneratedContextRules } from '../lib/cursor-hook-io.js'
 import { resolveProjectRemote, projectRemoteRefusalNotice } from '../lib/project-remote.js'
@@ -120,7 +120,11 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
     const refusal = [
       projectRemote.refusedFrom ? projectRemoteRefusalNotice(projectRemote.refusedFrom, plur.storageRoot) : null,
     ].filter(Boolean).map(n => `${n}\n\n`).join('')
-    fullContext = refusal + (context ? `${header}\n\n${context}` : header)
+    // An untrusted .plur.yaml: memories load without its settings, and the
+    // trust question rides along once per conversation (owner, 2026-11-14).
+    const trustAsk = untrustedPlurYamlAsk({ dir, policy, sessionId: conversationId, flags, plur })
+    const withAsk = trustAsk ? `${header}\n\n${trustAsk}` : header
+    fullContext = refusal + (context ? `${withAsk}\n\n${context}` : withAsk)
   } catch (err: unknown) {
     // Names the CLI `plur doctor`, not the `plur_doctor` MCP tool: the tool
     // only covers embedder/remote-store health, not .cursor/mcp.json or

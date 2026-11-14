@@ -437,29 +437,36 @@ export function createFolderGate(plur: Plur, opts: { sessionId?: string; hosts?:
       `on without memory, and do not ask again. The folder is still undecided; a new session will ask.`,
   })
 
+  const outstanding = (nonce: string): boolean => {
+    try { return folderNonceOutstanding(plur.storageRoot, sessionId, nonce) } catch { return false }
+  }
+
+  /**
+   * "Not now" to this session's own question about `dir`, if the user gave
+   * it: their command consumed its nonce while the question's other nonces
+   * are still there. Marks the folder off for the rest of the session, and
+   * the folder question is never asked again in it.
+   */
+  const notNowGiven = (dir: string): FolderOffAnswer | null => {
+    const entry = asked.get(dir)
+    if (entry?.ask.notNowNonce === undefined) return null
+    const notNowNonce = entry.ask.notNowNonce
+    if (outstanding(notNowNonce) || !entry.ask.nonces.some(n => n !== notNowNonce && outstanding(n))) return null
+    log(`folder ${JSON.stringify(entry.ask.folder)}: the user answered "not now"; memory tools do nothing for the rest of this session.`)
+    notNow.add(dir)
+    asked.delete(dir)
+    return notNowAnswer(entry.ask.folder)
+  }
+
   const askFor = (dir: string, policy: ReturnType<Plur['resolveFolderPolicy']>): FolderOffAnswer | FolderAskPayload => {
-    const outstanding = (nonce: string): boolean => {
-      try { return folderNonceOutstanding(plur.storageRoot, sessionId, nonce) } catch { return false }
-    }
-    let entry = asked.get(dir)
     // "Not now" first: it holds for the rest of the
-    // session, whatever happens to the question afterwards.
-    if (entry?.ask.notNowNonce !== undefined) {
-      // Consumed, not just gone: "not now" leaves the
-      // question's other nonces in place, while a session file that
-      // was swept or ended loses them all. Only the first is an answer; the
-      // second falls through and the question is asked afresh.
-      const notNowNonce = entry.ask.notNowNonce
-      const answered = !outstanding(notNowNonce) && entry.ask.nonces.some(n => n !== notNowNonce && outstanding(n))
-      if (answered) {
-        // The not-now nonce was consumed (or this session's nonces are gone):
-        // off for the rest of the session, never the question again.
-        log(`folder ${JSON.stringify(entry.ask.folder)}: the user answered "not now"; memory tools do nothing for the rest of this session.`)
-        notNow.add(dir)
-        asked.delete(dir)
-        return notNowAnswer(entry.ask.folder)
-      }
-    }
+    // session, whatever happens to the question afterwards. Consumed, not
+    // just gone: "not now" leaves the question's other nonces in place, while
+    // a session file that was swept or ended loses them all. Only the first
+    // is an answer; the second falls through and the question is asked afresh.
+    const given = notNowGiven(dir)
+    if (given) return given
+    let entry = asked.get(dir)
     // Rebuilt when the nonces are about to expire, or the reason the folder
     // is undecided changed (a repo .plur.yaml appeared or went away).
     if (entry && ((!entry.ask.notice && Date.now() - entry.issuedAt > reissueAfter) || entry.reason !== policy.reason)) {
@@ -590,6 +597,15 @@ export function createFolderGate(plur: Plur, opts: { sessionId?: string; hosts?:
         if (policy.mode === 'ask') {
           if (notNow.has(dir)) return notNowAnswer(asked.get(dir)?.ask.folder ?? dir)
           return askFor(dir, policy)
+        }
+        // An untrusted .plur.yaml is `on` without its settings (owner
+        // decision 2026-11-14), but it is no decision of the user's: a "not
+        // now" they gave this session still holds, so a repository file that
+        // appears afterwards cannot switch memory back on.
+        if (policy.reason === 'untrusted-plur-yaml') {
+          if (notNow.has(dir)) return notNowAnswer(dir)
+          const given = notNowGiven(dir)
+          if (given) return given
         }
         // Only on and remote-only let the tool run. An `off` read here (the
         // map changed after the off check above) turns memory off too.

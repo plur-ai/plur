@@ -50,10 +50,13 @@ describe('git-origin folder defaults', () => {
     expect(policy(read)).toMatchObject({ mode: 'ask', reason: 'malformed-map' })
     expect(read).not.toHaveBeenCalled()
   })
+  // D1, revised (owner, 2026-11-14): on without its settings, and still no
+  // git-origin scope (no `scope` key at all) and no git read.
   it('keeps an untrusted legacy request behind its trust decision', () => {
     mkdirSync(join(repo, '.git')); writeFileSync(join(repo, '.plur.yaml'), 'scope: project:legacy\n')
     const read = vi.fn(origin)
-    expect(policy(read)).toMatchObject({ mode: 'ask', reason: 'untrusted-plur-yaml' })
+    expect(policy(read)).toMatchObject({ mode: 'on', reason: 'untrusted-plur-yaml' })
+    expect(policy(read).scope).toBeUndefined()
     expect(read).not.toHaveBeenCalled()
   })
   it('unmatched origins stay on and local with a reason', () => {

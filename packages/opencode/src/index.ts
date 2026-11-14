@@ -88,6 +88,8 @@ export const PlurPlugin: Plugin = async (ctx) => {
    *  - `off` → no recall, no question, no learning;
    *  - `ask` → no memories; the first turn asks once, the next reminds (`chat.message`);
    *  - `on`  → the map's scope, else a TRUSTED `.plur.yaml`'s; this scope dials the team store.
+   *    An untrusted `.plur.yaml` that requests settings is `on` without them (owner decision
+   *    2026-11-14); its trust question comes with the first turn's memories.
    * The `.plur.yaml` is read once: remote settings go through core's gate, and its domain is
    * adopted only from a trusted file — both checked against this same read.
    */
@@ -252,9 +254,20 @@ export const PlurPlugin: Plugin = async (ctx) => {
           })
           pending.catch(() => {}) // a late rejection after the timeout must not go unhandled
           const injection = await withDeadline(pending, INJECT_TIMEOUT_MS)
+          // An untrusted .plur.yaml: memories load without its settings, and
+          // the trust question comes with them once per session (owner,
+          // 2026-11-14), like the CLI prompt hooks. Its commands need the CLI.
+          const trustAsk = state.policy.reason === 'untrusted-plur-yaml' && plurOnPath()
+            ? folderAskOnce({
+              dir: folderDir, policy: state.policy, sessionId: input.sessionID,
+              root: plur.storageRoot, plur, prompt: query, claim: claimAsk, bindSession: true,
+              host: { pid: process.pid, startedAt: Date.now() - process.uptime() * 1000 },
+            })
+            : null
           // A store in this folder that was found but not added: one
           // line, once per session and folder, like the CLI prompt hooks.
-          const hint = skippedStoreNotice(plur, input.sessionID, folderDir)
+          const storeHint = skippedStoreNotice(plur, input.sessionID, folderDir)
+          const hint = [trustAsk, storeHint].filter(Boolean).join('\n\n') || null
           if (injection === DEADLINE_MISSED) {
             // No memory this turn rather than the previous turn's block, which
             // answered a different query.

@@ -75,9 +75,15 @@ export interface FolderPolicy {
   remoteAllowed: boolean
   source: FolderPolicySource
   /**
-   * Why the answer is `ask` when that is not simply "unmapped". Today only
-   * `untrusted-plur-yaml`: the repo's `.plur.yaml` requests
-   * settings that need trust, and they are ignored until the user says yes.
+   * Why the decision is not simply what the map or a marker says:
+   *  - `untrusted-plur-yaml` (mode `on`, source `plur-yaml`): the repo's
+   *    `.plur.yaml` requests settings that need trust. Decision D1 as revised
+   *    by the owner on 2026-11-14 ("load memories but ignore untrusted
+   *    settings"): memory loads as if the file requested nothing — no scope,
+   *    domain or remote from it — and the hooks offer the one-time trust
+   *    question (`requested` says what it asks for).
+   *  - `malformed-map` / `resolver-error` (mode `ask`): the decision could not
+   *    be read; no memory (fail safe).
    */
   reason?: 'untrusted-plur-yaml' | 'malformed-map' | 'resolver-error'
   /**
@@ -773,7 +779,10 @@ export function folderOffEntries(dir: string, opts: FolderPolicyOptions): Folder
  *     trusted/scope-only entries never override it);
  *  3. a `.plur.yaml`: trusted or requesting nothing → on (map `scope` beats its hint,
  *     its remote only when trusted); untrusted with requests → hints ignored, map
- *     decision applies, else ask with `reason: 'untrusted-plur-yaml'`;
+ *     decision applies, else on WITHOUT any of its settings, with
+ *     `reason: 'untrusted-plur-yaml'` and `requested` so the hooks can offer the
+ *     trust question (decision D1, revised by the owner 2026-11-14: "load
+ *     memories but ignore untrusted settings"; it used to be `ask`, no memory);
  *  4. a project MCP config → on;  5. the most specific map entry;  6. else ask (incl. `$HOME`).
  */
 export function resolveFolderPolicy(dir: string, opts: FolderPolicyOptions): FolderPolicy {
@@ -845,8 +854,16 @@ function resolveExplicitFolderPolicy(dir: string, opts: FolderPolicyOptions): Fo
     return { mode: 'remote-only', ...(scope ? { scope } : {}), remoteAllowed: false, source: 'map' }
   }
   if (untrustedRequest && deciding.length === 0) {
+    // Decision D1, revised (owner, 2026-11-14: "load memories but ignore
+    // untrusted settings"). Memory loads exactly as for a `.plur.yaml` that
+    // requests nothing: no scope from it (and, because `reason` is set, no
+    // git-origin default either), never its remote. `reason` and `requested`
+    // stay so every hook can offer the trust question once per session; trust
+    // remains the only way the file's scope, domain or remote apply. Every
+    // stricter decision was taken above (off, remote-only, a malformed map) or
+    // is a `deciding` entry (an `ask` the user set), so none of them reach here.
     return {
-      mode: 'ask', remoteAllowed: false, source: 'plur-yaml', reason: 'untrusted-plur-yaml',
+      mode: 'on', remoteAllowed: false, source: 'plur-yaml', reason: 'untrusted-plur-yaml',
       requested: {
         ...(config.scope ? { scope: config.scope } : {}),
         ...(config.domain ? { domain: config.domain } : {}),
@@ -1287,15 +1304,17 @@ function setFolderEntryUnlocked(root: string, folder: string, change: FolderChan
 }
 
 /**
- * A folder question is shown only while the folder is undecided (`ask`), and
- * its nonce answers that question. Refuse the nonce-redeemed write when the
- * folder has been decided another way since (by hand, or by a parent entry):
- * nothing is written and the nonce is not consumed. "Not now" writes nothing
- * and is not checked here.
+ * A folder question is shown only while the user has not decided the folder:
+ * it is `ask`, or `on` only because an untrusted `.plur.yaml` was set aside
+ * (`reason: 'untrusted-plur-yaml'`, the trust question). Its nonce answers
+ * that question. Refuse the nonce-redeemed write when the folder has been
+ * decided another way since (by hand, or by a parent entry): nothing is
+ * written and the nonce is not consumed. "Not now" writes nothing and is not
+ * checked here.
  */
 function refuseIfDecided(root: string, folder: string, home: string, gitScopes?: readonly GitScopeSource[]): void {
   const policy = resolveFolderPolicy(folder, { root, home, readOnly: true, ...(gitScopes ? { gitScopes } : {}) })
-  if (policy.mode === 'ask') return
+  if (policy.mode === 'ask' || policy.reason === 'untrusted-plur-yaml') return
   throw new FolderMapError('nonce-stale',
     `${escapedPath(folder)} was decided another way after this question was shown (memory there is now ${policy.mode}), ` +
     'so this answer no longer applies; nothing was changed. See plur folders list, or change it by hand with plur folders set.')

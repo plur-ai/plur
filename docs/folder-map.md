@@ -44,6 +44,22 @@ edit the file by hand: every CLI write keeps your comments and the order of
 entries, and changes only the entry it is about. A `folders.yaml` PLUR cannot
 read is never overwritten; fix or remove it first.
 
+## A repository's `.plur.yaml`
+
+A `.plur.yaml` that requests nothing (no `scope`, `domain` or `remote_url`)
+turns memory on in its repository. One that requests settings is only applied
+once you trust it (`trusted: true`, `plur trust <folder>`, or "Yes, and trust"
+in the folder question).
+
+Until then, and when no entry of yours decides the folder, memory loads as if
+the file requested nothing: none of its scope, domain or team server is used,
+and nothing is sent to the server it names. The editor hooks add the folder
+question once per session so you can trust it, keep memory on without its
+settings, or turn memory off there. Your own entries still win: `off`,
+`remote-only`, an `ask` you set, or a scope you set. A `folders.yaml` PLUR
+cannot read still means no memory until it is fixed. (Owner decision,
+2026-11-14. Before that, such a folder loaded no memory until you answered.)
+
 ## Remote-only folders
 
 Use this for work whose memories belong on a team server rather than in your

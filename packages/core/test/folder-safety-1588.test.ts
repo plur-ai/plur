@@ -424,6 +424,9 @@ describe('#1589 audit L5: the temp-folder skip does not follow a user\u2019s sym
 // ---------------------------------------------------------------------------
 
 describe('#1589 audit round 2, R2-L1: the .plur.yaml lookup walks the real path to the real repository root', () => {
+  // D1, revised (owner, 2026-11-14): "ask" for an untrusted .plur.yaml is now
+  // on without its settings, with the same reason; the symlink must still
+  // resolve the same as the real path.
   it('P15: an untrusted .plur.yaml at the real repository root makes a symlinked sub-folder ask, as the real path does', () => {
     const ws = join(home, 'ws')
     const repo = join(ws, 'repo')
@@ -435,11 +438,13 @@ describe('#1589 audit round 2, R2-L1: the .plur.yaml lookup walks the real path 
     expect(findProjectConfigPath(link)).toBe(join(repo, '.plur.yaml'))
     const viaLink = resolveFolderPolicy(link, { root, home })
     const real = resolveFolderPolicy(join(repo, 'src'), { root, home })
-    expect(`${viaLink.mode}/${viaLink.reason}`).toBe('ask/untrusted-plur-yaml')
-    expect(`${real.mode}/${real.reason}`).toBe('ask/untrusted-plur-yaml')
+    expect(`${viaLink.mode}/${viaLink.reason}`).toBe('on/untrusted-plur-yaml')
+    expect(`${real.mode}/${real.reason}`).toBe('on/untrusted-plur-yaml')
+    expect(viaLink.scope).toBeUndefined()
+    expect(real.scope).toBeUndefined()
     // An untrusted .plur.yaml above the repository changes nothing.
     writeFileSync(join(ws, '.plur.yaml'), 'scope: "group:acme/eng"\n')
-    expect(resolveFolderPolicy(link, { root, home }).mode).toBe('ask')
+    expect(resolveFolderPolicy(link, { root, home })).toEqual(viaLink)
     expect(findProjectConfigPath(link)).toBe(join(repo, '.plur.yaml'))
   })
 

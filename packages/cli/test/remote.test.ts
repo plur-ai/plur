@@ -361,14 +361,16 @@ describe('plur remote (#1413)', () => {
       expect(readFileSync(join(work, '.plur.yaml'), 'utf8')).toBe(legacy())
     }, TEST_TIMEOUT_MS)
 
-    it('golden: untrusted, its remote is refused and the folder asks', async () => {
+    // D1, revised (owner, 2026-11-14): the folder is on without the file's
+    // settings, so its remote is still refused and no store serves it.
+    it('golden: untrusted, its remote is refused and the folder is on without its settings', async () => {
       writeFileSync(join(work, '.plur.yaml'), legacy())
       const r = await cli(['remote', '--json'])
       expect(r.status).not.toBe(0)
       const out = JSON.parse(r.stdout)
       // Only the host of an untrusted remote_url is shown (#1415 review).
       expect(out.policy).toEqual({
-        mode: 'ask', remoteAllowed: false, source: 'plur-yaml', reason: 'untrusted-plur-yaml',
+        mode: 'on', remoteAllowed: false, source: 'plur-yaml', reason: 'untrusted-plur-yaml',
         requested: { domain: 'example', remote_host: new URL(baseUrl).host },
       })
       expect(out.stores).toEqual([])
