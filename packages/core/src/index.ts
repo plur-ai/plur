@@ -10235,6 +10235,7 @@ export class Plur {
       clusters.push({
         id: `K-${String(clusters.length + 1).padStart(4, '0')}`,
         scope: members[0].scope,
+        block: blockKeyFor(members[0]),
         members: members.map(e => ({
           id: e.id,
           statement: e.statement,
@@ -10398,6 +10399,16 @@ export class Plur {
           if (row.scope !== cluster.scope) throw new Skip('drifted', `${m.id} moved to scope ${row.scope}`)
           if (computeContentHash(row.statement) !== m.statement_hash) throw new Skip('drifted', `${m.id} was edited since the plan`)
           members.push(row)
+        }
+        // One block, re-derived from the rows (S12): in a group scope every
+        // member must still have one author — the planned one — so a plan
+        // edited to add another author's row, or a row whose author changed,
+        // never merges authors.
+        const blocks = new Set(members.map(e => blockKeyFor(e)))
+        if (blocks.size > 1 || (cluster.block !== undefined && !blocks.has(cluster.block))) {
+          throw new Skip('drifted', cluster.scope.startsWith('group:')
+            ? 'the members no longer share the planned author'
+            : 'the members no longer share the planned block')
         }
         if (mixedPolarity(members)) throw new Skip('drifted', 'the members no longer share a polarity')
         if (clusterProtectedReasons(members).length > 0 && cluster.approved !== true) {

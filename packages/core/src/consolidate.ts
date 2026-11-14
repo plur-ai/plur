@@ -497,6 +497,8 @@ export interface PlanMember {
 export interface PlanCluster {
   id: string
   scope: string
+  /** The block the cluster was found in ({@link blockKeyFor}: scope, and in a group scope the author). Apply re-checks every member against it. */
+  block?: string
   members: PlanMember[]
   min_similarity: number
   polarity: 'do' | 'dont'

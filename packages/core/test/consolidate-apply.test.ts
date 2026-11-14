@@ -320,6 +320,37 @@ describe('plur consolidate: plan, apply, undo', () => {
     expect((await plur.getById(res.applied[0].merged_id))!.statement).toBe('Use UTC timestamps in every log line always')
   })
 
+  it('in a group scope, apply re-checks that every member still has one author (S12)', async () => {
+    const SCOPE = 'group:acme/notes'
+    const [a, b, c] = await teach([
+      { s: 'Review dependency updates weekly', v: axis(0, DIM), scope: SCOPE },
+      { s: 'Dependency updates get a weekly review', v: near(axis(0, DIM), 5, 0.95), scope: SCOPE },
+      { s: 'Look at dependency updates every week', v: near(axis(0, DIM), 6, 0.95), scope: SCOPE },
+    ])
+    const by = async (id: string, who: string) => {
+      const row = (await plur.getById(id))!
+      await plur.updateEngramAsync({ ...row, attribution: { ...(row.attribution ?? {}), asserted_by: who } } as Engram)
+    }
+    await by(a.id, 'alice'); await by(b.id, 'alice'); await by(c.id, 'bob')
+    const plan = await plur.consolidatePlan({ llm: mergingModel().llm })
+    expect(plan.clusters).toHaveLength(1)
+    expect(plan.clusters[0].members.map(m => m.id).sort()).toEqual([a.id, b.id].sort())
+    // A hand-edited plan adds bob's row to alice's cluster.
+    const cRow = (await plur.getById(c.id))!
+    const forged: ConsolidationPlan = { ...plan, clusters: [{ ...plan.clusters[0], members: [...plan.clusters[0].members, { ...plan.clusters[0].members[0], id: c.id, statement: cRow.statement, statement_hash: (cRow as any).content_hash ?? plan.clusters[0].members[0].statement_hash }] }] }
+    const { computeContentHash } = await import('../src/content-hash.js')
+    forged.clusters[0].members[2].statement_hash = computeContentHash(cRow.statement)
+    const refused = await plur.consolidateApply(forged, { limit: 1 })
+    expect(refused.applied).toEqual([])
+    expect(refused.skipped[0]).toMatchObject({ reason: 'drifted' })
+    expect(refused.skipped[0].detail).toMatch(/author/)
+    // The author of a member changed after the plan: refused too.
+    await by(b.id, 'mallory')
+    const drifted = await plur.consolidateApply(plan, { limit: 1 })
+    expect(drifted.applied).toEqual([])
+    expect(drifted.skipped[0].detail).toMatch(/author/)
+  })
+
   it('refuses to apply while consolidate.apply_enabled is false', async () => {
     config('')
     plur = new Plur({ path: dir, autoDiscover: false })
