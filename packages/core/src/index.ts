@@ -12833,7 +12833,19 @@ export class Plur {
         if (isEnriched(row)) { skipped.push({ id: item.id, reason: 'already enriched' }); continue }
         if (computeContentHash(row.statement) !== item.statement_hash) { skipped.push({ id: item.id, reason: 'statement changed since the plan' }); continue }
         if (!(ENRICH_KINDS as readonly string[]).includes(item.kind)) { skipped.push({ id: item.id, reason: `invalid kind ${String(item.kind)}` }); continue }
-        const label: EnrichLabel = { kind: item.kind, task_family: item.task_family, outcome: item.outcome ?? null, applies_when: item.applies_when ?? null }
+        // The plan file is input like a model reply (S7): the same parser's
+        // bounds apply (known kind, family and outcome; at most 15 words of
+        // applies_when), and a label that would carry a secret or text the
+        // row's scope may not hold is refused.
+        const label = parseEnrichReply(JSON.stringify([{
+          id: item.id, kind: item.kind, task_family: item.task_family, outcome: item.outcome ?? 'none', applies_when: item.applies_when ?? '',
+        }]), [item.id]).get(item.id)
+        if (!label) { skipped.push({ id: item.id, reason: 'invalid label' }); continue }
+        const labelText = label.applies_when ?? ''
+        if (labelText && (detectSecrets(labelText).length > 0 || this._offendingHitsForScope(labelText, row.scope).length > 0)) {
+          skipped.push({ id: item.id, reason: 'sensitive: the label would carry a secret or text this scope may not hold' })
+          continue
+        }
         rows.push(enrichRow(row, label, plan.enricher, at))
       }
       return { rows, skipped }

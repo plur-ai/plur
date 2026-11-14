@@ -146,6 +146,28 @@ describe('plur enrich plan / apply / undo', () => {
     expect(enriched.knowledge_type).toEqual(ktBefore)
   })
 
+  it('apply re-checks the plan: bounds as the reply parser sets them, and secrets refused (S7)', async () => {
+    const plan = await plur.planEnrichment({ llm: fakeModel().llm, model: 'test-model' })
+    const [first, second, third] = plan.items
+    const tampered = {
+      ...plan,
+      items: [
+        { ...first, applies_when: 'word '.repeat(200).trim(), task_family: 'evil' as any, outcome: 'pwned' as any },
+        { ...second, applies_when: 'when deploying with key AKIAIOSFODNN7EXAMPLE' },
+        { ...third, kind: 'opinion' as any },
+      ],
+    }
+    const res = await plur.applyEnrichmentPlan(tampered)
+    const one = (await plur.getById(first.id))! as any
+    expect(one.structured_data.enrichment.applies_when.split(/\s+/).length).toBeLessThanOrEqual(15)
+    expect(one.structured_data.enrichment.task_family).toBe('other')
+    expect(one.structured_data.enrichment.outcome).toBeNull()
+    expect(res.skipped).toEqual(expect.arrayContaining([expect.objectContaining({ id: second.id, reason: expect.stringMatching(/secret|sensitive/i) })]))
+    expect(((await plur.getById(second.id))! as any).structured_data?.enrichment).toBeUndefined()
+    expect(res.skipped.some(s => s.id === third.id)).toBe(true)
+    expect(JSON.stringify(await plur.list())).not.toContain('AKIAIOSFODNN7EXAMPLE')
+  })
+
   it('a second run changes nothing', async () => {
     const model = fakeModel()
     const plan = await plur.planEnrichment({ llm: model.llm, model: 'test-model' })
