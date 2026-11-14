@@ -321,7 +321,9 @@ class MetaPipeline:
                 try:
                     self._bridge.learn(me["statement"], scope="global",
                                        type="architectural",
-                                       domain=me.get("domain", "meta"))
+                                       domain=me.get("domain", "meta"),
+                                       # security audit 2026-11-06: model-formulated, so injection-checked
+                                       claim_class="inferred")
                     saved_count += 1
                     consecutive_failures = 0
                 except Exception as e:

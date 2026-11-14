@@ -40,6 +40,7 @@ def test_ai_message_triggers_learning():
     history, bridge = _make_history()
     history.add_message(AIMessage(content="I was wrong. The right approach is blue-green."))
     assert bridge.learn.called
+    assert bridge.learn.call_args.kwargs["claim_class"] == "inferred"
 
 
 def test_ai_message_no_learning_when_disabled():
@@ -55,3 +56,24 @@ def test_clear_empties_messages():
     history.clear()
     assert history._messages == []
     assert history._last_human_input == ""
+
+
+def test_ai_message_old_client_without_claim_class_fails_visibly():
+    history, bridge = _make_history()
+    bridge.learn.side_effect = TypeError("learn() got an unexpected keyword argument 'claim_class'")
+    with pytest.raises(TypeError, match="claim_class"):
+        history.add_message(AIMessage(content="I was wrong. The right approach is blue-green."))
+    assert bridge.learn.call_count == 1
+
+
+def test_ai_message_still_swallows_other_learn_errors():
+    history, bridge = _make_history()
+    bridge.learn.side_effect = RuntimeError("cli failed")
+    history.add_message(AIMessage(content="I was wrong. The right approach is blue-green."))
+
+
+def test_ai_message_still_swallows_unrelated_type_errors():
+    history, bridge = _make_history()
+    bridge.learn.side_effect = TypeError("unsupported operand type(s) for +: 'int' and 'str'")
+    history.add_message(AIMessage(content="I was wrong. The right approach is blue-green."))
+    assert bridge.learn.call_count == 1

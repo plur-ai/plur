@@ -426,6 +426,7 @@ class TestSyncTurn:
         # trigger strategy-2 marker
         p.sync_turn("msg", "I learned:\n- use black for formatting")
         assert p._learn_by_session.get("", 0) >= 1
+        assert bridge.learn.call_args.kwargs["claim_class"] == "inferred"
 
     def test_noop_when_standalone_hooks_active(self):
         bridge = _mock_bridge()

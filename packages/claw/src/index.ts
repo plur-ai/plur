@@ -153,6 +153,10 @@ const plugin = {
 
       api.registerCommand({
         name: 'recall',
+        // OpenClaw passes ctx.senderIsOwner only to commands that declare requiredScopes;
+        // without it the owner check below never sees true. operator.read is the least scope,
+        // and chat-channel owners pass it without a gateway scope context.
+        requiredScopes: ['operator.read'],
         description: 'Search PLUR memories',
         acceptsArgs: true,
         handler: async (ctx: any) => {
@@ -160,12 +164,15 @@ const plugin = {
           const results = await getEngine(path).plur.recall(ctx.args.trim(), { limit: 10 })
           maybeFlushAfter(recordEvent('recall'))
           if (!Array.isArray(results) || !results.length) return { text: 'No matching memories.' }
+          // security audit 2026-11-06: non-owners get a count only; /sync, /packs, /forget need operator.admin
+          if (ctx.senderIsOwner !== true) return { text: `Found ${results.length} memories. Only the owner can see their text here.` }
           return { text: `Found ${results.length} memories:\n${results.map((r: any, i: number) => `${i + 1}. [${r.id}] ${r.statement}`).join('\n')}` }
         },
       })
 
       api.registerCommand({
         name: 'forget',
+        requiredScopes: ['operator.admin'],
         description: 'Retire a PLUR memory by ID',
         acceptsArgs: true,
         handler: async (ctx: any) => {
@@ -177,6 +184,7 @@ const plugin = {
 
       api.registerCommand({
         name: 'sync',
+        requiredScopes: ['operator.admin'],
         description: 'Sync PLUR memories across devices via git',
         acceptsArgs: true,
         handler: async (ctx: any) => {
@@ -203,6 +211,7 @@ const plugin = {
 
       api.registerCommand({
         name: 'packs',
+        requiredScopes: ['operator.admin'],
         description: 'Manage knowledge packs: list, install <path>, uninstall <name>',
         acceptsArgs: true,
         handler: async (ctx: any) => {

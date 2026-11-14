@@ -160,8 +160,10 @@ def register(ctx):
         try:
             learnings = extract_learning_patterns(response)
             for statement in learnings:
+                # security audit 2026-11-06: harvested, so core's injection refusal applies
                 bridge.learn(statement, source="hermes:auto",
-                             rationale="Auto-extracted from assistant self-report")
+                             rationale="Auto-extracted from assistant self-report",
+                             claim_class="inferred")
                 if session_id in _session_state:
                     _session_state[session_id]["count"] += 1
         except Exception as e:

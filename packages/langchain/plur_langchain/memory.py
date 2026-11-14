@@ -62,7 +62,14 @@ class PlurMemory(BaseMemory):
                     statement,
                     source="langchain:PlurMemory",
                     rationale="Auto-extracted from LangChain chain output",
+                    # security audit 2026-11-06: harvested, so core's injection refusal applies
+                    claim_class="inferred",
                 )
+            except TypeError as exc:
+                # A plur-ai without claim_class: surface it rather than dropping every
+                # auto-learn, and never retry without the injection check.
+                if "claim_class" in str(exc):
+                    raise
             except Exception:
                 pass
 

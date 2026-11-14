@@ -635,6 +635,8 @@ class PlurMemoryProvider:
                     statement,
                     source="hermes:auto",
                     rationale="Auto-extracted from assistant self-report",
+                    # security audit 2026-11-06: harvested, so core's injection refusal applies
+                    claim_class="inferred",
                 )
                 self._learn_by_session[session_key] = (
                     self._learn_by_session.get(session_key, 0) + 1

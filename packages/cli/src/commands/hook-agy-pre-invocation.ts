@@ -1,6 +1,6 @@
 import { skippedStoreNotice } from '@plur-ai/core'
 import { createPlur, type GlobalFlags } from '../plur.js'
-import { hookFolderPolicy, sessionSettings, folderAskOnce, createAskPlur, bindHookFolder, remoteOnlyLines } from '../lib/folder-gate.js'
+import { agyHookFolder, sessionSettings, folderAskOnce, createAskPlur, bindHookFolder, remoteOnlyLines } from '../lib/folder-gate.js'
 import type { FolderPolicy } from '@plur-ai/core'
 import {
   readStdinJson,
@@ -78,11 +78,13 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   await runAgyHook('agy pre-invocation', async () => {
     const input = readStdinJson()
 
-    const workspaces = Array.isArray(input.workspacePaths) ? input.workspacePaths as string[] : []
-    const workspace = (workspaces.length > 0 && typeof workspaces[0] === 'string') ? workspaces[0] : null
+    // Every workspace root decides, not only the first (security audit
+    // 2026-11-06): off wins, remote-only fails closed, as in Cursor and MCP.
     // No workspace: the install is the opt-in, as before (no folder to ask about).
-    const policy: FolderPolicy | null = workspace ? hookFolderPolicy(workspace, flags) : null
+    const decision = agyHookFolder(input.workspacePaths, flags)
+    const policy: FolderPolicy | null = decision ? decision.policy : null
     if (policy?.mode === 'off') return
+    const workspace = decision?.dir ?? null
 
     const conversationId = agyConversationId(input)
     if (!conversationId) return
@@ -106,9 +108,12 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
     // Replayed only under the same folder decision (Codex round 7 on #1663):
     // never when the map cannot be read, and in a remote-only folder only a
     // message cached there for the same team scope.
+    // Any other mode change drops it too (security audit 2026-11-06,
+    // hardening): memory cached while `on` was replayed after the folder
+    // switched to `ask` within the same turn.
     const unresolved = policy?.reason === 'malformed-map' || policy?.reason === 'resolver-error'
-    const cached = rawCached && (unresolved ||
-      (policy?.mode === 'remote-only' && (rawCached.mode !== 'remote-only' || rawCached.scope !== policy.scope))) ? null : rawCached
+    const cached = rawCached && (unresolved || rawCached.mode !== policy?.mode ||
+      (policy?.mode === 'remote-only' && rawCached.scope !== policy.scope)) ? null : rawCached
 
     // "First" is the conversation's first turn. The absence of a cache alone
     // cannot say that: with an unusable cache dir it is absent on EVERY turn,
@@ -137,12 +142,16 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
       return
     }
 
-    if (workspace && policy?.mode === 'ask') {
+    if (policy?.mode === 'ask') {
+      // The root asked about may not exist (it is then asked about by name);
+      // with no root at all there is nothing to ask, and never memory.
+      const about = decision?.askAbout ?? workspace
+      if (!about) return
       // The question, once per conversation; an empty message after that. It
       // is cached as this turn's message so mid-turn invocations replay it.
       // No store discovery: asking must not register this folder's .plur store.
-      const ask = folderAskOnce({ dir: workspace, policy, sessionId: conversationId, flags, plur: createAskPlur(flags), prompt: user?.text ?? '' }) ?? ''
-      writeAgyTurnCache({ conversationId, step: user?.stepIndex ?? 0, textHash: userHash, message: ask })
+      const ask = folderAskOnce({ dir: about, policy, sessionId: conversationId, flags, plur: createAskPlur(flags), prompt: user?.text ?? '' }) ?? ''
+      writeAgyTurnCache({ conversationId, step: user?.stepIndex ?? 0, textHash: userHash, message: ask, mode: policy.mode })
       if (ask) emitInjectSteps(ask)
       return
     }

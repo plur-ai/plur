@@ -65,7 +65,7 @@ import { homedir } from 'os'
 import { join, dirname } from 'path'
 import { z } from 'zod'
 import type { Engram } from './schemas/engram.js'
-import { normalizeEndpointUrl, salvageRemoteRow, safeOrigin } from './store/remote-store.js'
+import { normalizeEndpointUrl, salvageRemoteRow, safeOrigin, readBodyCapped } from './store/remote-store.js'
 import { isScopeWithin, isSharedScope } from './scope-util.js'
 import { namespaceEngramId } from './engrams.js'
 import { logger } from './logger.js'
@@ -397,6 +397,16 @@ export interface RecallRemoteHostReport {
 export interface RecallRemoteReport {
   state: RemoteHostState | 'not_dialed'
   hosts: RecallRemoteHostReport[]
+  /** Set when hosts were implicated but the query was kept on this machine
+   *  because it matched a category the dialed scopes forbid (state stays
+   *  `not_dialed`). Categories only, never the matched text. */
+  skipped?: RecallRemoteSkip
+}
+
+/** Why a recall did not dial its implicated hosts. */
+export interface RecallRemoteSkip {
+  reason: 'sensitive_query'
+  categories: Array<'secrets' | 'infra'>
 }
 
 /** Build the per-call report from host outcomes. */
@@ -1018,36 +1028,6 @@ function processHostRows(
     engrams.push(engram)
   }
   return { engrams, scores }
-}
-
-// ---------------------------------------------------------------------------
-// Body reading with cap
-// ---------------------------------------------------------------------------
-
-async function readBodyCapped(res: Response, cap: number): Promise<string | null> {
-  const len = res.headers.get('content-length')
-  if (len && parseInt(len, 10) > cap) return null
-  const body = (res as { body?: { getReader?: () => { read(): Promise<{ done: boolean; value?: Uint8Array }>; cancel(): Promise<void> } } }).body
-  if (body && typeof body.getReader === 'function') {
-    const reader = body.getReader()
-    const chunks: Buffer[] = []
-    let total = 0
-    for (;;) {
-      const { done, value } = await reader.read()
-      if (done) break
-      if (value) {
-        total += value.byteLength
-        if (total > cap) {
-          try { await reader.cancel() } catch { /* already dead */ }
-          return null
-        }
-        chunks.push(Buffer.from(value))
-      }
-    }
-    return Buffer.concat(chunks).toString('utf8')
-  }
-  const text = await res.text()
-  return Buffer.byteLength(text, 'utf8') > cap ? null : text
 }
 
 function parseRetryAfterMs(header: string | null, now: number): number | null {

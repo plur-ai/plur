@@ -33,6 +33,7 @@ import { plurRoot } from '../lib/folder-gate.js'
 import { readHookInstalls, readHookRuns, type HookTool } from '../lib/hook-runs.js'
 import type { ServerStoreCheck } from '@plur-ai/core'
 import { repairAdvice, repairCommandFor } from './folders.js'
+import { repoFileIsTracked } from './init.js'
 import { codexInstalled } from '../lib/codex-binary.js'
 import { commandSpawn } from '../lib/command-spawn.js'
 
@@ -751,10 +752,21 @@ function resolveProbeTarget(): { entry: McpServerEntry; source: string } {
   // Probe what Claude Code launches first (#1561): ~/.claude.json (user, then
   // this folder's local scope), then the other harnesses' files; a
   // settings.json entry, which nothing launches, only as a last resort.
-  const files = knownConfigFiles().filter(cf => cf.exists && cf.kind !== 'cursor-hooks')
-  const cc = claudeCodePlurEntry(process.cwd())
+  // security audit 2026-11-06: a project entry is run only once ~/.claude.json records the user's approval.
+  const cwd = process.cwd()
+  // Run from the home folder, the "project" settings.json and .cursor/mcp.json ARE the global files.
+  const projectPaths = new Set([join(cwd, '.mcp.json'), ...(isHomeDir(cwd) ? [] : [join(cwd, '.claude', 'settings.json'), cursorProjectMcpConfigPath(cwd)])])
+  const files = knownConfigFiles().filter(cf => cf.exists && cf.kind !== 'cursor-hooks' && !projectPaths.has(cf.path))
+  const cc = claudeCodePlurEntry(cwd)
   const ccEntry = cc ? readPlurMcpEntry(cc.config) : null
-  if (cc && ccEntry) return { entry: ccEntry, source: `Claude Code (${cc.scope} scope, ${cc.path})` }
+  if (cc && ccEntry && (cc.scope !== 'project' || projectMcpServerApproved(cc.path))) {
+    return { entry: ccEntry, source: `Claude Code (${cc.scope} scope, ${cc.path})` }
+  }
+  if (cc && cc.scope === 'project') {
+    const user = readConfig(claudeCodeUserConfigPath())
+    const userEntry = hasPlurMcp(user) ? readPlurMcpEntry(user) : null
+    if (userEntry) return { entry: userEntry, source: `Claude Code (user scope; the project entry in ${cc.path} is not approved, so it was not run)` }
+  }
   const ordered = [
     ...files.filter(cf => cf.kind !== 'claude-user' && !isClaudeSettingsFile(cf.path)),
     ...files.filter(cf => isClaudeSettingsFile(cf.path)),
@@ -1269,6 +1281,37 @@ function localScopePlur(config: Record<string, unknown>, cwd: string): Record<st
     }
   }
   return null
+}
+
+/**
+ * Has the user approved the `plur` server of this project `.mcp.json` in
+ * Claude Code? Claude Code records that in ~/.claude.json under
+ * projects[<dir>]: `plur` in enabledMcpjsonServers, or
+ * enableAllProjectMcpServers: true (also honoured in the user's own
+ * ~/.claude/settings.json, and in the project's .claude/settings.local.json
+ * while git does not track it; a tracked file, like .claude/settings.json, is
+ * repository content and never approves). `plur` in disabledMcpjsonServers
+ * wins. Anything else is unapproved.
+ */
+function projectMcpServerApproved(mcpJsonPath: string): boolean {
+  type Approval = { enabledMcpjsonServers?: unknown; disabledMcpjsonServers?: unknown; enableAllProjectMcpServers?: unknown }
+  const dir = dirname(mcpJsonPath)
+  const projects = (readConfig(claudeCodeUserConfigPath()) as Record<string, unknown>).projects
+  const p = (projects && typeof projects === 'object' ? (projects as Record<string, unknown>)[dir] : undefined) as Approval | undefined
+  const userSettings = readConfig(claudeCodeGlobalSettingsPath()) as Approval
+  const localPath = join('.claude', 'settings.local.json')
+  const local = (existsSync(join(dir, localPath)) && !repoFileIsTracked(dir, localPath) ? readConfig(join(dir, localPath)) : {}) as Approval
+  const sources = [p, userSettings, local]
+  const lists = (key: 'enabledMcpjsonServers' | 'disabledMcpjsonServers') =>
+    sources.some(src => Array.isArray(src?.[key]) && (src![key] as unknown[]).includes('plur'))
+  if (lists('disabledMcpjsonServers')) return false
+  return lists('enabledMcpjsonServers') || sources.some(src => src?.enableAllProjectMcpServers === true)
+}
+
+/** Is `dir` the user's home folder (compared after resolving symlinks, e.g. /var -> /private/var)? */
+function isHomeDir(dir: string): boolean {
+  const canonical = (d: string) => { try { return realpathSync(d) } catch { return resolve(d) } }
+  return canonical(dir) === canonical(homedir())
 }
 
 /** The nearest `.mcp.json` with a plur entry, walking up from `cwd` as Claude Code does (#1564 review M1). */

@@ -5,6 +5,8 @@ import * as path from 'path'
 import { Plur } from '@plur-ai/core'
 import { getToolDefinitions } from '../src/tools.js'
 
+// security audit 2026-11-06: llm_base_url must be loopback (or configured), so tests use 127.0.0.1
+
 /**
  * plur_tensions lifecycle wiring (#181): scan persistence + suppress-list,
  * confirm/dismiss/resolve actions, injection warnings through the MCP
@@ -18,7 +20,7 @@ describe('plur_tensions lifecycle (#181)', () => {
   const tensionsTool = tools.find(t => t.name === 'plur_tensions')!
   const injectTool = tools.find(t => t.name === 'plur_inject')!
 
-  const LLM_ARGS = { llm_base_url: 'https://api.openai.com/v1', llm_api_key: 'test-key' }
+  const LLM_ARGS = { llm_base_url: 'http://127.0.0.1:9/v1', llm_api_key: 'test-key' }
 
   beforeEach(() => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'plur-tensions-lc-'))

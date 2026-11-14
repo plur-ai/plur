@@ -10,10 +10,12 @@
  * the same name share the model instance — important because each load is
  * 100MB+ of WASM / ONNX setup.
  */
-import { join } from 'path'
-import { existsSync, readFileSync } from 'fs'
+import { join, dirname } from 'path'
+import { createHash } from 'crypto'
+import { createReadStream, existsSync, readFileSync, statSync, mkdirSync, linkSync, copyFileSync, writeFileSync } from 'fs'
 import type { EmbedderAdapter } from './types.js'
 import { offlineByEnv, offlineNow } from '../offline.js'
+import { modelPin } from './model-pins.js'
 
 /** Pooling strategies supported by @huggingface/transformers feature-extraction. */
 export type Pooling = 'cls' | 'mean' | 'none'
@@ -126,6 +128,8 @@ export function localOnlyOptions(): { local_files_only?: true } {
  * (`transformers.js_config.use_external_data_format`, resolved the way
  * transformers.js resolves it).
  */
+const MAX_EXTERNAL_DATA_CHUNKS = 64
+
 function requiredFiles(weights: string, config: unknown): string[] {
   const files = [join('onnx', weights), 'tokenizer.json', 'tokenizer_config.json', 'config.json']
   // transformers.js merges `device_config[<device>]` over the top-level
@@ -144,7 +148,9 @@ function requiredFiles(weights: string, config: unknown): string[] {
   } else if (ext) {
     chunks = Number(ext)
   }
-  for (let i = 0; i < (Number.isFinite(chunks) ? chunks : 0); i++) {
+  // security audit 2026-11-06: clamped, the count comes from a cached config.json.
+  const count = Number.isFinite(chunks) ? Math.min(MAX_EXTERNAL_DATA_CHUNKS, Math.max(0, Math.floor(chunks))) : 0
+  for (let i = 0; i < count; i++) {
     files.push(join('onnx', `${weights}_data${i === 0 ? '' : '_' + i}`))
   }
   return files
@@ -154,21 +160,49 @@ function readJson(path: string): unknown {
   try { return JSON.parse(readFileSync(path, 'utf8')) } catch { return null }
 }
 
+/** Where transformers.js caches a pinned model's files: `<cacheDir>/<modelId>/<revision>`; null with no pin. */
+export function pinnedModelDir(cacheDir: string, modelId: string): string | null {
+  const pin = modelPin(modelId)
+  return pin ? join(cacheDir, modelId, pin.revision) : null
+}
+
+/** `{ revision }` for a pinned model, passed to every transformers.js load. */
+export function pinnedLoadOptions(modelId: string): { revision?: string } {
+  const pin = modelPin(modelId)
+  return pin ? { revision: pin.revision } : {}
+}
+
+/** Every file a load of `modelId` reads: what its config declares, plus every
+ *  file pinned for it (the pin is exact for the dtype PLUR loads). */
+function requiredFilesFor(modelId: string, weights: string, config: unknown): string[] {
+  const files = requiredFiles(weights, config)
+  const pin = modelPin(modelId)
+  if (pin) for (const f of Object.keys(pin.files)) if (!files.includes(f)) files.push(f)
+  return files
+}
+
 /**
- * Are all of a model's files on disk, for a load from `cacheRoot` (the model
- * folder in a cache) with `localRoot` (the model folder under
- * `localModelPath`)? Matches the loader: each file is taken from the cache,
- * else from `localModelPath` (#1586 round 6, L3), so a split layout counts.
+ * Are all of a model's files on disk, for a load with cache `cacheDir` and
+ * `localRoot` (the model folder under `localModelPath`)? Matches the loader:
+ * each file is taken from the cache, else from `localModelPath` (#1586 round
+ * 6, L3), so a split layout counts. A pinned model's files are in its
+ * revision folder; old-layout files count too (verifyPinnedModel adopts them).
  */
-function completeIn(cacheRoot: string | null, localRoot: string | null, weights: string): boolean {
-  const roots = [cacheRoot, localRoot].filter((r): r is string => !!r)
+function completeIn(cacheDir: string | null, modelId: string, localRoot: string | null, weights: string): boolean {
+  const roots: string[] = []
+  if (cacheDir) {
+    const pinned = pinnedModelDir(cacheDir, modelId)
+    if (pinned) roots.push(pinned)
+    roots.push(join(cacheDir, modelId))
+  }
+  if (localRoot) roots.push(localRoot)
   if (roots.length === 0) return false
   const configPath = roots.map(r => join(r, 'config.json')).find(p => existsSync(p))
   const config = configPath ? readJson(configPath) : null
   // A config.json that does not parse cannot be loaded: that location does
   // not hold a usable model (#1586 round 7, D-4), so the fallback can apply.
   if (configPath && config === null) return false
-  const files = requiredFiles(weights, config)
+  const files = requiredFilesFor(modelId, weights, config)
   return files.every(f => roots.some(r => existsSync(join(r, f))))
 }
 
@@ -194,9 +228,17 @@ export async function resolveLoadCacheDir(modelId: string, weights: string): Pro
   const override = process.env.PLUR_MODEL_CACHE_DIR || process.env.HF_HOME || null
   const def = await defaultCacheDir()
   const local = await localRootFor(modelId)
-  if (override && completeIn(join(override, modelId), local, weights)) return override
-  if (def && def !== override && completeIn(join(def, modelId), local, weights)) return def
+  if (override && completeIn(override, modelId, local, weights)) return override
+  if (def && def !== override && completeIn(def, modelId, local, weights)) return def
   return override ?? def
+}
+
+/** The folder holding `modelId` in PLUR's model cache: what to delete when it is corrupt. */
+export function modelCacheFolder(modelId: string): string {
+  const dir = process.env.PLUR_MODEL_CACHE_DIR || process.env.HF_HOME || defaultCacheDirSeam || libraryDefaultCacheDir || null
+  return dir
+    ? join(dir, modelId)
+    : `${modelId} under PLUR's model cache (PLUR_MODEL_CACHE_DIR or HF_HOME when set, otherwise the .cache folder of the installed @huggingface/transformers package)`
 }
 
 /** Is the model on disk where a load would read it? Null when there is
@@ -205,7 +247,122 @@ export async function modelPresence(modelId: string, weights: string): Promise<b
   const cacheDir = await resolveLoadCacheDir(modelId, weights)
   const local = await localRootFor(modelId)
   if (!cacheDir && !local) return null
-  return completeIn(cacheDir ? join(cacheDir, modelId) : null, local, weights)
+  return completeIn(cacheDir, modelId, local, weights)
+}
+
+// security audit 2026-11-06 (H-x03-1): every pinned file is checked against its sha256 before the model is used.
+
+let hashes = 0
+/** Test seam: files hashed by this module instance (a fresh import stands in for a new process). */
+export function _modelHashCount(): number { return hashes }
+
+async function sha256Of(path: string): Promise<string> {
+  hashes++
+  const h = createHash('sha256')
+  for await (const chunk of createReadStream(path)) h.update(chunk as Buffer)
+  return h.digest('hex')
+}
+
+const isFile = (p: string) => statSync(p, { throwIfNoEntry: false })?.isFile() === true
+
+// A file's hash result is kept per (size, mtime, ctime, inode), in memory and in a marker in the
+// revision folder, so a 100MB+ model file is hashed once, not in every process; any write changes ctime.
+const MARKER = '.plur-verified.json'
+const verifiedStat = new Map<string, string>()
+const statKey = (p: string) => {
+  const s = statSync(p, { throwIfNoEntry: false })
+  return s?.isFile() ? `${s.size}:${s.mtimeMs}:${s.ctimeMs}:${s.ino}` : null
+}
+async function matchesPin(path: string, expected: string, marker: Record<string, string>): Promise<boolean> {
+  const before = statKey(path)
+  if (!before) return false
+  const known = `${before}|${expected}`
+  if (verifiedStat.get(path) === known || marker[path] === known) { verifiedStat.set(path, known); return true }
+  if ((await sha256Of(path)) !== expected || statKey(path) !== before) return false
+  verifiedStat.set(path, known)
+  marker[path] = known
+  return true
+}
+
+/**
+ * Check a pinned model's files against their pins before transformers.js
+ * loads it from `cacheDir`, and return the check to run after the load, which
+ * hashes only the pinned files that were not on disk before (the download).
+ * Each file is found where hub.js looks for it (the file cache under the
+ * local-path key, then `<model>/<revision>/<file>`, then `localModelPath`).
+ * A file only in the old unpinned layout (`<cacheDir>/<model>/<file>`) is
+ * linked into the revision folder first, so an old offline cache keeps working.
+ * A mismatch throws an error that says "corrupt" and names the folder to delete.
+ */
+export async function verifyPinnedModel(modelId: string, cacheDir: string | null, what = 'model'): Promise<() => Promise<void>> {
+  const pin = modelPin(modelId)
+  if (!pin) {
+    throw new Error(`${what} ${modelId} has no integrity pin in PLUR (model-pins.ts), so its files cannot be verified; refusing to load it`)
+  }
+  const t = await importTransformers().catch(() => undefined)
+  const env = t ? envOf(t) : undefined
+  const local = await localRootFor(modelId)
+  const pinnedDir = cacheDir ? join(cacheDir, modelId, pin.revision) : null
+  const legacyDir = cacheDir ? join(cacheDir, modelId) : null
+  const folder = legacyDir ?? local ?? modelCacheFolder(modelId)
+  const locate = (file: string): [string, string] | undefined => {
+    const c: Array<[string, string]> = []
+    if (cacheDir && env?.localModelPath) c.push([join(cacheDir, env.localModelPath, modelId, file), folder])
+    if (pinnedDir) c.push([join(pinnedDir, file), folder])
+    if (local) c.push([join(local, file), local])
+    return c.find(([p]) => isFile(p))
+  }
+  const verified = new Set<string>()
+  const markerPath = pinnedDir ? join(pinnedDir, MARKER) : null
+  const marker: Record<string, string> = (markerPath && readJson(markerPath) as Record<string, string> | null) || {}
+  const saveMarker = () => {
+    if (!markerPath) return
+    try { mkdirSync(pinnedDir!, { recursive: true }); writeFileSync(markerPath, JSON.stringify(marker)) } catch { /* only costs a re-hash */ }
+  }
+  const check = async (files: string[], afterLoad: boolean): Promise<string[]> => {
+    const missing: string[] = []
+    for (const file of files) {
+      let found = locate(file)
+      const old = legacyDir ? join(legacyDir, file) : ''
+      if (!found && !afterLoad && pinnedDir && legacyDir && isFile(old)) {
+        // Adopt an old-layout file only when it already matches; otherwise a download (if allowed) fetches the pinned one.
+        if ((await sha256Of(old)) === pin.files[file]) {
+          const dest = join(pinnedDir, file)
+          try {
+            mkdirSync(dirname(dest), { recursive: true })
+            try { linkSync(old, dest) } catch { copyFileSync(old, dest) }
+            verified.add(dest)
+            continue
+          } catch { /* not adopted: a download fetches it */ }
+        } else if (downloadsOff()) {
+          throw new Error(`${what} ${modelId}: ${old} does not match the sha256 PLUR pins for ${file} at revision ${pin.revision} (integrity check failed: the model cache is corrupt or was tampered with). The file was not used. Delete ${folder} to force a clean re-download.`)
+        }
+        found = locate(file)
+      }
+      if (!found) {
+        if (afterLoad) throw new Error(`${what} ${modelId}: ${file} is not on disk after the load, so it cannot be verified (looked in ${pinnedDir ?? local ?? folder})`)
+        missing.push(file)
+        continue
+      }
+      const [path, where] = found
+      if (!(await matchesPin(path, pin.files[file], marker))) {
+        throw new Error(
+          `${what} ${modelId}: ${path} does not match the sha256 PLUR pins for ${file} at revision ${pin.revision} ` +
+          `(integrity check failed: the model cache is corrupt or was tampered with). The file was not used. ` +
+          `Delete ${where} to force a clean re-download.`,
+        )
+      }
+      verified.add(path)
+    }
+    // The tokenizer loader checks tokenizer_config.json exists without the revision; keep a verified copy there for offline loads.
+    if (pinnedDir && legacyDir && verified.has(join(pinnedDir, 'tokenizer_config.json')) && !isFile(join(legacyDir, 'tokenizer_config.json'))) {
+      try { copyFileSync(join(pinnedDir, 'tokenizer_config.json'), join(legacyDir, 'tokenizer_config.json')) } catch { /* a lookup then asks the network */ }
+    }
+    saveMarker()
+    return missing
+  }
+  const missing = await check(Object.keys(pin.files), false)
+  return async () => { await check(missing, true) }
 }
 
 async function loadPipeline(modelId: string, dtype: TransformersAdapterConfig['dtype']): Promise<unknown> {
@@ -248,19 +405,35 @@ async function loadPipeline(modelId: string, dtype: TransformersAdapterConfig['d
       const cacheDir = await resolveLoadCacheDir(modelId, weights)
       const env = envOf(transformers)
       if (cacheDir && env) {
-        // Assigned before pipeline() — after the first load the value is
+        // Assigned before the first load — after it the value is
         // already baked into the resolved paths and changing it does nothing.
         env.cacheDir = cacheDir
       }
+      const verifyDownload = await verifyPinnedModel(modelId, cacheDir, 'embedding model')
       // Downloads off: the loader itself is told not to fetch anything. That
-      // is not enough for a model missing from disk: transformers.js v4's
-      // pipeline() resolves the model's file list (get_pipeline_files) before
-      // it reads local_files_only, and that step fetches config.json. So a
-      // missing model is refused here, before the library is asked (TEAM-5).
+      // is not enough for a model missing from disk: some of transformers.js'
+      // discovery steps ignore local_files_only and fetch config.json or look
+      // up tokenizer_config.json. So a missing model is refused here, before
+      // the library is asked (TEAM-5).
       await refuseMissingModelOffline(modelId, weights, 'embedding model')
-      const opts = { ...(dtype ? { dtype } : {}), ...localOnlyOptions() }
-      const pipeline = transformers.pipeline as (task: string, model: string, o?: object) => Promise<unknown>
-      const pipe = await pipeline('feature-extraction', modelId, Object.keys(opts).length ? opts : undefined)
+      // security audit 2026-11-06: not pipeline(), which fetches config.json from the unpinned main branch.
+      const T = transformers as unknown as {
+        AutoTokenizer: { from_pretrained: (id: string, o?: object) => Promise<unknown> }
+        AutoModel: { from_pretrained: (id: string, o?: object) => Promise<unknown> }
+        FeatureExtractionPipeline: new (o: { task: string; model: unknown; tokenizer: unknown }) => unknown
+      }
+      const pinned = { ...pinnedLoadOptions(modelId), ...localOnlyOptions() }
+      const [tokenizer, model] = await Promise.all([
+        T.AutoTokenizer.from_pretrained(modelId, pinned),
+        T.AutoModel.from_pretrained(modelId, { ...pinned, ...(dtype ? { dtype } : {}) }),
+      ])
+      try {
+        await verifyDownload()
+      } catch (err) {
+        await disposeQuietly(model)
+        throw err
+      }
+      const pipe = new T.FeatureExtractionPipeline({ task: 'feature-extraction', model, tokenizer })
       loadedKeys.add(key)
       return pipe
     })()
@@ -269,6 +442,11 @@ async function loadPipeline(modelId: string, dtype: TransformersAdapterConfig['d
     pipelineCache.set(key, pending)
   }
   return await pending
+}
+
+/** Release a loaded model's ONNX session; a failure to do so is not the error to report. */
+export async function disposeQuietly(model: unknown): Promise<void> {
+  try { await (model as { dispose?: () => Promise<unknown> } | null)?.dispose?.() } catch { /* ignore */ }
 }
 
 /** Reset the shared pipeline cache. Test-only. */

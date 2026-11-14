@@ -208,8 +208,10 @@ class TestPlurBridge:
                 dual_coding={"example": "e", "analogy": "a"},
                 abstract="ABS-1",
                 derived_from="ENG-9",
+                claim_class="inferred",
             )
             call_args = mock_run.call_args[0][0]
+            assert call_args[call_args.index("--claim-class") + 1] == "inferred"
             for flag in (
                 "--rationale", "--tags", "--visibility",
                 "--knowledge-anchors", "--dual-coding",

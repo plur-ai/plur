@@ -68,12 +68,12 @@ import { RemoteStore, RemoteAbortedError, RemoteHttpError, RemoteTimeoutError, n
 import type { MeResponse } from './store/remote-store.js'
 import { recordSeenOnServer, seenOnServer } from './seen-on-server.js'
 import { classifyOutboxFailure, credentialChanged, statusFromErrorText, NEEDS_ACTION_RETRY_MS, NEEDS_ACTION_STATUSES, OUTBOX_CLAIM_ERROR_PREFIX, summarizeOutbox, type OutboxState, type OutboxSummary } from './outbox-health.js'
-import { redactToken, containsToken } from './redact-token.js'
+import { redactToken, containsToken, escapeRegExp } from './redact-token.js'
 import {
-  remoteRecall, isRemoteRecallDisabled, resolveRemoteRecallTimeoutMs, scopeOrg, tokenHealthKey,
+  remoteRecall, isRemoteRecallDisabled, resolveRemoteRecallTimeoutMs, scopeOrg, tokenHealthKey, MAX_REMOTE_QUERY_CHARS,
   REMOTE_STATUS_TTL_MS, PROBE_CLEARABLE_STATES,
   resolveRecallDeadlineMs, buildRecallRemoteReport, RECALL_BOOKKEEPING_LOCK_WAIT_MS, settleBy,
-  type RecallRemoteReport,
+  type RecallRemoteReport, type RecallRemoteSkip,
   type RemoteRecallHost, type RemoteRecallResult, type HostRecallOutcome, type RemoteStoreStatusEntry, isHostInCooldown, recordWriteOutcome, stampStoreRow} from './remote-recall.js'
 import { YamlPrimaryStore } from './store/yaml-primary-store.js'
 import { RemoteOnlyStoreGuard, QueueHoldStore, isQueuedForFolder } from './store/remote-only-store-guard.js'
@@ -400,7 +400,7 @@ export { EMBEDDER_NAMES, DEFAULT_EMBEDDER, resolveEmbedderName, type EmbedderNam
 // failure paths without downloading the real ~300 MB model.
 export {
   getReranker, isRerankerOff, resolveRerankerName, RERANKER_NAMES, DEFAULT_RERANKER,
-  rerankerStatus, resetRerankerStatus, classifyRerankerFailure, hfCacheDirName,
+  rerankerStatus, resetRerankerStatus, classifyRerankerFailure, modelCacheFolder,
   _resetRerankerCache, _setCachedReranker,
   type RerankerName, type RerankerRuntimeStatus, type RerankerFailureKind,
 } from './rerankers/index.js'
@@ -524,7 +524,7 @@ export {
   startBudgetTimer, BUDGET_TICK_MS, MAX_STARVATION_CREDIT_MS,
   BREAKER_HALF_OPEN_AFTER_MS, DEFAULT_RECALL_DEADLINE_MS, RECALL_BOOKKEEPING_LOCK_WAIT_MS,
   resolveRecallDeadlineMs, buildRecallRemoteReport,
-  type BudgetExpiry, type RecallRemoteReport, type RecallRemoteHostReport,
+  type BudgetExpiry, type RecallRemoteReport, type RecallRemoteHostReport, type RecallRemoteSkip,
   type RemoteRecallHost, type RemoteRecallResult, type HostRecallOutcome,
   type RemoteHostState, type RemoteStoreStatusEntry, type RemoteRecallOptions,
 } from './remote-recall.js'
@@ -1302,14 +1302,17 @@ function isEnterpriseServerEntry(raw: unknown): raw is Record<string, unknown> &
   return isPlainObject(raw) && typeof raw.url === 'string' && Array.isArray(raw.scopes) && isPlainObject(raw.enterprise)
 }
 
-/** scope → url for every remote entry whose normalized url is not `exceptUrl`:
- *  the scopes another server already serves (#1631). */
+/** scope → where it is served, for every store entry other than the server at `exceptUrl` (#1631).
+ *  security audit 2026-11-06: path stores count as claimed, or a discovered url entry would take their scope over. */
 function scopesServedElsewhere(rawStores: unknown[], exceptUrl: string): Map<string, string> {
   const out = new Map<string, string>()
   for (const r of rawStores) {
-    if (!isPlainObject(r) || typeof r.url !== 'string' || normalizeEndpointUrl(r.url) === exceptUrl) continue
+    if (!isPlainObject(r)) continue
+    if (typeof r.url === 'string' && normalizeEndpointUrl(r.url) === exceptUrl) continue
+    const where = typeof r.url === 'string' ? r.url : typeof r.path === 'string' ? `path:${r.path}` : undefined
+    if (!where) continue
     const scopes = [...stringList(r.scopes), ...stringList(r.pinned_scopes), ...(typeof r.scope === 'string' ? [r.scope] : [])]
-    for (const sc of scopes) if (!out.has(sc)) out.set(sc, r.url)
+    for (const sc of scopes) if (!out.has(sc)) out.set(sc, where)
   }
   return out
 }
@@ -3089,7 +3092,7 @@ export class Plur {
       if (!store.path) continue
       if (storeScope !== undefined && store.scope !== storeScope) continue
       const prefix = storePrefix(store.scope)
-      const nsPattern = new RegExp(`^(ENG|ABS|META)-${prefix}-`)
+      const nsPattern = new RegExp(`^(ENG|ABS|META)-${escapeRegExp(prefix)}-`)
       if (nsPattern.test(id)) {
         // Strip the namespace prefix to get the original ID — or the id as it
         // is, when the store file already holds it namespaced.
@@ -3116,7 +3119,7 @@ export class Plur {
    */
   private _stripRemotePrefix(id: string, scope: string): string {
     const prefix = storePrefix(scope)
-    const nsPattern = new RegExp(`^(ENG|ABS|META)-${prefix}-`)
+    const nsPattern = new RegExp(`^(ENG|ABS|META)-${escapeRegExp(prefix)}-`)
     if (nsPattern.test(id)) {
       return id.replace(nsPattern, '$1-')
     }
@@ -4524,12 +4527,11 @@ export class Plur {
 
   /**
    * The text the write-time HARD secret scan reads: the statement plus every
-   * caller-supplied content field, as listed by `LEARN_CONTEXT_FIELD_ROLES`.
+   * content field (learnContextContent for a write, engramContentFields for an engram).
    * Statement-only when the context carries no content field, so a plain
    * write scans exactly what it always did.
    */
-  private _hardScanText(statement: string, context: LearnContext | undefined): string {
-    const content = learnContextContent(context)
+  private _hardScanText(statement: string, content: Record<string, unknown> | undefined): string {
     return content ? `${statement}\n${JSON.stringify(content)}` : statement
   }
 
@@ -4722,7 +4724,7 @@ export class Plur {
       // compiler — a hand-picked subset here is how `attribution` and
       // `license` went unscanned. Shared/remote writes are additionally
       // policy-scanned by _guardSensitiveScope below.
-      const secrets = detectSecrets(this._hardScanText(statement, context))
+      const secrets = detectSecrets(this._hardScanText(statement, learnContextContent(context)))
       if (secrets.length > 0) {
         throw new Error(`Secret detected in statement or context: ${secrets[0].pattern}. Use config.allow_secrets to override.`)
       }
@@ -4748,7 +4750,7 @@ export class Plur {
     // caller can still write the statement as `asserted`/omitted if it
     // genuinely came from the user.
     if (context?.claim_class === 'inferred') {
-      const injections = detectPromptInjection(this._hardScanText(statement, context))
+      const injections = detectPromptInjection(this._hardScanText(statement, learnContextContent(context)))
       if (injections.length > 0) {
         throw new Error(
           `Prompt injection pattern detected in an auto-harvested (claim_class: 'inferred') statement or context: `
@@ -7172,7 +7174,7 @@ export class Plur {
       if (!entry.url) continue
       // remote-only: only the folder's own team store (re-audit of #1521, C-3).
       if (this._remoteOnly && (entry.scope !== this._remoteOnly.scope || !this._isDeliverableTeamScope(entry.scope))) continue
-      const prefixRe = new RegExp(`^(ENG|ABS|META)-${storePrefix(entry.scope)}-`)
+      const prefixRe = new RegExp(`^(ENG|ABS|META)-${escapeRegExp(storePrefix(entry.scope))}-`)
       // An old-form (0.21.0) id names this store only when no other url
       // store shares its old prefix; then its bare form is asked for.
       const oldPrefix = legacyStorePrefix(entry.scope)
@@ -7771,7 +7773,7 @@ export class Plur {
     /** The recall's deadline (#1586 audit L7): requests still in flight are
      *  aborted at it, and hosts that answered keep their rows. */
     deadlineAt?: number,
-  ): (Promise<RemoteRecallResult> & { hostUrls: string[] }) | null {
+  ): (Promise<RemoteRecallResult> & { hostUrls: string[]; skipped?: RecallRemoteSkip }) | null {
     if (options?.remote === false) return null
     // An origin-derived local/unknown default is a privacy boundary even for
     // always-dial stores. Explicit call/session scopes remain deliberate choices.
@@ -7786,6 +7788,20 @@ export class Plur {
     if (hosts.length === 0) return null
     // The dialed hosts ride along so a recall that stops waiting at its
     // deadline can still name them in its per-call report (#1586).
+    // security audit 2026-11-06: a query a write to these scopes would refuse never leaves the machine
+    const text = query.length > MAX_REMOTE_QUERY_CHARS ? query.slice(0, MAX_REMOTE_QUERY_CHARS) : query
+    const scopes = [...new Set(hosts.flatMap(h => h.scopes))]
+    // The skip is reported (categories only) so a caller can tell it from "no hosts".
+    const categories = new Set<'secrets' | 'infra'>()
+    if (detectSecrets(text).length > 0) categories.add('secrets')
+    for (const scope of scopes) for (const h of this._offendingHitsForScope(text, scope)) categories.add(sensitivityCategory(h.pattern))
+    if (categories.size > 0) {
+      const empty: RemoteRecallResult = { engrams: [], scores: new Map(), outcomes: [] }
+      return Object.assign(Promise.resolve(empty), {
+        hostUrls: [] as string[],
+        skipped: { reason: 'sensitive_query' as const, categories: [...categories].sort() },
+      })
+    }
     return Object.assign(remoteRecall(hosts, query, {
       timeoutMs: resolveRemoteRecallTimeoutMs(options?.remote_timeout_ms),
       limit: options?.limit,
@@ -7836,10 +7852,11 @@ export class Plur {
    * after the deadline, reports every dialed host as cut by the deadline.
    */
   private async _awaitRemote(
-    remotePromise: (Promise<RemoteRecallResult> & { hostUrls?: string[] }) | null,
+    remotePromise: (Promise<RemoteRecallResult> & { hostUrls?: string[]; skipped?: RecallRemoteSkip }) | null,
     deadlineAt: number,
   ): Promise<{ result?: RemoteRecallResult; report: RecallRemoteReport }> {
     if (!remotePromise) return { report: { state: 'not_dialed', hosts: [] } }
+    if (remotePromise.skipped) return { report: { state: 'not_dialed', hosts: [], skipped: remotePromise.skipped } }
     const waited = Number.isFinite(deadlineAt)
       ? await settleBy(remotePromise, deadlineAt + Plur.REMOTE_SETTLE_GRACE_MS)
       : { done: true as const, value: await remotePromise }
@@ -7902,7 +7919,7 @@ export class Plur {
 
   private async _mergeRemoteRecall(
     local: Engram[],
-    remotePromise: (Promise<RemoteRecallResult> & { hostUrls?: string[] }) | null,
+    remotePromise: (Promise<RemoteRecallResult> & { hostUrls?: string[]; skipped?: RecallRemoteSkip }) | null,
     options: (RecallOptions & { include_expired?: boolean }) | undefined,
     limit: number,
     /** Epoch ms past which this recall stops waiting for the server (#1586). */
@@ -9443,7 +9460,7 @@ export class Plur {
    * scopes (the index.ts personal fast-path). Defense-in-depth: activates only
    * if a future caller passes a shared-scope meta.
    */
-  async saveMetaEngrams(metas: Engram[]): Promise<{ saved: number; skipped: number }> {
+  async saveMetaEngrams(metas: Engram[]): Promise<{ saved: number; skipped: number; injection_refused?: string[] }> {
     this._assertWritable()
     this._remoteOnlyRefuseLocalStore('Saving meta-engrams (they are written to the personal store)')
     return await this._withStoreLock(this.paths.engrams, async () => {
@@ -9451,6 +9468,7 @@ export class Plur {
       const existingIds = new Set(engrams.map(e => e.id))
       let saved = 0
       let skipped = 0
+      const injectionRefused: string[] = []
       // Hard-tier tokens accepted earlier in this batch; listPinned cannot see
       // them until the batch is written.
       let pendingHard = 0
@@ -9459,6 +9477,18 @@ export class Plur {
           skipped++
           continue
         }
+        // security audit 2026-11-06: model-inferred metas get learn()'s injection gate; a flagged one is skipped, not thrown
+        const injections = detectPromptInjection(this._hardScanText(meta.statement, this._engramContextFields(meta)))
+        if (injections.length > 0) {
+          logger.warning(
+            `[plur] meta-engram ${meta.id} skipped: prompt injection pattern (${injections[0].pattern}) in a model-inferred statement.`,
+          )
+          injectionRefused.push(meta.id)
+          skipped++
+          continue
+        }
+        // Model-inferred, so marked as such (ClaimClassSchema 'inferred').
+        if ((meta as any).claim_class === undefined) (meta as any).claim_class = 'inferred'
         pendingHard += await this._assertHardTierFits(meta, pendingHard)
         // LOW-1: guard each meta on the FULL content (statement + context
         // fields) at its scope before persist. Do NOT call _guardExplicitUpdate
@@ -9502,7 +9532,7 @@ export class Plur {
         await this._writeEngrams(this.paths.engrams, engrams)
         await this._syncIndex()
       }
-      return { saved, skipped }
+      return { saved, skipped, ...(injectionRefused.length > 0 ? { injection_refused: injectionRefused } : {}) }
     })
   }
 
@@ -9843,7 +9873,25 @@ export class Plur {
         )
       }
     }
+    // security audit 2026-11-06: a retarget or content edit is a new logical write, so it gets a new idempotency key
+    const moved = toWrite.scope !== stored.scope
+    if (pending && stored.status !== 'retired' && sd._outbox
+      && (moved || Plur._pushedContentSignature(stored) !== Plur._pushedContentSignature(toWrite))) {
+      sd._outbox = { ...((moved ? sd._outbox : storedSd!._outbox) as object), idempotency_key: randomUUID(), attempt_count: 0, last_error: '' }
+      changed = true
+    }
     if (changed) (toWrite as any).structured_data = Object.keys(sd).length > 0 ? sd : undefined
+  }
+
+  /** What a remote push carries (minus scope and key); volatile local state is left out so a no-op update keeps its key. */
+  private static _pushedContentSignature(engram: Engram): string {
+    const e = engram as any
+    return JSON.stringify([
+      e.statement, e.domain, e.type, e.tags, e.pinned, e.rationale, e.commitment,
+      e.temporal, e.valid_from, e.valid_until, e.relations?.supersedes, e.supersedes,
+      e.locked_reason, e.source, e.provenance, e.measured_under, e.knowledge_anchors,
+      e.dual_coding, e.attribution, e.claim_class, e.structured_data?._scopeSource,
+    ])
   }
 
   /**
@@ -11711,6 +11759,8 @@ export class Plur {
         if (!captured || captured.length < 5) continue
         if (seen.has(captured.toLowerCase())) continue
         if (!this.config.allow_secrets && detectSecrets(captured).length > 0) continue
+        // security audit 2026-11-06: harvested text the agent merely read never carries an injection, not even in previews
+        if (detectPromptInjection(captured).length > 0) continue
         seen.add(captured.toLowerCase())
         candidates.push({
           statement: captured,
@@ -11733,6 +11783,9 @@ export class Plur {
           scope: options?.scope ?? (this._remoteOnly ? undefined : 'global'),
           domain: options?.domain,
           source: candidate.source,
+          // Auto-harvested, not asserted by the user: the D4 injection gate in
+          // _validateLearnInput and the (inferred) render mark key on this.
+          claim_class: 'inferred',
         })
       }
     }
@@ -11850,8 +11903,13 @@ export class Plur {
     // `plur_sync` MCP tool and the `plur sync` CLI command, both top-level.
     // (Found by writing this fix's first regression test as a nested call and
     // watching it hang; see async-lock's "NOT REENTRANT" header.)
+    //
+    // security audit 2026-11-06: the pull rewrites the sibling stores too, so their own locks are held (fixed order, no deadlock)
     const result = await this._withStoreLock(this.paths.engrams, async () => {
-      return gitSync(this.paths.root, remote, { remoteType })
+      return withLock(this.paths.tensions, () =>
+        withLock(this.paths.episodes, () =>
+          withLock(this.paths.candidates, () =>
+            gitSync(this.paths.root, remote, { remoteType }))))
     })
     // `git pull --rebase` may have REPLACED engrams.yaml underneath us, so any
     // cached snapshot the store is holding now describes a file that no longer
@@ -14318,6 +14376,15 @@ Generate an improved version of the procedure that prevents this failure. Return
     if (!scope || typeof scope !== 'string') {
       throw new Error(`addStore: scope must be a non-empty string, got ${typeof scope}`)
     }
+    // security audit 2026-11-06: a scope feeds id prefixes, config and routing keys, so it must match the scope grammar
+    if (!/^[A-Za-z0-9][A-Za-z0-9:._@/-]{0,199}$/.test(scope)) {
+      throw new Error(`addStore: scope "${scope}" has characters a scope cannot contain (letters, digits and : . _ @ / - only)`)
+    }
+    // `global` (and `local`) is where every unscoped save lands. Binding it to a
+    // remote url would send every future default-scope memory off the machine.
+    if (isRemote && (scope === 'global' || scope === 'local')) {
+      throw new Error(`addStore: scope "${scope}" is a built-in local scope and cannot be bound to a remote store`)
+    }
 
     // Pick up any out-of-process config edit before we dedup/write (#307).
     this.reloadConfigIfChanged()
@@ -15661,8 +15728,12 @@ Generate an improved version of the procedure that prevents this failure. Return
           continue
         }
         const cached = stringList(entry.scopes)
-        const decision = acceptDiscoveredScopes({ me, error, cached, otherServersScopes: scopesServedElsewhere(rawStores, key) })
         const oldDiscovery = isPlainObject(entry.discovery) ? entry.discovery : {}
+        const cachedOrgId = typeof oldDiscovery.org_id === 'string' && oldDiscovery.org_id ? oldDiscovery.org_id : undefined
+        const decision = acceptDiscoveredScopes({ me, error, cached, otherServersScopes: scopesServedElsewhere(rawStores, key), cachedOrgId })
+        if (decision.orgChanged) {
+          logger.warning(`[plur:discovery] ${safeOrigin(url)} now reports org "${me?.org_id}" but was discovered as org "${cachedOrgId}"; its scopes were not changed. If the org really changed, remove the server entry and sign in again.`)
+        }
         let next: Record<string, unknown>
         if (decision.replaceCache && me) {
           const personal = decision.scopes.find(sc => sc.toLowerCase() === `user:${me.org_id}:${me.username}`.toLowerCase())
@@ -16221,7 +16292,8 @@ Generate an improved version of the procedure that prevents this failure. Return
    *     nested sensitivity fields the remote sent);
    *   - only the remote `forbid` is persisted, sanitized to the known
    *     SENSITIVITY_CATEGORIES (empty-after-sanitize falls to the safe
-   *     default, mirroring ScopeSensitivitySchema);
+   *     default, mirroring ScopeSensitivitySchema), and only ADDED to the
+   *     local effective forbid (union), never replacing it;
    *   - a hand-edited `allow` in local config.yaml is preserved and remains
    *     honored by the guard — a deliberate LOCAL decision.
    *
@@ -16254,8 +16326,10 @@ Generate an improved version of the procedure that prevents this failure. Return
       // verbatim; sensitivity = local entry's policy (incl. any hand-edited
       // `allow` + nested unknowns) with only `forbid` taken from the server,
       // sanitized to the category enum. No server sensitivity → local untouched.
+      // security audit 2026-11-06: the persisted forbid is the union of the local effective forbid and the server's, never narrower
+      const localForbid: readonly SensitivityCategory[] = entry.sensitivity?.forbid?.length ? entry.sensitivity.forbid : SENSITIVITY_CATEGORIES
       const nextSensitivity = meta.sensitivity !== undefined
-        ? { ...(entry.sensitivity ?? { allow: [] }), forbid: sanitizeForbidCategories(meta.sensitivity.forbid) }
+        ? { ...(entry.sensitivity ?? { allow: [] }), forbid: [...new Set([...localForbid, ...sanitizeForbidCategories(meta.sensitivity.forbid)])] }
         : entry.sensitivity
       const nextCovers = meta.covers !== undefined ? meta.covers : entry.covers
       const nextDescription = meta.description !== undefined ? meta.description : entry.description

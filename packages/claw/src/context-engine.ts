@@ -170,6 +170,8 @@ export class PlurContextEngine implements ContextEngine {
               type: candidate.type,
               scope: this._scopeOf(params.sessionKey) || undefined,
               source: 'openclaw:ingest',
+              // security audit 2026-11-06: auto-harvested, so core's injection refusal applies
+              claim_class: 'inferred',
               rationale: 'user correction detected in real-time',
               tags: [candidate.type],
             }).catch(err => console.error('[plur-claw] _learnIfNew error:', err))
@@ -251,6 +253,7 @@ export class PlurContextEngine implements ContextEngine {
               type: candidate.type,
               scope: this._scopeOf(params.sessionKey) || undefined,
               source: 'openclaw:compact',
+              claim_class: 'inferred',
               rationale: 'extracted during context compaction',
               tags: [candidate.type],
             }).catch(err => console.error('[plur-claw] _learnIfNew error:', err)))
@@ -299,6 +302,7 @@ export class PlurContextEngine implements ContextEngine {
               type: 'behavioral',
               scope,
               source: 'openclaw:self-report',
+              claim_class: 'inferred',
               rationale: 'self-reported by agent via learning section',
               tags: ['self-report'],
             }).catch(err => console.error('[plur-claw] _learnIfNew error:', err)))
@@ -313,6 +317,7 @@ export class PlurContextEngine implements ContextEngine {
               type: candidate.type,
               scope,
               source: 'openclaw:afterTurn',
+              claim_class: 'inferred',
               rationale: 'extracted from conversation via pattern matching',
               tags: [candidate.type],
             }).catch(err => console.error('[plur-claw] _learnIfNew error:', err)))

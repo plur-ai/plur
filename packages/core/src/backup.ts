@@ -52,7 +52,7 @@ import { createHash, randomUUID } from 'crypto'
 import * as yaml from 'js-yaml'
 import { parseEngramEntry } from './engrams.js'
 import { logger } from './logger.js'
-import { atomicWrite, withLock } from './sync.js'
+import { atomicWrite, storeFileMode, withLock } from './sync.js'
 
 /** Directory under the plur root holding snapshots and their state. */
 export const BACKUP_DIR = 'backups'
@@ -115,10 +115,10 @@ function readState(root: string): BackupState {
   }
 }
 
-function writeState(root: string, state: BackupState): void {
+function writeState(root: string, state: BackupState, mode?: number): void {
   const p = statePath(root)
   fs.mkdirSync(path.dirname(p), { recursive: true })
-  atomicWrite(p, JSON.stringify(state, null, 2) + '\n')
+  atomicWrite(p, JSON.stringify(state, null, 2) + '\n', { mode })
 }
 
 /**
@@ -304,6 +304,8 @@ export function maybeDailyBackup(root: string, storePath: string, now = new Date
     if (!fs.existsSync(storePath)) {
       return { taken: false, skipped: 'no-store' }
     }
+    // security audit 2026-11-06: snapshots, sidecars and state follow the live store's mode
+    const fileMode = storeFileMode(storePath)
     const state = readState(root)
     const stamp = todayStamp(now)
     if (state.last_backup_date === stamp) {
@@ -328,7 +330,7 @@ export function maybeDailyBackup(root: string, storePath: string, now = new Date
           last_backup_date: stamp,
           last_good_count: sameDay.count ?? state.last_good_count,
           last_good_sha256: sameDay.sha256,
-        })
+        }, fileMode)
         return { taken: false, skipped: 'already-today', path: sameDay.path }
       }
       // Unverifiable: its bytes do not match its sidecar, or it has none. Keep
@@ -379,7 +381,7 @@ export function maybeDailyBackup(root: string, storePath: string, now = new Date
 
     const dest = snapshotPath(root, stamp)
     fs.mkdirSync(path.dirname(dest), { recursive: true })
-    writeFileDurable(dest, bytes)
+    writeFileDurable(dest, bytes, fileMode)
     // Sidecar is what makes a restore verifiable rather than hopeful.
     //
     // `taken_at` is the full instant, not just the date: snapshots are daily,
@@ -393,6 +395,7 @@ export function maybeDailyBackup(root: string, storePath: string, now = new Date
         `${sha256(bytes)}  ${path.basename(dest)}\n${validity.count} engrams\ntaken_at ${now.toISOString()}\n`,
         'utf8',
       ),
+      fileMode,
     )
 
     doneThisProcess.add(key)
@@ -400,7 +403,7 @@ export function maybeDailyBackup(root: string, storePath: string, now = new Date
       last_backup_date: stamp,
       last_good_count: validity.count ?? undefined,
       last_good_sha256: sha256(bytes),
-    })
+    }, fileMode)
     rotate(root, now)
     return { taken: true, path: dest, validity }
   } catch (err) {
@@ -411,11 +414,10 @@ export function maybeDailyBackup(root: string, storePath: string, now = new Date
 
 /**
  * Atomic, durable publication: temp file, fsync, rename, directory fsync.
- * Not a permission change: a new snapshot gets the process default mode
- * (0644 under umask 022), exactly as the previous open-write-fsync did.
+ * `mode` is the live store's own mode (storeFileMode).
  */
-function writeFileDurable(dest: string, bytes: Buffer): void {
-  atomicWrite(dest, bytes)
+function writeFileDurable(dest: string, bytes: Buffer, mode: number | undefined): void {
+  atomicWrite(dest, bytes, { mode })
 }
 
 export interface BackupEntry {
@@ -680,7 +682,7 @@ export function restoreBackup(
     if (fs.existsSync(storePath)) {
       // Same mode as the store it copies (copyFileSync did this before): it
       // holds the whole corpus, including scope:local engrams.
-      atomicWrite(superseded, fs.readFileSync(storePath), { mode: fs.statSync(storePath).mode & 0o777 })
+      atomicWrite(superseded, fs.readFileSync(storePath), { mode: storeFileMode(storePath) })
     }
     // tmp + fsync + rename, rather than truncating the live file in place.
     atomicWrite(storePath, snapshot.bytes)

@@ -20,35 +20,49 @@
  *
  * These tests exercise the wiring without downloading a model: the
  * `@huggingface/transformers` import is mocked, so what is asserted is that
- * core assigns `env.cacheDir` BEFORE calling `pipeline()`, and with the right
+ * core assigns `env.cacheDir` BEFORE it loads the model, and with the right
  * precedence.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
-/** Captures what the adapter did to the module before pipeline() was called. */
+/** Captures what the adapter did to the module before the model was loaded. */
 const seen: { cacheDirAtPipelineTime?: string; pipelineCalls: number } = { pipelineCalls: 0 }
 const fakeEnv: { cacheDir?: string } = {}
 
-vi.mock('@huggingface/transformers', () => ({
-  env: fakeEnv,
-  pipeline: async () => {
-    // Record the value AS IT STOOD when pipeline ran — assigning after this
+vi.mock('@huggingface/transformers', () => {
+  // Core loads the tokenizer and model directly at the pinned revision rather
+  // than through pipeline() (security audit 2026-11-06, H-x03-1), so the
+  // "point of use" recorded here is the model load.
+  const atLoad = async () => {
+    // Record the value AS IT STOOD when the load ran — assigning after this
     // point would be useless, since the resolved paths are already baked.
     seen.cacheDirAtPipelineTime = fakeEnv.cacheDir
     seen.pipelineCalls++
     return async () => ({ data: new Float32Array(384) })
-  },
-}))
+  }
+  return {
+    env: fakeEnv,
+    AutoTokenizer: { from_pretrained: async () => async () => ({}) },
+    AutoModel: { from_pretrained: atLoad },
+    FeatureExtractionPipeline: class { constructor(public o: unknown) {} },
+    pipeline: async () => { throw new Error('pipeline() must not be used: it resolves files from the unpinned main branch') },
+  }
+})
 
 const ORIGINAL = { plur: process.env.PLUR_MODEL_CACHE_DIR, hf: process.env.HF_HOME }
 
 async function loadOnce() {
   const mod = await import('../src/embedders/transformers-base.js')
+  const pins = await import('../src/embedders/model-pins.js')
+  // A dummy model needs a pin to be loadable at all; no files, so the
+  // integrity check has nothing to hash (model-pinning.test.ts covers that).
+  pins._setModelPinsForTesting({ 'stub/model': { revision: 'c0ffee0000000000000000000000000000000001', files: {} } })
   mod._resetTransformersPipelineCache()
   const adapter = mod.makeTransformersAdapter({
     name: 'stub', modelId: 'stub/model', dim: 384, pooling: 'mean',
   } as never)
-  await adapter.embed('anything')
+  // The pipeline double is not callable; only what happened up to the load matters here.
+  await adapter.embed('anything').catch(() => undefined)
 }
 
 describe('model cache directory is configurable (#845)', () => {
@@ -73,7 +87,7 @@ describe('model cache directory is configurable (#845)', () => {
     expect(seen.cacheDirAtPipelineTime).toBe('/var/lib/plur/models')
   })
 
-  it('sets it BEFORE pipeline() runs, which is the only moment it matters', async () => {
+  it('sets it BEFORE the model load runs, which is the only moment it matters', async () => {
     process.env.PLUR_MODEL_CACHE_DIR = '/var/lib/plur/models'
     await loadOnce()
     // Not merely "the value ended up set" — it was set at the point of use.

@@ -5,7 +5,7 @@ import { embeddingSearch, embedderStatus, type EmbeddingSearchOptions } from './
 import { rewriteLexicalQuery, isQueryRewriteDisabled } from './intent/rewrite.js'
 import { logger } from './logger.js'
 import type { RerankerAdapter } from './rerankers/types.js'
-import { isRerankerOff, recordRerankerEngaged, recordRerankerFailure, hfCacheDirName } from './rerankers/index.js'
+import { isRerankerOff, recordRerankerEngaged, recordRerankerFailure, modelCacheFolder } from './rerankers/index.js'
 
 /** Result of a hybrid search call with diagnostic metadata. */
 export interface HybridSearchResult {
@@ -318,7 +318,8 @@ function logRerankerFailure(reranker: RerankerAdapter, message: string): void {
     return
   }
   const hint = rec.kind === 'corrupt-cache'
-    ? ` Model cache looks corrupt (truncated download, see #340) — delete ~/.cache/huggingface/hub/${hfCacheDirName(reranker.modelId)}/ to force a clean re-download.`
+    // security audit 2026-11-06: PLUR's own model cache, not the HF hub cache.
+    ? ` Model cache looks corrupt (truncated download, see #340) — delete ${modelCacheFolder(reranker.modelId)} to force a clean re-download.`
     : ''
   logger.warning(`${base}${hint} Run plur_doctor for diagnosis. Repeats of this failure log at debug level.`)
 }
