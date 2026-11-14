@@ -498,12 +498,15 @@ export async function injectWithFallback<O, R>(
     })
     // A sentinel, not null: R is unconstrained, so a legitimate hybrid result
     // could itself be falsy and would otherwise read as a deadline miss.
-    // Core gets a deadline just before the race's own (unless the caller set
-    // one), so its optional work — the injection counter, a slow semantic leg —
-    // stops in time and it returns its result, instead of the race discarding
-    // a finished ranking because a best-effort store write was still running.
-    const coreOpts = (opts && typeof opts === 'object' && !('deadline_at' in (opts as object)))
-      ? { ...(opts as object), deadline_at: Date.now() + Math.max(0, deadlineMs - CORE_DEADLINE_MARGIN_MS) } as O
+    // Core is told when the race needs its answer, for the best-effort
+    // injection counter only (a whole-file write on YAML stores): it is then
+    // not started too close to the deadline, so a finished ranking is not lost
+    // to it. The search itself is NOT bounded — a hybrid search that misses
+    // the race keeps running, which the background cache build relies on.
+    // A race shorter than the margin has no meaningful earlier point to share.
+    const coreOpts = (deadlineMs > CORE_DEADLINE_MARGIN_MS && opts && typeof opts === 'object'
+      && !('bookkeeping_deadline_at' in (opts as object)))
+      ? { ...(opts as object), bookkeeping_deadline_at: Date.now() + deadlineMs - CORE_DEADLINE_MARGIN_MS } as O
       : opts
     const raced = await Promise.race([plur.injectHybrid(task, coreOpts), deadline])
     if (raced !== DEADLINE_MISSED) return { result: raced, mode: 'hybrid' }

@@ -9355,7 +9355,13 @@ export class Plur {
       // but the corpus is the one loaded under this lock, so the fallback is
       // the same shape it always was.
       try {
-        await this._bookkeepingWithinDeadline(deadlineAt, async (tooLate) => {
+        // The caller's bookkeeping deadline (a racing hook) bounds the counter
+        // too, whichever is sooner.
+        const bk = options?.bookkeeping_deadline_at
+        const counterDeadline = typeof bk === 'number' && Number.isFinite(bk)
+          ? Math.min(bk, deadlineAt ?? Number.POSITIVE_INFINITY)
+          : deadlineAt
+        await this._bookkeepingWithinDeadline(counterDeadline, async (tooLate) => {
           const primaryEngrams = await this._loadTargeted(injected_ids)
           const injectedSet = new Set(injected_ids)
           const touched: Engram[] = []

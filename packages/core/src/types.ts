@@ -439,6 +439,14 @@ export interface InjectOptions {
   deadline_ms?: number
   /** Absolute form — see {@link RecallOptions.deadline_at}. */
   deadline_at?: number
+  /**
+   * Epoch ms by which the caller needs the result, applied ONLY to the
+   * best-effort injection counter (not to the search). A hook racing a
+   * deadline passes it so a whole-file counter write is not started too close
+   * to the deadline; the search runs on exactly as before, which the hook's
+   * background embedding-cache build relies on.
+   */
+  bookkeeping_deadline_at?: number
   /** `.plur.yaml` remote endpoint (hook path org context) — see
    *  {@link RemoteProjectConfig}. */
   remote_project?: RemoteProjectConfig

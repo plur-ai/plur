@@ -253,22 +253,26 @@ describe('injectWithFallback', () => {
     err.mockRestore()
   })
 
-  it('hands core a deadline just before its own, so core ends optional work in time', async () => {
+  it('tells core when it needs the answer, for the injection counter only', async () => {
     let seen: Record<string, unknown> | undefined
     const plur = { injectHybrid: async (_q: string, o: Record<string, unknown>) => { seen = o; return R(1, 'h') }, inject: async () => R(1, 'b') }
     const t0 = Date.now()
     await injectWithFallback(plur, 'q', { scope: 's' } as Record<string, unknown>, 8000)
     expect(seen?.scope).toBe('s')
-    const at = seen?.deadline_at as number
+    // The search deadline is untouched: a missed hybrid search keeps running.
+    expect(seen).not.toHaveProperty('deadline_at')
+    const at = seen?.bookkeeping_deadline_at as number
     expect(at).toBeGreaterThan(t0 + 6000)
     expect(at).toBeLessThan(t0 + 8000)
   })
 
-  it('keeps a deadline_at the caller already set', async () => {
+  it('passes nothing extra for a race shorter than the margin, and keeps a caller value', async () => {
     let seen: Record<string, unknown> | undefined
     const plur = { injectHybrid: async (_q: string, o: Record<string, unknown>) => { seen = o; return R(1, 'h') }, inject: async () => R(1, 'b') }
-    await injectWithFallback(plur, 'q', { deadline_at: 42 } as Record<string, unknown>, 8000)
-    expect(seen?.deadline_at).toBe(42)
+    await injectWithFallback(plur, 'q', {} as Record<string, unknown>, 1)
+    expect(seen).toEqual({})
+    await injectWithFallback(plur, 'q', { bookkeeping_deadline_at: 42 } as Record<string, unknown>, 8000)
+    expect(seen?.bookkeeping_deadline_at).toBe(42)
   })
 
   it('does not leave the deadline timer holding the event loop open', async () => {
