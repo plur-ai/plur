@@ -2097,6 +2097,11 @@ export class Plur {
   }
 
   /** Where session manifests are anchored (#1657). `off` unless the user turned it on. */
+  /** config.yaml `injection_budget` (default 2,000). */
+  injectionBudget(): number {
+    return this.config.injection_budget ?? 2000
+  }
+
   receiptsConfig(): { store: 'off' | 'swarm'; gateway_url?: string; stamp_id?: string } {
     const r = (this.config as { receipts?: { store?: 'off' | 'swarm'; gateway_url?: string; stamp_id?: string } }).receipts
     return {

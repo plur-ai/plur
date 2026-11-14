@@ -757,9 +757,11 @@ export function eventInjectOptions(o: {
   sessionId?: string
   queryContext?: string[]
   includePinned?: boolean
+  /** config.yaml `injection_budget`; used when larger than the 3,000 event floor. */
+  configBudget?: number
 }) {
   return {
-    budget: 3000,
+    budget: Math.max(3000, o.configBudget ?? 0),
     source: 'hook' as const,
     include_pinned: o.includePinned ?? true,
     ...(o.remoteOnly
@@ -1058,6 +1060,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       sessionId: eventSessionId,
       queryContext,
       includePinned,
+      configBudget: plur.injectionBudget(),
     })
     const plan = await planEventRetrieval({
       lockPath: sessionStatePath(key, 'event-hybrid'),

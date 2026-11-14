@@ -29,7 +29,8 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const plur = createPlur(flags)
 
   let task = ''
-  let budget = 2000
+  // Unset: core uses config.yaml `injection_budget` (default 2,000).
+  let budget: number | undefined
   let scope: string | undefined
   let withProtocol = true
 
