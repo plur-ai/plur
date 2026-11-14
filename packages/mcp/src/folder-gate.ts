@@ -444,7 +444,8 @@ export function createFolderGate(plur: Plur, opts: { sessionId?: string; hosts?:
   /**
    * "Not now" to this session's own question about `dir`, if the user gave
    * it: their command consumed its nonce while the question's other nonces
-   * are still there. Marks the folder off for the rest of the session.
+   * are still there. Marks the folder off for the rest of the session, and
+   * the folder question is never asked again in it.
    */
   const notNowGiven = (dir: string): FolderOffAnswer | null => {
     const entry = asked.get(dir)

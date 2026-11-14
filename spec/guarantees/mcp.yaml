@@ -72,7 +72,7 @@ anchors:
     lean:
       - PlurSpec/FolderRules.lean:no_start_no_match
       - PlurSpec/FolderRules.lean:match_same_pid_close
-  packages/mcp/src/folder-gate.ts#askFor:
+  packages/mcp/src/folder-gate.ts#notNowGiven:
     kind: guarantee
     rule: >-
       After the user answers not now, memory is off for the rest of the session and the folder question is not asked
