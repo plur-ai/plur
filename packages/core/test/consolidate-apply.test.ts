@@ -284,6 +284,28 @@ describe('plur consolidate: plan, apply, undo', () => {
     expect((await plur.getById(res.applied[0].merged_id))!.visibility).toBe('private')
   })
 
+  it('the apply result lists rows outside the local store that still reference a retired original (finding 10)', async () => {
+    const [a, b] = await teach([
+      { s: 'Deploy only from the main branch', v: axis(0, DIM) },
+      { s: 'Deployments go out from main only', v: near(axis(0, DIM), 5, 0.95) },
+    ])
+    // A secondary store holds a row that points at A; the journal cannot remap it.
+    const teamPath = join(dir, 'team.yaml')
+    const ext = { ...(await plur.getById(a.id))!, id: 'ENG-2026-1111-901', statement: 'Release checklist for the deploy', scope: 'project:team', relations: { related: [a.id] } }
+    writeFileSync(teamPath, yaml.dump({ engrams: [ext] }))
+    config(`consolidate:\n  apply_enabled: true\nstores:\n  - path: ${teamPath}\n    scope: project:team\n    shared: false\n    readonly: false\n`)
+    plur = new Plur({ path: dir, autoDiscover: false })
+    installStub(vectors)
+    const plan = await plur.consolidatePlan({ llm: mergingModel().llm })
+    const res = await plur.consolidateApply(plan, { limit: 1 })
+    expect(res.applied).toHaveLength(1)
+    // The row is named by its namespaced id (the store it lives in).
+    expect(res.applied[0].still_referencing).toHaveLength(1)
+    expect(res.applied[0].still_referencing[0].id).toMatch(/-2026-1111-901$/)
+    expect(res.applied[0].still_referencing[0].references).toEqual([a.id])
+    expect(b.id).toBeTruthy()
+  })
+
   it('refuses to apply while consolidate.apply_enabled is false', async () => {
     config('')
     plur = new Plur({ path: dir, autoDiscover: false })

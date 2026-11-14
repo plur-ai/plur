@@ -94,7 +94,7 @@ import {
 import {
   candidatePairs, completeLinkageClusters, blockKeyFor, polarityOf, mixedPolarity, protectedReasons, clusterProtectedReasons, structuredBodyOf,
   nightlySeed, seededSample, buildConsolidationPrompt, parseConsolidationResponse, mergeEngrams, retireInto,
-  remapReferences, newPlanId, assertConsolidationPlan, refreshProgress,
+  remapReferences, referencesTo, newPlanId, assertConsolidationPlan, refreshProgress,
   ConsolidateApplyDisabledError, ConsolidateTrialRequiredError, ConsolidateError,
   CONSOLIDATE_QUEUE_FILE, CONSOLIDATE_STATE_FILE, CONSOLIDATE_CHANGE_KIND, CONSOLIDATION_PLAN_KIND, PARAPHRASE_QUEUE_THRESHOLD,
   type ConsolidationPlan, type PlanCluster, type ConsolidationItem,
@@ -10416,7 +10416,18 @@ export class Plur {
         })
       } catch { /* history is an audit trail, never a gate on the write */ }
     }
-    return { cluster_id: cluster.id, change_id: record.id, merged_id: mergedId, retired: memberIds, touched }
+    // Rows the journal could not stage (packs, team scopes, other stores)
+    // keep pointing at the retired originals: say which, so the owner can
+    // fix them where they live.
+    const stillReferencing: Array<{ id: string; references: string[] }> = []
+    try {
+      for (const row of await this._loadAllEngrams()) {
+        if (from.has(row.id) || row.id === mergedId) continue
+        const refs = referencesTo(row, from)
+        if (refs.length > 0) stillReferencing.push({ id: row.id, references: refs })
+      }
+    } catch { /* a report, never a gate on the applied change */ }
+    return { cluster_id: cluster.id, change_id: record.id, merged_id: mergedId, retired: memberIds, touched, still_referencing: stillReferencing }
   }
 
   /**

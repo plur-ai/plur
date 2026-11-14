@@ -790,6 +790,15 @@ export function remapReferences(row: Engram, from: ReadonlySet<string>, to: stri
   return changed ? out : null
 }
 
+/** The ids in `from` that a row names in its relations or engram associations (sorted). */
+export function referencesTo(row: Engram, from: ReadonlySet<string>): string[] {
+  const out = new Set<string>()
+  const rel = (row.relations ?? {}) as Partial<Relations>
+  for (const k of RELATION_KEYS) for (const t of rel[k] ?? []) if (from.has(t)) out.add(t)
+  for (const a of row.associations ?? []) if (a.target_type === 'engram' && from.has(a.target)) out.add(a.target)
+  return [...out].sort()
+}
+
 /** A plan id: `CPL-<UTC stamp>-<hash of the seed and time>`. */
 export function newPlanId(now: Date, seed: string): string {
   const stamp = now.toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z')
@@ -838,7 +847,11 @@ export type ConsolidateSkipReason =
 
 export interface ConsolidateApplyResult {
   plan_id: string
-  applied: Array<{ cluster_id: string; change_id: string; merged_id: string; retired: string[]; touched: string[] }>
+  applied: Array<{
+    cluster_id: string; change_id: string; merged_id: string; retired: string[]; touched: string[]
+    /** Rows the change could not remap (packs, team scopes, other stores) that still name a retired original. */
+    still_referencing: Array<{ id: string; references: string[] }>
+  }>
   skipped: Array<{ cluster_id: string; reason: ConsolidateSkipReason; detail?: string }>
 }
 
