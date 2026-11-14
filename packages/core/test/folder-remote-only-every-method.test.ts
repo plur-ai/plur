@@ -173,7 +173,7 @@ describe('every public Plur method in a remote-only folder', () => {
       recallWithMeta: ['dentist PERSONALZEBRA'], outboxClaimsProblem: [], skippedProjectStores: [work],
       refreshServerScopes: [], notNowFolder: [join(base, 'elsewhere'), { nonce: 'not-a-nonce' }],
       // Shared change journal (overhaul W0): beginChange only builds a handle; the rest touch the personal store.
-      beginChange: ['test.kind'], undoChange: ['CHG-none'], listChanges: [], getChange: ['CHG-none'],
+      beginChange: ['test.kind'], undoChange: ['CHG-none'], listChanges: [], getChange: ['CHG-none'], redactChangeJournal: [[pid]],
       // Retrieval and injection overhaul (W1/W5): reads config only.
       injectionSettings: [],
       // Store consolidation (overhaul W6): planning and health read the personal store; apply writes it.
@@ -219,7 +219,7 @@ describe('every public Plur method in a remote-only folder', () => {
       // It runs the embedder and reranker models over the corpus (Codex round 5 on #1663).
       'rerankerSelfEval',
       // The change journal holds personal rows in full (overhaul W0).
-      'undoChange', 'listChanges', 'getChange',
+      'undoChange', 'listChanges', 'getChange', 'redactChangeJournal',
       // Consolidation reads and rewrites personal rows in full (overhaul W6).
       'consolidatePlan', 'consolidateApply', 'storeHealth',
       // Rescope plans and enrichment read personal rows (W7, W10); enrichment sends them to a model.

@@ -87,7 +87,7 @@ import { escapedPath as folderEscaped } from './folder-ask.js'
 import { ReadonlyStoreGuard, ReadonlyStoreError } from './store/readonly-store-guard.js'
 import { withAsyncLock, type AsyncLockOptions } from './store/async-lock.js'
 import {
-  newChangeId, readChangeJournal, UNDO_BOOKKEEPING_FIELDS, carryIgnoredFields, journalBegin, journalCommit, findUndoConflicts, canonicalRow,
+  newChangeId, readChangeJournal, UNDO_BOOKKEEPING_FIELDS, carryIgnoredFields, isRedactedRow, redactChangeJournal, ChangeRedactedError, journalBegin, journalCommit, findUndoConflicts, canonicalRow,
   ChangeJournalError, ChangeJournalUnsupportedError, ChangeNotFoundError, ChangeAlreadyUndoneError, ChangeConflictError,
   type ChangeRecord, type ChangeRowSnapshot, type ChangeTx, type PendingChange, type UndoChangeOptions,
 } from './change-journal.js'
@@ -495,7 +495,7 @@ export {
   type InjectionOverhaulSettings, type PinningSettings, type ConsolidateSettings, type LearnSettings,
 } from './schemas/config.js'
 export {
-  CHANGE_JOURNAL_FILE, changeJournalPath, UNDO_BOOKKEEPING_FIELDS, CO_ACCESS_FIELD, readChangeJournal, newChangeId, canonicalRow, findUndoConflicts,
+  CHANGE_JOURNAL_FILE, CHANGE_JOURNAL_ROTATED_FILE, changeJournalPath, changeJournalMaxBytes, isRedactedRow, ChangeRedactedError, UNDO_BOOKKEEPING_FIELDS, CO_ACCESS_FIELD, readChangeJournal, newChangeId, canonicalRow, findUndoConflicts,
   ChangeJournalError, ChangeJournalUnsupportedError, ChangeNotFoundError, ChangeAlreadyUndoneError, ChangeConflictError,
   type ChangeRecord, type ChangeRowSnapshot, type ChangeTx, type PendingChange, type UndoChangeOptions, type ChangeConflictRow,
 } from './change-journal.js'
@@ -10000,6 +10000,8 @@ export class Plur {
       const record = readChangeJournal(this.paths.root).find(r => r.id === changeId)
       if (!record) throw new ChangeNotFoundError(changeId)
       if (record.undone_by) throw new ChangeAlreadyUndoneError(changeId, record.undone_by)
+      const redacted = record.rows.filter(r => isRedactedRow(r.before) || isRedactedRow(r.after)).map(r => r.id)
+      if (redacted.length > 0) throw new ChangeRedactedError(changeId, redacted)
       const current = new Map<string, Engram>()
       for (const row of record.rows) {
         const now = tx.get(row.id)
@@ -10017,6 +10019,21 @@ export class Plur {
         tx.put(restored as Engram, row.index ?? undefined)
       }
     })
+  }
+
+  /**
+   * Redact every change-journal snapshot of these rows (S5): the journal
+   * keeps full row content for undo, so a row whose content is being let go
+   * of — forgotten, compacted away, found to hold a secret — must not live on
+   * there. Undo of a change that touched a redacted row then refuses. `forget`
+   * and `compact` call this themselves. Returns how many snapshots changed.
+   */
+  async redactChangeJournal(ids: readonly string[]): Promise<number> {
+    this._assertWritable()
+    // The journal holds personal rows in full: never touched from a remote-only folder.
+    this._remoteOnlyRefuseLocalStore('Redacting the change journal (run it outside the remote-only folder)')
+    if (ids.length === 0) return 0
+    return await this._withStoreLock(this.paths.engrams, async () => redactChangeJournal(this.paths.root, ids))
   }
 
   /** Every journalled change, oldest first. */
@@ -11665,6 +11682,21 @@ export class Plur {
    * dedup tracking (two agents learned the same fact; one forgets — the
    * other's reference should remain). */
   async forget(id: string, reason?: string, options?: { force?: boolean; scope?: string }): Promise<MutationOutcome> {
+    const outcome = await this._forget(id, reason, options)
+    // A row forget retired or deleted in the local store is redacted from the
+    // change journal (S5); one still active (write_count above zero) is not.
+    if (!this._remoteOnly && !this._readonly && !parseNamespacedId(id)) {
+      try {
+        const row = (await this._loadTargeted([id])).find(e => e.id === id)
+        if (!row || row.status === 'retired') await this.redactChangeJournal([id])
+      } catch (err) {
+        logger.warning(`[plur] forget: the change journal could not be redacted for ${id}: ${(err as Error).message}`)
+      }
+    }
+    return outcome
+  }
+
+  private async _forget(id: string, reason?: string, options?: { force?: boolean; scope?: string }): Promise<MutationOutcome> {
     this._assertWritable()
     // remote-only (audit of #1521, B2): a save queued from a remote-only
     // folder is DELETED, not retired — a retired row would keep its content
@@ -12890,6 +12922,10 @@ export class Plur {
         // Every removed row, by identity — a retired row can share its id with
         // a kept one, and it must still be named.
         const kept = new Set(active)
+        // The change journal must not keep what compaction removed (S5).
+        try { redactChangeJournal(this.paths.root, engrams.filter(e => !kept.has(e)).map(e => e.id)) } catch (err) {
+          logger.warning(`[plur] compact: the change journal could not be redacted: ${(err as Error).message}`)
+        }
         try {
           this._appendHistory({
             event: 'store_compacted',

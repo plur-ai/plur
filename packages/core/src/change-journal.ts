@@ -28,6 +28,17 @@
  * (including `scope: local` rows), so it is machine-local: it is not one of the
  * files `plur sync` stages.
  *
+ * Retention (S5). The journal must not keep content the store has let go of:
+ *  - `forget` and `compact` redact the rows they retire or remove
+ *    ({@link redactChangeJournal}): every snapshot of those rows becomes
+ *    `{ id, _redacted: true }`, and an undo that would restore one refuses
+ *    with {@link ChangeRedactedError}. Callers that remove content for other
+ *    reasons (a secret found in a row) call `Plur.redactChangeJournal`.
+ *  - Size-based rotation: before a change is begun, a journal over
+ *    {@link changeJournalMaxBytes} (default 8 MiB, `PLUR_CHANGE_JOURNAL_MAX_BYTES`)
+ *    becomes `changes.1.jsonl`, replacing the previous generation. Changes in
+ *    a generation that was dropped can no longer be listed or undone.
+ *
  * Each change writes two lines: `begun` (with the snapshots) BEFORE the store
  * write, and `committed` after it. A crash between the two leaves a `begun`
  * change whose undo compares the store against the recorded after-state, so it
@@ -43,7 +54,7 @@
  * the journal format, the folding of its lines into records, and the row
  * comparison undo uses.
  */
-import { appendFileSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync } from 'fs'
+import { appendFileSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, statSync, writeFileSync } from 'fs'
 import { dirname, join } from 'path'
 import { randomBytes } from 'crypto'
 import { sortKeysDeep } from './history.js'
@@ -55,6 +66,23 @@ export const CHANGE_JOURNAL_FILE = 'changes.jsonl'
 /** Path of the change journal for the store rooted at `root`. */
 export function changeJournalPath(root: string): string {
   return join(root, CHANGE_JOURNAL_FILE)
+}
+
+/** The one older generation kept by rotation. */
+export const CHANGE_JOURNAL_ROTATED_FILE = 'changes.1.jsonl'
+
+/** Default size past which the journal rotates (8 MiB). */
+export const CHANGE_JOURNAL_DEFAULT_MAX_BYTES = 8 * 1024 * 1024
+
+/** Rotation threshold: `PLUR_CHANGE_JOURNAL_MAX_BYTES` when a positive integer, else the default. */
+export function changeJournalMaxBytes(): number {
+  const n = parseInt(process.env.PLUR_CHANGE_JOURNAL_MAX_BYTES ?? '', 10)
+  return Number.isFinite(n) && n > 0 ? n : CHANGE_JOURNAL_DEFAULT_MAX_BYTES
+}
+
+/** A snapshot whose content was redacted (S5). */
+export function isRedactedRow(row: unknown): boolean {
+  return !!row && typeof row === 'object' && (row as { _redacted?: unknown })._redacted === true
 }
 
 /** One touched row: what it was before the change and what the change wrote. */
@@ -201,6 +229,13 @@ export class ChangeConflictError extends ChangeJournalError {
   }
 }
 
+/** Undo refused: a row the change touched was redacted from the journal (forgotten, compacted away, or holding a secret). Nothing was written. */
+export class ChangeRedactedError extends ChangeJournalError {
+  constructor(readonly changeId: string, readonly ids: string[]) {
+    super(`Refusing to undo change ${changeId}: its snapshot of ${ids.join(', ')} was redacted from the change journal (the row was forgotten or removed). Nothing was written.`)
+  }
+}
+
 /** A new change id: `CHG-<UTC yyyymmddThhmmss>-<random>`. */
 export function newChangeId(now: Date = new Date()): string {
   const stamp = now.toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z')
@@ -287,7 +322,65 @@ function appendLine(root: string, line: JournalLine): void {
 
 /** Append the `begun` line of a change. Call under the store lock, before the store write. */
 export function journalBegin(root: string, change: { id: string; kind: string; meta: Record<string, unknown>; at: string; rows: ChangeRowSnapshot[] }): void {
+  rotateIfLarge(root)
   appendLine(root, { v: 1, state: 'begun', ...change })
+}
+
+/**
+ * Rotate before a new change begins, never between a change's two lines: a
+ * journal over the size limit becomes the one older generation, replacing
+ * the previous one (whose changes can then no longer be undone).
+ */
+function rotateIfLarge(root: string): void {
+  const path = changeJournalPath(root)
+  try {
+    if (statSync(path).size <= changeJournalMaxBytes()) return
+    renameSync(path, join(root, CHANGE_JOURNAL_ROTATED_FILE))
+  } catch { /* no journal yet, or a rename race: append to what is there */ }
+}
+
+/**
+ * Redact every snapshot of the given rows in the journal and its rotated
+ * generation (S5): `before`/`after` become `{ id, _redacted: true }`. Call
+ * under the store lock. Returns how many snapshots were redacted.
+ */
+export function redactChangeJournal(root: string, ids: Iterable<string>): number {
+  const wanted = new Set(ids)
+  if (wanted.size === 0) return 0
+  let total = 0
+  const stub = (id: string) => ({ id, _redacted: true }) as unknown as Engram
+  for (const file of [CHANGE_JOURNAL_ROTATED_FILE, CHANGE_JOURNAL_FILE]) {
+    const path = join(root, file)
+    if (!existsSync(path)) continue
+    let count = 0
+    const lines = readFileSync(path, 'utf8').split('\n').map(raw => {
+      if (!raw.trim()) return raw
+      let line: JournalLine
+      try { line = JSON.parse(raw) } catch { return raw }
+      if (line?.state === 'begun' && Array.isArray(line.rows)) {
+        for (const row of line.rows) {
+          if (!wanted.has(row.id)) continue
+          if (row.before !== null && !isRedactedRow(row.before)) { row.before = stub(row.id); count++ }
+          if (row.after !== null && !isRedactedRow(row.after)) { row.after = stub(row.id); count++ }
+        }
+      } else if (line?.state === 'committed' && line.after) {
+        for (const id of Object.keys(line.after)) {
+          if (wanted.has(id) && line.after[id] !== null && !isRedactedRow(line.after[id])) { line.after[id] = stub(id); count++ }
+        }
+      } else {
+        return raw
+      }
+      return JSON.stringify(line)
+    })
+    if (count === 0) continue
+    const tmp = `${path}.${process.pid}.tmp`
+    writeFileSync(tmp, lines.join('\n'), { encoding: 'utf8', mode: 0o600 })
+    const fd = openSync(tmp, 'r')
+    try { fsyncSync(fd) } finally { closeSync(fd) }
+    renameSync(tmp, path)
+    total += count
+  }
+  return total
 }
 
 /**
@@ -305,10 +398,14 @@ export function journalCommit(root: string, id: string, after?: Record<string, E
  * malformed line is skipped too rather than hiding every change after it.
  */
 export function readChangeJournal(root: string): ChangeRecord[] {
-  const path = changeJournalPath(root)
-  if (!existsSync(path)) return []
+  const texts: string[] = []
+  for (const file of [CHANGE_JOURNAL_ROTATED_FILE, CHANGE_JOURNAL_FILE]) {
+    const path = join(root, file)
+    if (existsSync(path)) texts.push(readFileSync(path, 'utf8'))
+  }
+  if (texts.length === 0) return []
   const byId = new Map<string, ChangeRecord>()
-  for (const raw of readFileSync(path, 'utf8').split('\n')) {
+  for (const raw of texts.join('\n').split('\n')) {
     if (!raw.trim()) continue
     let line: JournalLine
     try { line = JSON.parse(raw) } catch { continue }
