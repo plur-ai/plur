@@ -9,7 +9,9 @@
  * inside the store lock.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, readFileSync } from 'fs'
+import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'fs'
+import yaml from 'js-yaml'
+import { EngramSchema } from '../src/schemas/engram.js'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { Plur } from '../src/index.js'
@@ -211,5 +213,35 @@ describe('plur enrich plan / apply / undo', () => {
     const result = await plur.applyEnrichmentPlan(plan)
     expect(result.skipped.find(s => s.id === target.id)?.reason).toMatch(/statement changed/)
     expect(result.applied).toHaveLength(3)
+  })
+})
+
+describe('plur enrich: what is sent to the model (S9)', () => {
+  it('rows queued for a team store or in a team-store scope are never sent to the model', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'plur-enrich-s9-'))
+    try {
+      const SCOPE = 'group:acme/team'
+      writeFileSync(join(dir, 'config.yaml'), `index: false\nstores:\n  - url: https://plur.example.com/sse\n    token: t\n    scope: ${SCOPE}\n    shared: true\n    readonly: false\n`)
+      const today = new Date().toISOString().slice(0, 10)
+      const row = (id: string, statement: string, extra: Record<string, unknown> = {}) => ({
+        ...EngramSchema.parse({ id, statement, type: 'behavioral', scope: 'global', status: 'active', version: 2, tags: [],
+          activation: { retrieval_strength: 0.8, storage_strength: 1, frequency: 0, last_accessed: today } }),
+        ...extra,
+      })
+      writeFileSync(join(dir, 'engrams.yaml'), yaml.dump({ engrams: [
+        row('ENG-2026-1101-001', 'Local rule about linting'),
+        row('ENG-2026-1101-002', 'Queued team rule PRIVATEQUEUED', { scope: SCOPE, structured_data: { _outbox: { url: 'https://plur.example.com/sse', scope: SCOPE, attempts: 0 } } }),
+        row('ENG-2026-1101-003', 'Team scoped row PRIVATETEAM', { scope: SCOPE }),
+      ] }))
+      const plur = new Plur({ path: dir, autoDiscover: false })
+      const prompts: string[] = []
+      await plur.planEnrichment({ llm: async (p: string) => { prompts.push(p); return '[]' }, model: 'm' })
+      const sent = prompts.join('\n')
+      expect(sent).toContain('Local rule about linting')
+      expect(sent).not.toContain('PRIVATEQUEUED')
+      expect(sent).not.toContain('PRIVATETEAM')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })

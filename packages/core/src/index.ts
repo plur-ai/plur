@@ -12775,8 +12775,11 @@ export class Plur {
     if (typeof llm !== 'function') throw new TypeError('planEnrichment: llm is required')
     const batchSize = Math.max(1, Math.min(100, options.batchSize ?? 20))
     const primary = await this._loadCached(this.paths.engrams)
-    let todo = primary.filter(e => e.status === 'active' && typeof e.statement === 'string' && e.statement.trim()
-      && !isEnriched(e) && !Plur._isRemoteOnlyQueued(e))
+    // Only active, current, locally owned rows go to the model — the same
+    // exclusion consolidation uses (S9): never a row queued for a team store
+    // or living in a scope a team store serves.
+    let todo = primary.filter(e => typeof e.statement === 'string' && e.statement.trim()
+      && !isEnriched(e) && !Plur._isRemoteOnlyQueued(e) && this._consolidationExclusion(e) === null)
     const alreadyEnriched = primary.filter(e => e.status === 'active' && isEnriched(e)).length
     if (options.limit !== undefined) todo = todo.slice(0, Math.max(0, options.limit))
     const items: EnrichPlanItem[] = []
@@ -12837,6 +12840,8 @@ export class Plur {
         if (!row) { skipped.push({ id: item.id, reason: 'not in the local primary store' }); continue }
         if (row.status !== 'active') { skipped.push({ id: item.id, reason: `not active (${row.status})` }); continue }
         if (isEnriched(row)) { skipped.push({ id: item.id, reason: 'already enriched' }); continue }
+        const excluded = this._consolidationExclusion(row)
+        if (excluded) { skipped.push({ id: item.id, reason: `not a locally owned current row (${excluded})` }); continue }
         if (computeContentHash(row.statement) !== item.statement_hash) { skipped.push({ id: item.id, reason: 'statement changed since the plan' }); continue }
         if (!(ENRICH_KINDS as readonly string[]).includes(item.kind)) { skipped.push({ id: item.id, reason: `invalid kind ${String(item.kind)}` }); continue }
         // The plan file is input like a model reply (S7): the same parser's
