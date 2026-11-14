@@ -11,7 +11,10 @@ an integrator can notice is listed here; fill in the version at release time.
   rollback path. Related keys: `injection.recall_limit` (default 10),
   `injection.prohibition_ratio` (0.2), `injection.query_min_terms` (4),
   `injection.min_relevance_signal` / `injection.min_relevance` (no cut-off by
-  default).
+  default: no signal met the bar of emptying the task section on unrelated
+  prompts while losing at most 1 target in 30. The nearest, `cosine` at
+  0.714, empties it on about half of unrelated prompts and loses about 1
+  target in 22; set it only if you prefer that trade).
 - **Pins once per context.** Pinned engrams are injected on the first prompt
   and after a compaction (or resume), not on every skill, agent or plan-mode
   event in the same context. A subagent is its own context: it gets the pins
@@ -95,6 +98,27 @@ an integrator can notice is listed here; fill in the version at release time.
   part of the search text. The Postgres tier re-derives its stored search
   text once, in its non-blocking background backfill (`plur reindex-tokens`
   forces it); embedding caches re-embed only the rows whose text changed.
+
+## Speed on large stores
+
+- **Keyword search tokenises each memory once per process** instead of three
+  times per query. Same results; on a 14k-memory store a unified injection
+  went from about 11 s to under 9 s from the CLI.
+- **Binary companion for the embedding cache.** After the JSON cache is read,
+  its vectors are also written to `.embeddings-cache.vectors.bin` (exact
+  float64 copy). Later processes read that file while the JSON is unchanged
+  (same size, modification time and inode) and fall back to the JSON
+  otherwise. It is derived, git-ignored and never synced; deleting it is safe.
+  It roughly takes the store's vector count × dimension × 8 bytes on disk
+  (about 50 MB for 16k memories at 384 dimensions).
+- **Hooks keep a finished ranking.** A hook racing its deadline now tells core
+  when it needs the answer (`bookkeeping_deadline_at`); the best-effort
+  injection counter (a whole-file write on YAML stores) is skipped when less
+  than 2 s is left, instead of making the hook throw away a finished result.
+  The search itself is not cut short.
+- On the 14k-memory store a first-prompt hook in unified mode now finishes in
+  about 6 s and an event in about 3–4 s.
+- `plur inject --json` reports the unified relevance signals (`relevance`).
 
 ## Configuration robustness
 
