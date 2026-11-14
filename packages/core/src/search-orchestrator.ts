@@ -1,6 +1,6 @@
 import type { Engram } from './schemas/engram.js'
 import type { LlmFunction } from './types.js'
-import { searchEngrams, ftsScore, ftsTokenize, computeIdf, engramSearchText } from './fts.js'
+import { searchEngrams, ftsScore, ftsTokenize, computeIdf, engramTokens } from './fts.js'
 import { hybridSearchWithMeta } from './hybrid-search.js'
 import { expandedSearch } from './query-expansion.js'
 
@@ -39,7 +39,7 @@ function normalizedBm25Scores(engrams: Engram[], query: string): Map<string, num
   if (queryTokens.length === 0) return new Map()
   const idfWeights = computeIdf(engrams, queryTokens)
   const avgDocLength = engrams.length > 0
-    ? engrams.reduce((sum, e) => sum + ftsTokenize(engramSearchText(e)).length, 0) / engrams.length
+    ? engrams.reduce((sum, e) => sum + engramTokens(e).length, 0) / engrams.length
     : 0
   const rawScores: Array<{ id: string; score: number }> = []
   for (const e of engrams) {

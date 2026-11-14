@@ -250,6 +250,43 @@ export function searchTextFrom(fields: SearchTextFields): string {
  * is caught and ignored is worse than either a crash or a default, so this takes
  * the default.
  */
+/**
+ * Per-process token cache for engrams. Keyword search used to tokenise every
+ * engram three times per query (IDF, mean length, score) and again on every
+ * grow-loop pass; on a 14k-engram store that was ~4.5 s of a unified
+ * injection. Keyed on the engram object (garbage-collected with it) and
+ * checked against the current search text, so an edited engram is
+ * re-tokenised. Callers must not mutate the returned array.
+ */
+const engramTokenCache = new WeakMap<object, { text: string; tokens: string[]; set?: Set<string> }>()
+
+function tokenEntry(engram: Engram): { text: string; tokens: string[]; set?: Set<string> } {
+  const text = engramSearchText(engram)
+  const hit = engramTokenCache.get(engram)
+  if (hit && hit.text === text) return hit
+  const entry = { text, tokens: ftsTokenize(text) }
+  engramTokenCache.set(engram, entry)
+  return entry
+}
+
+/** `ftsTokenize(engramSearchText(e))`, cached per engram object (see above). */
+export function engramTokens(engram: Engram): string[] {
+  return tokenEntry(engram).tokens
+}
+
+/** The distinct tokens of {@link engramTokens}, cached with them. Callers must not mutate it. */
+export function engramTermSet(engram: Engram): Set<string> {
+  const entry = tokenEntry(engram)
+  return entry.set ??= new Set(entry.tokens)
+}
+
+/** True when a token set contains `qt` under {@link termMatches} — the df rule. */
+function termSetMatches(termSet: Set<string>, qt: string): boolean {
+  if (termSet.has(qt)) return true
+  for (const t of termSet) if (termMatches(t, qt)) return true
+  return false
+}
+
 export function engramSearchText(engram: Engram): string {
   const parts = [engram.statement]
   if (engram.domain) parts.push(engram.domain.replace(/\./g, ' '))
@@ -413,15 +450,13 @@ export function computeIdf(
   if (N === 0) return new Map()
 
   // Pre-tokenize all engrams
-  const engramTermSets = engrams.map(e => new Set(ftsTokenize(engramSearchText(e))))
+  const engramTermSets = engrams.map(e => engramTermSet(e))
 
   const idf = new Map<string, number>()
   for (const qt of queryTokens) {
     let df = 0
     for (const termSet of engramTermSets) {
-      if (termSet.has(qt) || Array.from(termSet).some(t => termMatches(t, qt))) {
-        df++
-      }
+      if (termSetMatches(termSet, qt)) df++
     }
     idf.set(qt, Math.max(0, Math.log(N / (1 + df))))
   }
@@ -461,7 +496,7 @@ export function extendCorpusStats(
   const termSets: Array<Set<string>> = []
   let totalLen = 0
   for (const e of outsiders) {
-    const terms = ftsTokenize(engramSearchText(e))
+    const terms = engramTokens(e)
     totalLen += terms.length
     termSets.push(new Set(terms))
   }
@@ -469,7 +504,7 @@ export function extendCorpusStats(
   for (const qt of queryTokens) {
     let added = 0
     for (const set of termSets) {
-      if (set.has(qt) || Array.from(set).some(t => termMatches(t, qt))) added++
+      if (termSetMatches(set, qt)) added++
     }
     if (added > 0) df.set(qt, (df.get(qt) ?? 0) + added)
   }
@@ -499,7 +534,7 @@ export function ftsScore(engram: Engram, queryTokens: string[], idfWeights?: Map
 export function ftsScoreDetail(
   engram: Engram, queryTokens: string[], idfWeights?: Map<string, number>, avgDocLength?: number,
 ): { score: number; coverage: number } {
-  const allTerms = ftsTokenize(engramSearchText(engram))
+  const allTerms = engramTokens(engram)
   if (queryTokens.length === 0) return { score: 0, coverage: 0 }
 
   const docLen = allTerms.length
@@ -583,7 +618,7 @@ export function searchEngramsScored(
   const avgDocLength = stats
     ? stats.avgDocLength
     : engrams.length > 0
-      ? engrams.reduce((sum, e) => sum + ftsTokenize(engramSearchText(e)).length, 0) / engrams.length
+      ? engrams.reduce((sum, e) => sum + engramTokens(e).length, 0) / engrams.length
       : 0
 
   let scored = engrams
