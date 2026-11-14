@@ -10869,10 +10869,13 @@ export class Plur {
         // the event is still written, flagged, rather than dropped.
         // Agent pinning (overhaul D2) on a team-store row: the PATCH carries
         // only pinned/status/statement, so a pin request cannot ride along.
-        // A restricted caller's NEW pin is refused rather than lost.
+        // A restricted caller's NEW pin is refused rather than lost — and so
+        // is one whose prior state cannot be read (a 404, an unreachable
+        // store or an error): only a row the server says is already pinned
+        // may carry `pinned: true` from a restricted caller (S3, fail closed).
         if (updated.pinned === true && this._pinDecisionFor(options?.actor) !== 'allow') {
           const prior = await driver.getById(serverId).catch(() => null)
-          if (prior && (prior as { pinned?: unknown }).pinned !== true) throw this._remotePinRefusal(updated.id, 'update')
+          if (!prior || (prior as { pinned?: unknown }).pinned !== true) throw this._remotePinRefusal(updated.id, 'update')
         }
         let previous: { status?: string } | null | undefined
         if (updated.status === 'retired') {
@@ -10901,7 +10904,8 @@ export class Plur {
           return patched
         }
       } catch (err) {
-        if (serverId !== updated.id) throw err
+        // A pin refusal is the answer, never "try the next store" (S3).
+        if (serverId !== updated.id || err instanceof PinDeniedError) throw err
         continue
       }
     }
