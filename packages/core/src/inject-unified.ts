@@ -452,7 +452,12 @@ export function rankAndPack(
     let scores: ReadonlyMap<string, number> | undefined
     if (rerank) ({ ranked, scores } = rerank(ranked))
     const res = packUnified(ctx, pool, ranked, config, scores)
-    if (res.task_count >= limit || res.relevance.gated || depth * 3 >= pool.candidates.length) return res
+    // Both legs must have offered every candidate before the search stops:
+    // the keyword leg fetches 3× the depth but the meaning leg only 2×, so
+    // stopping on the keyword leg alone would never offer meaning-only
+    // candidates ranked past 2× the depth.
+    const exhausted = (meaning && meaning.size > 0 ? depth * 2 : depth * 3) >= pool.candidates.length
+    if (res.task_count >= limit || res.relevance.gated || exhausted) return res
     depth *= 4
   }
 }

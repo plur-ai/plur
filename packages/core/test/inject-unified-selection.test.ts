@@ -162,4 +162,19 @@ describe('selectUnified', () => {
     const r = selectUnified({ prompt: 'deploy billing pack recipe', maxTokens: 2000 }, [], packs, {})
     expect(ids(r)).toEqual([p1.id])
   })
+
+  it('the deeper search does not stop before meaning-only candidates are offered (finding 9)', () => {
+    // 120 candidates with no keyword hit; the meaning leg ranks 100 that are
+    // each too big for the budget above 20 that fit. The keyword leg (3x
+    // depth) covers the store long before the meaning leg (2x) does.
+    const big = Array.from({ length: 100 }, (_, i) => mk(`ENG-2026-1101-${String(i + 1).padStart(3, '0')}`, `alpha note ${i} ${'with a very long explanation '.repeat(80)}`))
+    const small = Array.from({ length: 20 }, (_, i) => mk(`ENG-2026-1102-${String(i + 1).padStart(3, '0')}`, `beta note ${i}`, { domain: `beta${i}` }))
+    const meaning = new Map<string, number>([
+      ...big.map((e, i) => [e.id, 0.9 - i * 0.001] as [string, number]),
+      ...small.map((e, i) => [e.id, 0.5 - i * 0.001] as [string, number]),
+    ])
+    const r = selectUnified({ prompt: 'zzqx', maxTokens: 500 }, [...big, ...small], [], { recall_limit: 10 }, meaning)
+    expect(r.task_count).toBe(10)
+    expect(ids(r).every(i => i.startsWith('ENG-2026-1102-'))).toBe(true)
+  })
 })
