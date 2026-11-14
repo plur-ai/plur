@@ -585,6 +585,7 @@ class PlurMemoryProvider:
         *,
         session_id: str = "",
         messages: Optional[List[Dict[str, Any]]] = None,
+        turn_author: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Auto-learn from the completed turn and send injection feedback.
 
@@ -603,6 +604,9 @@ class PlurMemoryProvider:
 
         Only writes in the ``primary`` agent context — skipping cron and
         subagent contexts matches the standalone hook path's behaviour.
+
+        ``turn_author`` is accepted to match the Hermes base-class signature
+        and is unused.
         """
         if self._standalone_hooks_active:
             return
@@ -869,6 +873,89 @@ class PlurMemoryProvider:
         Hermes's MemoryManager calls ``shutdown()`` on each provider when it closes
         an idle session; without this method it logs a "shutdown failed" warning.
         """
+
+    # -- Optional Hermes MemoryProvider methods (no-ops) ----------------------
+    #
+    # PlurMemoryProvider is duck-typed against Hermes's MemoryProvider base
+    # class, so it does not inherit the base class's empty defaults.  Hermes
+    # calls these on every provider; a missing method raises AttributeError,
+    # which Hermes catches and logs.  Each one below has the base-class
+    # signature and returns the base-class default, so Hermes picks the same
+    # call shape it uses for the base class.  They do nothing whether or not
+    # ``standalone_hooks_active`` is set.
+
+    def unavailable_reason(self) -> str:
+        """No extra hint for Hermes's "provider unavailable" warning."""
+        return ""
+
+    def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
+        """No-op: ``prefetch()`` recalls synchronously, so nothing is queued."""
+
+    def recall_status(self) -> Optional[Any]:
+        """No recall indicator yet; returns ``None`` (see plur-ai/plur#1853)."""
+        return None
+
+    def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
+        """No-op: PLUR keeps no per-turn state outside ``prefetch``/``sync_turn``."""
+
+    def identity_signature(self) -> Dict[str, Any]:
+        """No identity-mapping values, so no cached gateway agent is busted."""
+        return {}
+
+    def on_session_switch(
+        self,
+        new_session_id: str,
+        *,
+        parent_session_id: str = "",
+        reset: bool = False,
+        rewound: bool = False,
+        **kwargs,
+    ) -> None:
+        """No-op: pending engrams are keyed by the ``session_id`` each call passes."""
+
+    def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:
+        """No-op: returns ``""``, so nothing is added to the compression summary.
+
+        PLUR does not advertise the pre-compress checkpoint API, so Hermes
+        treats this as the best-effort legacy hook.
+        """
+        return ""
+
+    def on_delegation(self, task: str, result: str, *, child_session_id: str = "", **kwargs) -> None:
+        """No-op: delegated work is not recorded separately."""
+
+    def on_memory_write(
+        self,
+        action: str,
+        target: str,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """No-op: writes by Hermes's built-in memory tool are not mirrored into PLUR."""
+
+    def backup_paths(self) -> List[str]:
+        """No paths: the PLUR store is not added to ``hermes backup``."""
+        return []
+
+    def on_profile_created(self, profile_name: str, hermes_home: str) -> None:
+        """No-op: PLUR needs no per-profile setup."""
+
+    def on_profile_renamed(self, old_name: str, new_name: str, hermes_home: str) -> None:
+        """No-op: PLUR stores nothing under the profile name."""
+
+    def read_config_fields(self, hermes_home: str) -> Dict[str, Any]:
+        """Empty field values: PLUR config is env-var-based (see ``save_config``)."""
+        return {"values": {}, "placeholders": {}}
+
+    def write_config_fields(self, values: Dict[str, Any], hermes_home: str) -> None:
+        """Raise ``NotImplementedError``, as the base class does.
+
+        Hermes calls this for a ``config_schema.py`` that declares provider
+        storage; plur-hermes ships none, and its config is env-var-based.
+        """
+        raise NotImplementedError(
+            f"memory provider {self.name} declares storage=provider but cannot write it"
+        )
 
 
 def create_memory_provider(bridge: Optional[PlurBridge] = None) -> PlurMemoryProvider:
