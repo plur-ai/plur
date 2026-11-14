@@ -117,7 +117,7 @@ describe('loadConfig with one bad overhaul value (H4)', () => {
       const cfg = loadConfig(path)
       expect(cfg.stores).toHaveLength(1)
       expect(cfg.injection?.mode).toBeUndefined()
-      expect(cfg.pinning?.agents).toBeUndefined()
+      expect(cfg.pinning?.agents).toBe('request') // fails safe, never allow
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
