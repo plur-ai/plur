@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Changes
+
+- A repository `.plur.yaml` that asks for a scope, domain or team server, in
+  a folder you have not trusted, no longer stops memory there. Memory loads as
+  if the file asked for nothing: none of its settings are used and its server
+  is never contacted. The Claude Code, Codex, Cursor and Antigravity hooks and
+  the opencode plugin add the trust question next to the memories once per
+  session, so you can trust it, keep memory on without its settings, or turn
+  memory off. Your own `off`, `remote-only`, `ask` or scope entries still
+  decide, and a folder map PLUR cannot read still means no memory. (#1879)
+
 ### Fixes
 
 - After `npm install -g @plur-ai/cli@latest @plur-ai/mcp@latest`, `plur init`
