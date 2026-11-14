@@ -20,9 +20,11 @@
  *      `rankForInjection` here uses the same fusion (`fuseLegs`) over a
  *      caller-supplied meaning map. A superseded engram with no deliverable
  *      replacement takes ×0.3 here, before the cut.
- *   4. Prohibitions in the ranked top 50 get up to `prohibition_ratio` of the
- *      budget, then the task list takes up to `recall_limit` of the ranking,
- *      packed in rank order into `maxTokens − pinned_spent − prohibitions`,
+ *   4. Prohibitions in the ranked top 50 with a keyword hit or a meaning
+ *      similarity over `EMBEDDING_RELEVANCE_FLOOR` get up to
+ *      `prohibition_ratio` of the budget (withheld, like the task list, when
+ *      the W8 gate is set and nothing clears it), then the task list takes
+ *      up to `recall_limit` of the ranking, packed in rank order into `maxTokens − pinned_spent − prohibitions`,
  *      skipping an engram that does not fit and continuing. Per-pack and
  *      per-domain diversity caps apply.
  *   5. Render into the three sections (directives, constraints, consider) by
@@ -44,7 +46,7 @@ import {
   isInjectVisible, skipForApproval, skipForValidity, isReplacedByDeliverable, isPrimaryRow, hasHistoricalIntent,
   isSupersededEngram, getPackMetadata, stripAssociations, stripScoring, splitWireSections, estimateTokens,
   fillTokenBudget, hardPinnedReserve, pinnedHardCap, DEFAULT_PINNED_HARD_RATIO, PINNED_TOKEN_BUDGET_RATIO,
-  DEFAULT_MAX_TOKENS, DEFAULT_GRACE_DAYS, MAX_PER_PACK, MAX_PER_DOMAIN, packKeyOf,
+  DEFAULT_MAX_TOKENS, DEFAULT_GRACE_DAYS, MAX_PER_PACK, MAX_PER_DOMAIN, packKeyOf, EMBEDDING_RELEVANCE_FLOOR,
 } from './inject.js'
 
 /** Signals the W8 relevance gate can be set on (`injection.min_relevance_signal`). */
@@ -375,12 +377,8 @@ export function packUnified(
     return used
   }
 
-  // ── 4a. Prohibition slice (D4): relevance-based, from the ranked top 50.
-  const prohibitions = ranked.slice(0, PROHIBITION_DEPTH).filter(c => isProhibition(c.engram))
-  spent += pack(prohibitions, Math.floor(maxTokens * prohibitionRatio), Number.POSITIVE_INFINITY)
-
-  // ── W8 gate (default off). The always-on slot and the prohibition slice are
-  // unchanged by it; only the general task list is withheld.
+  // ── W8 gate (default off). When nothing clears it, the prohibition slice
+  // and the general task list are withheld; the always-on slot stays.
   const relevance = relevanceSignals(ranked, rerank)
   const gateSignal = config.min_relevance_signal ?? null
   const gateThreshold = config.min_relevance ?? null
@@ -389,6 +387,14 @@ export function packUnified(
     if (v === null) relevance.gate_unavailable = gateSignal
     else if (v < gateThreshold) relevance.gated = true
   }
+
+  // ── 4a. Prohibition slice (D4): relevance-based, from the ranked top 50.
+  // A prohibition the meaning leg merely ranked (every engram gets a rank
+  // there) is not relevant by that alone: it needs a keyword hit or a
+  // similarity over the legacy embedding floor.
+  const relevant = (c: RankedCandidate) => c.keyword !== null || (c.cosine !== null && c.cosine > EMBEDDING_RELEVANCE_FLOOR)
+  const prohibitions = relevance.gated ? [] : ranked.slice(0, PROHIBITION_DEPTH).filter(c => isProhibition(c.engram) && relevant(c))
+  spent += pack(prohibitions, Math.floor(maxTokens * prohibitionRatio), Number.POSITIVE_INFINITY)
 
   // ── 4b. Task list: recall's ranking, up to recall_limit, into what is left.
   const before = selected.length

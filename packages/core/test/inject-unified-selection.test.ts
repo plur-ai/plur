@@ -124,7 +124,7 @@ describe('selectUnified', () => {
     expect(r.relevance.gated).toBe(false)
   })
 
-  it('relevance gate (W8, default off): when nothing clears it the task section is empty, pins and prohibitions unchanged', () => {
+  it('relevance gate (W8, default off): when nothing clears it the task section and the prohibition slice are empty, pins unchanged (finding 7)', () => {
     const pin = mk('ENG-2026-1011-001', 'always be kind', { pinned: true })
     const dont = mk('ENG-2026-1011-002', 'never deploy billing on fridays', { polarity: 'dont' })
     const task = mk('ENG-2026-1011-003', 'deploy billing with the script')
@@ -133,7 +133,7 @@ describe('selectUnified', () => {
     expect(ids(ungated).sort()).toEqual([pin.id, dont.id, task.id].sort())
     const gated = selectUnified({ prompt: 'deploy billing', maxTokens: 2000 }, [pin, dont, task], [],
       { min_relevance_signal: 'cosine', min_relevance: 0.9 }, meaning)
-    expect(ids(gated).sort()).toEqual([pin.id, dont.id].sort())
+    expect(ids(gated)).toEqual([pin.id])
     expect(gated.relevance.gated).toBe(true)
     // A threshold that is cleared changes nothing.
     const cleared = selectUnified({ prompt: 'deploy billing', maxTokens: 2000 }, [pin, dont, task], [],
@@ -186,5 +186,16 @@ describe('selectUnified', () => {
     const legacy = selectAndSpread({ prompt: 'deploy billing recipe step', maxTokens: 100_000 }, [], packs)
     const legacyIds = [...legacy.directives, ...legacy.constraints, ...legacy.consider].map(e => e.id)
     expect(legacyIds.length).toBeLessThanOrEqual(MAX_PER_PACK)
+  })
+
+  it('the prohibition slice needs a keyword hit or a meaning similarity over the floor (finding 7)', () => {
+    const hit = mk('ENG-2026-1104-001', 'never deploy billing on fridays', { polarity: 'dont' })
+    const unrelated = mk('ENG-2026-1104-002', 'never feed the office cat chocolate', { polarity: 'dont' })
+    const close = mk('ENG-2026-1104-003', 'do not ship payment changes late in the week', { polarity: 'dont' })
+    // The meaning leg ranks every prohibition; only `close` is similar enough.
+    const meaning = new Map([[hit.id, 0.45], [unrelated.id, 0.2], [close.id, 0.7]])
+    // recall_limit 0: only the always-on slot and the prohibition slice deliver.
+    const r = selectUnified({ prompt: 'deploy billing', maxTokens: 2000 }, [hit, unrelated, close], [], { recall_limit: 0, prohibition_ratio: 0.5 }, meaning)
+    expect(ids(r).sort()).toEqual([hit.id, close.id].sort())
   })
 })

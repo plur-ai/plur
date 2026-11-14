@@ -104,6 +104,12 @@ const NEIGHBOUR_RELEVANCE_RATIO = 0.8
 const NEIGHBOUR_ANCHORS = 50
 export const MAX_PER_PACK = 5
 /**
+ * Meaning similarity (raw cosine) above which an engram with no keyword hit
+ * still counts as relevant: legacy's embedding-only floor (raised from 0.3 in
+ * 0.9.4, a typical BGE-small threshold), and the unified prohibition slice's.
+ */
+export const EMBEDDING_RELEVANCE_FLOOR = 0.5
+/**
  * The pack a row counts against for the per-pack cap: the `_pack` stamp the
  * pack loops and the corpus put on pack rows, else a stored `pack` field,
  * else personal (finding 8: the caps read `pack` alone and never saw a stamp).
@@ -1066,7 +1072,7 @@ export function selectAndSpread(
     // unrelated short English sentences. 0.5 is a typical BGE-small threshold for
     // "actually related". Keyword+semantic matches still get the additive bonus regardless.
     const embBoost = embeddingBoosts?.get(engram.id) ?? 0
-    if (raw === 0 && embBoost > 0.5) {
+    if (raw === 0 && embBoost > EMBEDDING_RELEVANCE_FLOOR) {
       raw = embBoost * 2 // semantic-only signal, scaled to be comparable with keyword scores
     } else if (raw > 0 && embBoost > 0) {
       raw += embBoost // additive boost for keyword+semantic match
@@ -1107,7 +1113,7 @@ export function selectAndSpread(
       let raw = scoreEngram(engram, promptLower, promptWords, matchTerms, ctx.scope, true, ctx.grantedScopes)
       relevance.set(engram.id, raw + (embeddingBoosts?.get(engram.id) ?? 0))
       const embBoost = embeddingBoosts?.get(engram.id) ?? 0
-      if (raw === 0 && embBoost > 0.5) {
+      if (raw === 0 && embBoost > EMBEDDING_RELEVANCE_FLOOR) {
         raw = embBoost * 2
       } else if (raw > 0 && embBoost > 0) {
         raw += embBoost
