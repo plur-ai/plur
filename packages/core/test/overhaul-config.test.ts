@@ -69,7 +69,6 @@ describe('overhaul config keys', () => {
     ['injection.query_min_terms', { injection: { query_min_terms: -1 } }],
     ['injection.min_relevance_signal', { injection: { min_relevance_signal: 'vibes' } }],
     ['injection.min_relevance', { injection: { min_relevance: 'high' } }],
-    ['pinning.agents', { pinning: { agents: 'maybe' } }],
     ['consolidate.threshold', { consolidate: { threshold: 1.2 } }],
     ['consolidate.apply_enabled', { consolidate: { apply_enabled: 'yes' } }],
     ['consolidate.nightly_max_changes', { consolidate: { nightly_max_changes: -5 } }],
@@ -85,6 +84,16 @@ describe('overhaul config keys', () => {
     expect((parsed.data as { stores?: unknown[] }).stores).toHaveLength(1)
     expect((parsed.data as { injection_budget?: number }).injection_budget).toBe(1234)
     expect(invalidOverhaulConfigKeys(raw)).toEqual([key])
+  })
+
+  it('an invalid pinning.agents fails safe to request, not allow, and keeps the rest of the config', () => {
+    const raw = { pinning: { agents: 'denny' } }
+    const parsed = PlurConfigSchema.safeParse({ ...raw, injection_budget: 1234 })
+    expect(parsed.success).toBe(true)
+    expect(resolvePinningConfig(parsed.data)).toEqual({ agents: 'request' })
+    expect((parsed.data as { injection_budget?: number }).injection_budget).toBe(1234)
+    expect(invalidOverhaulConfigKeys(raw)).toEqual(['pinning.agents'])
+    expect(resolvePinningConfig(PlurConfigSchema.parse({}))).toEqual({ agents: 'allow' })
   })
 
   it('reports no invalid keys for a valid or absent block (H4)', () => {

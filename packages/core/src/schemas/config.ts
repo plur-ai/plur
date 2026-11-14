@@ -483,7 +483,10 @@ export const PlurConfigSchema = partialKeepAbsent(z.object({
    * not affected, and pack installs keep stripping pins as before.
    */
   pinning: partialKeepAbsent(z.object({
-    agents: OVERHAUL_KEY_SCHEMAS.pinning.agents.optional().catch(undefined).default('allow'),
+    // An invalid value fails SAFE: someone who set this key meant to restrict
+    // agent pinning, so a typo ("denny") becomes 'request', never 'allow'.
+    // An absent key keeps the 'allow' default (existing installs unchanged).
+    agents: OVERHAUL_KEY_SCHEMAS.pinning.agents.optional().catch('request').default('allow'),
   })).prefault({}),
   /**
    * Store consolidation, the memory optimiser (overhaul W6, D7), read by
