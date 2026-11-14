@@ -1482,6 +1482,14 @@ function discoveryChanged(entry: Record<string, unknown>, next: Record<string, u
   return !Number.isFinite(at) || at > now || now - at >= DISCOVERY_TIMESTAMP_REFRESH_MS
 }
 
+/**
+ * The injection counter (best-effort) is skipped when a caller deadline leaves
+ * less than this. On a YAML store the counter is a corpus reload plus a
+ * whole-file rewrite — ~1.8 s at 14k engrams — that cannot be interrupted, so
+ * starting it near the deadline loses the finished ranking to the race.
+ */
+export const BOOKKEEPING_RESERVE_MS = 2000
+
 /** Why one scope of a server entry cannot be replaced or removed on its own. */
 function serverEntryScopeRefusal(scope: string, url: string): string {
   return `scope "${scope}" belongs to the server entry for ${safeOrigin(url)}, which lists all its scopes in one entry ` +
@@ -8554,13 +8562,16 @@ export class Plur {
   private async _bookkeepingWithinDeadline(
     deadlineAt: number | undefined,
     body: (tooLate: () => boolean) => Promise<void>,
+    /** Skip the write unless at least this much time is left (a write that
+     *  cannot be interrupted once started must not begin at the deadline). */
+    minRemainingMs = 0,
   ): Promise<void> {
     if (deadlineAt === undefined || !Number.isFinite(deadlineAt)) {
       await this._withStoreLock(this.paths.engrams, () => body(() => false))
       return
     }
     const remaining = deadlineAt - Date.now()
-    if (!(remaining > 0)) return
+    if (!(remaining > 0) || remaining < minRemainingMs) return
     let abandoned = false
     const tooLate = (): boolean => abandoned || Date.now() >= deadlineAt
     const locked = this._withStoreLock(this.paths.engrams, async () => {
@@ -9356,7 +9367,7 @@ export class Plur {
           }
           if (tooLate()) return
           await this._updateEngrams(primaryEngrams, touched)
-        })
+        }, BOOKKEEPING_RESERVE_MS)
       } catch (err) {
         // Best-effort, but not SILENT. `EngramStoreShrinkError` and
         // `EngramStoreUnreadableError` are the #795/#800 guards telling us the
