@@ -13,13 +13,18 @@
  *      any search. Nothing hidden here can come back later.
  *   2. The always-on slot: pins, ordered origin → hard tier → priority, and
  *      for pins without a priority prohibitions first, then oldest first.
- *   3. Rank the rest with recall's search (BM25 over the lexically rewritten
- *      query, fused by RRF with the meaning ranking when there is one). A
- *      superseded engram with no deliverable replacement takes ×0.3 here,
- *      before the cut.
- *   4. Prohibitions in the ranked top 50 get up to `prohibition_ratio` of the
- *      budget, then the task list takes up to `recall_limit` of the ranking,
- *      packed in rank order into `maxTokens − pinned_spent − prohibitions`,
+ *   3. Rank the rest with recall's search. `Plur` runs the very search
+ *      `recallHybridWithMeta` runs (BM25 over the rewritten query and the
+ *      meaning leg fused by RRF, intent routing, the reranker when
+ *      configured) and hands its order to `orderRecallCandidates`; the pure
+ *      `rankForInjection` here uses the same fusion (`fuseLegs`) over a
+ *      caller-supplied meaning map. A superseded engram with no deliverable
+ *      replacement takes ×0.3 here, before the cut.
+ *   4. Prohibitions in the ranked top 50 with a keyword hit or a meaning
+ *      similarity over `EMBEDDING_RELEVANCE_FLOOR` get up to
+ *      `prohibition_ratio` of the budget (withheld, like the task list, when
+ *      the W8 gate is set and nothing clears it), then the task list takes
+ *      up to `recall_limit` of the ranking, packed in rank order into `maxTokens − pinned_spent − prohibitions`,
  *      skipping an engram that does not fit and continuing. Per-pack and
  *      per-domain diversity caps apply.
  *   5. Render into the three sections (directives, constraints, consider) by
@@ -34,13 +39,14 @@ import type { LoadedPack } from './engrams.js'
 import { parseNamespacedId } from './engrams.js'
 import { comparePinTiebreak, isProhibition } from './pin-policy.js'
 import { searchEngramsScored } from './fts.js'
+import { fuseLegs } from './hybrid-search.js'
 import { rewriteLexicalQuery } from './intent/rewrite.js'
 import {
   type InjectionContext, type InternalInjectionResult, type ScoredEngram, type WireEngram, type ExpiryConfig, type OmittedPinned,
   isInjectVisible, skipForApproval, skipForValidity, isReplacedByDeliverable, isPrimaryRow, hasHistoricalIntent,
   isSupersededEngram, getPackMetadata, stripAssociations, stripScoring, splitWireSections, estimateTokens,
   fillTokenBudget, hardPinnedReserve, pinnedHardCap, DEFAULT_PINNED_HARD_RATIO, PINNED_TOKEN_BUDGET_RATIO,
-  DEFAULT_MAX_TOKENS, DEFAULT_GRACE_DAYS, MAX_PER_PACK, MAX_PER_DOMAIN,
+  DEFAULT_MAX_TOKENS, DEFAULT_GRACE_DAYS, MAX_PER_PACK, MAX_PER_DOMAIN, packKeyOf, EMBEDDING_RELEVANCE_FLOOR,
 } from './inject.js'
 
 /** Signals the W8 relevance gate can be set on (`injection.min_relevance_signal`). */
@@ -109,6 +115,8 @@ export type UnifiedResult = InternalInjectionResult & {
   relevance: RelevanceSignals
   /** How many engrams the general task list delivered. */
   task_count: number
+  /** The general task list's ids, in rank order. */
+  task_ids: string[]
 }
 
 /** The gated candidate pool: everything this injection may deliver. */
@@ -212,29 +220,53 @@ export function rankForInjection(
       .sort((a, b) => b[1] - a[1])
       .slice(0, Math.min(candidates.length, depth * 2))
     : []
-  const out = new Map<string, RankedCandidate>()
-  const entry = (e: Engram): RankedCandidate => {
-    let c = out.get(e.id)
-    if (!c) {
-      c = { engram: e, fused: 0, cosine: meaning?.get(e.id) ?? null, keyword: null, coverage: null }
-      out.set(e.id, c)
-    }
-    return c
-  }
-  const twoLegs = meaningRanked.length > 0
-  kw.forEach((h, rank) => {
-    const c = entry(h.engram)
-    c.keyword = h.score
-    c.coverage = h.coverage
-    c.fused += (twoLegs ? h.coverage : 1) / (RRF_K + rank + 1)
-  })
-  meaningRanked.forEach(([id], rank) => {
-    entry(byId.get(id)!).fused += 1 / (RRF_K + rank + 1)
-  })
-  const ranked = [...out.values()]
+  // The same fusion recall uses (hybrid-search `fuseLegs`).
+  const out = fuseLegs(kw, meaningRanked.map(([id]) => byId.get(id)!))
+    .map((f): RankedCandidate => ({ engram: f.engram, fused: f.score, cosine: meaning?.get(f.engram.id) ?? null, keyword: f.keyword, coverage: f.coverage }))
+  const ranked = out
   for (const c of ranked) if (pool.penalised.has(c.engram.id)) c.fused *= SUPERSEDED_PENALTY
   // Stable: ties keep the keyword-then-meaning order they arrived in.
   return ranked.sort((a, b) => b.fused - a.fused)
+}
+
+/**
+ * Recall's ranked ids (`order`, already routed and reranked by recall's own
+ * search) as task candidates: ids the gates removed (not in the pool) drop
+ * out, everything else keeps recall's order. A superseded candidate with no
+ * deliverable replacement (`pool.penalised`) takes ×0.3 on its fused score
+ * and moves down past the candidates that now outscore it, as legacy does.
+ * `fused` carries each id's RRF score when the search reported it (else a
+ * rank-derived one), `meaning` the raw cosine for the W8 signals.
+ */
+export function orderRecallCandidates(
+  order: readonly string[],
+  pool: Pick<UnifiedPool, 'candidates' | 'penalised'>,
+  fused: ReadonlyMap<string, { score: number; keyword: number | null; coverage: number | null }>,
+  meaning?: ReadonlyMap<string, number>,
+): RankedCandidate[] {
+  const byId = new Map(pool.candidates.map(e => [e.id, e]))
+  const list: RankedCandidate[] = []
+  order.forEach((id, pos) => {
+    const engram = byId.get(id)
+    if (!engram) return
+    const f = fused.get(id)
+    list.push({ engram, fused: f?.score ?? 1 / (RRF_K + pos + 1), cosine: meaning?.get(id) ?? null, keyword: f?.keyword ?? null, coverage: f?.coverage ?? null })
+  })
+  if (pool.penalised.size === 0) return list
+  const kept: RankedCandidate[] = []
+  const demoted: Array<{ c: RankedCandidate; from: number }> = []
+  for (const c of list) {
+    if (pool.penalised.has(c.engram.id)) { c.fused *= SUPERSEDED_PENALTY; demoted.push({ c, from: kept.length }) }
+    else kept.push(c)
+  }
+  // Each demoted candidate goes before the first kept candidate, at or after
+  // its own place, that it still outscores; ties keep recall's order.
+  const slot = (from: number, f: number) => { let at = from; while (at < kept.length && kept[at].fused >= f) at++; return at }
+  const keyed = [
+    ...kept.map((c, i) => ({ c, key: i, tie: 0 })),
+    ...demoted.map(({ c, from }, i) => ({ c, key: slot(from, c.fused) - 0.5, tie: i })),
+  ]
+  return keyed.sort((x, y) => x.key - y.key || x.tie - y.tie).map(k => k.c)
 }
 
 /** Reorder the head of a ranking by reranker scores (id → score). */
@@ -314,14 +346,14 @@ export function packUnified(
   const packCounts = new Map<string, number>()
   const domainCounts = new Map<string, number>()
   const count = (e: Engram) => {
-    const pack = e.pack ?? '__personal__'
+    const pack = packKeyOf(e as never)
     packCounts.set(pack, (packCounts.get(pack) ?? 0) + 1)
     const top = (e.domain ?? '__none__').split('.')[0]
     domainCounts.set(top, (domainCounts.get(top) ?? 0) + 1)
   }
   for (const e of selected) count(e)
   const capped = (e: Engram): boolean => {
-    const pack = e.pack ?? '__personal__'
+    const pack = packKeyOf(e as never)
     if (pack !== '__personal__' && (packCounts.get(pack) ?? 0) >= MAX_PER_PACK) return true
     return (domainCounts.get((e.domain ?? '__none__').split('.')[0]) ?? 0) >= MAX_PER_DOMAIN
   }
@@ -345,12 +377,8 @@ export function packUnified(
     return used
   }
 
-  // ── 4a. Prohibition slice (D4): relevance-based, from the ranked top 50.
-  const prohibitions = ranked.slice(0, PROHIBITION_DEPTH).filter(c => isProhibition(c.engram))
-  spent += pack(prohibitions, Math.floor(maxTokens * prohibitionRatio), Number.POSITIVE_INFINITY)
-
-  // ── W8 gate (default off). The always-on slot and the prohibition slice are
-  // unchanged by it; only the general task list is withheld.
+  // ── W8 gate (default off). When nothing clears it, the prohibition slice
+  // and the general task list are withheld; the always-on slot stays.
   const relevance = relevanceSignals(ranked, rerank)
   const gateSignal = config.min_relevance_signal ?? null
   const gateThreshold = config.min_relevance ?? null
@@ -360,10 +388,19 @@ export function packUnified(
     else if (v < gateThreshold) relevance.gated = true
   }
 
+  // ── 4a. Prohibition slice (D4): relevance-based, from the ranked top 50.
+  // A prohibition the meaning leg merely ranked (every engram gets a rank
+  // there) is not relevant by that alone: it needs a keyword hit or a
+  // similarity over the legacy embedding floor.
+  const relevant = (c: RankedCandidate) => c.keyword !== null || (c.cosine !== null && c.cosine > EMBEDDING_RELEVANCE_FLOOR)
+  const prohibitions = relevance.gated ? [] : ranked.slice(0, PROHIBITION_DEPTH).filter(c => isProhibition(c.engram) && relevant(c))
+  spent += pack(prohibitions, Math.floor(maxTokens * prohibitionRatio), Number.POSITIVE_INFINITY)
+
   // ── 4b. Task list: recall's ranking, up to recall_limit, into what is left.
   const before = selected.length
   if (!relevance.gated) spent += pack(ranked, maxTokens - spent, recallLimit)
   const taskCount = selected.length - before
+  const taskIds = selected.slice(before).map(e => e.id)
 
   // ── 5. Render. Sections assigned after selection, by the legacy routing.
   const wire: WireEngram[] = selected.map(e => stripScoring(stripAssociations(e)))
@@ -376,6 +413,7 @@ export function packUnified(
     omitted_pinned: dedupe(pinPass.omitted_pinned, selected),
     relevance,
     task_count: taskCount,
+    task_ids: taskIds,
   }
 }
 
@@ -420,7 +458,12 @@ export function rankAndPack(
     let scores: ReadonlyMap<string, number> | undefined
     if (rerank) ({ ranked, scores } = rerank(ranked))
     const res = packUnified(ctx, pool, ranked, config, scores)
-    if (res.task_count >= limit || res.relevance.gated || depth * 3 >= pool.candidates.length) return res
+    // Both legs must have offered every candidate before the search stops:
+    // the keyword leg fetches 3× the depth but the meaning leg only 2×, so
+    // stopping on the keyword leg alone would never offer meaning-only
+    // candidates ranked past 2× the depth.
+    const exhausted = (meaning && meaning.size > 0 ? depth * 2 : depth * 3) >= pool.candidates.length
+    if (res.task_count >= limit || res.relevance.gated || exhausted) return res
     depth *= 4
   }
 }

@@ -18,6 +18,7 @@ import {
   ChangeNotFoundError,
   ChangeAlreadyUndoneError,
   ChangeJournalUnsupportedError,
+  ChangeRedactedError,
   readChangeJournal,
   changeJournalPath,
 } from '../src/change-journal.js'
@@ -94,6 +95,67 @@ describe('change journal', () => {
     // A refused undo writes nothing.
     expect(storeBytes()).toBe(afterEdit)
     expect((await plur.getById(c.id))?.tags).toEqual(['touched'])
+  })
+
+  it('undo is not blocked by bookkeeping (recall, inject, feedback) and keeps the counts made since', async () => {
+    const change = plur.beginChange('test.edit')
+    await change.apply(tx => { tx.put({ ...tx.get(a.id)!, statement: 'Use pnpm in this repository, never npm' }) })
+    // Ordinary use after the apply: recall (activation, co-access), inject
+    // (injection_count) and feedback all touch the row.
+    await plur.recall('pnpm repository test suite committing', { limit: 5 })
+    await plur.inject('use pnpm in this repository and run the test suite')
+    await plur.feedback(a.id, 'positive')
+    const used = (await plur.getById(a.id))!
+    const changeAfter = plur.getChange(change.id)!.rows[0].after!
+    // Bookkeeping moved, so a strict comparison would refuse.
+    expect(JSON.stringify(used.feedback_signals)).not.toBe(JSON.stringify(changeAfter.feedback_signals))
+
+    await plur.undoChange(change.id)
+    const restored = (await plur.getById(a.id))!
+    expect(restored.statement).toBe(a.statement)
+    expect(restored.feedback_signals).toEqual(used.feedback_signals)
+    expect(restored.injection_count).toBe(used.injection_count)
+    expect(restored.activation).toEqual(used.activation)
+  })
+
+  it('keeps bookkeeping written directly since the apply (counters, sources)', async () => {
+    const change = plur.beginChange('test.edit')
+    await change.apply(tx => { tx.put({ ...tx.get(a.id)!, statement: 'Changed by the change' }) })
+    const now = (await plur.getById(a.id))!
+    const bumped = {
+      ...now,
+      injection_count: (now.injection_count ?? 0) + 3,
+      write_count: (now.write_count ?? 1) + 1,
+      recurrence_count: 2,
+      sources: [...(now.sources ?? []), { scope: 'global', session_id: null, stored_at: '2026-11-11T00:00:00.000Z' }],
+      associations: [...(now.associations ?? []), { target_type: 'engram', target: b.id, type: 'co_accessed', strength: 0.3, updated_at: '2026-11-11' }],
+    } as Engram
+    // Write the row the way the bookkeeping paths do (no updated_at stamp).
+    const bk = plur.beginChange('test.bookkeeping')
+    await bk.apply(tx => { tx.put(bumped) })
+    await plur.undoChange(change.id)
+    const restored = (await plur.getById(a.id))!
+    expect(restored.statement).toBe(a.statement)
+    expect(restored.injection_count).toBe(bumped.injection_count)
+    expect(restored.write_count).toBe(bumped.write_count)
+    expect(restored.recurrence_count).toBe(2)
+    expect(restored.sources).toHaveLength(bumped.sources.length)
+    expect(restored.associations.filter(x => x.type === 'co_accessed').map(x => x.target)).toEqual([b.id])
+  })
+
+  it('an explicit empty ignoreFields still counts bookkeeping as drift', async () => {
+    const change = plur.beginChange('test.edit')
+    await change.apply(tx => { tx.put({ ...tx.get(a.id)!, statement: 'Changed by the change' }) })
+    const now = (await plur.getById(a.id))!
+    await plur.updateEngramAsync({ ...now, injection_count: (now.injection_count ?? 0) + 1 })
+    await expect(plur.undoChange(change.id, { ignoreFields: [] })).rejects.toBeInstanceOf(ChangeConflictError)
+  })
+
+  it('history logs a change that retires a row as engram_retired, not engram_updated (finding 5)', async () => {
+    const change = plur.beginChange('test.retire')
+    await change.apply(tx => { tx.put({ ...tx.get(b.id)!, status: 'retired' }) })
+    const events = plur.getEngramHistory(b.id).filter(e => (e.data as any)?.change_id === change.id)
+    expect(events.map(e => e.event)).toEqual(['engram_retired'])
   })
 
   it('undoes a change that created a row by removing that row', async () => {
@@ -212,5 +274,47 @@ describe('change journal', () => {
   it('refuses on a read-only instance', async () => {
     const ro = new Plur({ path: dir, autoDiscover: false, readonly: true })
     await expect(ro.beginChange('test.edit').apply(() => {})).rejects.toThrow()
+  })
+
+  it('forget redacts the row from the change journal; undo of that change then refuses (S5)', async () => {
+    const change = plur.beginChange('test.edit')
+    await change.apply(tx => { tx.put({ ...tx.get(a.id)!, statement: 'Use pnpm here; the token is hunter2-secret' }) })
+    expect(readFileSync(changeJournalPath(dir), 'utf8')).toContain('hunter2-secret')
+    await plur.forget(a.id, 'contained a secret', { force: true })
+    const journal = readFileSync(changeJournalPath(dir), 'utf8')
+    expect(journal).not.toContain('hunter2-secret')
+    expect(journal).not.toContain(a.statement)
+    await expect(plur.undoChange(change.id)).rejects.toBeInstanceOf(ChangeRedactedError)
+  })
+
+  it('compact redacts removed rows from the change journal (S5)', async () => {
+    const change = plur.beginChange('test.retire')
+    await change.apply(tx => { tx.put({ ...tx.get(b.id)!, status: 'retired' }) })
+    expect(readFileSync(changeJournalPath(dir), 'utf8')).toContain(b.statement)
+    await plur.compact()
+    expect(readFileSync(changeJournalPath(dir), 'utf8')).not.toContain(b.statement)
+  })
+
+  it('rotates the journal by size, keeping one older generation (S5)', async () => {
+    const prev = process.env.PLUR_CHANGE_JOURNAL_MAX_BYTES
+    process.env.PLUR_CHANGE_JOURNAL_MAX_BYTES = '4000'
+    try {
+      const ids: string[] = []
+      for (let i = 0; i < 12; i++) {
+        const ch = plur.beginChange('test.edit')
+        await ch.apply(tx => { tx.put({ ...tx.get(c.id)!, tags: [`round-${i}`] }) })
+        ids.push(ch.id)
+      }
+      const { statSync, readdirSync } = await import('fs')
+      expect(statSync(changeJournalPath(dir)).size).toBeLessThan(4000 + 4000)
+      expect(existsSync(join(dir, 'changes.1.jsonl'))).toBe(true)
+      expect(readdirSync(dir).filter(f => /^changes\.\d+\.jsonl$/.test(f))).toEqual(['changes.1.jsonl'])
+      // The latest change is still listed and undoable.
+      expect(plur.listChanges().map(r => r.id)).toContain(ids.at(-1))
+      await plur.undoChange(ids.at(-1)!)
+    } finally {
+      if (prev === undefined) delete process.env.PLUR_CHANGE_JOURNAL_MAX_BYTES
+      else process.env.PLUR_CHANGE_JOURNAL_MAX_BYTES = prev
+    }
   })
 })

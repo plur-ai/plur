@@ -1,7 +1,7 @@
 /**
  * Overhaul W10 (b): enrichment. A host model labels each engram's kind, task
  * family, outcome and when it applies; the label is stored in
- * `structured_data.enrichment` and `memory_class` is re-judged from the kind.
+ * `structured_data.enrichment` only; `knowledge_type` is never touched.
  *
  * The safety contract (capture report, C4): statements are never touched, so
  * statement hashes stay the same; a second run changes nothing; undo through
@@ -9,7 +9,9 @@
  * inside the store lock.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, readFileSync } from 'fs'
+import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'fs'
+import yaml from 'js-yaml'
+import { EngramSchema } from '../src/schemas/engram.js'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { Plur } from '../src/index.js'
@@ -98,7 +100,7 @@ describe('plur enrich plan / apply / undo', () => {
     expect(storeBytes()).toBe(before)
   })
 
-  it('apply adds enrichment, re-judges memory_class and leaves statements and their hashes alone', async () => {
+  it('apply adds enrichment and leaves statements, their hashes and knowledge_type alone', async () => {
     const before = await plur.list()
     const plan = await plur.planEnrichment({ llm: fakeModel().llm, model: 'test-model' })
     const result = await plur.applyEnrichmentPlan(plan)
@@ -112,11 +114,60 @@ describe('plur enrich plan / apply / undo', () => {
       const en = (a as any).structured_data.enrichment
       expect(ENRICH_KINDS).toContain(en.kind)
       expect(en.enricher).toMatchObject({ model: 'test-model', version: ENRICHER_VERSION })
-      expect(a.knowledge_type!.memory_class).toBe(KIND_TO_MEMORY_CLASS[en.kind as keyof typeof KIND_TO_MEMORY_CLASS])
+      expect(a.knowledge_type).toEqual(b.knowledge_type)
     }
     const lesson = after.find(e => e.statement.startsWith('The staging deploy failed'))!
     expect((lesson as any).structured_data.enrichment).toMatchObject({ kind: 'failure_lesson', outcome: 'failure' })
-    expect(lesson.knowledge_type!.memory_class).toBe('episodic')
+  })
+
+  it('enrichment never moves a rule between injection sections (knowledge_type untouched), both modes', async () => {
+    const learned = await plur.learn('Never print secrets in logs or terminal output', { scope: 'global', domain: 'security' })
+    // Older and imported rows carry no knowledge_type at all.
+    const { knowledge_type: _kt, ...bare } = (await plur.getById(learned.id))! as any
+    await plur.updateEngramAsync(bare)
+    const rule = (await plur.getById(learned.id))!
+    expect(rule.knowledge_type).toBeUndefined()
+    const task = 'print the secrets in the terminal logs'
+    const sectionOf = (r: { directives: string; constraints: string; consider: string }) =>
+      r.constraints.includes(rule.id) ? 'constraints' : r.directives.includes(rule.id) ? 'directives' : r.consider.includes(rule.id) ? 'consider' : 'absent'
+    const before = {
+      legacy: sectionOf(await plur.inject(task, { mode: 'legacy' })),
+      unified: sectionOf(await plur.inject(task, { mode: 'unified' })),
+    }
+    expect(before).toEqual({ legacy: 'constraints', unified: 'constraints' })
+    const ktBefore = (await plur.getById(rule.id))!.knowledge_type
+    const plan = await plur.planEnrichment({ llm: fakeModel().llm, model: 'test-model' })
+    await plur.applyEnrichmentPlan(plan)
+    const enriched = (await plur.getById(rule.id))!
+    expect((enriched as any).structured_data.enrichment.kind).toBe('rule')
+    const after = {
+      legacy: sectionOf(await plur.inject(task, { mode: 'legacy' })),
+      unified: sectionOf(await plur.inject(task, { mode: 'unified' })),
+    }
+    expect(after).toEqual(before)
+    expect(enriched.knowledge_type).toEqual(ktBefore)
+  })
+
+  it('apply re-checks the plan: bounds as the reply parser sets them, and secrets refused (S7)', async () => {
+    const plan = await plur.planEnrichment({ llm: fakeModel().llm, model: 'test-model' })
+    const [first, second, third] = plan.items
+    const tampered = {
+      ...plan,
+      items: [
+        { ...first, applies_when: 'word '.repeat(200).trim(), task_family: 'evil' as any, outcome: 'pwned' as any },
+        { ...second, applies_when: 'when deploying with key AKIAIOSFODNN7EXAMPLE' },
+        { ...third, kind: 'opinion' as any },
+      ],
+    }
+    const res = await plur.applyEnrichmentPlan(tampered)
+    const one = (await plur.getById(first.id))! as any
+    expect(one.structured_data.enrichment.applies_when.split(/\s+/).length).toBeLessThanOrEqual(15)
+    expect(one.structured_data.enrichment.task_family).toBe('other')
+    expect(one.structured_data.enrichment.outcome).toBeNull()
+    expect(res.skipped).toEqual(expect.arrayContaining([expect.objectContaining({ id: second.id, reason: expect.stringMatching(/secret|sensitive/i) })]))
+    expect(((await plur.getById(second.id))! as any).structured_data?.enrichment).toBeUndefined()
+    expect(res.skipped.some(s => s.id === third.id)).toBe(true)
+    expect(JSON.stringify(await plur.list())).not.toContain('AKIAIOSFODNN7EXAMPLE')
   })
 
   it('a second run changes nothing', async () => {
@@ -162,5 +213,35 @@ describe('plur enrich plan / apply / undo', () => {
     const result = await plur.applyEnrichmentPlan(plan)
     expect(result.skipped.find(s => s.id === target.id)?.reason).toMatch(/statement changed/)
     expect(result.applied).toHaveLength(3)
+  })
+})
+
+describe('plur enrich: what is sent to the model (S9)', () => {
+  it('rows queued for a team store or in a team-store scope are never sent to the model', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'plur-enrich-s9-'))
+    try {
+      const SCOPE = 'group:acme/team'
+      writeFileSync(join(dir, 'config.yaml'), `index: false\nstores:\n  - url: https://plur.example.com/sse\n    token: t\n    scope: ${SCOPE}\n    shared: true\n    readonly: false\n`)
+      const today = new Date().toISOString().slice(0, 10)
+      const row = (id: string, statement: string, extra: Record<string, unknown> = {}) => ({
+        ...EngramSchema.parse({ id, statement, type: 'behavioral', scope: 'global', status: 'active', version: 2, tags: [],
+          activation: { retrieval_strength: 0.8, storage_strength: 1, frequency: 0, last_accessed: today } }),
+        ...extra,
+      })
+      writeFileSync(join(dir, 'engrams.yaml'), yaml.dump({ engrams: [
+        row('ENG-2026-1101-001', 'Local rule about linting'),
+        row('ENG-2026-1101-002', 'Queued team rule PRIVATEQUEUED', { scope: SCOPE, structured_data: { _outbox: { url: 'https://plur.example.com/sse', scope: SCOPE, attempts: 0 } } }),
+        row('ENG-2026-1101-003', 'Team scoped row PRIVATETEAM', { scope: SCOPE }),
+      ] }))
+      const plur = new Plur({ path: dir, autoDiscover: false })
+      const prompts: string[] = []
+      await plur.planEnrichment({ llm: async (p: string) => { prompts.push(p); return '[]' }, model: 'm' })
+      const sent = prompts.join('\n')
+      expect(sent).toContain('Local rule about linting')
+      expect(sent).not.toContain('PRIVATEQUEUED')
+      expect(sent).not.toContain('PRIVATETEAM')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })

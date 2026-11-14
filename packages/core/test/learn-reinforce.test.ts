@@ -37,6 +37,23 @@ describe('learn: reinforce on an exact normalised restatement (D8)', () => {
     rmSync(dir, { recursive: true, force: true })
   })
 
+  it('a restatement carrying a different structured body, kind or rationale is written, not swallowed (finding 6)', async () => {
+    open('learn:\n  reinforce_exact: true\n')
+    const first = await plur.learn('Run the migrations before deploying', { scope: 'global' })
+    const withBody = await plur.learn('Run the migrations before deploying', {
+      scope: 'global', structured_data: { body: 'Pitfall: the staging migrator times out after 60s', kind: 'rule' },
+    })
+    expect(withBody.id).not.toBe(first.id)
+    expect(plur.reinforcementOf(withBody)).toBeNull()
+    expect(((await plur.getById(withBody.id))!.structured_data as any).body).toBe('Pitfall: the staging migrator times out after 60s')
+    const withWhy = await plur.learn('Run the migrations before deploying', { scope: 'global', rationale: 'A missed migration took the API down' })
+    expect(withWhy.id).not.toBe(first.id)
+    expect((await plur.getById(withWhy.id))!.rationale).toBe('A missed migration took the API down')
+    // The same restatement with nothing new is still absorbed.
+    const plain = await plur.learn('Run the migrations before deploying', { scope: 'global' })
+    expect([first.id, withBody.id, withWhy.id]).toContain(plain.id)
+  })
+
   it('reinforces the existing engram and reports REINFORCE with the swallowed text', async () => {
     open('learn:\n  reinforce_exact: true\n')
     const first = await plur.learn('Use pnpm, not npm, in this repository', { scope: 'global' })

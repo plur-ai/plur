@@ -5,7 +5,7 @@
  * path that can turn an engram into a pin. The caller is an `actor`: `owner`
  * is never restricted; `agent` and an absent actor follow the config.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -117,7 +117,7 @@ describe('pinning.agents in core (D2)', () => {
     const asked = (await plur.setPinned(e.id, true, { actor: 'agent' }))!
     expect(asked.pinned).toBeUndefined()
     expect(pinRequestOf(asked)?.via).toBe('pin')
-    const approved = (await plur.approvePinRequest(e.id))!
+    const approved = (await plur.approvePinRequest(e.id, { actor: 'owner' }))!
     expect(approved.pinned).toBe(true)
     expect((approved.structured_data as any)?.pin_request).toBeUndefined()
     expect(await plur.pendingPinRequests()).toEqual([])
@@ -126,7 +126,7 @@ describe('pinning.agents in core (D2)', () => {
   it('rejecting a request clears it and leaves the engram unpinned', async () => {
     const { plur } = open('request')
     const e = await plur.learn('Use pnpm', { pinned: true, actor: 'agent' })
-    const rejected = (await plur.rejectPinRequest(e.id))!
+    const rejected = (await plur.rejectPinRequest(e.id, { actor: 'owner' }))!
     expect(rejected.pinned).toBeUndefined()
     expect(pinRequestOf(rejected)).toBeNull()
     expect(await plur.pendingPinRequests()).toEqual([])
@@ -211,5 +211,45 @@ describe('pinning.agents in core (D2)', () => {
     expect(packRow).toBeDefined()
     expect(pinRequestOf(packRow)).toBeNull()
     expect(await plur.pendingPinRequests()).toEqual([])
+  })
+
+  it('team-store update: a restricted pin is refused when the prior pin state cannot be read (S3)', async () => {
+    const SCOPE = 'group:acme/team'
+    const extra = `stores:\n  - url: https://plur.example.com/sse\n    token: t\n    scope: ${SCOPE}\n    shared: true\n    readonly: false\n`
+    const { plur } = open('request', { extra })
+    const row = { id: 'SRV-1', statement: 'Tag every release', scope: SCOPE, status: 'active' } as any
+    for (const prior of [null, 'throw'] as const) {
+      const fake = {
+        getById: vi.fn(async () => { if (prior === 'throw') throw new Error('down'); return prior }),
+        patch: vi.fn(async (id: string, u: Record<string, unknown>) => ({ ...row, id, ...u })),
+      }
+      vi.spyOn(plur as any, '_getRemoteDriver').mockReturnValue(fake)
+      await expect(plur.updateEngram({ ...row, pinned: true }, { actor: 'agent' })).rejects.toBeInstanceOf(PinDeniedError)
+      expect(fake.patch).not.toHaveBeenCalled()
+    }
+    // Already pinned on the server: an ordinary update goes through.
+    const pinnedFake = {
+      getById: vi.fn(async () => ({ ...row, pinned: true })),
+      patch: vi.fn(async (id: string, u: Record<string, unknown>) => ({ ...row, id, ...u })),
+    }
+    vi.spyOn(plur as any, '_getRemoteDriver').mockReturnValue(pinnedFake)
+    await plur.updateEngram({ ...row, pinned: true, statement: 'Tag every release in git' }, { actor: 'agent' })
+    expect(pinnedFake.patch).toHaveBeenCalled()
+  })
+
+  it('approving or rejecting a pin request needs an explicit owner: the default actor is not assumed to be one (S4)', async () => {
+    const { dir } = open('request')
+    const agent = new Plur({ path: dir, autoDiscover: false, actor: 'agent' })
+    const e = await agent.learn('Use pnpm in this repository', { pinned: true })
+    expect(pinRequestOf((await agent.getById(e.id))!)).not.toBeNull()
+    await expect(agent.approvePinRequest(e.id)).rejects.toBeInstanceOf(PinDeniedError)
+    await expect(agent.rejectPinRequest(e.id)).rejects.toBeInstanceOf(PinDeniedError)
+    // No actor at all on an install that restricts agents: not the owner either.
+    const anon = new Plur({ path: dir, autoDiscover: false })
+    await expect(anon.approvePinRequest(e.id)).rejects.toBeInstanceOf(PinDeniedError)
+    const row = (await agent.getById(e.id))!
+    expect(row.pinned).toBeUndefined()
+    expect(pinRequestOf(row)).not.toBeNull()
+    expect((await anon.approvePinRequest(e.id, { actor: 'owner' }))!.pinned).toBe(true)
   })
 })

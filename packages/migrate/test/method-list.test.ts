@@ -110,7 +110,7 @@ const ALWAYS_ASYNC = new Set([
   // Born async (overhaul W0) — undoing a journalled change takes the store
   // lock and writes through the async PrimaryStore seam; new, so there is no
   // pre-0.16 call site to rewrite.
-  'undoChange',
+  'undoChange', 'redactChangeJournal',
   // Born async (overhaul W6) — consolidation plans and applies through the
   // async PrimaryStore seam and the change journal, and store health reads
   // the embedding cache; new, so there is no pre-0.16 call site to rewrite.

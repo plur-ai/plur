@@ -25,13 +25,13 @@ import {
   type EnrichLabel, type EngramKind, type TaskFamily, type Outcome,
 } from './enrich.js'
 import { selectAndSpread, scoreEngramsPublic, formatWithLayer, assignLayer, estimateTokens, pinnedHardCap, isHardPinned, pinnedShareRatio, DEFAULT_PINNED_HARD_RATIO } from './inject.js'
-import { buildUnifiedPool, buildInjectionQuery, rankAndPack, rankForInjection, applyRerankScores, type RankedCandidate } from './inject-unified.js'
+import { buildUnifiedPool, buildInjectionQuery, packUnified, orderRecallCandidates, UNIFIED_RECALL_LIMIT, type RankedCandidate, type UnifiedPool, type UnifiedResult } from './inject-unified.js'
 import { reactivate } from './decay.js'
 import { captureEpisode, queryTimeline } from './episodes.js'
 import { agenticSearch } from './agentic-search.js'
 import { embeddingSearch, embeddingSearchWithScores, type SimilarityResult } from './embeddings.js'
 import { applyFeedbackSignal, type FeedbackSource } from './feedback.js'
-import { hybridSearch, hybridSearchWithMeta, applyReranker, rrfMergeEngrams as pgliteRrfMerge, type HybridSearchResult, type RerankOptions } from './hybrid-search.js'
+import { hybridSearch, hybridSearchWithMeta, applyReranker, rrfMergeEngrams as pgliteRrfMerge, type HybridSearchResult, type RerankOptions, type FusedHit } from './hybrid-search.js'
 import { getReranker, resolveRerankerName, isRerankerOff, rerankerStatus, resetRerankerStatus, _resetRerankerCache, type RerankerAdapter, type RerankerRuntimeStatus, type RerankerName } from './rerankers/index.js'
 import { checkRerankerFit, type FitCheckResult } from './rerankers/fit-check.js'
 import { runRerankerSelfEval, loadRerankerEvalCache, saveRerankerEvalResult, isRerankerEvalStale, logRerankerEvalAdvisory, type RerankerEvalResult } from './reranker-eval.js'
@@ -87,14 +87,14 @@ import { escapedPath as folderEscaped } from './folder-ask.js'
 import { ReadonlyStoreGuard, ReadonlyStoreError } from './store/readonly-store-guard.js'
 import { withAsyncLock, type AsyncLockOptions } from './store/async-lock.js'
 import {
-  newChangeId, readChangeJournal, journalBegin, journalCommit, findUndoConflicts, canonicalRow,
+  newChangeId, readChangeJournal, UNDO_BOOKKEEPING_FIELDS, carryIgnoredFields, isRedactedRow, redactChangeJournal, ChangeRedactedError, journalBegin, journalCommit, findUndoConflicts, canonicalRow,
   ChangeJournalError, ChangeJournalUnsupportedError, ChangeNotFoundError, ChangeAlreadyUndoneError, ChangeConflictError,
   type ChangeRecord, type ChangeRowSnapshot, type ChangeTx, type PendingChange, type UndoChangeOptions,
 } from './change-journal.js'
 import {
-  candidatePairs, completeLinkageClusters, blockKeyFor, polarityOf, mixedPolarity, protectedReasons,
+  candidatePairs, completeLinkageClusters, blockKeyFor, polarityOf, mixedPolarity, protectedReasons, clusterProtectedReasons, structuredBodyOf,
   nightlySeed, seededSample, buildConsolidationPrompt, parseConsolidationResponse, mergeEngrams, retireInto,
-  remapReferences, newPlanId, assertConsolidationPlan, refreshProgress,
+  remapReferences, referencesTo, newPlanId, assertConsolidationPlan, refreshProgress,
   ConsolidateApplyDisabledError, ConsolidateTrialRequiredError, ConsolidateError,
   CONSOLIDATE_QUEUE_FILE, CONSOLIDATE_STATE_FILE, CONSOLIDATE_CHANGE_KIND, CONSOLIDATION_PLAN_KIND, PARAPHRASE_QUEUE_THRESHOLD,
   type ConsolidationPlan, type PlanCluster, type ConsolidationItem,
@@ -495,18 +495,18 @@ export {
   type InjectionOverhaulSettings, type PinningSettings, type ConsolidateSettings, type LearnSettings,
 } from './schemas/config.js'
 export {
-  CHANGE_JOURNAL_FILE, changeJournalPath, readChangeJournal, newChangeId, canonicalRow, findUndoConflicts,
+  CHANGE_JOURNAL_FILE, CHANGE_JOURNAL_ROTATED_FILE, changeJournalPath, changeJournalMaxBytes, isRedactedRow, ChangeRedactedError, UNDO_BOOKKEEPING_FIELDS, CO_ACCESS_FIELD, readChangeJournal, newChangeId, canonicalRow, findUndoConflicts,
   ChangeJournalError, ChangeJournalUnsupportedError, ChangeNotFoundError, ChangeAlreadyUndoneError, ChangeConflictError,
   type ChangeRecord, type ChangeRowSnapshot, type ChangeTx, type PendingChange, type UndoChangeOptions, type ChangeConflictRow,
 } from './change-journal.js'
 export {
-  candidatePairs, completeLinkageClusters, blockKeyFor, polarityOf, mixedPolarity, protectedReasons,
+  candidatePairs, completeLinkageClusters, blockKeyFor, polarityOf, mixedPolarity, protectedReasons, clusterProtectedReasons, mergeBase, nonBaseMembersCarryContent, structuredBodyOf,
   nightlySeed, seededSample, seededRandom, buildConsolidationPrompt, parseConsolidationResponse,
   mergeEngrams, retireInto, remapReferences, assertConsolidationPlan,
   ConsolidateError, ConsolidateApplyDisabledError, ConsolidateTrialRequiredError, ConsolidatePlanInvalidError,
   CONSOLIDATE_QUEUE_FILE, CONSOLIDATE_STATE_FILE, CONSOLIDATE_CHANGE_KIND, CONSOLIDATION_PLAN_KIND, PARAPHRASE_QUEUE_THRESHOLD,
   type ConsolidationPlan, type PlanCluster, type PlanMember, type ConsolidationItem, type NeighbourPair, type Cluster,
-  type ClusterDecision,
+  type ClusterDecision, type ProtectedReason,
   type ConsolidatePlanOptions, type ConsolidateApplyOptions, type ConsolidateApplyResult, type StoreHealth, type ConsolidateSkipReason,
 } from './consolidate.js'
 export {
@@ -891,8 +891,6 @@ export interface EnrichPlanItem {
   task_family: TaskFamily
   outcome: Outcome | null
   applies_when: string | null
-  memory_class_from: string | null
-  memory_class_to: string
   statement: string
 }
 
@@ -907,7 +905,7 @@ export interface EnrichPlan {
 
 export interface EnrichApplyResult {
   change: ChangeRecord | null
-  applied: Array<{ id: string; kind: string; memory_class: string }>
+  applied: Array<{ id: string; kind: string }>
   skipped: Array<{ id: string; reason: string }>
 }
 
@@ -3679,6 +3677,27 @@ export class Plur {
     }
   }
 
+  /**
+   * True when a write whose statement matches `hit` carries content `hit`
+   * does not hold: a structured body, kind or outcome, or a rationale, that
+   * differs from the hit's (finding 6). Such a write is not absorbed as a
+   * duplicate — that would drop the body — but written as its own engram,
+   * where consolidation can later merge it with the owner's approval.
+   */
+  private _incomingCarriesNewContent(hit: Engram, context: LearnContext | undefined): boolean {
+    let incoming: ReturnType<typeof validateLearnStructuredData>
+    try { incoming = validateLearnStructuredData(context?.structured_data) } catch { incoming = undefined }
+    const sd = (hit.structured_data ?? {}) as Record<string, unknown>
+    if (incoming) {
+      for (const key of ['body', 'kind', 'outcome'] as const) {
+        const v = incoming[key]
+        if (v !== undefined && v !== sd[key]) return true
+      }
+    }
+    const why = typeof context?.rationale === 'string' ? context.rationale.trim() : ''
+    return why !== '' && why !== (hit.rationale ?? '').trim()
+  }
+
   /** Apply a duplicate-write to an existing engram: increment write_count,
    * append source, persist to primary store if that's where the engram lives.
    * Mutates the engram and (best-effort) writes back. See issue #107. */
@@ -5205,7 +5224,7 @@ export class Plur {
       // this is the branch a Postgres/PGLite install actually takes.
       const { primaryHashMatch, hashMatch, foreign: sameScopeForeign } =
         await this._learnHashMatch(statement, scope, canDelegate, allEngrams)
-      if (hashMatch) {
+      if (hashMatch && !this._incomingCarriesNewContent(hashMatch, context)) {
         // Decision A: `hashMatch` is a row the writer can persist (primary, a
         // writable secondary store, or the writable remote of this very
         // scope); a pack / readonly / other-remote match never gets here.
@@ -5797,7 +5816,7 @@ export class Plur {
     const { hit: hashMatch, foreign: unpersistableHit } = await this._firstPersistableHit(
       allEngrams, this._hashDedupPredicate(statement, scope), scope,
     )
-    if (hashMatch) {
+    if (hashMatch && !this._incomingCarriesNewContent(hashMatch, context)) {
       // Mutate + persist if local; otherwise return mutated (best-effort)
       return await this._withStoreLock(this.paths.engrams, async () => {
         const engrams = await this._primaryStore.load()
@@ -6770,32 +6789,7 @@ export class Plur {
       }
       const rerank = await this._resolveRerankOptions(options?.rerank)
       const intent = this._resolveIntentProfile(query, options?.intentOverride)
-      // When intent routing is on we over-fetch from the hybrid call WITHOUT the
-      // reranker, apply intent routing, then run the reranker on the routed set.
-      // When intent is off the hybrid call handles reranking inline so the
-      // PGLite and JSON paths stay symmetric.
-      const intentLimit = intent ? Math.max(limit * 2, limit + 10) : limit
-      // remote-only: the PGLite index mirrors the personal store; rank in memory.
-      const pglite = this._remoteOnly ? null : this.pgliteAdapter
-      let result: HybridSearchResult
-      if (intent) {
-        result = pglite
-          ? await this._pgliteHybridRecall(query, intentLimit, filtered, undefined, options)
-          : await hybridSearchWithMeta(filtered, query, intentLimit, this.paths.root, undefined, searchOpts)
-        let routed = applyIntentRouting(result.engrams, intent.profile)
-        let rerankedCount = result.reranked
-        if (rerank) {
-          const reranked = await applyReranker(routed, query, rerank)
-          routed = reranked.engrams
-          rerankedCount = reranked.count
-        }
-        result = { ...result, engrams: routed.slice(0, limit), reranked: rerankedCount }
-      } else if (pglite) {
-        result = await this._pgliteHybridRecall(query, limit, filtered, rerank, options)
-      } else {
-        result = await hybridSearchWithMeta(filtered, query, limit, this.paths.root, rerank, searchOpts)
-      }
-      return result
+      return await this._localHybridRanking(query, filtered, limit, { rerank, intent, searchOpts, restrict: options })
     }
     // #1586: the local pipeline (store load, embedder, reranker) is bounded by
     // the same deadline. Past it the reply carries the remote rows and says
@@ -6859,6 +6853,55 @@ export class Plur {
         resultCount: result.engrams.length,
         topScore: result.topScore ?? null,
       }).catch(() => {})
+    }
+    return result
+  }
+
+  /**
+   * Recall's local ranking (the search `recall` runs, and the one unified
+   * injection runs, overhaul W1): BM25 over the rewritten query and the
+   * meaning leg fused by RRF (PGLite's vector leg when that index is active),
+   * intent routing, then the reranker when one is given. Writes nothing to
+   * the store. Returns the top `limit`; `searchOpts.onRanking` sees the whole
+   * fused list (YAML path; the PGLite path returns the top `limit` only).
+   */
+  private async _localHybridRanking(
+    query: string,
+    filtered: Engram[],
+    limit: number,
+    opts: {
+      rerank?: RerankOptions
+      intent?: { intent: QueryIntent; profile: IntentRoutingProfile }
+      searchOpts?: Parameters<typeof hybridSearchWithMeta>[5]
+      restrict?: Pick<RecallOptions, 'scope' | 'scopes'>
+    },
+  ): Promise<HybridSearchResult> {
+    const { rerank, intent, searchOpts } = opts
+    // When intent routing is on we over-fetch from the hybrid call WITHOUT the
+    // reranker, apply intent routing, then run the reranker on the routed set.
+    // When intent is off the hybrid call handles reranking inline so the
+    // PGLite and JSON paths stay symmetric.
+    const intentLimit = intent ? Math.max(limit * 2, limit + 10) : limit
+    // remote-only: the PGLite index mirrors the personal store; rank in memory.
+    // A keyword-only ranking (semantic: false) never needs the vector index.
+    const pglite = this._remoteOnly || searchOpts?.semantic === false ? null : this.pgliteAdapter
+    let result: HybridSearchResult
+    if (intent) {
+      result = pglite
+        ? await this._pgliteHybridRecall(query, intentLimit, filtered, undefined, opts.restrict)
+        : await hybridSearchWithMeta(filtered, query, intentLimit, this.paths.root, undefined, searchOpts)
+      let routed = applyIntentRouting(result.engrams, intent.profile)
+      let rerankedCount = result.reranked
+      if (rerank) {
+        const reranked = await applyReranker(routed, query, rerank)
+        routed = reranked.engrams
+        rerankedCount = reranked.count
+      }
+      result = { ...result, engrams: routed.slice(0, limit), reranked: rerankedCount }
+    } else if (pglite) {
+      result = await this._pgliteHybridRecall(query, limit, filtered, rerank, opts.restrict)
+    } else {
+      result = await hybridSearchWithMeta(filtered, query, limit, this.paths.root, rerank, searchOpts)
     }
     return result
   }
@@ -9044,11 +9087,12 @@ export class Plur {
     const selection = this._injectionMode(options)
     const includePinned = options?.include_pinned !== false
     let relevance: InjectionResult['relevance']
+    let taskIds: string[] | undefined
 
     const unifiedResult = selection === 'unified'
       ? await this._selectUnified(task, options, engrams, packs, budget, embeddingBoosts, deadlineAt)
       : null
-    if (unifiedResult) relevance = unifiedResult.relevance
+    if (unifiedResult) { relevance = unifiedResult.relevance; taskIds = unifiedResult.task_ids }
     const result = unifiedResult ?? selectAndSpread(
       {
         prompt: task,
@@ -9352,6 +9396,7 @@ export class Plur {
       pins_included: includePinned,
       ...(includePinned ? { pinned_share_tokens: Math.floor(budget * pinnedShareRatio(this.config.injection?.pinned_ratio)) } : {}),
       ...(relevance ? { relevance } : {}),
+      ...(taskIds ? { task_ids: taskIds } : {}),
     }
   }
 
@@ -9371,13 +9416,20 @@ export class Plur {
 
   /**
    * Unified selection (overhaul W1): the gates over the whole visible store,
-   * recall's ranking — keyword (with the query rewrite) fused with the
-   * meaning similarities when `injectHybrid` computed them, intent routing,
-   * the optional reranker under a hard time cap — then the always-on slot,
-   * the prohibition slice and the task list packed into the budget.
+   * then recall's own ranking — the SAME local search `recallHybridWithMeta`
+   * runs (`_localHybridRanking`: BM25 over the rewritten query and the
+   * meaning leg fused by RRF, intent routing, the reranker when configured,
+   * here under a hard time cap) over recall's candidate set — then the
+   * always-on slot, the prohibition slice and the task list packed into the
+   * budget. The task list is recall's top-K after the gates; when gates and
+   * caps leave it short, the search is asked deeper and the new candidates
+   * are appended after recall's order (never re-sorted into it).
    *
    * No bookkeeping here (R5): no reactivation, frequency or co_accessed
    * writes. `_formatInjection` records the injection itself, once.
+   * `meaning` (raw cosine per id, from `injectHybrid`) feeds only the W8
+   * signals and the prohibition floor; its presence also says the meaning
+   * leg may run.
    */
   private async _selectUnified(
     task: string,
@@ -9387,7 +9439,7 @@ export class Plur {
     budget: number,
     meaning: Map<string, number> | undefined,
     deadlineAt: number | undefined,
-  ): Promise<ReturnType<typeof rankAndPack>> {
+  ): Promise<UnifiedResult> {
     const s = resolveInjectionOverhaul(this.config)
     const hook = options?.source === 'hook'
     // D6: in the hook path the query rewrite is off unless configured.
@@ -9406,34 +9458,67 @@ export class Plur {
       query_rewrite: queryRewrite,
     }
     const ctx = { prompt: task, scope: options?.scope, grantedScopes: this._grantedScopes(), maxTokens: budget }
-    const pool = buildUnifiedPool(ctx, engrams, packs, config)
+    const pool: UnifiedPool = buildUnifiedPool(ctx, engrams, packs, config)
+    const limit = Math.max(0, config.recall_limit ?? UNIFIED_RECALL_LIMIT)
+    if (pool.candidates.length === 0) return packUnified(ctx, pool, [], config)
 
-    // Intent routing, as recall applies it, on the fused list.
+    // Recall's candidate set, so BM25's statistics and the meaning leg's
+    // centring are recall's; pool candidates recall would not load (rows the
+    // injection's remote leg brought) are ranked with them.
+    const recallCorpus = await this._hybridCandidates(task, { scope: options?.scope, scopes: options?.scopes })
+    const inCorpus = new Set(recallCorpus.map(e => e.id))
+    const corpus = [...recallCorpus, ...pool.candidates.filter(e => !inCorpus.has(e.id))]
+
+    const semantic = meaning !== undefined && !this._remoteOnly
     const intent = this._remoteOnly ? undefined : this._resolveIntentProfile(task, options?.intentOverride)
-    const route = (ranked: RankedCandidate[]): RankedCandidate[] => {
-      if (!intent) return ranked
-      const byId = new Map(ranked.map(c => [c.engram.id, c]))
-      return applyIntentRouting(ranked.map(c => c.engram), intent.profile).map(e => byId.get(e.id)!)
+    // The reranker runs only when configured (PLUR_RERANKER or rerank: true),
+    // as recall runs it, but under a hard time cap; past it the fused order stands.
+    const rerankOpts = this._remoteOnly ? undefined : await this._resolveRerankOptions(options?.rerank)
+    const rerankByText = new Map<string, number>()
+    let rerank: RerankOptions | undefined
+    if (rerankOpts?.reranker && !isRerankerOff(rerankOpts.reranker)) {
+      const inner = rerankOpts.reranker
+      const capMs = parseInt(process.env.PLUR_INJECT_RERANK_CAP_MS ?? '', 10) || (hook ? 1500 : 10_000)
+      const capped = Object.create(inner) as typeof inner & { scoreBatch: typeof inner.scoreBatch }
+      capped.scoreBatch = async (q: string, docs: string[]) => {
+        const capAt = Math.min(deadlineAt ?? Number.POSITIVE_INFINITY, Date.now() + capMs)
+        const res = await settleBy(inner.scoreBatch(q, docs), capAt)
+        if (!res.done) throw new Error(`reranker did not answer within the ${capMs} ms injection cap`)
+        if (res.error !== undefined) throw res.error
+        const scores = res.value!
+        docs.forEach((d, i) => rerankByText.set(d, scores[i]))
+        return scores
+      }
+      rerank = { ...rerankOpts, reranker: capped }
     }
 
-    // The reranker runs only when configured (PLUR_RERANKER or rerank: true),
-    // on the fused top-K, under a hard time cap; past it the fused order stands.
-    let rerankScores: Map<string, number> | undefined
-    const rerank = this._remoteOnly ? undefined : await this._resolveRerankOptions(options?.rerank)
-    if (rerank?.reranker && !isRerankerOff(rerank.reranker) && pool.candidates.length > 0) {
-      const head = route(rankForInjection(pool, task, meaning, { query_rewrite: queryRewrite }))
-        .slice(0, Math.max(1, rerank.topK ?? 50))
-      const capMs = parseInt(process.env.PLUR_INJECT_RERANK_CAP_MS ?? '', 10) || (hook ? 1500 : 10_000)
-      const capAt = Math.min(deadlineAt ?? Number.POSITIVE_INFINITY, Date.now() + capMs)
-      const res = await settleBy(rerank.reranker.scoreBatch(task, head.map(c => c.engram.statement)), capAt)
-      if (res.done && res.error === undefined && Array.isArray(res.value) && res.value.length === head.length) {
-        rerankScores = new Map(head.map((c, i) => [c.engram.id, res.value![i]]))
+    let depth = Math.max(1, limit)
+    const order: string[] = []
+    const fusedById = new Map<string, FusedHit>()
+    for (;;) {
+      let fusedAll: FusedHit[] = []
+      const res = await this._localHybridRanking(task, corpus, depth, {
+        rerank, intent, restrict: { scope: options?.scope, scopes: options?.scopes },
+        searchOpts: { semantic, queryRewrite, deadlineAt, onRanking: f => { fusedAll = f } },
+      })
+      const grewFrom = order.length
+      const seen = new Set(order)
+      for (const f of fusedAll) if (!fusedById.has(f.engram.id)) fusedById.set(f.engram.id, f)
+      for (const id of [...res.engrams.map(e => e.id), ...fusedAll.map(f => f.engram.id)]) {
+        if (!seen.has(id)) { seen.add(id); order.push(id) }
       }
+      const ranked = orderRecallCandidates(order, pool, fusedById, meaning)
+      const scores = rerankByText.size > 0
+        ? new Map(ranked.filter(c => rerankByText.has(c.engram.statement)).map(c => [c.engram.id, rerankByText.get(c.engram.statement)!]))
+        : undefined
+      const out = packUnified(ctx, pool, ranked, config, scores)
+      // Stop when the task list is full, gated, nothing new came back, or both
+      // legs have offered every candidate (the meaning leg fetches 2× the
+      // depth, the keyword leg 3×), so meaning-only candidates are never cut.
+      const exhausted = (semantic ? depth * 2 : depth * 3) >= corpus.length
+      if (out.task_count >= limit || out.relevance.gated || order.length === grewFrom || exhausted) return out
+      depth *= 4
     }
-    return rankAndPack(ctx, pool, config, meaning, ranked => {
-      const routed = route(ranked)
-      return rerankScores ? { ranked: applyRerankScores(routed, rerankScores), scores: rerankScores } : { ranked: routed }
-    })
   }
 
   /**
@@ -9908,13 +9993,15 @@ export class Plur {
    * here, and can be undone in turn.
    */
   async undoChange(changeId: string, options: UndoChangeOptions = {}): Promise<ChangeRecord> {
-    const ignore = options.ignoreFields ?? []
+    const ignore = options.ignoreFields ?? UNDO_BOOKKEEPING_FIELDS
     const undoId = newChangeId()
     return await this._applyChange(undoId, 'undo', { undoes: changeId }, (tx) => {
       // Read under the lock, so a concurrent undo of the same change sees the first one's record.
       const record = readChangeJournal(this.paths.root).find(r => r.id === changeId)
       if (!record) throw new ChangeNotFoundError(changeId)
       if (record.undone_by) throw new ChangeAlreadyUndoneError(changeId, record.undone_by)
+      const redacted = record.rows.filter(r => isRedactedRow(r.before) || isRedactedRow(r.after)).map(r => r.id)
+      if (redacted.length > 0) throw new ChangeRedactedError(changeId, redacted)
       const current = new Map<string, Engram>()
       for (const row of record.rows) {
         const now = tx.get(row.id)
@@ -9928,13 +10015,25 @@ export class Plur {
         if (row.before === null) { tx.remove(row.id); continue }
         const restored = structuredClone(row.before) as Record<string, unknown>
         const now = current.get(row.id) as Record<string, unknown> | undefined
-        if (now) for (const f of ignore) {
-          if (f in now) restored[f] = now[f]
-          else delete restored[f]
-        }
+        if (now) carryIgnoredFields(restored, now, (row.after ?? undefined) as Record<string, unknown> | undefined, ignore)
         tx.put(restored as Engram, row.index ?? undefined)
       }
     })
+  }
+
+  /**
+   * Redact every change-journal snapshot of these rows (S5): the journal
+   * keeps full row content for undo, so a row whose content is being let go
+   * of — forgotten, compacted away, found to hold a secret — must not live on
+   * there. Undo of a change that touched a redacted row then refuses. `forget`
+   * and `compact` call this themselves. Returns how many snapshots changed.
+   */
+  async redactChangeJournal(ids: readonly string[]): Promise<number> {
+    this._assertWritable()
+    // The journal holds personal rows in full: never touched from a remote-only folder.
+    this._remoteOnlyRefuseLocalStore('Redacting the change journal (run it outside the remote-only folder)')
+    if (ids.length === 0) return 0
+    return await this._withStoreLock(this.paths.engrams, async () => redactChangeJournal(this.paths.root, ids))
   }
 
   /** Every journalled change, oldest first. */
@@ -9971,28 +10070,63 @@ export class Plur {
     return null
   }
 
-  private _readConsolidateState(): { last_nightly_at?: string } {
+  private _readConsolidateState(): { last_nightly_at?: string; carry_ids?: string[] } {
     try {
       return JSON.parse(fs.readFileSync(join(this.paths.root, CONSOLIDATE_STATE_FILE), 'utf8')) ?? {}
     } catch { return {} }
   }
 
-  /** Ids queued by `learn` (near-paraphrases, D8) since `since` (all when null). */
-  private _readConsolidateQueue(since: string | null): string[] {
+  /**
+   * Every id queued by `learn` (near-paraphrases, D8). Entries stay queued
+   * until a nightly plan that looked at them finishes
+   * ({@link _finishNightlyPlan} removes them by id), so a plan that stopped
+   * part-way loses none.
+   */
+  private _readConsolidateQueue(): string[] {
     let text = ''
     try { text = fs.readFileSync(join(this.paths.root, CONSOLIDATE_QUEUE_FILE), 'utf8') } catch { return [] }
     const ids: string[] = []
     for (const line of text.split('\n')) {
       if (!line.trim()) continue
       try {
-        const q = JSON.parse(line) as { at?: string; id?: string; neighbour_id?: string }
-        if (since && (q.at ?? '') <= since) continue
+        const q = JSON.parse(line) as { id?: string; neighbour_id?: string }
         if (q.id) ids.push(q.id)
         if (q.neighbour_id) ids.push(q.neighbour_id)
-      } catch { /* a torn line */ }
+      } catch { /* skip a torn line */ }
     }
     return [...new Set(ids)]
   }
+
+  /**
+   * A nightly plan finished (every cluster decided): record it. Only now does
+   * `last_nightly_at` move (to the plan's start, so rows changed while it ran
+   * are looked at next time); member ids of clusters dropped by the
+   * `nightly_max_changes` cap are carried to the next plan; and the queue
+   * entries this plan read are removed by id, keeping ones queued meanwhile.
+   */
+  private _finishNightlyPlan(plan: ConsolidationPlan): void {
+    if (plan.mode !== 'nightly' || !plan.nightly || !plan.progress.complete || this._readonly) return
+    const root = this.paths.root
+    try {
+      fs.writeFileSync(join(root, CONSOLIDATE_STATE_FILE), JSON.stringify({
+        last_nightly_at: plan.created_at, last_seed: plan.seed, last_plan_id: plan.plan_id,
+        carry_ids: plan.nightly.carried_ids ?? [],
+      }, null, 2) + '\n', { mode: 0o600 })
+    } catch { return /* the next nightly run looks further back; harmless */ }
+    const consumed = new Set(plan.nightly.queued_ids)
+    if (consumed.size === 0) return
+    const path = join(root, CONSOLIDATE_QUEUE_FILE)
+    try {
+      const kept = fs.readFileSync(path, 'utf8').split('\n').filter(line => {
+        if (!line.trim()) return false
+        try { return !consumed.has((JSON.parse(line) as { id?: string }).id ?? '') } catch { return false }
+      })
+      const tmp = `${path}.${process.pid}.tmp`
+      fs.writeFileSync(tmp, kept.length > 0 ? kept.join('\n') + '\n' : '', { mode: 0o600 })
+      fs.renameSync(tmp, path)
+    } catch { /* a stale entry is looked at again next time; harmless */ }
+  }
+
 
   /**
    * Append near-paraphrases of a just-written engram to the consolidation
@@ -10047,6 +10181,7 @@ export class Plur {
     if (options.llm) await this._decideClusters(plan, options.llm, options.batchSize ?? 8, options.onProgress)
     refreshProgress(plan)
     plan.updated_at = new Date().toISOString()
+    this._finishNightlyPlan(plan)
     return plan
   }
 
@@ -10073,10 +10208,11 @@ export class Plur {
       const changed = since
         ? eligible.filter(e => (e.updated_at ?? e.created_at ?? '') > since).map(e => e.id)
         : []
-      const queued = this._readConsolidateQueue(since)
+      const queued = this._readConsolidateQueue()
+      const carried = (state.carry_ids ?? []).filter(id => typeof id === 'string')
       const sampled = seededSample(eligible.map(e => e.id).sort(), seed, options.sampleSize ?? 200)
-      focus = new Set([...changed, ...queued, ...sampled])
-      nightly = { date: nightlySeed(now), changed_since: since, sampled_ids: sampled, queued_ids: queued, max_changes: cfg.nightly_max_changes }
+      focus = new Set([...changed, ...queued, ...carried, ...sampled])
+      nightly = { date: nightlySeed(now), changed_since: since, sampled_ids: sampled, queued_ids: queued, carried_in_ids: carried, max_changes: cfg.nightly_max_changes }
     }
 
     const byId = new Map(eligible.map(e => [e.id, e]))
@@ -10094,11 +10230,12 @@ export class Plur {
     for (const c of found.sort((x, y) => y.min_similarity - x.min_similarity)) {
       const members = c.members.map(id => byId.get(id)!).sort((x, y) => (x.id < y.id ? -1 : 1))
       if (mixedPolarity(members)) { mixed++; continue }
-      const reasons = [...new Set(members.flatMap(protectedReasons))]
+      const reasons = clusterProtectedReasons(members)
       if (reasons.length > 0) protectedCount++
       clusters.push({
         id: `K-${String(clusters.length + 1).padStart(4, '0')}`,
         scope: members[0].scope,
+        block: blockKeyFor(members[0]),
         members: members.map(e => ({
           id: e.id,
           statement: e.statement,
@@ -10117,6 +10254,7 @@ export class Plur {
       })
     }
     const kept = nightly ? clusters.slice(0, nightly.max_changes) : clusters
+    if (nightly) nightly.carried_ids = clusters.slice(kept.length).flatMap(c => c.members.map(m => m.id))
 
     const plan: ConsolidationPlan = {
       kind: CONSOLIDATION_PLAN_KIND,
@@ -10142,11 +10280,6 @@ export class Plur {
       clusters: kept,
       progress: { decided: 0, pending: kept.length, complete: kept.length === 0, model_calls: 0, model_errors: 0 },
     }
-    if (options.nightly && !this._readonly) {
-      try {
-        fs.writeFileSync(join(this.paths.root, CONSOLIDATE_STATE_FILE), JSON.stringify({ last_nightly_at: now.toISOString(), last_seed: seed, last_plan_id: plan.plan_id }, null, 2) + '\n', { mode: 0o600 })
-      } catch { /* the next nightly run looks further back; harmless */ }
-    }
     return plan
   }
 
@@ -10157,12 +10290,21 @@ export class Plur {
   ): Promise<void> {
     const pending = plan.clusters.filter(c => c.decision === 'pending')
     const size = Math.max(1, batchSize)
+    // Rationale and structured body go to the model with the statement, so a
+    // merged statement can keep what only a non-base member said.
+    const rows = pending.length > 0 ? new Map((await this._primaryStore.load()).map(e => [e.id, e])) : new Map<string, Engram>()
+    const promptMember = (m: { id: string; statement: string }) => {
+      const row = rows.get(m.id)
+      const rationale = typeof row?.rationale === 'string' && row.rationale.trim() ? row.rationale : undefined
+      const body = row ? structuredBodyOf(row) : undefined
+      return { id: m.id, statement: m.statement, ...(rationale ? { rationale } : {}), ...(body ? { body } : {}) }
+    }
     for (let i = 0; i < pending.length; i += size) {
       const batch = pending.slice(i, i + size)
       let answer: string
       try {
         plan.progress.model_calls++
-        answer = await llm(buildConsolidationPrompt(batch.map(c => ({ members: c.members.map(m => ({ id: m.id, statement: m.statement })) }))))
+        answer = await llm(buildConsolidationPrompt(batch.map(c => ({ members: c.members.map(promptMember) }))))
       } catch (err) {
         plan.progress.model_errors++
         plan.progress.last_error = err instanceof Error ? err.message : String(err)
@@ -10221,7 +10363,8 @@ export class Plur {
       if (cluster.decision !== 'merge' || !cluster.merged_statement?.trim()) { skip('not_decided'); continue }
       if (cluster.requires_owner_approval && cluster.approved !== true) { skip('needs_approval', cluster.protected_reasons.join(', ')); continue }
       if (result.applied.length >= limit) { skip('limit'); continue }
-      const statement = cluster.merged_statement.trim()
+      // The plan file is editable: a statement is one line, as every write path makes it (S8).
+      const statement = collapseLineTerminators(cluster.merged_statement).trim()
       if (polarityOf({ statement, polarity: null }) !== cluster.polarity) { skip('polarity_changed'); continue }
       if (detectSecrets(statement).length > 0 || this._offendingHitsForScope(statement, cluster.scope).length > 0) { skip('sensitive'); continue }
       if (this._isRemoteBackedScope(cluster.scope)) { skip('not_local', cluster.scope); continue }
@@ -10257,9 +10400,19 @@ export class Plur {
           if (computeContentHash(row.statement) !== m.statement_hash) throw new Skip('drifted', `${m.id} was edited since the plan`)
           members.push(row)
         }
+        // One block, re-derived from the rows (S12): in a group scope every
+        // member must still have one author — the planned one — so a plan
+        // edited to add another author's row, or a row whose author changed,
+        // never merges authors.
+        const blocks = new Set(members.map(e => blockKeyFor(e)))
+        if (blocks.size > 1 || (cluster.block !== undefined && !blocks.has(cluster.block))) {
+          throw new Skip('drifted', cluster.scope.startsWith('group:')
+            ? 'the members no longer share the planned author'
+            : 'the members no longer share the planned block')
+        }
         if (mixedPolarity(members)) throw new Skip('drifted', 'the members no longer share a polarity')
-        if (members.some(e => protectedReasons(e).length > 0) && cluster.approved !== true) {
-          throw new Skip('needs_approval', 'a member became pinned, locked or a prohibition since the plan')
+        if (clusterProtectedReasons(members).length > 0 && cluster.approved !== true) {
+          throw new Skip('needs_approval', 'a member is pinned, locked or a prohibition, or a non-base member carries a body, rationale or dual coding')
         }
         const all = tx.all()
         mergedId = generateEngramId(all, idsInUse)
@@ -10292,7 +10445,18 @@ export class Plur {
         })
       } catch { /* history is an audit trail, never a gate on the write */ }
     }
-    return { cluster_id: cluster.id, change_id: record.id, merged_id: mergedId, retired: memberIds, touched }
+    // Rows the journal could not stage (packs, team scopes, other stores)
+    // keep pointing at the retired originals: say which, so the owner can
+    // fix them where they live.
+    const stillReferencing: Array<{ id: string; references: string[] }> = []
+    try {
+      for (const row of await this._loadAllEngrams()) {
+        if (from.has(row.id) || row.id === mergedId) continue
+        const refs = referencesTo(row, from)
+        if (refs.length > 0) stillReferencing.push({ id: row.id, references: refs })
+      }
+    } catch { /* a report, never a gate on the applied change */ }
+    return { cluster_id: cluster.id, change_id: record.id, merged_id: mergedId, retired: memberIds, touched, still_referencing: stillReferencing }
   }
 
   /**
@@ -10500,9 +10664,12 @@ export class Plur {
       journalCommit(this.paths.root, id, adjusted)
       // History is the audit trail, never a gate on the write.
       for (const r of effective) {
+        // A row the change took to `retired` (consolidation retiring an
+        // original) is a retirement, not an update.
+        const retiredNow = r.after !== null && r.after.status === 'retired' && r.before?.status !== 'retired'
         try {
           this._appendHistory({
-            event: r.before === null ? 'engram_created' : r.after === null ? 'engram_retired' : 'engram_updated',
+            event: r.before === null ? 'engram_created' : (r.after === null || retiredNow) ? 'engram_retired' : 'engram_updated',
             engram_id: r.id,
             timestamp: at,
             data: { via: kind === 'undo' ? 'change_undo' : 'change', change_id: id, kind, ...(r.after === null ? { removed: true } : {}) },
@@ -10731,10 +10898,13 @@ export class Plur {
         // the event is still written, flagged, rather than dropped.
         // Agent pinning (overhaul D2) on a team-store row: the PATCH carries
         // only pinned/status/statement, so a pin request cannot ride along.
-        // A restricted caller's NEW pin is refused rather than lost.
+        // A restricted caller's NEW pin is refused rather than lost — and so
+        // is one whose prior state cannot be read (a 404, an unreachable
+        // store or an error): only a row the server says is already pinned
+        // may carry `pinned: true` from a restricted caller (S3, fail closed).
         if (updated.pinned === true && this._pinDecisionFor(options?.actor) !== 'allow') {
           const prior = await driver.getById(serverId).catch(() => null)
-          if (prior && (prior as { pinned?: unknown }).pinned !== true) throw this._remotePinRefusal(updated.id, 'update')
+          if (!prior || (prior as { pinned?: unknown }).pinned !== true) throw this._remotePinRefusal(updated.id, 'update')
         }
         let previous: { status?: string } | null | undefined
         if (updated.status === 'retired') {
@@ -10763,7 +10933,8 @@ export class Plur {
           return patched
         }
       } catch (err) {
-        if (serverId !== updated.id) throw err
+        // A pin refusal is the answer, never "try the next store" (S3).
+        if (serverId !== updated.id || err instanceof PinDeniedError) throw err
         continue
       }
     }
@@ -11132,12 +11303,13 @@ export class Plur {
 
   /**
    * Approve a pending pin request: pin the engram (with the tier and
-   * priority the request asked for) and clear the request. An owner action;
-   * a restricted actor's approval is itself only a request.
+   * priority the request asked for) and clear the request. An owner action:
+   * the actor is the one given, else this instance's default actor, and one
+   * the pin policy restricts is refused (S4) — pass `actor: 'owner'`.
    */
   async approvePinRequest(id: string, options?: { actor?: PinActor }): Promise<Engram | null> {
     this._remoteOnlyRefuseLocalStore('Approving a pin request (run it outside the remote-only folder)')
-    const actor = options?.actor ?? 'owner'
+    const actor = this._pinReviewActor(id, 'approve', options?.actor)
     const row = (await this._loadTargeted([id])).find(e => e.id === id)
     if (!row) return null
     const request = pinRequestOf(row)
@@ -11155,11 +11327,27 @@ export class Plur {
   /** Reject a pending pin request: clear it, leaving the engram unpinned. */
   async rejectPinRequest(id: string, options?: { actor?: PinActor }): Promise<Engram | null> {
     this._remoteOnlyRefuseLocalStore('Rejecting a pin request (run it outside the remote-only folder)')
+    const actor = this._pinReviewActor(id, 'reject', options?.actor)
     const row = (await this._loadTargeted([id])).find(e => e.id === id)
     if (!row) return null
     if (!pinRequestOf(row)) throw new Error(`${id} has no pending pin request.`)
     return await this._updateEngramReturning(
-      withoutPinRequest(row as unknown as Record<string, unknown>) as unknown as Engram, { actor: options?.actor ?? 'owner' })
+      withoutPinRequest(row as unknown as Record<string, unknown>) as unknown as Engram, { actor })
+  }
+
+  /**
+   * The actor reviewing a pin request (S4): the one given, else this
+   * instance's default actor — never an assumed owner. Reviewing is an owner
+   * action, so a caller the pin policy restricts is refused.
+   */
+  private _pinReviewActor(id: string, verb: 'approve' | 'reject', given?: PinActor): PinActor | undefined {
+    const actor = given ?? this._defaultActor
+    if (this._pinDecisionFor(actor) !== 'allow') {
+      throw new PinDeniedError(id, `${verb}:pin_request`,
+        `Reviewing a pin request is an owner action on this install (pinning.agents: ${resolvePinningConfig(this.config).agents}), `
+        + `so ${id}'s request was not ${verb === 'approve' ? 'approved' : 'rejected'}. The owner runs \`plur pins ${verb} ${id}\`.`)
+    }
+    return actor
   }
 
   /**
@@ -11217,7 +11405,12 @@ export class Plur {
       proposal_created_at: proposal.created_at,
       ...(options?.limit !== undefined ? { limit: options.limit } : {}),
     }).apply(tx => {
-      outcomes = planPinApply(proposal, id => tx.get(id), { limit: options?.limit })
+      // The proposal file is editable: a short form is scanned like any
+      // write before it replaces a statement (S8).
+      outcomes = planPinApply(proposal, id => tx.get(id), {
+        limit: options?.limit,
+        sensitive: (text, scope) => detectSecrets(text).length > 0 || this._offendingHitsForScope(text, scope).length > 0,
+      })
       for (const o of outcomes) if (o.row) tx.put(o.row)
     })
     return {
@@ -11506,6 +11699,21 @@ export class Plur {
    * dedup tracking (two agents learned the same fact; one forgets — the
    * other's reference should remain). */
   async forget(id: string, reason?: string, options?: { force?: boolean; scope?: string }): Promise<MutationOutcome> {
+    const outcome = await this._forget(id, reason, options)
+    // A row forget retired or deleted in the local store is redacted from the
+    // change journal (S5); one still active (write_count above zero) is not.
+    if (!this._remoteOnly && !this._readonly && !parseNamespacedId(id)) {
+      try {
+        const row = (await this._loadTargeted([id])).find(e => e.id === id)
+        if (!row || row.status === 'retired') await this.redactChangeJournal([id])
+      } catch (err) {
+        logger.warning(`[plur] forget: the change journal could not be redacted for ${id}: ${(err as Error).message}`)
+      }
+    }
+    return outcome
+  }
+
+  private async _forget(id: string, reason?: string, options?: { force?: boolean; scope?: string }): Promise<MutationOutcome> {
     this._assertWritable()
     // remote-only (audit of #1521, B2): a save queued from a remote-only
     // folder is DELETED, not retired — a retired row would keep its content
@@ -12578,8 +12786,11 @@ export class Plur {
     if (typeof llm !== 'function') throw new TypeError('planEnrichment: llm is required')
     const batchSize = Math.max(1, Math.min(100, options.batchSize ?? 20))
     const primary = await this._loadCached(this.paths.engrams)
-    let todo = primary.filter(e => e.status === 'active' && typeof e.statement === 'string' && e.statement.trim()
-      && !isEnriched(e) && !Plur._isRemoteOnlyQueued(e))
+    // Only active, current, locally owned rows go to the model — the same
+    // exclusion consolidation uses (S9): never a row queued for a team store
+    // or living in a scope a team store serves.
+    let todo = primary.filter(e => typeof e.statement === 'string' && e.statement.trim()
+      && !isEnriched(e) && !Plur._isRemoteOnlyQueued(e) && this._consolidationExclusion(e) === null)
     const alreadyEnriched = primary.filter(e => e.status === 'active' && isEnriched(e)).length
     if (options.limit !== undefined) todo = todo.slice(0, Math.max(0, options.limit))
     const items: EnrichPlanItem[] = []
@@ -12599,8 +12810,6 @@ export class Plur {
           id: e.id,
           statement_hash: computeContentHash(e.statement),
           ...label,
-          memory_class_from: e.knowledge_type?.memory_class ?? null,
-          memory_class_to: KIND_TO_MEMORY_CLASS[label.kind],
           statement: e.statement.length > 120 ? e.statement.slice(0, 117) + '...' : e.statement,
         })
       }
@@ -12618,8 +12827,8 @@ export class Plur {
 
   /**
    * Apply an enrichment plan through the change journal (W10): adds
-   * `structured_data.enrichment` and re-judges `memory_class`; the statement
-   * is never touched. Skips, per item, a row that is gone, not active, already
+   * `structured_data.enrichment` only; the statement and `knowledge_type`
+   * are never touched. Skips, per item, a row that is gone, not active, already
    * enriched (so a second run changes nothing) or whose statement changed
    * since the plan. One journalled change; nothing journalled when nothing
    * applies. `limit` stops after that many rows.
@@ -12642,9 +12851,23 @@ export class Plur {
         if (!row) { skipped.push({ id: item.id, reason: 'not in the local primary store' }); continue }
         if (row.status !== 'active') { skipped.push({ id: item.id, reason: `not active (${row.status})` }); continue }
         if (isEnriched(row)) { skipped.push({ id: item.id, reason: 'already enriched' }); continue }
+        const excluded = this._consolidationExclusion(row)
+        if (excluded) { skipped.push({ id: item.id, reason: `not a locally owned current row (${excluded})` }); continue }
         if (computeContentHash(row.statement) !== item.statement_hash) { skipped.push({ id: item.id, reason: 'statement changed since the plan' }); continue }
         if (!(ENRICH_KINDS as readonly string[]).includes(item.kind)) { skipped.push({ id: item.id, reason: `invalid kind ${String(item.kind)}` }); continue }
-        const label: EnrichLabel = { kind: item.kind, task_family: item.task_family, outcome: item.outcome ?? null, applies_when: item.applies_when ?? null }
+        // The plan file is input like a model reply (S7): the same parser's
+        // bounds apply (known kind, family and outcome; at most 15 words of
+        // applies_when), and a label that would carry a secret or text the
+        // row's scope may not hold is refused.
+        const label = parseEnrichReply(JSON.stringify([{
+          id: item.id, kind: item.kind, task_family: item.task_family, outcome: item.outcome ?? 'none', applies_when: item.applies_when ?? '',
+        }]), [item.id]).get(item.id)
+        if (!label) { skipped.push({ id: item.id, reason: 'invalid label' }); continue }
+        const labelText = label.applies_when ?? ''
+        if (labelText && (detectSecrets(labelText).length > 0 || this._offendingHitsForScope(labelText, row.scope).length > 0)) {
+          skipped.push({ id: item.id, reason: 'sensitive: the label would carry a secret or text this scope may not hold' })
+          continue
+        }
         rows.push(enrichRow(row, label, plan.enricher, at))
       }
       return { rows, skipped }
@@ -12661,7 +12884,7 @@ export class Plur {
       })
     return {
       change,
-      applied: inLock.rows.map(r => ({ id: r.id, kind: (r.structured_data as any).enrichment.kind, memory_class: r.knowledge_type!.memory_class })),
+      applied: inLock.rows.map(r => ({ id: r.id, kind: (r.structured_data as any).enrichment.kind })),
       skipped: inLock.skipped,
     }
   }
@@ -12733,6 +12956,10 @@ export class Plur {
         // Every removed row, by identity — a retired row can share its id with
         // a kept one, and it must still be named.
         const kept = new Set(active)
+        // The change journal must not keep what compaction removed (S5).
+        try { redactChangeJournal(this.paths.root, engrams.filter(e => !kept.has(e)).map(e => e.id)) } catch (err) {
+          logger.warning(`[plur] compact: the change journal could not be redacted: ${(err as Error).message}`)
+        }
         try {
           this._appendHistory({
             event: 'store_compacted',

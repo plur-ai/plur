@@ -3,7 +3,7 @@
  * the stored session task as `query_context` retrieves the task's engram, in
  * both selection modes, and the query used is recorded on the result.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { mkdtempSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
@@ -27,6 +27,20 @@ describe.each(['legacy', 'unified'] as const)('query_context (W5) — %s mode', 
     ], `injection:\n  mode: ${mode}\n`)
   })
   afterEach(() => rmSync(dir, { recursive: true, force: true }))
+
+  it('the remote recall leg is sent the original task only, never the session context (S11)', async () => {
+    const plur = new Plur({ path: dir })
+    const spy = vi.spyOn(plur as any, '_startRemoteRecall')
+    const task = 'do 1,2,3'
+    const context = ['TRANSCRIPTSECRET fix the invoice exporter', 'branch: TRANSCRIPTSECRET-branch']
+    const r = await plur.injectHybrid(task, { query_context: context })
+    expect(r.query).toContain('TRANSCRIPTSECRET')
+    expect(spy).toHaveBeenCalled()
+    for (const call of spy.mock.calls) {
+      expect(call[0]).toBe(task)
+      expect(JSON.stringify(call.slice(0, 2))).not.toContain('TRANSCRIPTSECRET')
+    }
+  })
 
   it('a vague prompt alone does not retrieve the task engram; with the session task it does', async () => {
     const plur = new Plur({ path: dir })

@@ -7,7 +7,7 @@
  */
 import { describe, it, expect } from 'vitest'
 import { selectUnified } from '../src/inject-unified.js'
-import { estimateTokens, isConstraintCandidate } from '../src/inject.js'
+import { estimateTokens, isConstraintCandidate, selectAndSpread, MAX_PER_PACK } from '../src/inject.js'
 import { EngramSchema, type Engram } from '../src/schemas/engram.js'
 
 const today = new Date().toISOString().slice(0, 10)
@@ -124,7 +124,7 @@ describe('selectUnified', () => {
     expect(r.relevance.gated).toBe(false)
   })
 
-  it('relevance gate (W8, default off): when nothing clears it the task section is empty, pins and prohibitions unchanged', () => {
+  it('relevance gate (W8, default off): when nothing clears it the task section and the prohibition slice are empty, pins unchanged (finding 7)', () => {
     const pin = mk('ENG-2026-1011-001', 'always be kind', { pinned: true })
     const dont = mk('ENG-2026-1011-002', 'never deploy billing on fridays', { polarity: 'dont' })
     const task = mk('ENG-2026-1011-003', 'deploy billing with the script')
@@ -133,7 +133,7 @@ describe('selectUnified', () => {
     expect(ids(ungated).sort()).toEqual([pin.id, dont.id, task.id].sort())
     const gated = selectUnified({ prompt: 'deploy billing', maxTokens: 2000 }, [pin, dont, task], [],
       { min_relevance_signal: 'cosine', min_relevance: 0.9 }, meaning)
-    expect(ids(gated).sort()).toEqual([pin.id, dont.id].sort())
+    expect(ids(gated)).toEqual([pin.id])
     expect(gated.relevance.gated).toBe(true)
     // A threshold that is cleared changes nothing.
     const cleared = selectUnified({ prompt: 'deploy billing', maxTokens: 2000 }, [pin, dont, task], [],
@@ -161,5 +161,41 @@ describe('selectUnified', () => {
     ] as never
     const r = selectUnified({ prompt: 'deploy billing pack recipe', maxTokens: 2000 }, [], packs, {})
     expect(ids(r)).toEqual([p1.id])
+  })
+
+  it('the deeper search does not stop before meaning-only candidates are offered (finding 9)', () => {
+    // 120 candidates with no keyword hit; the meaning leg ranks 100 that are
+    // each too big for the budget above 20 that fit. The keyword leg (3x
+    // depth) covers the store long before the meaning leg (2x) does.
+    const big = Array.from({ length: 100 }, (_, i) => mk(`ENG-2026-1101-${String(i + 1).padStart(3, '0')}`, `alpha note ${i} ${'with a very long explanation '.repeat(80)}`))
+    const small = Array.from({ length: 20 }, (_, i) => mk(`ENG-2026-1102-${String(i + 1).padStart(3, '0')}`, `beta note ${i}`, { domain: `beta${i}` }))
+    const meaning = new Map<string, number>([
+      ...big.map((e, i) => [e.id, 0.9 - i * 0.001] as [string, number]),
+      ...small.map((e, i) => [e.id, 0.5 - i * 0.001] as [string, number]),
+    ])
+    const r = selectUnified({ prompt: 'zzqx', maxTokens: 500 }, [...big, ...small], [], { recall_limit: 10 }, meaning)
+    expect(r.task_count).toBe(10)
+    expect(ids(r).every(i => i.startsWith('ENG-2026-1102-'))).toBe(true)
+  })
+
+  it('the per-pack cap counts pack rows by their _pack stamp, in unified and legacy selection (finding 8)', () => {
+    const rows = Array.from({ length: 9 }, (_, i) => mk(`ENG-2026-1103-${String(i + 1).padStart(3, '0')}`, `deploy billing recipe step ${i}`, { domain: `d${i}` }))
+    const packs = [{ manifest: { name: 'recipes', version: '1' } as never, engrams: rows }] as never
+    const unified = selectUnified({ prompt: 'deploy billing recipe step', maxTokens: 100_000 }, [], packs, { recall_limit: 9 })
+    expect(ids(unified).length).toBe(MAX_PER_PACK)
+    const legacy = selectAndSpread({ prompt: 'deploy billing recipe step', maxTokens: 100_000 }, [], packs)
+    const legacyIds = [...legacy.directives, ...legacy.constraints, ...legacy.consider].map(e => e.id)
+    expect(legacyIds.length).toBeLessThanOrEqual(MAX_PER_PACK)
+  })
+
+  it('the prohibition slice needs a keyword hit or a meaning similarity over the floor (finding 7)', () => {
+    const hit = mk('ENG-2026-1104-001', 'never deploy billing on fridays', { polarity: 'dont' })
+    const unrelated = mk('ENG-2026-1104-002', 'never feed the office cat chocolate', { polarity: 'dont' })
+    const close = mk('ENG-2026-1104-003', 'do not ship payment changes late in the week', { polarity: 'dont' })
+    // The meaning leg ranks every prohibition; only `close` is similar enough.
+    const meaning = new Map([[hit.id, 0.45], [unrelated.id, 0.2], [close.id, 0.7]])
+    // recall_limit 0: only the always-on slot and the prohibition slice deliver.
+    const r = selectUnified({ prompt: 'deploy billing', maxTokens: 2000 }, [hit, unrelated, close], [], { recall_limit: 0, prohibition_ratio: 0.5 }, meaning)
+    expect(ids(r).sort()).toEqual([hit.id, close.id].sort())
   })
 })

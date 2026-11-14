@@ -240,6 +240,117 @@ describe('plur consolidate: plan, apply, undo', () => {
     expect(b.id).toBeTruthy()
   })
 
+  it('the merge prompt carries every member\'s rationale and structured body, as data (finding 3)', async () => {
+    const [, b] = await teach([
+      { s: 'Run the migrations before deploying', v: axis(0, DIM) },
+      { s: 'Before a deploy, run the migrations', v: near(axis(0, DIM), 5, 0.95) },
+    ])
+    const row = (await plur.getById(b.id))!
+    await plur.updateEngramAsync({ ...row, rationale: 'A missed migration took the API down', structured_data: { body: 'Pitfall: the staging migrator times out after 60s' } } as Engram)
+    const model = mergingModel()
+    await plur.consolidatePlan({ llm: model.llm })
+    expect(model.calls[0]).toContain(JSON.stringify('A missed migration took the API down'))
+    expect(model.calls[0]).toContain(JSON.stringify('Pitfall: the staging migrator times out after 60s'))
+  })
+
+  it('a cluster whose non-base members carry a body, rationale or dual coding needs owner approval (finding 3)', async () => {
+    const [a, b] = await teach([
+      { s: 'Tag releases with the version number', v: axis(0, DIM) },
+      { s: 'Release tags carry the version number', v: near(axis(0, DIM), 5, 0.95) },
+    ])
+    // A is the base (strongest); B carries content the merge would drop.
+    const ra = (await plur.getById(a.id))!
+    await plur.updateEngramAsync({ ...ra, activation: { ...ra.activation, retrieval_strength: 0.99 } })
+    const rb = (await plur.getById(b.id))!
+    await plur.updateEngramAsync({ ...rb, rationale: 'The changelog generator keys on the tag' } as Engram)
+    const plan = await plur.consolidatePlan({ llm: mergingModel().llm })
+    expect(plan.clusters[0].requires_owner_approval).toBe(true)
+    expect(plan.clusters[0].protected_reasons).toContain('member_content')
+    const res = await plur.consolidateApply(plan, { limit: 1 })
+    expect(res.skipped[0]).toMatchObject({ reason: 'needs_approval' })
+  })
+
+  it('the merged engram takes the most restrictive visibility of its members (finding 3)', async () => {
+    const [a, b] = await teach([
+      { s: 'Prefer small pull requests', v: axis(0, DIM) },
+      { s: 'Keep pull requests small', v: near(axis(0, DIM), 5, 0.95) },
+    ])
+    const ra = (await plur.getById(a.id))!
+    await plur.updateEngramAsync({ ...ra, visibility: 'public', activation: { ...ra.activation, retrieval_strength: 0.99 } })
+    const rb = (await plur.getById(b.id))!
+    await plur.updateEngramAsync({ ...rb, visibility: 'private' })
+    const plan = await plur.consolidatePlan({ llm: mergingModel().llm })
+    const res = await plur.consolidateApply(plan, { limit: 1 })
+    expect((await plur.getById(res.applied[0].merged_id))!.visibility).toBe('private')
+  })
+
+  it('the apply result lists rows outside the local store that still reference a retired original (finding 10)', async () => {
+    const [a, b] = await teach([
+      { s: 'Deploy only from the main branch', v: axis(0, DIM) },
+      { s: 'Deployments go out from main only', v: near(axis(0, DIM), 5, 0.95) },
+    ])
+    // A secondary store holds a row that points at A; the journal cannot remap it.
+    const teamPath = join(dir, 'team.yaml')
+    const ext = { ...(await plur.getById(a.id))!, id: 'ENG-2026-1111-901', statement: 'Release checklist for the deploy', scope: 'project:team', relations: { related: [a.id] } }
+    writeFileSync(teamPath, yaml.dump({ engrams: [ext] }))
+    config(`consolidate:\n  apply_enabled: true\nstores:\n  - path: ${teamPath}\n    scope: project:team\n    shared: false\n    readonly: false\n`)
+    plur = new Plur({ path: dir, autoDiscover: false })
+    installStub(vectors)
+    const plan = await plur.consolidatePlan({ llm: mergingModel().llm })
+    const res = await plur.consolidateApply(plan, { limit: 1 })
+    expect(res.applied).toHaveLength(1)
+    // The row is named by its namespaced id (the store it lives in).
+    expect(res.applied[0].still_referencing).toHaveLength(1)
+    expect(res.applied[0].still_referencing[0].id).toMatch(/-2026-1111-901$/)
+    expect(res.applied[0].still_referencing[0].references).toEqual([a.id])
+    expect(b.id).toBeTruthy()
+  })
+
+  it('apply collapses line breaks in an edited merged statement and refuses one carrying a secret (S8)', async () => {
+    await teach([
+      { s: 'Use UTC timestamps in logs', v: axis(0, DIM) },
+      { s: 'Log timestamps in UTC', v: near(axis(0, DIM), 5, 0.95) },
+    ])
+    const plan = await plur.consolidatePlan({ llm: mergingModel().llm })
+    const leaky: ConsolidationPlan = { ...plan, clusters: [{ ...plan.clusters[0], merged_statement: 'Use UTC in logs; key AKIAIOSFODNN7EXAMPLE' }] }
+    const refused = await plur.consolidateApply(leaky, { limit: 1 })
+    expect(refused.skipped[0]).toMatchObject({ reason: 'sensitive' })
+    const multi: ConsolidationPlan = { ...plan, clusters: [{ ...plan.clusters[0], merged_statement: 'Use UTC timestamps\r\nin every log line\u2029always' }] }
+    const res = await plur.consolidateApply(multi, { limit: 1 })
+    expect((await plur.getById(res.applied[0].merged_id))!.statement).toBe('Use UTC timestamps in every log line always')
+  })
+
+  it('in a group scope, apply re-checks that every member still has one author (S12)', async () => {
+    const SCOPE = 'group:acme/notes'
+    const [a, b, c] = await teach([
+      { s: 'Review dependency updates weekly', v: axis(0, DIM), scope: SCOPE },
+      { s: 'Dependency updates get a weekly review', v: near(axis(0, DIM), 5, 0.95), scope: SCOPE },
+      { s: 'Look at dependency updates every week', v: near(axis(0, DIM), 6, 0.95), scope: SCOPE },
+    ])
+    const by = async (id: string, who: string) => {
+      const row = (await plur.getById(id))!
+      await plur.updateEngramAsync({ ...row, attribution: { ...(row.attribution ?? {}), asserted_by: who } } as Engram)
+    }
+    await by(a.id, 'alice'); await by(b.id, 'alice'); await by(c.id, 'bob')
+    const plan = await plur.consolidatePlan({ llm: mergingModel().llm })
+    expect(plan.clusters).toHaveLength(1)
+    expect(plan.clusters[0].members.map(m => m.id).sort()).toEqual([a.id, b.id].sort())
+    // A hand-edited plan adds bob's row to alice's cluster.
+    const cRow = (await plur.getById(c.id))!
+    const forged: ConsolidationPlan = { ...plan, clusters: [{ ...plan.clusters[0], members: [...plan.clusters[0].members, { ...plan.clusters[0].members[0], id: c.id, statement: cRow.statement, statement_hash: (cRow as any).content_hash ?? plan.clusters[0].members[0].statement_hash }] }] }
+    const { computeContentHash } = await import('../src/content-hash.js')
+    forged.clusters[0].members[2].statement_hash = computeContentHash(cRow.statement)
+    const refused = await plur.consolidateApply(forged, { limit: 1 })
+    expect(refused.applied).toEqual([])
+    expect(refused.skipped[0]).toMatchObject({ reason: 'drifted' })
+    expect(refused.skipped[0].detail).toMatch(/author/)
+    // The author of a member changed after the plan: refused too.
+    await by(b.id, 'mallory')
+    const drifted = await plur.consolidateApply(plan, { limit: 1 })
+    expect(drifted.applied).toEqual([])
+    expect(drifted.skipped[0].detail).toMatch(/author/)
+  })
+
   it('refuses to apply while consolidate.apply_enabled is false', async () => {
     config('')
     plur = new Plur({ path: dir, autoDiscover: false })
@@ -317,6 +428,63 @@ describe('plur consolidate: plan, apply, undo', () => {
     expect(p1.nightly?.sampled_ids).toEqual(p2.nightly?.sampled_ids)
     expect(p1.nightly?.sampled_ids.length).toBe(2)
     expect(p1.nightly?.max_changes).toBe(25)
+  })
+
+  it('nightly: an unfinished plan does not move last_nightly_at, so nothing changed since is skipped (finding 4)', async () => {
+    await teach([
+      { s: 'Use UTC timestamps in logs', v: axis(0, DIM) },
+      { s: 'Log timestamps in UTC', v: near(axis(0, DIM), 5, 0.95) },
+    ])
+    const first = await plur.consolidatePlan({ nightly: true, now: new Date('2026-11-09T03:00:00Z'), llm: mergingModel().llm, sampleSize: 0 })
+    expect(first.progress.complete).toBe(true)
+    // The next night the model fails: the plan is unfinished.
+    const failed = await plur.consolidatePlan({ nightly: true, now: new Date('2026-11-10T03:00:00Z'), llm: mergingModel({ failAfter: 0 }).llm, sampleSize: 0 })
+    expect(failed.nightly?.changed_since).toBe('2026-11-09T03:00:00.000Z')
+    const next = await plur.consolidatePlan({ nightly: true, now: new Date('2026-11-11T03:00:00Z'), sampleSize: 0 })
+    expect(next.nightly?.changed_since).toBe('2026-11-09T03:00:00.000Z')
+  })
+
+  it('nightly: clusters over the cap are carried to the next plan (finding 4)', async () => {
+    config('consolidate:\n  apply_enabled: true\n  nightly_max_changes: 1\n')
+    plur = new Plur({ path: dir, autoDiscover: false })
+    await teach([
+      { s: 'Use UTC timestamps in logs', v: axis(0, DIM) },
+      { s: 'Log timestamps in UTC', v: near(axis(0, DIM), 5, 0.95) },
+      { s: 'Name branches after the issue number', v: axis(1, DIM) },
+      { s: 'Branch names carry the issue number', v: near(axis(1, DIM), 6, 0.95) },
+    ])
+    // Queue every row, so the first plan finds both clusters and keeps one.
+    const all = await plur.list()
+    writeFileSync(join(dir, 'consolidate-queue.jsonl'), all.map(e => JSON.stringify({ at: '2026-11-01T00:00:00.000Z', id: e.id, neighbour_id: e.id, score: 0.95, scope: 'global' })).join('\n') + '\n')
+    // Dates after the rows were written, so the second plan sees none as changed.
+    const later = (days: number) => new Date(Date.now() + days * 86_400_000)
+    const first = await plur.consolidatePlan({ nightly: true, now: later(1), llm: mergingModel().llm, sampleSize: 0 })
+    expect(first.clusters).toHaveLength(1)
+    const keptIds = new Set(first.clusters[0].members.map(m => m.id))
+    const droppedIds = all.map(e => e.id).filter(id => !keptIds.has(id))
+    const second = await plur.consolidatePlan({ nightly: true, now: later(2), llm: mergingModel().llm, sampleSize: 0 })
+    expect(second.clusters).toHaveLength(1)
+    expect(second.clusters[0].members.map(m => m.id).sort()).toEqual(droppedIds.sort())
+  })
+
+  it('nightly: a finished plan removes the queue entries it consumed by id, and keeps ones queued meanwhile (finding 4)', async () => {
+    const [a, b] = await teach([
+      { s: 'Use UTC timestamps in logs', v: axis(0, DIM) },
+      { s: 'Log timestamps in UTC', v: near(axis(0, DIM), 5, 0.95) },
+    ])
+    const queue = join(dir, 'consolidate-queue.jsonl')
+    writeFileSync(queue, JSON.stringify({ at: '2026-11-01T00:00:00.000Z', id: b.id, neighbour_id: a.id, score: 0.95, scope: 'global' }) + '\n')
+    const inner = mergingModel().llm
+    const llm = async (prompt: string) => {
+      // A learn queues a paraphrase while the model is thinking.
+      writeFileSync(queue, readFileSync(queue, 'utf8') + JSON.stringify({ at: '2026-11-01T00:00:00.000Z', id: 'ENG-LATER', neighbour_id: a.id, score: 0.95, scope: 'global' }) + '\n')
+      return inner(prompt)
+    }
+    const plan = await plur.consolidatePlan({ nightly: true, now: new Date('2026-11-10T03:00:00Z'), llm, sampleSize: 0 })
+    expect(plan.nightly?.queued_ids).toEqual([b.id, a.id])
+    expect(plan.progress.complete).toBe(true)
+    const left = readFileSync(queue, 'utf8').trim().split('\n').map(l => JSON.parse(l).id)
+    expect(left).toEqual(['ENG-LATER'])
   })
 
   it('a plan interrupted by a model failure resumes where it stopped', async () => {

@@ -103,6 +103,20 @@ const NEIGHBOUR_RELEVANCE_RATIO = 0.8
 /** How many kept candidates each later candidate is compared with (bounds the cost on large stores). */
 const NEIGHBOUR_ANCHORS = 50
 export const MAX_PER_PACK = 5
+/**
+ * Meaning similarity (raw cosine) above which an engram with no keyword hit
+ * still counts as relevant: legacy's embedding-only floor (raised from 0.3 in
+ * 0.9.4, a typical BGE-small threshold), and the unified prohibition slice's.
+ */
+export const EMBEDDING_RELEVANCE_FLOOR = 0.5
+/**
+ * The pack a row counts against for the per-pack cap: the `_pack` stamp the
+ * pack loops and the corpus put on pack rows, else a stored `pack` field,
+ * else personal (finding 8: the caps read `pack` alone and never saw a stamp).
+ */
+export function packKeyOf(e: { pack?: string | null; _pack?: unknown }): string {
+  return (typeof e._pack === 'string' && e._pack) || e.pack || '__personal__'
+}
 export const MAX_PER_DOMAIN = 10
 // Default share of the injection budget that may be PINNED (owner decision
 // 2026-10-19, INJ-6). Configurable as `injection.pinned_ratio`. The same share
@@ -800,7 +814,7 @@ export function fillTokenBudget(
   const packCounts = new Map<string, number>()
   const domainCounts = new Map<string, number>()
   for (const e of seed) {
-    const pack = e.pack ?? '__personal__'
+    const pack = packKeyOf(e as never)
     packCounts.set(pack, (packCounts.get(pack) ?? 0) + 1)
     const topDomain = (e.domain ?? '__none__').split('.')[0]
     domainCounts.set(topDomain, (domainCounts.get(topDomain) ?? 0) + 1)
@@ -902,7 +916,7 @@ export function fillTokenBudget(
     tokensUsed += cost
     pinnedLedger.spent += cost
     if (hard) pinnedLedger.hardSpent += cost
-    const pack = engram.pack ?? '__personal__'
+    const pack = packKeyOf(engram as never)
     packCounts.set(pack, (packCounts.get(pack) ?? 0) + 1)
     const topDomain = (engram.domain ?? '__none__').split('.')[0]
     domainCounts.set(topDomain, (domainCounts.get(topDomain) ?? 0) + 1)
@@ -912,7 +926,7 @@ export function fillTokenBudget(
     const cost = estimateTokens(engram)
     if (tokensUsed + cost > maxTokens) continue
 
-    const pack = engram.pack ?? '__personal__'
+    const pack = packKeyOf(engram as never)
     const packCount = packCounts.get(pack) ?? 0
     if (packCount >= MAX_PER_PACK && pack !== '__personal__') continue
 
@@ -1058,7 +1072,7 @@ export function selectAndSpread(
     // unrelated short English sentences. 0.5 is a typical BGE-small threshold for
     // "actually related". Keyword+semantic matches still get the additive bonus regardless.
     const embBoost = embeddingBoosts?.get(engram.id) ?? 0
-    if (raw === 0 && embBoost > 0.5) {
+    if (raw === 0 && embBoost > EMBEDDING_RELEVANCE_FLOOR) {
       raw = embBoost * 2 // semantic-only signal, scaled to be comparable with keyword scores
     } else if (raw > 0 && embBoost > 0) {
       raw += embBoost // additive boost for keyword+semantic match
@@ -1099,7 +1113,7 @@ export function selectAndSpread(
       let raw = scoreEngram(engram, promptLower, promptWords, matchTerms, ctx.scope, true, ctx.grantedScopes)
       relevance.set(engram.id, raw + (embeddingBoosts?.get(engram.id) ?? 0))
       const embBoost = embeddingBoosts?.get(engram.id) ?? 0
-      if (raw === 0 && embBoost > 0.5) {
+      if (raw === 0 && embBoost > EMBEDDING_RELEVANCE_FLOOR) {
         raw = embBoost * 2
       } else if (raw > 0 && embBoost > 0) {
         raw += embBoost
@@ -1291,13 +1305,13 @@ export function selectAndSpread(
   // Respect pack diversity: exclude packs already at their cap in directives
   const directivePackCounts = new Map<string, number>()
   for (const e of directives) {
-    const pack = e.pack ?? '__personal__'
+    const pack = packKeyOf(e as never)
     directivePackCounts.set(pack, (directivePackCounts.get(pack) ?? 0) + 1)
   }
   const dip19Remainder = filtered.filter(e => {
     if (directiveIds.has(e.id)) return false
     if (omittedPinIds.has(e.id)) return false
-    const pack = e.pack ?? '__personal__'
+    const pack = packKeyOf(e as never)
     if (pack !== '__personal__' && (directivePackCounts.get(pack) ?? 0) >= MAX_PER_PACK) return false
     return true
   })
