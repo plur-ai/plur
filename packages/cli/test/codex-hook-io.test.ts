@@ -253,6 +253,24 @@ describe('injectWithFallback', () => {
     err.mockRestore()
   })
 
+  it('hands core a deadline just before its own, so core ends optional work in time', async () => {
+    let seen: Record<string, unknown> | undefined
+    const plur = { injectHybrid: async (_q: string, o: Record<string, unknown>) => { seen = o; return R(1, 'h') }, inject: async () => R(1, 'b') }
+    const t0 = Date.now()
+    await injectWithFallback(plur, 'q', { scope: 's' } as Record<string, unknown>, 8000)
+    expect(seen?.scope).toBe('s')
+    const at = seen?.deadline_at as number
+    expect(at).toBeGreaterThan(t0 + 6000)
+    expect(at).toBeLessThan(t0 + 8000)
+  })
+
+  it('keeps a deadline_at the caller already set', async () => {
+    let seen: Record<string, unknown> | undefined
+    const plur = { injectHybrid: async (_q: string, o: Record<string, unknown>) => { seen = o; return R(1, 'h') }, inject: async () => R(1, 'b') }
+    await injectWithFallback(plur, 'q', { deadline_at: 42 } as Record<string, unknown>, 8000)
+    expect(seen?.deadline_at).toBe(42)
+  })
+
   it('does not leave the deadline timer holding the event loop open', async () => {
     // The timer is unref()ed and cleared; a leaked one would delay every hook
     // exit by the full deadline.

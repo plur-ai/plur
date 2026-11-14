@@ -447,6 +447,9 @@ export interface Injectable<O, R> {
   injectHybrid: (task: string, opts: O) => Promise<R>
 }
 
+/** How much earlier than the race deadline core is told to finish. */
+export const CORE_DEADLINE_MARGIN_MS = 750
+
 /**
  * Inject with hybrid search, falling back to BM25 if hybrid misses a soft deadline.
  *
@@ -495,7 +498,14 @@ export async function injectWithFallback<O, R>(
     })
     // A sentinel, not null: R is unconstrained, so a legitimate hybrid result
     // could itself be falsy and would otherwise read as a deadline miss.
-    const raced = await Promise.race([plur.injectHybrid(task, opts), deadline])
+    // Core gets a deadline just before the race's own (unless the caller set
+    // one), so its optional work — the injection counter, a slow semantic leg —
+    // stops in time and it returns its result, instead of the race discarding
+    // a finished ranking because a best-effort store write was still running.
+    const coreOpts = (opts && typeof opts === 'object' && !('deadline_at' in (opts as object)))
+      ? { ...(opts as object), deadline_at: Date.now() + Math.max(0, deadlineMs - CORE_DEADLINE_MARGIN_MS) } as O
+      : opts
+    const raced = await Promise.race([plur.injectHybrid(task, coreOpts), deadline])
     if (raced !== DEADLINE_MISSED) return { result: raced, mode: 'hybrid' }
     process.stderr.write(
       `[plur] hybrid injection exceeded ${deadlineMs}ms — falling back to BM25 for this turn. ` +
