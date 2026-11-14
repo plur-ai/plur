@@ -44,7 +44,7 @@ import {
   isInjectVisible, skipForApproval, skipForValidity, isReplacedByDeliverable, isPrimaryRow, hasHistoricalIntent,
   isSupersededEngram, getPackMetadata, stripAssociations, stripScoring, splitWireSections, estimateTokens,
   fillTokenBudget, hardPinnedReserve, pinnedHardCap, DEFAULT_PINNED_HARD_RATIO, PINNED_TOKEN_BUDGET_RATIO,
-  DEFAULT_MAX_TOKENS, DEFAULT_GRACE_DAYS, MAX_PER_PACK, MAX_PER_DOMAIN,
+  DEFAULT_MAX_TOKENS, DEFAULT_GRACE_DAYS, MAX_PER_PACK, MAX_PER_DOMAIN, packKeyOf,
 } from './inject.js'
 
 /** Signals the W8 relevance gate can be set on (`injection.min_relevance_signal`). */
@@ -344,14 +344,14 @@ export function packUnified(
   const packCounts = new Map<string, number>()
   const domainCounts = new Map<string, number>()
   const count = (e: Engram) => {
-    const pack = e.pack ?? '__personal__'
+    const pack = packKeyOf(e as never)
     packCounts.set(pack, (packCounts.get(pack) ?? 0) + 1)
     const top = (e.domain ?? '__none__').split('.')[0]
     domainCounts.set(top, (domainCounts.get(top) ?? 0) + 1)
   }
   for (const e of selected) count(e)
   const capped = (e: Engram): boolean => {
-    const pack = e.pack ?? '__personal__'
+    const pack = packKeyOf(e as never)
     if (pack !== '__personal__' && (packCounts.get(pack) ?? 0) >= MAX_PER_PACK) return true
     return (domainCounts.get((e.domain ?? '__none__').split('.')[0]) ?? 0) >= MAX_PER_DOMAIN
   }

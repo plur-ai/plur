@@ -7,7 +7,7 @@
  */
 import { describe, it, expect } from 'vitest'
 import { selectUnified } from '../src/inject-unified.js'
-import { estimateTokens, isConstraintCandidate } from '../src/inject.js'
+import { estimateTokens, isConstraintCandidate, selectAndSpread, MAX_PER_PACK } from '../src/inject.js'
 import { EngramSchema, type Engram } from '../src/schemas/engram.js'
 
 const today = new Date().toISOString().slice(0, 10)
@@ -176,5 +176,15 @@ describe('selectUnified', () => {
     const r = selectUnified({ prompt: 'zzqx', maxTokens: 500 }, [...big, ...small], [], { recall_limit: 10 }, meaning)
     expect(r.task_count).toBe(10)
     expect(ids(r).every(i => i.startsWith('ENG-2026-1102-'))).toBe(true)
+  })
+
+  it('the per-pack cap counts pack rows by their _pack stamp, in unified and legacy selection (finding 8)', () => {
+    const rows = Array.from({ length: 9 }, (_, i) => mk(`ENG-2026-1103-${String(i + 1).padStart(3, '0')}`, `deploy billing recipe step ${i}`, { domain: `d${i}` }))
+    const packs = [{ manifest: { name: 'recipes', version: '1' } as never, engrams: rows }] as never
+    const unified = selectUnified({ prompt: 'deploy billing recipe step', maxTokens: 100_000 }, [], packs, { recall_limit: 9 })
+    expect(ids(unified).length).toBe(MAX_PER_PACK)
+    const legacy = selectAndSpread({ prompt: 'deploy billing recipe step', maxTokens: 100_000 }, [], packs)
+    const legacyIds = [...legacy.directives, ...legacy.constraints, ...legacy.consider].map(e => e.id)
+    expect(legacyIds.length).toBeLessThanOrEqual(MAX_PER_PACK)
   })
 })
