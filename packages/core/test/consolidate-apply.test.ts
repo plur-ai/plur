@@ -306,6 +306,20 @@ describe('plur consolidate: plan, apply, undo', () => {
     expect(b.id).toBeTruthy()
   })
 
+  it('apply collapses line breaks in an edited merged statement and refuses one carrying a secret (S8)', async () => {
+    await teach([
+      { s: 'Use UTC timestamps in logs', v: axis(0, DIM) },
+      { s: 'Log timestamps in UTC', v: near(axis(0, DIM), 5, 0.95) },
+    ])
+    const plan = await plur.consolidatePlan({ llm: mergingModel().llm })
+    const leaky: ConsolidationPlan = { ...plan, clusters: [{ ...plan.clusters[0], merged_statement: 'Use UTC in logs; key AKIAIOSFODNN7EXAMPLE' }] }
+    const refused = await plur.consolidateApply(leaky, { limit: 1 })
+    expect(refused.skipped[0]).toMatchObject({ reason: 'sensitive' })
+    const multi: ConsolidationPlan = { ...plan, clusters: [{ ...plan.clusters[0], merged_statement: 'Use UTC timestamps\r\nin every log line\u2029always' }] }
+    const res = await plur.consolidateApply(multi, { limit: 1 })
+    expect((await plur.getById(res.applied[0].merged_id))!.statement).toBe('Use UTC timestamps in every log line always')
+  })
+
   it('refuses to apply while consolidate.apply_enabled is false', async () => {
     config('')
     plur = new Plur({ path: dir, autoDiscover: false })

@@ -17,6 +17,7 @@
  *   - an item whose engram changed since the audit (statement, pin) is
  *     skipped, never applied to a row the proposal did not see.
  */
+import { collapseLineTerminators } from './sanitize.js'
 import type { Engram } from './schemas/engram.js'
 import type { LlmFunction } from './types.js'
 import { isProhibition } from './pin-policy.js'
@@ -191,7 +192,12 @@ export interface PinApplyOutcome {
 export function planPinApply(
   proposal: PinAuditProposal,
   current: (id: string) => Engram | undefined,
-  opts?: { limit?: number; now?: string },
+  opts?: {
+    limit?: number
+    now?: string
+    /** True when a short form would carry a secret or text the row's scope may not hold; that item is refused. */
+    sensitive?: (text: string, scope: string) => boolean
+  },
 ): Array<PinApplyOutcome & { row?: Engram }> {
   const limit = opts?.limit ?? Infinity
   const now = opts?.now ?? new Date().toISOString()
@@ -216,7 +222,8 @@ export function planPinApply(
       continue
     }
     // shorten
-    const short = (item.short_form ?? '').trim()
+    // One line, as every write path stores a statement (S8).
+    const short = collapseLineTerminators(item.short_form ?? '').trim()
     if (e.statement === short && original === item.statement) { out.push({ id: item.id, action: 'shorten', status: 'skipped', detail: 'already shortened' }); continue }
     if (e.statement !== item.statement) { out.push({ id: item.id, action: 'shorten', status: 'skipped', detail: 'statement changed since the audit' }); continue }
     if (e.pinned !== true) { out.push({ id: item.id, action: 'shorten', status: 'skipped', detail: 'no longer pinned' }); continue }
@@ -224,6 +231,11 @@ export function planPinApply(
     // proposal edited to say `prohibition: false` cannot skip the approval.
     if ((isProhibition(e) || item.prohibition) && item.approved !== true) {
       out.push({ id: item.id, action: 'shorten', status: 'refused', detail: 'a short form for a prohibition needs "approved": true on this item (read the diff first)' })
+      continue
+    }
+    if (!short) { out.push({ id: item.id, action: 'shorten', status: 'refused', detail: 'empty short form' }); continue }
+    if (opts?.sensitive?.(short, e.scope)) {
+      out.push({ id: item.id, action: 'shorten', status: 'refused', detail: 'the short form would carry a secret or sensitive text this scope may not hold' })
       continue
     }
     if (applied >= limit) { out.push({ id: item.id, action: 'shorten', status: 'skipped', detail: 'over --limit' }); continue }

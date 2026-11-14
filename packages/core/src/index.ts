@@ -10362,7 +10362,8 @@ export class Plur {
       if (cluster.decision !== 'merge' || !cluster.merged_statement?.trim()) { skip('not_decided'); continue }
       if (cluster.requires_owner_approval && cluster.approved !== true) { skip('needs_approval', cluster.protected_reasons.join(', ')); continue }
       if (result.applied.length >= limit) { skip('limit'); continue }
-      const statement = cluster.merged_statement.trim()
+      // The plan file is editable: a statement is one line, as every write path makes it (S8).
+      const statement = collapseLineTerminators(cluster.merged_statement).trim()
       if (polarityOf({ statement, polarity: null }) !== cluster.polarity) { skip('polarity_changed'); continue }
       if (detectSecrets(statement).length > 0 || this._offendingHitsForScope(statement, cluster.scope).length > 0) { skip('sensitive'); continue }
       if (this._isRemoteBackedScope(cluster.scope)) { skip('not_local', cluster.scope); continue }
@@ -11393,7 +11394,12 @@ export class Plur {
       proposal_created_at: proposal.created_at,
       ...(options?.limit !== undefined ? { limit: options.limit } : {}),
     }).apply(tx => {
-      outcomes = planPinApply(proposal, id => tx.get(id), { limit: options?.limit })
+      // The proposal file is editable: a short form is scanned like any
+      // write before it replaces a statement (S8).
+      outcomes = planPinApply(proposal, id => tx.get(id), {
+        limit: options?.limit,
+        sensitive: (text, scope) => detectSecrets(text).length > 0 || this._offendingHitsForScope(text, scope).length > 0,
+      })
       for (const o of outcomes) if (o.row) tx.put(o.row)
     })
     return {

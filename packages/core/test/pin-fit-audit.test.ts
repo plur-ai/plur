@@ -118,6 +118,24 @@ describe('pin audit (W3)', () => {
     return { dir, plur, sit, every, proh, llm }
   }
 
+  it('apply scans an edited short form for secrets and collapses its line breaks (S8)', async () => {
+    const { plur, every, sit, llm } = await fixture()
+    const proposal = await plur.auditPins(llm)
+    const edited = {
+      ...proposal,
+      items: proposal.items.map(i =>
+        i.id === every.id ? { ...i, short_form: 'Plain language;\nids in brackets.\u2028Always.' }
+        : i.id === sit.id ? { ...i, action: 'shorten' as const, short_form: 'Deploy docs with key AKIAIOSFODNN7EXAMPLE' }
+        : i),
+    }
+    const res = await plur.applyPinAudit(edited, { actor: 'owner' })
+    expect((await plur.getById(every.id))!.statement).toBe('Plain language; ids in brackets. Always.')
+    const leak = res.outcomes.find(o => o.id === sit.id)!
+    expect(leak.status).toBe('refused')
+    expect(leak.detail).toMatch(/secret|sensitive/i)
+    expect((await plur.getById(sit.id))!.statement).toBe(sit.statement)
+  })
+
   it('audit writes a proposal and leaves the store unchanged', async () => {
     const { dir, plur, sit, every, proh, llm } = await fixture()
     const before = readFileSync(join(dir, 'engrams.yaml'), 'utf8')
