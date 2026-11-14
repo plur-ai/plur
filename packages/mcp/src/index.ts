@@ -388,8 +388,39 @@ function stripPlurHooks(entries: HookEntry[]): HookEntry[] {
   return kept
 }
 
+const isObject = (v: unknown): v is Record<string, unknown> =>
+  typeof v === 'object' && v !== null && !Array.isArray(v)
+
+/**
+ * Where a settings file's `hooks` departs from the shape Claude Code reads
+ * (event → list of entries → `hooks` list of hook objects), as the first
+ * offending path, or null when it can be merged. A hand-edited file that
+ * breaks the structure made init throw midway (#1352). A malformed section is
+ * refused: installHooks skips the step, names the path, and never writes the
+ * file. Absent or null levels are fine (nothing to merge into), and a hook's
+ * own fields are not checked: a command-less hook is a prompt/agent hook,
+ * which isPlurCommandHook already handles (#1279).
+ */
+export function hooksShapeProblem(hooks: unknown): string | null {
+  if (hooks === undefined || hooks === null) return null
+  if (!isObject(hooks)) return '`hooks` is not an object'
+  for (const [event, entries] of Object.entries(hooks)) {
+    if (entries === null) continue
+    if (!Array.isArray(entries)) return `hooks.${event} is not a list`
+    for (const [i, entry] of entries.entries()) {
+      if (!isObject(entry)) return `hooks.${event}[${i}] is not an object`
+      if (entry.hooks == null) continue
+      if (!Array.isArray(entry.hooks)) return `hooks.${event}[${i}].hooks is not a list`
+      const bad = entry.hooks.findIndex(h => !isObject(h))
+      if (bad !== -1) return `hooks.${event}[${i}].hooks[${bad}] is not an object`
+    }
+  }
+  return null
+}
+
 /**
  * Merge PLUR hooks into Claude Code settings (only I/O: reading plur-hook.meta.json).
+ * Expects a `hooks` section hooksShapeProblem accepts.
  * A hook is PLUR's only when isPlurHookSpec says so.
  * - No PLUR hook: append the full set ('installed').
  * - PLUR hooks present: remove PLUR's PostCompact hooks (dropping emptied entries) and,
@@ -458,6 +489,13 @@ function installHooks(): string {
   const settingsRead = readJsonObjectForWrite(settingsPath)
   if (!settingsRead.ok) {
     return `skipped — ${settingsPath} exists but is not a JSON object; writing would discard your other settings. Fix it by hand, then re-run \`plur-mcp init\``
+  }
+  const shapeProblem = hooksShapeProblem(settingsRead.data.hooks)
+  if (shapeProblem) {
+    const expected = shapeProblem.startsWith('`hooks` ')
+      ? 'Claude Code expects an object mapping each event to a list of hook entries'
+      : 'Claude Code expects lists of hook objects there'
+    return `skipped — in ${settingsPath}, ${shapeProblem}; ${expected}. Fix it by hand, then re-run \`plur-mcp init\``
   }
   const settings = settingsRead.data as Settings
 
