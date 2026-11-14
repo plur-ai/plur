@@ -592,8 +592,81 @@ export function _readEmbeddingCacheEntries(cachePath: string, meta: { name: stri
   return loadCache(cachePath, meta).entries
 }
 
+/**
+ * Binary companion of the main cache file. Every cold process (each hook run)
+ * used to JSON-parse the whole cache — ~132 MB and ~2.2 s on a 14k-engram
+ * store, enough to push a unified first-prompt injection past the hook's
+ * hybrid deadline. After a JSON parse the vectors are also written here as
+ * float64 (bit-exact round trip), stamped with the JSON file's size, mtime
+ * and inode; a later load reads this file only while that stamp still
+ * matches, and falls back to the JSON on any mismatch or damage. Derived
+ * state: never synced, never the file of record, safe to delete.
+ *
+ * Layout: "PLURVEC1" | u32 LE header length | header JSON | zero pad to 8 |
+ * float64 LE vectors, one row of `dim` per id, in header order.
+ */
+function vectorSidecarPath(cachePath: string): string {
+  return cachePath.replace(/\.json$/, '') + '.vectors.bin'
+}
+const SIDECAR_MAGIC = 'PLURVEC1'
+interface FileStamp { size: number; mtimeMs: number; ino: number }
+const sameStamp = (a: FileStamp | undefined, b: FileStamp): boolean =>
+  !!a && a.size === b.size && a.mtimeMs === b.mtimeMs && a.ino === b.ino
+
+function readVectorSidecar(cachePath: string, stamp: FileStamp): EmbeddingCache | null {
+  try {
+    const buf = readFileSync(vectorSidecarPath(cachePath))
+    if (buf.length < 12 || buf.toString('latin1', 0, 8) !== SIDECAR_MAGIC) return null
+    const headerLen = buf.readUInt32LE(8)
+    if (12 + headerLen > buf.length) return null
+    const header = JSON.parse(buf.toString('utf8', 12, 12 + headerLen)) as {
+      stamp: FileStamp; meta: EmbeddingCache['meta']; dim: number; ids: string[]; hashes: string[]
+    }
+    if (!sameStamp(header.stamp, stamp)) return null
+    const { dim, ids, hashes } = header
+    if (!Number.isInteger(dim) || dim <= 0 || !Array.isArray(ids) || !Array.isArray(hashes) || ids.length !== hashes.length) return null
+    const offset = Math.ceil((12 + headerLen) / 8) * 8
+    const bytes = ids.length * dim * 8
+    if (buf.length !== offset + bytes) return null
+    // Copy into an aligned buffer: a Buffer's byteOffset need not be a multiple of 8.
+    const data = new Float64Array(buf.buffer.slice(buf.byteOffset + offset, buf.byteOffset + offset + bytes))
+    const entries: EmbeddingCacheEntries = {}
+    for (let i = 0; i < ids.length; i++) {
+      entries[ids[i]] = { hash: hashes[i], embedding: Array.from(data.subarray(i * dim, (i + 1) * dim)) }
+    }
+    return { meta: header.meta, entries }
+  } catch {
+    return null
+  }
+}
+
+function writeVectorSidecar(cachePath: string, stamp: FileStamp, cache: EmbeddingCache): void {
+  try {
+    const dim = cache.meta.embedder_dim
+    const ids = Object.keys(cache.entries)
+    // Only a uniform cache gets a sidecar; anything irregular keeps the JSON path.
+    if (!ids.every(id => Array.isArray(cache.entries[id]?.embedding) && cache.entries[id].embedding.length === dim)) return
+    const header = Buffer.from(JSON.stringify({ stamp, meta: cache.meta, dim, ids, hashes: ids.map(id => cache.entries[id].hash) }), 'utf8')
+    const offset = Math.ceil((12 + header.length) / 8) * 8
+    const out = Buffer.alloc(offset + ids.length * dim * 8)
+    out.write(SIDECAR_MAGIC, 0, 'latin1')
+    out.writeUInt32LE(header.length, 8)
+    header.copy(out, 12)
+    const data = new Float64Array(out.buffer, out.byteOffset + offset, ids.length * dim)
+    ids.forEach((id, i) => data.set(cache.entries[id].embedding, i * dim))
+    atomicWrite(vectorSidecarPath(cachePath), out, { durable: false })
+  } catch { /* best effort: the JSON path still works */ }
+}
+
 function loadMainCache(cachePath: string, active: { name: string; dim: number }): EmbeddingCache {
   if (!existsSync(cachePath)) return emptyCache(active)
+  let stamp: FileStamp | undefined
+  try {
+    const st = statSync(cachePath)
+    stamp = { size: st.size, mtimeMs: st.mtimeMs, ino: st.ino }
+    const fast = readVectorSidecar(cachePath, stamp)
+    if (fast && fast.meta.embedder_name === active.name && fast.meta.embedder_dim === active.dim) return fast
+  } catch { /* fall through to the JSON */ }
   try {
     const raw = JSON.parse(readFileSync(cachePath, 'utf8'))
     // Detect the v1 format. Legacy format has no `meta` field — invalidate.
@@ -607,7 +680,11 @@ function loadMainCache(cachePath: string, active: { name: string; dim: number })
       return emptyCache(active)
     }
     const entries = (raw.entries && typeof raw.entries === 'object') ? raw.entries as EmbeddingCacheEntries : {}
-    return { meta: { embedder_name: meta.embedder_name!, embedder_dim: meta.embedder_dim!, version: meta.version ?? CACHE_VERSION }, entries }
+    const loaded = { meta: { embedder_name: meta.embedder_name!, embedder_dim: meta.embedder_dim!, version: meta.version ?? CACHE_VERSION }, entries }
+    // The stamp was taken BEFORE the read: if the file was replaced in between,
+    // the sidecar carries the old stamp and is simply never matched.
+    if (stamp) writeVectorSidecar(cachePath, stamp, loaded)
+    return loaded
   } catch {
     return emptyCache(active)
   }
