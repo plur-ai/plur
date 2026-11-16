@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest'
 import { execFileSync } from 'child_process'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs'
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs'
 import { join, relative } from 'path'
 import { tmpdir } from 'os'
 import { Plur } from '@plur-ai/core'
@@ -9,8 +9,9 @@ import { INSTRUCTIONS, NEUTRAL_INSTRUCTIONS, createServer, resolveInstructions }
 /**
  * Claude's directory lists a local MCP server only inside a plugin, and its
  * review rejects text that tells Claude how to behave. The directory build
- * runs the same server with neutral instructions and no automatic hooks:
- * memory is saved and recalled when the person asks.
+ * runs the same server with neutral instructions. Its hooks add relevant
+ * memory automatically (the automatic_memory setting, on by default) and
+ * stand down where `plur init`'s hooks are installed.
  */
 
 const REPO = join(__dirname, '..', '..', '..')
@@ -233,7 +234,8 @@ describe('plugins/plur meets the directory checks', () => {
     for (const f of files) {
       expect(f.endsWith('.DS_Store'), relative(PLUGIN, f)).toBe(false)
       expect(statSync(f).size, relative(PLUGIN, f)).toBeLessThan(256 * 1024)
-      expect(statSync(f).isSymbolicLink(), relative(PLUGIN, f)).toBe(false)
+      // lstat: statSync follows the link, so isSymbolicLink() would always be false.
+      expect(lstatSync(f).isSymbolicLink(), relative(PLUGIN, f)).toBe(false)
     }
     expect(existsSync(join(PLUGIN, 'LICENSE'))).toBe(true)
   })

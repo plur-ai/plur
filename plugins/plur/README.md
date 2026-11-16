@@ -16,7 +16,7 @@ The first time PLUR runs in a folder, it asks whether memory should be on there,
 
 Once a folder is on, relevant notes reach Claude by themselves. To be sure something is saved to PLUR, name it, because Claude also has its own memory: "save to PLUR that this project uses pnpm".
 
-Notes about a project stay with that project, named after its repository. Preferences you want everywhere, such as "across all my projects, end commit messages with [gs]", follow you into every project where PLUR is on.
+Notes about a project stay with that project, named after its repository, or after the folder you turned PLUR on in when it is not a repository. Two repositories in folders with the same name share their notes. Preferences you want everywhere, such as "across all my projects, end commit messages with [gs]", follow you into every project where PLUR is on.
 
 The server is a local program, so it runs in Claude Code and in Cowork sessions on your computer. It does not run in claude.ai chat.
 
@@ -26,14 +26,14 @@ With the `automatic_memory` setting on, which is the default, these hooks run in
 
 | When | What happens |
 |---|---|
-| You send a prompt | Saved notes relevant to the prompt are added to the conversation. From time to time this also adds a reminder for Claude to save what it learned |
+| You send the first prompt of a session | Saved notes relevant to that prompt are added to the conversation. Later prompts may get a short reminder for Claude to save what it learned |
 | The conversation is compacted or resumed | The notes are added again, or the folder question is asked again |
 | The session ends | The session's memory record is closed |
 | Claude Code starts | The PLUR command-line package is fetched from npm if it is not cached yet, in the background |
 
 Turn it off in `/config`, under this plugin. PLUR then acts only when its tools are called, and you can turn it back on at any time. Removing the plugin removes the hooks, and your notes stay in `~/.plur/`.
 
-If `plur init` has put PLUR's hooks in the Claude Code settings used for a project, those hooks stay in charge there and this plugin's hooks do nothing, so nothing is added twice. If those hooks are removed later, this plugin's hooks take over. `plur init` is also how to use the same memory in Cursor, Codex and other tools.
+If `plur init` has put PLUR's hooks in the Claude Code settings used for a project, those hooks stay in charge there and this plugin's hooks do nothing, so nothing is added twice. Those hooks do not keep notes per project: in such a folder, notes reach Claude whichever project they were saved in. If those hooks are removed later, this plugin's hooks take over. `plur init` is also how to use the same memory in Cursor, Codex and other tools.
 
 ## What it runs
 

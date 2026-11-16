@@ -71,4 +71,54 @@ describe('PLUR_FOLDER_SCOPE=project', () => {
     const { root, repo, home } = setup('    plur: on\n', 'my app (old)')
     expect(resolveFolderPolicy(repo, { root, home }).scope).toBe('project:my-app-old')
   })
+
+  // Review of #1870: a folder's own name must never choose where its writes
+  // go. A url store at exactly the derived scope would make it a push target.
+  it('derives no scope that a url store claims', () => {
+    process.env.PLUR_FOLDER_SCOPE = 'project'
+    const { root, repo, home } = setup('    plur: on\n', 'backend')
+    writeFileSync(join(root, 'config.yaml'),
+      'stores:\n  - url: https://team.example.test/sse\n    scope: project:backend\n')
+    const policy = resolveFolderPolicy(repo, { root, home })
+    expect(policy.mode).toBe('on')
+    expect(policy.scope).toBeUndefined()
+  })
+
+  it('still derives the scope when only a store on this disk uses that name', () => {
+    process.env.PLUR_FOLDER_SCOPE = 'project'
+    const { root, repo, home } = setup('    plur: on\n', 'backend')
+    writeFileSync(join(root, 'config.yaml'),
+      `stores:\n  - path: "${join(base, 'other')}"\n    scope: project:backend\n`)
+    expect(resolveFolderPolicy(repo, { root, home }).scope).toBe('project:backend')
+  })
+
+  // Review of #1870: outside a repository, every subfolder got its own scope
+  // (notes/src → project:src), so a note saved in one was not injected in the
+  // others, and every `src` folder on the machine shared one scope.
+  function setupPlain(entryPath: (home: string) => string) {
+    base = realpathSync(mkdtempSync(join(tmpdir(), 'plur-derived-')))
+    const root = join(base, 'store')
+    const home = join(base, 'home')
+    const notes = join(home, 'notes')
+    mkdirSync(root, { recursive: true })
+    mkdirSync(join(notes, 'src'), { recursive: true })
+    mkdirSync(join(notes, 'docs'), { recursive: true })
+    writeFileSync(join(root, 'folders.yaml'), `version: 1\nfolders:\n  - path: "${entryPath(home)}"\n    plur: on\n`)
+    return { root, home, notes }
+  }
+
+  it('outside a repository, names the scope after the folder the map turned on', () => {
+    process.env.PLUR_FOLDER_SCOPE = 'project'
+    const { root, home, notes } = setupPlain(h => join(h, 'notes'))
+    for (const dir of [notes, join(notes, 'src'), join(notes, 'docs')]) {
+      expect(resolveFolderPolicy(dir, { root, home }).scope).toBe('project:notes')
+    }
+  })
+
+  it('outside a repository, a glob entry names the scope after the folder it matched', () => {
+    process.env.PLUR_FOLDER_SCOPE = 'project'
+    const { root, home, notes } = setupPlain(h => join(h, '*'))
+    expect(resolveFolderPolicy(join(notes, 'src'), { root, home }).scope).toBe('project:notes')
+    expect(resolveFolderPolicy(join(notes, 'docs'), { root, home }).scope).toBe('project:notes')
+  })
 })
