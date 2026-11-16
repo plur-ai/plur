@@ -1730,3 +1730,8 @@ fi
 echo "  npm: $NPM_PUBLISHED"
 echo "  PyPI: plur-hermes==$VERSION"
 echo "  GitHub: https://github.com/plur-ai/plur/releases/tag/v$VERSION"
+echo ""
+# @plur-ai/plur-enterprise bundles the client and is published by hand from its
+# own repository, so it keeps installing the previous client until someone does.
+echo "Next: rebuild @plur-ai/plur-enterprise against v$VERSION from its own repository,"
+echo "      then approve the staged version on npm. Until then it installs the previous client."
