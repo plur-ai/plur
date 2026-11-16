@@ -25,7 +25,7 @@ export async function enterpriseFixture() {
   const configure = (stores: unknown[] = [entry]) => writeFileSync(join(store, 'config.yaml'),
     JSON.stringify({ index: false, embeddings: { enabled: false }, auto_learn: false, stores }), { mode: 0o600 })
   configure()
-  writeFileSync(join(store, 'folders.yaml'), JSON.stringify({ version: 1, folders: [{ path: repo, plur: 'on' }] }))
+  writeFileSync(join(store, 'folders.yaml'), JSON.stringify({ version: 1, folders: [{ path: repo, plur: 'on', trusted: true }] }))
   useEmbedder('off')
   const instances: Plur[] = []
   const open = () => { const p = new Plur({ path: store, cwd: repo, autoDiscover: false }); instances.push(p); return p }
