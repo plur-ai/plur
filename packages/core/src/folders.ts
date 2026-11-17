@@ -873,11 +873,16 @@ function plainFolderBase(dir: string, root: string, home: string): string {
     .filter(c => c.e.plur === 'on' && entryCovers(c.e, [target], home, false))
   const best = mostSpecific(covering, home)
   if (!best) return dir
-  const form = entryForms(best.path, home, false, best.literal === true)[0]
-  const depth = form.split(/[\\/]+/).filter(Boolean).length
-  const parts = target.split(/[\\/]+/).filter(Boolean)
-  if (depth === 0 || depth > parts.length) return dir
-  return (target.startsWith(sep) ? sep : '') + parts.slice(0, depth).join(sep)
+  // The highest folder the entry still covers, below home: walking up uses
+  // the same matching that chose the entry, so a `~` entry under a symlinked
+  // home and a `**` in the middle of a pattern land on the folder they name.
+  let base = target
+  for (;;) {
+    const parent = dirname(base)
+    if (parent === base || coversHomeOrRoot(parent, home) || !entryCovers(best, [parent], home, false)) break
+    base = parent
+  }
+  return base
 }
 
 function configuredStores(root: string): readonly StoreEntry[] {

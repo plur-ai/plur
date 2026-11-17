@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest'
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'fs'
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { resolveFolderPolicy } from '../src/folders.js'
@@ -113,6 +113,30 @@ describe('PLUR_FOLDER_SCOPE=project', () => {
     for (const dir of [notes, join(notes, 'src'), join(notes, 'docs')]) {
       expect(resolveFolderPolicy(dir, { root, home }).scope).toBe('project:notes')
     }
+  })
+
+  // Review of d7591f8e: the folder was cut at the segment count of the
+  // entry's first spelling, which is wrong for a `~` entry under a symlinked
+  // home and for a `**` in the middle of an entry.
+  it('outside a repository, a ~ entry under a symlinked home names the scope after its folder', () => {
+    process.env.PLUR_FOLDER_SCOPE = 'project'
+    base = realpathSync(mkdtempSync(join(tmpdir(), 'plur-derived-')))
+    const root = join(base, 'store')
+    const realHome = join(base, 'data', 'users', 'me')
+    const home = join(base, 'h')
+    mkdirSync(root, { recursive: true })
+    mkdirSync(join(realHome, 'notes', 'src'), { recursive: true })
+    symlinkSync(realHome, home)
+    writeFileSync(join(root, 'folders.yaml'), 'version: 1\nfolders:\n  - path: "~/notes"\n    plur: on\n')
+    expect(resolveFolderPolicy(join(realHome, 'notes', 'src'), { root, home }).scope).toBe('project:notes')
+  })
+
+  it('outside a repository, a ** entry names the scope after the folder the pattern ends at', () => {
+    process.env.PLUR_FOLDER_SCOPE = 'project'
+    const { root, home } = setupPlain(h => join(h, '**', 'notes'))
+    const deep = join(home, 'a', 'b', 'notes')
+    mkdirSync(join(deep, 'src'), { recursive: true })
+    expect(resolveFolderPolicy(join(deep, 'src'), { root, home }).scope).toBe('project:notes')
   })
 
   it('outside a repository, a glob entry names the scope after the folder it matched', () => {
