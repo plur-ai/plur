@@ -124,7 +124,7 @@ describe('every public Plur method in a remote-only folder', () => {
       close: null, // called last, below
       bindFolder: null, bindFolderPolicy: null, bindFolderUnresolved: null, // change the binding under test
       // Session memory manifest (#1657): ids and hashes only, history metadata only.
-      recordRecall: [{ session_id: 'ro-session', ids: [pid], query: 'dentist' }], sessionManifest: ['ro-session'], receiptsConfig: [],
+      recordRecall: [{ session_id: 'ro-session', ids: [pid], query: 'dentist' }], sessionManifest: ['ro-session'], receiptsConfig: [], injectionBudget: [],
       verifyManifest: [{ schema: 'plur/session-manifest/v1', session_id: 'ro-session', actor: 'unidentified', window: { from: null, to: null }, engrams: [{ id: pid, role: 'recalled', record_hash: '0'.repeat(64), content_hash: null }], created_at: '2026-10-27T00:00:00.000Z' }],
       backendSelection: [], provenanceFor: [pid], writeProvenance: [pid], identity: [], setIdentity: ['someone'],
       getScopeMetadata: [TEAM], listScopeMetadata: [], previewAutoRoute: [{ statement: 'x' }], suggestScope: [{ statement: 'x' }],
