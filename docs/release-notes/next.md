@@ -8,7 +8,7 @@ an integrator can notice is listed here; fill in the version at release time.
 - **Unified injection is opt-in.** `injection.mode: unified` in `config.yaml`
   builds the injected block from recall's ranked list behind the always-on
   pinned slot. The default stays `legacy` for this release, kept as the
-  rollback path. Related keys: `injection.recall_limit` (default 10),
+  rollback path. Related keys: `injection.recall_limit` (default 20),
   `injection.prohibition_ratio` (0.2), `injection.query_min_terms` (4),
   `injection.min_relevance_signal` / `injection.min_relevance` (no cut-off by
   default: no signal met the bar of emptying the task section on unrelated
@@ -119,6 +119,20 @@ an integrator can notice is listed here; fill in the version at release time.
 - On the 14k-memory store a first-prompt hook in unified mode now finishes in
   about 6 s and an event in about 3–4 s.
 - `plur inject --json` reports the unified relevance signals (`relevance`).
+- **A late hybrid result is kept.** When a hook's hybrid search misses its
+  deadline, it now races the keyword fallback and the hook keeps whichever
+  finishes first. Before, a long query could leave an event with nothing:
+  the fallback started from scratch and neither finished in time. The racing
+  fallback skips its best-effort injection counter, so no store write is cut
+  off at exit.
+- **`injection_budget` reaches every path.** `plur inject` uses it unless
+  `--budget` is given (it was a fixed 2,000); skill, agent and plan-mode
+  event hooks use it when it is above their 3,000 floor (it was a fixed
+  3,000).
+- **Unified task list default raised to 20** (`injection.recall_limit`, was
+  10). On the 14k-memory store it lifted the hook path on real-session
+  questions from 15 to 17 of 30 at session start and from 13 to 15 on agent
+  events, with no empty contexts.
 
 ## Configuration robustness
 

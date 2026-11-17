@@ -704,7 +704,7 @@ export type PlurConfig = z.infer<typeof PlurConfigSchema>
  */
 export const INJECTION_OVERHAUL_DEFAULTS = {
   mode: 'legacy' as 'legacy' | 'unified',
-  recall_limit: 10,
+  recall_limit: 20,
   prohibition_ratio: 0.2,
   query_min_terms: 4,
   min_relevance_signal: null as NonNullable<NonNullable<PlurConfig['injection']>['min_relevance_signal']> | null,

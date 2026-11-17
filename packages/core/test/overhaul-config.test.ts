@@ -35,7 +35,7 @@ describe('overhaul config keys', () => {
     const empty = PlurConfigSchema.parse({})
     expect(resolveInjectionOverhaul(empty)).toEqual({
       mode: 'legacy',
-      recall_limit: 10,
+      recall_limit: 20,
       prohibition_ratio: 0.2,
       query_min_terms: 4,
       min_relevance_signal: null,
@@ -121,5 +121,12 @@ describe('loadConfig with one bad overhaul value (H4)', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
+  })
+})
+
+describe('recall_limit default (2026-11-17)', () => {
+  it('the unified task list defaults to 20 engrams', async () => {
+    const { UNIFIED_RECALL_LIMIT } = await import('../src/inject-unified.js')
+    expect(UNIFIED_RECALL_LIMIT).toBe(20)
   })
 })

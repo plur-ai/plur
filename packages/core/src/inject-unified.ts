@@ -92,7 +92,7 @@ export interface UnifiedConfig {
 }
 
 /** Default task-list length (`injection.recall_limit`). */
-export const UNIFIED_RECALL_LIMIT = 10
+export const UNIFIED_RECALL_LIMIT = 20
 /** Default prohibition slice (`injection.prohibition_ratio`, D4). */
 export const UNIFIED_PROHIBITION_RATIO = 0.2
 /** How deep in the ranking prohibitions are taken from (D4). */
