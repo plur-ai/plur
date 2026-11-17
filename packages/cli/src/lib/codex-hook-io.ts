@@ -485,6 +485,12 @@ export async function injectWithFallback<O, R>(
   if (!hybridEnabled()) return { result: await plur.inject(task, opts), mode: 'bm25' }
 
   let timer: NodeJS.Timeout | undefined
+  // The hybrid search is not cancelled when it misses the deadline: it keeps
+  // running on the same thread as the BM25 fallback. Past the deadline the
+  // two race, so a hybrid ranking that is nearly done is not thrown away for
+  // a fallback that competes with it for the thread and may not finish
+  // before the hook's own limit.
+  let late: Promise<InjectOutcome<R>> | null = null
   try {
     const deadline = new Promise<typeof DEADLINE_MISSED>((resolve) => {
       // Deliberately NOT unref()'d (adversarial audit F1). If injectHybrid
@@ -508,8 +514,14 @@ export async function injectWithFallback<O, R>(
       && !('bookkeeping_deadline_at' in (opts as object)))
       ? { ...(opts as object), bookkeeping_deadline_at: Date.now() + deadlineMs - CORE_DEADLINE_MARGIN_MS } as O
       : opts
-    const raced = await Promise.race([plur.injectHybrid(task, coreOpts), deadline])
+    const hybridSearch = plur.injectHybrid(task, coreOpts)
+    const raced = await Promise.race([hybridSearch, deadline])
     if (raced !== DEADLINE_MISSED) return { result: raced, mode: 'hybrid' }
+    // A late failure must not win the race: it yields to the fallback.
+    late = hybridSearch.then(
+      (result): InjectOutcome<R> => ({ result, mode: 'hybrid' }),
+      () => new Promise<never>(() => { /* yield to BM25 */ }),
+    )
     process.stderr.write(
       `[plur] hybrid injection exceeded ${deadlineMs}ms — falling back to BM25 for this turn. ` +
       'If this is routine, raise PLUR_HOOK_HYBRID_DEADLINE_MS — and keep it below your ' +
@@ -524,5 +536,13 @@ export async function injectWithFallback<O, R>(
   } finally {
     if (timer) clearTimeout(timer)
   }
-  return { result: await plur.inject(task, opts), mode: 'bm25' }
+  // Racing a still-running hybrid search, the fallback writes nothing: its
+  // best-effort injection counter is skipped (a deadline already reached), so
+  // whichever result the hook keeps, no store write of the loser can be cut
+  // off at exit and leave a stale lock behind.
+  const fallbackOpts = (late && opts && typeof opts === 'object')
+    ? { ...(opts as object), bookkeeping_deadline_at: Date.now() } as O
+    : opts
+  const fallback = plur.inject(task, fallbackOpts).then((result): InjectOutcome<R> => ({ result, mode: 'bm25' }))
+  return late ? Promise.race([late, fallback]) : fallback
 }

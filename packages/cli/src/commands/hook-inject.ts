@@ -785,12 +785,19 @@ export async function injectForHook<O, R>(
   task: string,
   opts: O,
   deadlineMs?: number,
-): Promise<InjectOutcome<R> & { hybrid: Promise<unknown> | null }> {
+): Promise<InjectOutcome<R> & { hybrid: Promise<unknown> | null; pending: Promise<unknown> | null }> {
   // Keep hold of the hybrid search: when it misses the deadline it is still
   // running, and the exit must wait for it to finish its store write (#1313).
+  // Likewise the BM25 fallback when a late hybrid result won the race: it is
+  // still running and records its injection under the store lock.
   let hybrid: Promise<unknown> | null = null
+  let fallback: Promise<unknown> | null = null
   const tracked: Injectable<O, R> = {
-    inject: (t, o) => plur.inject(t, o),
+    inject: (t, o) => {
+      const p = plur.inject(t, o)
+      fallback = p.catch(() => undefined)
+      return p
+    },
     injectHybrid: (t, o) => {
       const p = plur.injectHybrid(t, o)
       hybridInFlight = true
@@ -799,7 +806,9 @@ export async function injectForHook<O, R>(
     },
   }
   const outcome = await injectWithFallback(tracked, task, opts, deadlineMs)
-  return { ...outcome, hybrid }
+  // What may still be running when the hook wants to exit.
+  const pending = outcome.mode === 'bm25' ? hybrid : fallback
+  return { ...outcome, hybrid, pending }
 }
 
 /**
@@ -1072,7 +1081,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     try {
       outcome = plan.mode === 'hybrid'
         ? await injectForHook(plur, task, eventOpts, EVENT_HYBRID_DEADLINE_MS)
-        : { result: await plur.inject(task, eventOpts), mode: 'bm25', hybrid: null }
+        : { result: await plur.inject(task, eventOpts), mode: 'bm25', hybrid: null, pending: null }
     } finally {
       // Kept while an abandoned hybrid search may still be running: released
       // at exit (exitIfAbandonedHybrid) or by the watchdog.
@@ -1081,8 +1090,8 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
         heldInjectLock = null
       }
     }
-    const { result, mode, hybrid } = outcome
-    abandonedHybrid = mode === 'bm25' && hybrid ? hybrid : null
+    const { result, mode, hybrid, pending } = outcome
+    abandonedHybrid = (mode === 'bm25' && hybrid) ? hybrid : pending
     recordInjected('claude', input.session_id, result.injected_ids) // #1310 auto-rate
     // Remote-only folders still read the team server: surface its outcome.
     const degradation = remoteOnly ? surfaceRemoteOutcomes(plur) : []
@@ -1363,11 +1372,11 @@ async function injectSession(
   // #1313: bounded, because the hook is sync. On a missed deadline or a
   // hybrid failure, BM25 (local-only by design — inject() never dials)
   // serves the turn.
-  const { result, mode, hybrid } = await injectForHook(plur, task, injectOpts)
+  const { result, mode, hybrid, pending } = await injectForHook(plur, task, injectOpts)
   recordInjected('claude', input.session_id, result.injected_ids) // #1310 auto-rate
   // A missed deadline leaves the hybrid search running; it must not hold
   // the process (and so the prompt) open until the watchdog.
-  abandonedHybrid = mode === 'bm25' && hybridEnabled() ? hybrid : null
+  abandonedHybrid = mode === 'bm25' && hybridEnabled() ? hybrid : pending
   storeRoot = plur.storageRoot
   if (result.count > 0) {
     const parts: string[] = []

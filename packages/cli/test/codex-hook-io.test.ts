@@ -241,6 +241,48 @@ describe('injectWithFallback', () => {
     err.mockRestore()
   })
 
+  it('past the deadline, takes a hybrid result that finishes before the BM25 fallback', async () => {
+    const err = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    const plur = {
+      injectHybrid: () => new Promise<ReturnType<typeof R>>(r => setTimeout(() => r(R(5, 'hybrid')), 60)),
+      inject: () => new Promise<ReturnType<typeof R>>(r => setTimeout(() => r(R(3, 'bm25')), 400)),
+    }
+    const t0 = Date.now()
+    const out = await injectWithFallback(plur, 'q', {}, 20)
+    expect(out.mode).toBe('hybrid')
+    expect(out.result.count).toBe(5)
+    expect(Date.now() - t0).toBeLessThan(300)
+    err.mockRestore()
+  })
+
+  it('past the deadline, the racing BM25 fallback is told to skip its store write', async () => {
+    const err = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    let seen: Record<string, unknown> | undefined
+    const plur = {
+      injectHybrid: () => new Promise<never>(() => { /* still running */ }),
+      inject: async (_t: string, o: Record<string, unknown>) => { seen = o; return R(3, 'bm25') },
+    }
+    const before = Date.now()
+    await injectWithFallback(plur, 'q', { scope: 'x' } as Record<string, unknown>, 20)
+    expect(seen?.scope).toBe('x')
+    expect(typeof seen?.bookkeeping_deadline_at).toBe('number')
+    expect(seen!.bookkeeping_deadline_at as number).toBeLessThanOrEqual(Date.now())
+    expect(seen!.bookkeeping_deadline_at as number).toBeGreaterThanOrEqual(before)
+    err.mockRestore()
+  })
+
+  it('past the deadline, a hybrid search that then fails still yields the BM25 result', async () => {
+    const err = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    const plur = {
+      injectHybrid: () => new Promise<never>((_r, rej) => setTimeout(() => rej(new Error('late failure')), 40)),
+      inject: () => new Promise<ReturnType<typeof R>>(r => setTimeout(() => r(R(3, 'bm25')), 120)),
+    }
+    const out = await injectWithFallback(plur, 'q', {}, 20)
+    expect(out.mode).toBe('bm25')
+    expect(out.result.count).toBe(3)
+    err.mockRestore()
+  })
+
   it('falls back to BM25 when hybrid throws — a dead embedder must not cost the turn', async () => {
     const err = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
     const plur = {
