@@ -1,5 +1,5 @@
 import { type GlobalFlags } from '../plur.js'
-import { hookFolderOn, payloadDir, cursorHookFolder } from '../lib/folder-gate.js'
+import { hookFolderOn, hookFolderPolicy, payloadDir, cursorHookFolder, agyHookFolder, isWorkingMode } from '../lib/folder-gate.js'
 import { readStdinJson, runCodexHook, codexSessionId } from '../lib/codex-hook-io.js'
 import { exitWhenStoreIdle, EXIT_LOCK_WAIT_MS } from '../lib/store-lock-exit.js'
 import { enqueueTurn, hasLeftoverBatches, spawnWorker, runWorker, agyReplySinceLastUser, type AutoRateEditor } from '../lib/auto-rate.js'
@@ -93,9 +93,8 @@ export function readTurn(editor: AutoRateEditor, input: Record<string, unknown>)
     case 'agy': {
       const sessionId = str(input.conversationId)
       if (!sessionId) return null
-      const workspaces = Array.isArray(input.workspacePaths) ? input.workspacePaths : []
-      const cwd = typeof workspaces[0] === 'string' ? workspaces[0] as string : undefined
-      return { sessionId, reply: agyReplySinceLastUser(str(input.transcriptPath)), cwd }
+      // The workspace is decided in run() over every root (agyHookFolder).
+      return { sessionId, reply: agyReplySinceLastUser(str(input.transcriptPath)) }
     }
   }
 }
@@ -135,7 +134,17 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     // hooks from its config dir, so only its workspace path is meaningful
     // there (see hook-agy-guard): no workspace, no folder to decide about.
     if (editor === 'agy') {
-      if (turn.cwd && !hookFolderOn(turn.cwd, flags)) return
+      // Every root decides, not only the first (security audit 2026-11-06):
+      // any off root silences the workspace, a remote-only one binds it.
+      const folder = agyHookFolder(input.workspacePaths, flags)
+      if (folder) {
+        if (!isWorkingMode(folder.policy) || !folder.dir) return
+        // The worker binds to the folder it is given: a remote-only decision
+        // that came from another root must not run as `on` in this one.
+        if (folder.policy.mode === 'remote-only' && hookFolderPolicy(folder.dir, flags).mode !== 'remote-only') return
+        turn.cwd = folder.dir
+        turn.workspaceScope = folder.policy.scope ?? null
+      }
     } else if (editor === 'cursor') {
       // Cursor sends no cwd, only workspace_roots, and runs the hook wherever
       // it likes (a plugin's folder): decide for the workspace (G1). The

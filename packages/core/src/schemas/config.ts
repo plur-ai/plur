@@ -181,6 +181,8 @@ export const LlmTierConfigSchema = partialKeepAbsent(z.object({
   dedup_tier: z.enum(['fast', 'balanced', 'thorough']).default('fast'),
   profile_tier: z.enum(['fast', 'balanced', 'thorough']).default('balanced'),
   meta_tier: z.enum(['fast', 'balanced', 'thorough']).default('thorough'),
+  /** security audit 2026-11-06: user-written allowlist of non-loopback `llm_base_url` values an agent may name. */
+  base_urls: z.array(z.string()).optional(),
 }))
 
 export const ProfileConfigSchema = partialKeepAbsent(z.object({

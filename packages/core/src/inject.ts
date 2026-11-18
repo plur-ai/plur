@@ -9,6 +9,7 @@ import { makeVisibilityPredicate } from './scope-util.js'
 import { collapseLineTerminators } from './sanitize.js'
 import { isNotYetValid, isExpired, isExpiredBeyondGrace } from './validity.js'
 import { ftsTokenize } from './fts.js'
+import { escapeRegExp } from './redact-token.js'
 
 /**
  * D1-RECALL/INJECT-ASYMMETRY (#353). When an inject is given an EXPLICIT
@@ -265,7 +266,8 @@ function skipForApproval(engram: Engram): boolean {
 function expiredMarker(engram: WireEngram): string {
   const until = engram.temporal?.valid_until
   if (until && isExpired(engram.temporal, Date.now())) {
-    return `⚠ EXPIRED ${until} — verify before use: `
+    // security audit 2026-11-06: valid_until is row-controlled, so it is folded like every rendered value
+    return `⚠ EXPIRED ${entrySafe(String(until))} — verify before use: `
   }
   return ''
 }
@@ -381,7 +383,7 @@ function legacyEstimateChars(engram: ScoredEngram): number {
   }
   let chars = e.id.length + 4 + (e.statement?.length ?? 0)
   const contra = e.contraindications
-  if (contra?.length) chars += 24 + contra.join('; ').length
+  if (Array.isArray(contra) && contra.length) chars += 24 + contra.join('; ').length
   if (e.rationale) chars += 15 + e.rationale.length
   const meta =
     (e.domain ? e.domain.length + 10 : 0) +
@@ -464,7 +466,6 @@ const HISTORICAL_KEYWORDS = ['before', 'was', 'prior', 'used to', 'previously', 
 // The inter-word gap is matched as \s+ (not a literal space) so a phrase split
 // by a newline, tab, or doubled space — "used\nto", "used  to" — still matches;
 // hardcoding a single U+0020 there was a false-negative on multi-line prompts.
-const escapeRegExp = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 const HISTORICAL_KEYWORD_PATTERNS = HISTORICAL_KEYWORDS.map(
   kw => new RegExp(`\\b${kw.split(/\s+/).map(escapeRegExp).join('\\s+')}\\b`),
 )
@@ -1498,8 +1499,9 @@ export function formatLayer1(engram: WireEngram): string {
  */
 function contraindicationLines(engram: WireEngram, indent: string): string[] {
   const c = engram.contraindications
-  if (!c?.length) return []
-  return [`${indent}Does NOT apply when: ${c.map(entrySafe).join('; ')}`]
+  // security audit 2026-11-06: a remote row's contraindications may not be an array
+  if (!Array.isArray(c) || c.length === 0) return []
+  return [`${indent}Does NOT apply when: ${c.filter(x => typeof x === 'string').map(entrySafe).join('; ')}`]
 }
 
 export function formatLayer2(engram: WireEngram): string {

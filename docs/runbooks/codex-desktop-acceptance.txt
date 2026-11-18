@@ -1,9 +1,28 @@
 PLUR — Windows Codex desktop acceptance
 
 Status: not yet performed; tracked in #1625. Do not describe the desktop flow as verified.
-For desktop acceptance, download the plur-codex-candidate artifact from the passing
-Windows real editors workflow. Extract it into an empty directory. In
-PowerShell, from that directory:
+For desktop acceptance, install only a candidate built by a run of
+windows-editors.yml on main. Pull request runs build the pull request's own
+code with its own copy of the workflow and publish an artifact of the same
+name, so the artifact name, a green check and candidate-version.txt (written
+by the same run) prove nothing about who built it. Before any install:
+
+  gh run view <run-id> --repo plur-ai/plur --json workflowName,event,headBranch,headSha,conclusion
+
+Continue only when ALL of these hold; otherwise stop and do not install:
+  - workflowName is "Windows real editors" (the name of windows-editors.yml)
+  - event is push or workflow_dispatch (never pull_request or pull_request_target)
+  - headBranch is main
+  - conclusion is success
+  - headSha is the main commit you intend to test
+
+Then download that run's artifact by the head SHA it reported, into an empty
+directory:
+
+  gh run download <run-id> --repo plur-ai/plur -n plur-codex-candidate-<headSha> -D <empty-dir>
+
+Never pick the artifact from the Actions list by name. In PowerShell, from
+that directory:
 
   $packages = Get-ChildItem -Filter *.tgz | Where-Object { $_.Name -match '^plur-ai-(core|cli|mcp)-' }
   npm install -g --no-audit --no-fund $packages.FullName
@@ -11,7 +30,9 @@ PowerShell, from that directory:
   plur init --codex
   plur doctor --codex
 
-The version must match candidate-version.txt. This is a test build, not a
+The version must match candidate-version.txt, and its Commit line must equal
+the headSha checked above (the file comes from the same run, so it is a
+consistency check, not proof of origin). This is a test build, not a
 published release. Installing the eventual stable CLI and MCP together, then
 rerunning init, returns the registration to the stable installed packages.
 A global CLI version alone does not establish which MCP Codex is running.

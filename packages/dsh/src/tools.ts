@@ -14,13 +14,12 @@ import type { Config } from './config.js'
 import { readScope } from './scope.js'
 import type { Counters } from './counters.js'
 import { guard, writable, type WriteQueue } from './guard.js'
-import type { PlurClient } from './client.js'
+import type { MemoryFor, PlurClient } from './client.js'
 
 /** Dependencies shared by every tool. */
 export interface ToolDeps {
   config: Config
   counters: Counters
-  plur?: PlurClient
   /** The ONE shared write queue, so tool writes cannot interleave with auto-learn. */
   queue: WriteQueue
   /**
@@ -31,6 +30,8 @@ export interface ToolDeps {
    * into another project's session, or write them there.
    */
   resolveScope: (agent?: CallerAgent) => Promise<string>
+  /** The folder map's answer for the calling session (security audit 2026-11-06). */
+  memoryFor: MemoryFor
 }
 
 /** The slice of the calling agent scope resolution needs. */
@@ -66,15 +67,24 @@ const UNAVAILABLE = 'PLUR is unavailable right now; continuing without memory.'
  * @returns one disposer per registered tool, in registration order.
  */
 export function registerTools(ctx: Context, deps: ToolDeps): Array<() => void> {
-  const { config, counters, plur, resolveScope, queue } = deps
+  const { config, counters, resolveScope, queue, memoryFor } = deps
 
   /** Read the calling agent off the registry-supplied execution context. */
   const callerOf = (exec: unknown): CallerAgent | undefined =>
     (exec as { agent?: CallerAgent } | null | undefined)?.agent
 
   /** Run a tool body under the never-throw guard and shape the canonical value. */
-  const body = async (fn: () => Promise<string>): Promise<TextValue> => {
-    const out = await guard(fn, {
+  const body = async (
+    exec: unknown,
+    fn: (plur: PlurClient | undefined) => Promise<string>,
+    gated = true,
+  ): Promise<TextValue> => {
+    const out = await guard(async () => {
+      // security audit 2026-11-06: an `off` folder gets the reason, never a read or write; plur_status stays ungated.
+      if (!gated) return fn(undefined)
+      const memory = await memoryFor(callerOf(exec))
+      return memory.off ? memory.message : fn(memory.plur)
+    }, {
       timeoutMs: config.timeoutMs,
       onError: () => counters.bump('errors_swallowed'),
     })
@@ -93,7 +103,7 @@ export function registerTools(ctx: Context, deps: ToolDeps): Array<() => void> {
         additionalProperties: false,
       },
       output: TEXT_OUTPUT,
-      execute: (args: unknown, exec: unknown) => body(async () => {
+      execute: (args: unknown, exec: unknown) => body(exec, async (plur) => {
         const query = String((args as { query?: unknown } | null)?.query ?? '')
         const scope = await resolveScope(callerOf(exec))
         const results = (await plur?.recall?.(query, { ...readScope(scope, config.includeGlobal), limit: 10 })) ?? []
@@ -115,7 +125,7 @@ export function registerTools(ctx: Context, deps: ToolDeps): Array<() => void> {
         additionalProperties: false,
       },
       output: TEXT_OUTPUT,
-      execute: (args: unknown, exec: unknown) => body(async () => {
+      execute: (args: unknown, exec: unknown) => body(exec, async (plur) => {
         const input = args as { statement?: unknown; domain?: unknown } | null
         const statement = String(input?.statement ?? '').trim()
         if (!statement) return 'Nothing to store: statement was empty.'
@@ -152,7 +162,7 @@ export function registerTools(ctx: Context, deps: ToolDeps): Array<() => void> {
         additionalProperties: false,
       },
       output: TEXT_OUTPUT,
-      execute: (args: unknown, exec: unknown) => body(async () => {
+      execute: (args: unknown, exec: unknown) => body(exec, async (plur) => {
         const input = args as { id?: unknown; reason?: unknown } | null
         const id = String(input?.id ?? '').trim()
         if (!id) return 'Nothing to retire: id was empty.'
@@ -179,7 +189,7 @@ export function registerTools(ctx: Context, deps: ToolDeps): Array<() => void> {
         additionalProperties: false,
       },
       output: TEXT_OUTPUT,
-      execute: (args: unknown, exec: unknown) => body(async () => {
+      execute: (args: unknown, exec: unknown) => body(exec, async (plur) => {
         const input = args as { id?: unknown; signal?: unknown } | null
         const id = String(input?.id ?? '').trim()
         if (!id) return 'Nothing to rate: id was empty.'
@@ -198,7 +208,7 @@ export function registerTools(ctx: Context, deps: ToolDeps): Array<() => void> {
         'Report memory-system health and this session\'s memory activity counters. Use when asked why something was or was not remembered.',
       parameters: { type: 'object', properties: {}, additionalProperties: false },
       output: TEXT_OUTPUT,
-      execute: (_args: unknown, exec: unknown) => body(async () => {
+      execute: (_args: unknown, exec: unknown) => body(exec, async () => {
         const scope = await resolveScope(callerOf(exec))
         const snapshot = counters.snapshot()
         return [
@@ -206,7 +216,7 @@ export function registerTools(ctx: Context, deps: ToolDeps): Array<() => void> {
           `injection: ${config.injectionMode}`,
           ...Object.entries(snapshot).map(([key, value]) => `${key}: ${value}`),
         ].join('\n')
-      }),
+      }, false),
     },
   ]
 

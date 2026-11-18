@@ -19,6 +19,9 @@ beforeEach(async () => {
   mkdirSync(root); mkdirSync(repo); mkdirSync(join(home, 'tmp'))
   execFileSync('git', ['init', '-q', repo])
   execFileSync('git', ['-C', repo, 'remote', 'add', 'origin', 'https://gitlab.example.com/team/backend.git'])
+  // A repository's git origin picks a team scope only when the repo is trusted
+  // (security audit 2026-11-06).
+  writeFileSync(join(root, 'folders.yaml'), yaml.dump({ version: 1, folders: [{ path: repo, trusted: true }] }))
   stub = new StubServer('fixture-key')
   const { url, token } = await stub.start()
   writeFileSync(join(root, 'config.yaml'), yaml.dump({
@@ -64,6 +67,8 @@ it('an unmatched repository makes no remote recall or append, even with routing 
 }, 60_000)
 
 it('a mapped repository sends both save and recall requests (positive control)', async () => {
+  // A trusted repository: an origin-derived team scope needs that (security audit 2026-11-06).
+  writeFileSync(join(root, 'folders.yaml'), `folders:\n  - path: ${JSON.stringify(repo)}\n    trusted: true\n`)
   const learned = JSON.parse(await cli(['learn', 'fixture release procedure uses canary batches', '--json']))
   expect(learned.delivery).toBe('remote')
   expect(learned.scope).toBe(SCOPE)

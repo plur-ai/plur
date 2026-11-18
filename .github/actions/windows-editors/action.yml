@@ -38,7 +38,8 @@ runs:
     - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
       with:
         node-version: 22
-        cache: pnpm
+        # security audit 2026-11-06: the unpinned latest channel must not share the pinned runs' pnpm cache
+        cache: ${{ inputs.channel != 'latest' && 'pnpm' || '' }}
     - shell: pwsh
       run: pnpm install --frozen-lockfile
 

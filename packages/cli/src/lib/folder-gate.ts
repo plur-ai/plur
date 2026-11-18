@@ -235,6 +235,7 @@ function within(dir: string, root: string): boolean {
 export function cursorHookFolder(
   input: Record<string, unknown> | null | undefined,
   flags?: { path?: string },
+  rootPath: (raw: unknown) => string | null = cursorRootPath,
 ): CursorWorkspaceDecision {
   const closed: CursorWorkspaceDecision = { dir: null, policy: WORKSPACE_UNKNOWN }
   const rawCwd = input?.cwd
@@ -246,7 +247,7 @@ export function cursorHookFolder(
   if (input && Object.prototype.hasOwnProperty.call(input, 'workspace_roots')) {
     const raw = input.workspace_roots
     if (!Array.isArray(raw) || raw.length === 0) return closed
-    const paths = raw.map(r => cursorRootPath(r))
+    const paths = raw.map(r => rootPath(r))
     if (paths.some(p => p === null)) return closed
     inputs = [...new Set(paths as string[])]
   } else {
@@ -346,6 +347,31 @@ export function cursorHookFolder(
   const { scope: _own, ...ownRest } = on
   const rest = { ...ownRest, git }
   return { dir, policy: scope ? { ...rest, scope } : { ...rest, ...(on.scope ? { remoteAllowed: false } : {}) } }
+}
+
+/**
+ * What an Antigravity hook decides for its `workspacePaths` (security audit
+ * 2026-11-06). Every root counts, by the same rule as Cursor and the MCP
+ * gate: any off root makes the workspace off, any remote-only root makes it
+ * remote-only, and an entry that is not a usable path (not a string) fails
+ * closed as off. Deciding from the first root alone let root order choose
+ * whether a folder the user turned off received memory. Null when there is
+ * no workspace (no list, or an empty one): the install is the opt-in, as
+ * before.
+ */
+export function agyHookFolder(workspacePaths: unknown, flags?: { path?: string }): CursorWorkspaceDecision | null {
+  if (!Array.isArray(workspacePaths) || workspacePaths.length === 0) return null
+  return cursorHookFolder({ workspace_roots: workspacePaths }, flags, agyRootPath)
+}
+
+/**
+ * An Antigravity root: what {@link cursorRootPath} accepts, plus any path the
+ * platform calls absolute (agy's Windows path form is not verified, and the
+ * hooks took any absolute string before). A non-string or relative entry is
+ * null, which makes the workspace off.
+ */
+function agyRootPath(raw: unknown): string | null {
+  return cursorRootPath(raw) ?? (typeof raw === 'string' && raw.length > 0 && isAbsolute(raw) ? raw : null)
 }
 
 /** Registry key for the folder's scope on a CLI read; no real session id starts with NUL. */

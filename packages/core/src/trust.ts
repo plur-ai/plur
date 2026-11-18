@@ -50,6 +50,10 @@ export function trustDirectory(dir: string, root: string, opts?: { nonce?: strin
   const target = canonicalize(dir)
   setFolderEntry(root, target, { trusted: true }, {
     configuredScopes: [],
+    // A trust grant names one real directory. Recorded as a glob, a path with
+    // `*` or `?` in it also trusted every sibling it matched (security audit
+    // 2026-11-06), so a cloned neighbour's .plur.yaml remote was adopted.
+    literal: true,
     ...(opts?.nonce !== undefined ? { nonce: opts.nonce } : {}),
     ...(opts?.now !== undefined ? { now: opts.now } : {}),
     ...(opts?.session !== undefined ? { session: opts.session } : {}),

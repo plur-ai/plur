@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { rmSync, mkdtempSync, writeFileSync } from 'fs'
+import { rmSync, mkdtempSync, writeFileSync, realpathSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { run } from '../src/commands/hook-agy-pre-invocation.js'
@@ -265,7 +265,7 @@ describe('hook-agy-pre-invocation', () => {
     })
     await run([], {} as never)
 
-    expect(projectConfigCalls).toEqual([dir])
+    expect(projectConfigCalls).toEqual([realpathSync(dir)]) // the hook canonicalises the workspace path (/var -> /private/var on macOS)
     expect(injectCalls[0].opts.scope).toBe('project:from-workspace')
     expect(emittedMessage()).toContain('project:from-workspace')
   })

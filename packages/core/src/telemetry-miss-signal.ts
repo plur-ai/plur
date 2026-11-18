@@ -13,7 +13,8 @@
 //      !isTelemetryEnabled() BEFORE any network call. A default-off install
 //      makes zero network calls and writes zero files for miss-signals.
 //   2. Content-free AND identifier-free. The raw query NEVER leaves the process
-//      — we ship a SHA-256 fingerprint of the normalized query (irreversible).
+//      — we ship an HMAC-SHA-256 of the normalized query under a per-install
+//      key that never leaves this machine (security audit 2026-11-06).
 //      The scope is reduced to its KIND only (#312): 'project:acme-secret'
 //      becomes 'project', so a user's private project/client name in the scope
 //      path is never transmitted. The domain is reduced to its first dotted
@@ -28,9 +29,9 @@
 // daily counter heartbeat, a miss is emitted at the moment it happens (fire-
 // and-forget) because the signal is the event, not a daily aggregate.
 
-import { createHash } from 'node:crypto'
+import { createHmac } from 'node:crypto'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 
 import { isTelemetryEnabled } from './telemetry.js'
 import { readOrCreateInstallId } from './telemetry-counters.js'
@@ -137,15 +138,10 @@ function utcDate(d: Date): string {
   return d.toISOString().slice(0, 10)
 }
 
-/**
- * Normalize then SHA-256-hash the query. Irreversible: there is no way to
- * recover the query from the fingerprint, but two installs that miss on the
- * same normalized phrasing produce the same fingerprint — which is exactly the
- * clustering key WS5 needs, with zero content disclosure.
- */
-export function fingerprintQuery(query: string): string {
+/** Normalize then HMAC-SHA-256 the query under this install's key, so a guessed query cannot be confirmed by hashing it. */
+export function fingerprintQuery(query: string, key: string): string {
   const normalized = query.trim().toLowerCase().replace(/\s+/g, ' ')
-  return createHash('sha256').update(normalized, 'utf8').digest('hex')
+  return createHmac('sha256', key).update(normalized, 'utf8').digest('hex')
 }
 
 /**
@@ -181,10 +177,11 @@ export function buildMissSignalPayload(
   reason: MissReason,
   installId: string,
   now: Date,
+  fingerprintKey: string,
 ): MissSignalPayload {
   return {
     install_id: installId,
-    query_fingerprint: fingerprintQuery(input.query),
+    query_fingerprint: fingerprintQuery(input.query, fingerprintKey),
     scope_type: scopeType(input.scope),
     domain: domainHead(input.domain),
     reason,
@@ -242,9 +239,12 @@ export async function emitMissSignal(
   if (reason === null) return false // a hit — nothing to signal
 
   try {
-    const installId = readOrCreateInstallId(opts.installIdPath ?? defaultInstallIdPath())
+    const installIdPath = opts.installIdPath ?? defaultInstallIdPath()
+    const installId = readOrCreateInstallId(installIdPath)
+    // Random, owner-only, created once beside the install id; never sent.
+    const fingerprintKey = readOrCreateInstallId(join(dirname(installIdPath), 'miss-signal-key'))
     const now = (opts.now ?? (() => new Date()))()
-    const payload = buildMissSignalPayload(input, reason, installId, now)
+    const payload = buildMissSignalPayload(input, reason, installId, now, fingerprintKey)
     return await postMissSignal(payload, opts, env)
   } catch {
     // Never disturb the recall path.

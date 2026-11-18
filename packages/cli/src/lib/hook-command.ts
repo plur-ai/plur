@@ -329,3 +329,25 @@ export function matchesPlurHookLauncher(command: string): boolean {
 }
 
 // END shared hook matcher
+
+/**
+ * Is this PLUR hook spec bound to THIS machine's own install? True only for
+ * the shim under this home (`<homedir>/.plur/bin/plur-hook`, compared as a
+ * literal string) or the Windows exec form naming a CLI js entry this
+ * machine's init recorded. The npx fallback and a plur-hook shim anywhere
+ * else match `isPlurHookSpec` on any machine, so a repository can ship them;
+ * their presence does not show that this machine's init wrote them
+ * (security audit 2026-11-06).
+ */
+export function isThisMachinesPlurHookSpec(spec: { command?: string; args?: unknown }): boolean {
+  if (!isPlurHookSpec(spec)) return false
+  const command = typeof spec.command === 'string' ? spec.command : ''
+  const args = Array.isArray(spec.args) ? spec.args.filter((a): a is string => typeof a === 'string') : []
+  if (args.length > 0) {
+    // node + a recorded CLI entry (machine-bound via ~/.plur/bin); cmd.exe /c npx is not.
+    return /(^|\/)node(\.exe)?$/.test(command.replace(/\\/g, '/').replace(/"/g, '').toLowerCase())
+  }
+  const normalised = command.trim().replace(/^&[ \t]+/, '').replace(/\\/g, '/').toLowerCase()
+  const unquoted = normalised.startsWith('"') ? normalised.replace(/^"([^"]*)"/, '$1') : normalised
+  return homeShimPaths().some((p) => unquoted.startsWith(p) && HOME_SHIM_TAIL.test(unquoted.slice(p.length)))
+}

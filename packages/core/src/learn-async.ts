@@ -459,6 +459,17 @@ export async function learnAsync(
       const parsed = parseDedupResponse(response)
       decision = parsed.decision
       targetId = parsed.target_id
+      // The TARGET line is free-form model output, and the candidates' text
+      // (a teammate's row in a shared scope, say) can steer it. Only an id the
+      // prompt actually offered — already filtered to the requested scope — is
+      // acted on; any other id is no match, so this write can neither
+      // supersede nor be absorbed by an engram it was never compared with
+      // (security audit 2026-11-06).
+      if (targetId !== null && !candidates.some(c => c.id === targetId)) {
+        logger.warning(`LLM dedup named ${targetId}, which was not among the candidates; adding instead`)
+        decision = 'ADD'
+        targetId = null
+      }
       deps.recordLlmSuccess()
     } catch (err) {
       logger.warning(`LLM dedup failed, falling back to local similarity: ${err}`)

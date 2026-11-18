@@ -8,6 +8,7 @@ import { atomicWrite, fsyncDir } from './sync.js'
 import { recordLastWritten } from './backup.js'
 import { normalizeEngramInput } from './normalize-engram.js'
 import { createHash } from 'crypto'
+import { escapeRegExp } from './redact-token.js'
 import { appendHistoryBatch, readRekeyedPairs, type HistoryEvent } from './history.js'
 
 /**
@@ -83,6 +84,21 @@ export class EngramStoreUnreadableError extends Error {
  * back. A malformed engram is a partial-data problem; deleting it to tidy up
  * the file is a data-loss problem, and the second is worse.
  */
+/** Counts a parsed YAML value's nodes as if aliases were expanded, stopping once `budget` is spent. */
+function withinExpansionBudget(value: unknown, budget: number): boolean {
+  const stack: unknown[] = [value]
+  let left = budget
+  while (stack.length > 0) {
+    const v = stack.pop()
+    if (--left < 0) return false
+    if (v === null || typeof v !== 'object') continue
+    if (Array.isArray(v)) { for (let i = v.length - 1; i >= 0; i--) stack.push(v[i]) }
+    else for (const k of Object.keys(v as object)) stack.push((v as Record<string, unknown>)[k])
+    if (stack.length > left) return false
+  }
+  return true
+}
+
 /**
  * The shape rule for an engram store document — THE one definition, shared by
  * every reader of a store file (formal round 2, core-persistence#11): this
@@ -105,6 +121,13 @@ export function engramStoreEntries(filePath: string, content: string, byteLength
   }
   if (raw == null) {
     throw new EngramStoreUnreadableError(filePath, new Error('file has content but parses to nothing'))
+  }
+  // security audit 2026-11-06: an alias lattice would be materialized by the noRefs re-dump, so it is refused
+  if (!withinExpansionBudget(raw, Math.max(10_000, content.length))) {
+    throw new EngramStoreUnreadableError(
+      filePath,
+      new Error('the document expands beyond its own size when YAML aliases are resolved (anchor/alias lattice?) — PLUR never writes aliases'),
+    )
   }
   if (typeof raw !== 'object' || Array.isArray(raw)) {
     throw new EngramStoreUnreadableError(filePath, new Error('top-level value is not a mapping'))
@@ -1307,8 +1330,8 @@ export function namespacePackEngrams(engrams: Engram[], packName: string): Engra
  */
 export function namespaceEngramId(id: string, scope: string): string {
   const prefix = storePrefix(scope)
-  if (new RegExp(`^(ENG|ABS|META)-${prefix}-`).test(id)) return id
-  const legacy = new RegExp(`^(ENG|ABS|META)-${legacyStorePrefix(scope)}-(?=\\d{4}-)`)
+  if (new RegExp(`^(ENG|ABS|META)-${escapeRegExp(prefix)}-`).test(id)) return id
+  const legacy = new RegExp(`^(ENG|ABS|META)-${escapeRegExp(legacyStorePrefix(scope))}-(?=\\d{4}-)`)
   if (legacy.test(id)) return id.replace(legacy, `$1-${prefix}-`)
   return id.replace(/^(ENG|ABS|META)-/, `$1-${prefix}-`)
 }

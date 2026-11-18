@@ -262,6 +262,7 @@ const ECHO_SPAN = /<(command-name|command-message|command-args|local-command-[a-
 
 /** The typed part of one text: echo spans removed. null when nothing typed is left. */
 function typedText(raw: string): string | null {
+  if (raw.length > 20_000) raw = raw.slice(-20_000) // security audit 2026-11-06: bounds the echo-span regex
   if (!ECHO_TAG.test(raw) && !raw.includes('<')) return raw
   const t = raw.replace(ECHO_SPAN, '').trim()
   return t ? t : null

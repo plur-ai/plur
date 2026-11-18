@@ -1,6 +1,7 @@
 import { mkdirSync, appendFileSync, readSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
+import { detectSecrets } from '@plur-ai/core'
 import { type GlobalFlags } from '../plur.js'
 import { hookFolderPolicy, payloadDir, parsePayload } from '../lib/folder-gate.js'
 
@@ -48,9 +49,31 @@ function readStdinRaw(): string {
   }
 }
 
-function trimValue(v: unknown, maxLen = 200): unknown {
-  if (typeof v === 'string' && v.length > maxLen) {
-    return v.slice(0, maxLen) + '...[trimmed]'
+/** What is scanned past the kept length, so a token the trim would cut is still whole when scanned. */
+const SCAN_MARGIN = 1024
+/** Runs of characters scanned on their own: shell words, quoted values, `KEY=value` pairs. */
+const WORD = /[^\s"'`,;]+/g
+
+// security audit 2026-11-06: observations kept tokens and .env contents verbatim.
+/** `text` with every word detectSecrets flags redacted; a secret no single word carries withholds the whole value. */
+function redactText(text: string): string {
+  if (detectSecrets(text).length === 0) return text
+  const out = text.replace(WORD, w => detectSecrets(w).length > 0 ? '[REDACTED:secret]' : w)
+  return detectSecrets(out).length > 0 ? '[REDACTED:secret]' : out
+}
+
+/** A tool-input value as observed: secrets redacted BEFORE the trim, then trimmed. */
+function observeValue(v: unknown, maxLen = 200): unknown {
+  if (typeof v === 'string') {
+    const redacted = redactText(v.slice(0, maxLen + SCAN_MARGIN))
+    return redacted.length > maxLen || v.length > maxLen + SCAN_MARGIN ? redacted.slice(0, maxLen) + '...[trimmed]' : redacted
+  }
+  if (v !== null && typeof v === 'object') {
+    // A structured value (a list of edits, say) is kept whole only when clean.
+    try {
+      const text = JSON.stringify(v)
+      if (typeof text === 'string' && detectSecrets(text).length > 0) return '[REDACTED:secret]'
+    } catch { return '[REDACTED:unserializable]' }
   }
   return v
 }
@@ -97,7 +120,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     if (toolInput && typeof toolInput === 'object') {
       const trimmed: Record<string, unknown> = {}
       for (const [k, v] of Object.entries(toolInput)) {
-        trimmed[k] = trimValue(v)
+        trimmed[k] = observeValue(v)
       }
       obs.input = trimmed
     }
@@ -110,7 +133,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   if (event === 'PostToolUseFailure') {
     obs.success = false
     const error = data.error ?? data.message ?? ''
-    if (error) obs.error = String(error).slice(0, 500)
+    if (error) obs.error = redactText(String(error).slice(0, 500 + SCAN_MARGIN)).slice(0, 500)
   }
 
   // Write to observations JSONL
@@ -122,8 +145,8 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const obsFile = join(obsDir, `${dateStr}.jsonl`)
 
   try {
-    mkdirSync(obsDir, { recursive: true })
-    appendFileSync(obsFile, JSON.stringify(obs) + '\n')
+    mkdirSync(obsDir, { recursive: true, mode: 0o700 })
+    appendFileSync(obsFile, JSON.stringify(obs) + '\n', { mode: 0o600 })
   } catch {
     // Never block on write failure
   }

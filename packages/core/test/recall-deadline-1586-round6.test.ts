@@ -77,7 +77,9 @@ function countingFetch(): { calls: () => number } {
 describe('G1 — a model in the default cache is found when the override cache is empty', () => {
   it('EmbeddingGemma: present, loaded from the default cache, nothing fetched', async () => {
     const defaultCache = tmp('plur-1587-r6-default-')
-    provision(defaultCache, GEMMA, 'model_quantized.onnx')
+    // The real model ships one external-data chunk, and the presence check
+    // requires every pinned file (security audit 2026-11-06, H-x03-1).
+    provision(defaultCache, GEMMA, 'model_quantized.onnx', {}, ['model_quantized.onnx_data'])
     expect(typeof (tb as any)._setDefaultModelCacheDir).toBe('function')
     ;(tb as any)._setDefaultModelCacheDir(defaultCache)
     process.env.HF_HOME = tmp('plur-1587-r6-hfhome-') // empty
