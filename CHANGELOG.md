@@ -57,6 +57,23 @@ A PLUR plugin for Claude's directory. (#1870)
   current. The MCP server and the OpenClaw plugin keep the answer in the
   store's `cache/update-check.json` (6 hours, 30 minutes after a failure), so a
   restart within that time asks npm nothing. (#1833)
+- `plur_doctor` and `plur_session_start` report the local engram count. The
+  doctor used to count the embedding cache, which also holds team engrams
+  cached from a server, so a machine with no local engrams reported about a
+  thousand; `status()` now reports local and remote-cached counts apart, and a
+  cold remote cache is reported as not loaded yet rather than empty. (#1822)
+- On a team-only install (no local engrams, the team's memory on the server),
+  the doctor's engram store check passes instead of failing. (#1828)
+- On Windows, `plur doctor` names the missing Microsoft Visual C++ runtime when
+  the embedding model fails to load, instead of reporting a binding file that
+  exists as "could not be found". (#1824)
+- The first remote recall in a `plur recall` process gets the 5 s warm-up
+  budget, so it no longer times out while later calls answer in about a
+  second. (#1825)
+- `plur-hermes`: the memory provider implements every optional method of
+  Hermes's `MemoryProvider` (including `shutdown()`), so Hermes no longer logs
+  `AttributeError` warnings when it closes an idle session, and Hermes's recall
+  line now reports how many memories PLUR recalled. (#1851, #1863, #1869)
 
 ## 0.23.0
 
