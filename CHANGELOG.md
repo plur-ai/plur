@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.23.1
+
+A PLUR plugin for Claude's directory. (#1870)
+
+- `plugins/plur`: the MCP server, a skill, and hooks for automatic memory behind
+  one `automatic_memory` setting. Existing installs are unchanged.
+- `PLUR_INSTRUCTIONS=neutral`: server instructions that describe the tools
+  without directing the model.
+- `PLUR_FOLDER_SCOPE=project`: a folder that is on and has no scope gets one named
+  after its repository, so one project's notes are not injected into another.
+
 ## 0.23.0
 
 Memory you can prove. (#1790, #1799)
