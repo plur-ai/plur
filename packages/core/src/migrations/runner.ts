@@ -6,6 +6,7 @@ import { loadEngrams, saveEngrams, engramStoreEntries } from '../engrams.js'
 import { recordLastWritten } from '../backup.js'
 import { withLock } from '../file-lock.js'
 import { atomicWrite, fsyncDir } from '../atomic-write.js'
+import { storeFileMode } from '../sync.js'
 import { writeConfigFile } from '../config-file.js'
 import { logger } from '../logger.js'
 import type { Migration } from './types.js'
@@ -96,7 +97,7 @@ function createBackup(engramsPath: string, version: number): string | null {
   // replace a known-good backup with a corrupt copy.
   if (fs.existsSync(backupPath)) return backupPath
   // Same mode as the corpus (copyFileSync kept it): a backup is the corpus.
-  atomicWrite(backupPath, fs.readFileSync(engramsPath), { mode: fs.statSync(engramsPath).mode & 0o777 })
+  atomicWrite(backupPath, fs.readFileSync(engramsPath), { mode: storeFileMode(engramsPath) })
   return backupPath
 }
 
@@ -163,7 +164,7 @@ function commitMigration(
   let bytes: Buffer
   try {
     if (fs.existsSync(engramsPath)) {
-      atomicWrite(staged, fs.readFileSync(engramsPath), { mode: fs.statSync(engramsPath).mode & 0o777 })
+      atomicWrite(staged, fs.readFileSync(engramsPath), { mode: storeFileMode(engramsPath) })
       loadEngrams(staged) // retain quarantined rows through the serializer
     }
     saveEngrams(staged, engrams, { allowShrink: true })

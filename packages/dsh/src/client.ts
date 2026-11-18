@@ -52,6 +52,13 @@ export interface LearnContextLike {
   source?: string
 }
 
+/** The folder map's answer for the calling session (security audit 2026-11-06): its client, or `off` with the words to relay. */
+export type MemoryFor = (caller?: {
+  id?: string
+  session?: { header?: { cwd?: string } }
+  header?: { cwd?: string }
+}) => Promise<{ off: false; plur?: PlurClient } | { off: true; message: string }>
+
 /** The rating vocabulary core accepts. Note: NOT a number. */
 export type FeedbackSignal = 'positive' | 'negative' | 'neutral'
 

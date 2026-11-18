@@ -215,7 +215,7 @@ export { _appendEmbeddingCacheEntries, activeEmbedderDim, allowBackgroundModelLo
 // failure paths without downloading the real ~300 MB model.
 export { checkRerankerFit, type FitCheckEngram, type FitCheckResult } from './rerankers/fit-check.js'
 export {
-    _resetRerankerCache, _setCachedReranker, classifyRerankerFailure, DEFAULT_RERANKER, getReranker, hfCacheDirName, isRerankerOff, RERANKER_NAMES, rerankerStatus, resetRerankerStatus, resolveRerankerName, type RerankerFailureKind, type RerankerName, type RerankerRuntimeStatus
+    _resetRerankerCache, _setCachedReranker, classifyRerankerFailure, DEFAULT_RERANKER, getReranker, isRerankerOff, modelCacheFolder, RERANKER_NAMES, rerankerStatus, resetRerankerStatus, resolveRerankerName, type RerankerFailureKind, type RerankerName, type RerankerRuntimeStatus
 } from './rerankers/index.js'
 export type { RerankerAdapter } from './rerankers/types.js'
 // Per-store reranker eval gate — the self-check that must pass before
@@ -302,7 +302,7 @@ export {
     applyFeedbackSignal, NEGATIVE_STRENGTH_DELTA, nextCommitment,
     POSITIVE_STRENGTH_DELTA, type ApplyFeedbackOptions, type FeedbackSignal, type FeedbackSource
 } from './feedback.js'
-export { BREAKER_COOLDOWN_MS, BREAKER_FAILURE_THRESHOLD, BREAKER_HALF_OPEN_AFTER_MS, BUDGET_TICK_MS, buildRecallRemoteReport, claimHookDegradationLines, DEFAULT_RECALL_DEADLINE_MS, DEFAULT_REMOTE_RECALL_TIMEOUT_MS, WARM_REMOTE_RECALL_TIMEOUT_MS, doctorRemoteRemediation, HOOK_HEADER_REPEAT_MS, hookRemoteHeaderLine, isRemoteRecallDisabled, MAX_REMOTE_QUERY_CHARS, MAX_REMOTE_RESPONSE_BYTES, MAX_STARVATION_CREDIT_MS, mcpRemoteWarningLine, PROBE_CLEARABLE_STATES, readRemoteHealth, RECALL_BOOKKEEPING_LOCK_WAIT_MS, REMOTE_STATUS_TTL_MS, remoteHealthPath, remoteRecall, resolveRecallDeadlineMs, resolveRemoteRecallTimeoutMs, scopeOrg, startBudgetTimer, UNSUPPORTED_TTL_MS, type BudgetExpiry, type HostRecallOutcome, type RecallRemoteHostReport, type RecallRemoteReport, type RemoteHostState, type RemoteRecallHost, type RemoteRecallOptions, type RemoteRecallResult, type RemoteStoreStatusEntry } from './remote-recall.js'
+export { BREAKER_COOLDOWN_MS, BREAKER_FAILURE_THRESHOLD, BREAKER_HALF_OPEN_AFTER_MS, BUDGET_TICK_MS, buildRecallRemoteReport, claimHookDegradationLines, DEFAULT_RECALL_DEADLINE_MS, DEFAULT_REMOTE_RECALL_TIMEOUT_MS, WARM_REMOTE_RECALL_TIMEOUT_MS, doctorRemoteRemediation, HOOK_HEADER_REPEAT_MS, hookRemoteHeaderLine, isRemoteRecallDisabled, MAX_REMOTE_QUERY_CHARS, MAX_REMOTE_RESPONSE_BYTES, MAX_STARVATION_CREDIT_MS, mcpRemoteWarningLine, PROBE_CLEARABLE_STATES, readRemoteHealth, RECALL_BOOKKEEPING_LOCK_WAIT_MS, REMOTE_STATUS_TTL_MS, remoteHealthPath, remoteRecall, resolveRecallDeadlineMs, resolveRemoteRecallTimeoutMs, scopeOrg, startBudgetTimer, UNSUPPORTED_TTL_MS, type BudgetExpiry, type HostRecallOutcome, type RecallRemoteHostReport, type RecallRemoteSkip, type RecallRemoteReport, type RemoteHostState, type RemoteRecallHost, type RemoteRecallOptions, type RemoteRecallResult, type RemoteStoreStatusEntry } from './remote-recall.js'
 // Automatic rating of injected engrams from the reply text.
 export { AUTO_FEEDBACK_MIN_CONFIDENCE, detectInjectionSignal, rateInjectedEngrams, type InjectionSignal, type InjectionSignalResult, type RatedEngram } from './injection-signal.js'
 // Client-side token inspection — expiry + display-only payload

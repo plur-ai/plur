@@ -123,12 +123,12 @@ export interface ScopeGuardsMethods {
 
   /**
    * The text the write-time HARD secret scan reads: the statement plus every
-   * caller-supplied content field, as listed by `LEARN_CONTEXT_FIELD_ROLES`.
+   * content field (learnContextContent for a write, engramContentFields for an engram).
    * Statement-only when the context carries no content field, so a plain
    * write scans exactly what it always did.
    */
   /** @internal */
-  _hardScanText(statement: string, context: LearnContext | undefined): string
+  _hardScanText(statement: string, content: Record<string, unknown> | undefined): string
 
   /**
    * Write-time leak guard, called by both `learn()` and `learnRouted()` so every
@@ -428,8 +428,7 @@ export const scopeGuardsMethods: ScopeGuardsMethods & ThisType<Plur> = {
     return { scope: fallback, routed: null, refusedShared }
   },
 
-  _hardScanText(statement: string, context: LearnContext | undefined): string {
-    const content = learnContextContent(context)
+  _hardScanText(statement: string, content: Record<string, unknown> | undefined): string {
     return content ? `${statement}\n${JSON.stringify(content)}` : statement
   },
 
@@ -582,7 +581,7 @@ export const scopeGuardsMethods: ScopeGuardsMethods & ThisType<Plur> = {
       // `LearnContext` by the compiler, so no field goes unscanned.
       // Shared/remote writes are additionally policy-scanned by
       // _guardSensitiveScope below.
-      const secrets = detectSecrets(this._hardScanText(statement, context))
+      const secrets = detectSecrets(this._hardScanText(statement, learnContextContent(context)))
       if (secrets.length > 0) {
         throw new Error(`Secret detected in statement or context: ${secrets[0].pattern}. Use config.allow_secrets to override.`)
       }
@@ -594,7 +593,7 @@ export const scopeGuardsMethods: ScopeGuardsMethods & ThisType<Plur> = {
     // quarantine, like the secret check: there is no review queue for engram
     // writes, and a genuine user statement can be written as `asserted`.
     if (context?.claim_class === 'inferred') {
-      const injections = detectPromptInjection(this._hardScanText(statement, context))
+      const injections = detectPromptInjection(this._hardScanText(statement, learnContextContent(context)))
       if (injections.length > 0) {
         throw new Error(
           `Prompt injection pattern detected in an auto-harvested (claim_class: 'inferred') statement or context: `

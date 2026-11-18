@@ -16,6 +16,7 @@ import type { Engram } from '../schemas/engram.js'
 import { resolveScopeTarget, urlGroupsForScope } from '../store-resolver.js'
 import { normalizeEndpointUrl, RemoteAbortedError, RemoteHttpError } from '../store/remote-store.js'
 import { YamlPrimaryStore } from '../store/yaml-primary-store.js'
+import { withLock } from '../file-lock.js'
 import { getSyncStatus, sync as gitSync, type SyncRemoteType, type SyncResult, type SyncStatus } from '../sync.js'
 import type { UploadLocalResult } from '../types.js'
 import { OUTBOX_CLAIM_LEASE_MS, OUTBOX_CLAIM_MAX_AGE_MS, OUTBOX_ID_MAP_MAX, OUTBOX_TAKEOVER_MAX_DEPTH, outboxClaimTag, pidAlive, queuedOutboxKeys } from './helpers.js'
@@ -445,8 +446,12 @@ export const outboxMethods: OutboxMethods & ThisType<Plur> = {
     // deletion. Held across network calls deliberately (a delay beats a lost engram); gitSync takes no lock itself.
     // CALLER CONTRACT: do NOT call `sync()` from inside `_withStoreLock` — the in-process lock is not reentrant and
     // has no timeout, so nesting hangs.
+    // security audit 2026-11-06: the pull rewrites the sibling stores too, so their own locks are held (fixed order, no deadlock)
     const result = await this._withStoreLock(this.paths.engrams, async () => {
-      return gitSync(this.paths.root, remote, { remoteType })
+      return withLock(this.paths.tensions, () =>
+        withLock(this.paths.episodes, () =>
+          withLock(this.paths.candidates, () =>
+            gitSync(this.paths.root, remote, { remoteType }))))
     })
     // `git pull --rebase` may have REPLACED engrams.yaml underneath us, so any
     // cached snapshot the store is holding now describes a file that no longer

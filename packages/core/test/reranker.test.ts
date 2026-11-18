@@ -36,7 +36,6 @@ import {
   recordRerankerFailure,
   recordRerankerEngaged,
   resetRerankerStatus,
-  hfCacheDirName,
   type RerankerAdapter,
   type RerankerName,
 } from '../src/rerankers/index.js'
@@ -219,11 +218,6 @@ describe('reranker runtime status + failure classification (#341)', () => {
       lastErrorKind: null,
       lastFailedReranker: null,
     })
-  })
-
-  it('hfCacheDirName maps a model id to its HF hub cache directory (purge target)', () => {
-    expect(hfCacheDirName('onnx-community/bge-reranker-v2-m3-ONNX'))
-      .toBe('models--onnx-community--bge-reranker-v2-m3-ONNX')
   })
 })
 

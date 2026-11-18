@@ -10,13 +10,14 @@ import {
     REMOTE_STATUS_TTL_MS,
     remoteRecall,
     resolveRecallDeadlineMs,
-    resolveRemoteRecallTimeoutMs, scopeOrg,
+    resolveRemoteRecallTimeoutMs, scopeOrg, MAX_REMOTE_QUERY_CHARS,
     settleBy,
-    type RecallRemoteReport,
+    type RecallRemoteReport, type RecallRemoteSkip,
     type RemoteRecallHost, type RemoteRecallResult,
     type RemoteStoreStatusEntry
 } from '../remote-recall.js'
 import type { StoreEntry } from '../schemas/config.js'
+import { detectSecrets, sensitivityCategory } from '../secrets.js'
 import type { Engram } from '../schemas/engram.js'
 import { personalStoreEntry } from '../scope-target.js'
 import { isScopeWithin, isSharedScope, makeVisibilityPredicate, scopeAllowFilter } from '../scope-util.js'
@@ -49,7 +50,7 @@ export interface RemoteResultsMethods {
    * current project/work. The returned promise NEVER rejects.
    */
   /** @internal */
-  _startRemoteRecall(query: string, options?: { scope?: string; scopes?: string[]; context_scopes?: string[]; session?: string; remote?: boolean; remote_timeout_ms?: number; remote_project?: RemoteProjectConfig; limit?: number }, deadlineAt?: number): (Promise<RemoteRecallResult> & { hostUrls: string[] }) | null
+  _startRemoteRecall(query: string, options?: { scope?: string; scopes?: string[]; context_scopes?: string[]; session?: string; remote?: boolean; remote_timeout_ms?: number; remote_project?: RemoteProjectConfig; limit?: number }, deadlineAt?: number): (Promise<RemoteRecallResult> & { hostUrls: string[]; skipped?: RecallRemoteSkip }) | null
 
   /**
    * Apply the SAME read-side filters to server rows that every local read
@@ -69,7 +70,7 @@ export interface RemoteResultsMethods {
    * after the deadline, reports every dialed host as cut by the deadline.
    */
   /** @internal */
-  _awaitRemote(remotePromise: (Promise<RemoteRecallResult> & { hostUrls?: string[] }) | null, deadlineAt: number): Promise<{ result?: RemoteRecallResult; report: RecallRemoteReport }>
+  _awaitRemote(remotePromise: (Promise<RemoteRecallResult> & { hostUrls?: string[]; skipped?: RecallRemoteSkip }) | null, deadlineAt: number): Promise<{ result?: RemoteRecallResult; report: RecallRemoteReport }>
 
   /**
    * In a long-lived process that opted in ({@link allowBackgroundModelLoad}),
@@ -94,7 +95,7 @@ export interface RemoteResultsMethods {
    * only, not ranking.
    */
   /** @internal */
-  _mergeRemoteRecall(local: Engram[], remotePromise: (Promise<RemoteRecallResult> & { hostUrls?: string[] }) | null, options: (RecallOptions & { include_expired?: boolean }) | undefined, limit: number, deadlineAt?: number): Promise<{ engrams: Engram[]; remote: RecallRemoteReport }>
+  _mergeRemoteRecall(local: Engram[], remotePromise: (Promise<RemoteRecallResult> & { hostUrls?: string[]; skipped?: RecallRemoteSkip }) | null, options: (RecallOptions & { include_expired?: boolean }) | undefined, limit: number, deadlineAt?: number): Promise<{ engrams: Engram[]; remote: RecallRemoteReport }>
 
   /**
    * Server rows for the injection path: filtered for authorization +
@@ -271,7 +272,7 @@ export const remoteResultsMethods: RemoteResultsMethods & ThisType<Plur> = {
     return hosts
   },
 
-  _startRemoteRecall(query: string, options?: { scope?: string; scopes?: string[]; context_scopes?: string[]; session?: string; remote?: boolean; remote_timeout_ms?: number; remote_project?: RemoteProjectConfig; limit?: number }, deadlineAt?: number): (Promise<RemoteRecallResult> & { hostUrls: string[] }) | null {
+  _startRemoteRecall(query: string, options?: { scope?: string; scopes?: string[]; context_scopes?: string[]; session?: string; remote?: boolean; remote_timeout_ms?: number; remote_project?: RemoteProjectConfig; limit?: number }, deadlineAt?: number): (Promise<RemoteRecallResult> & { hostUrls: string[]; skipped?: RecallRemoteSkip }) | null {
     if (options?.remote === false) return null
     // An origin-derived local/unknown default is a privacy boundary even for
     // always-dial stores. Explicit call/session scopes remain deliberate choices.
@@ -286,6 +287,20 @@ export const remoteResultsMethods: RemoteResultsMethods & ThisType<Plur> = {
     if (hosts.length === 0) return null
     // The dialed hosts ride along so a recall that stops waiting at its
     // deadline can still name them in its per-call report.
+    // security audit 2026-11-06: a query a write to these scopes would refuse never leaves the machine
+    const text = query.length > MAX_REMOTE_QUERY_CHARS ? query.slice(0, MAX_REMOTE_QUERY_CHARS) : query
+    const scopes = [...new Set(hosts.flatMap(h => h.scopes))]
+    // The skip is reported (categories only) so a caller can tell it from "no hosts".
+    const categories = new Set<'secrets' | 'infra'>()
+    if (detectSecrets(text).length > 0) categories.add('secrets')
+    for (const scope of scopes) for (const h of this._offendingHitsForScope(text, scope)) categories.add(sensitivityCategory(h.pattern))
+    if (categories.size > 0) {
+      const empty: RemoteRecallResult = { engrams: [], scores: new Map(), outcomes: [] }
+      return Object.assign(Promise.resolve(empty), {
+        hostUrls: [] as string[],
+        skipped: { reason: 'sensitive_query' as const, categories: [...categories].sort() },
+      })
+    }
     return Object.assign(remoteRecall(hosts, query, {
       timeoutMs: resolveRemoteRecallTimeoutMs(options?.remote_timeout_ms),
       limit: options?.limit,
@@ -319,8 +334,9 @@ export const remoteResultsMethods: RemoteResultsMethods & ThisType<Plur> = {
     return this._applyResidualFilters(filtered, options)
   },
 
-  async _awaitRemote(remotePromise: (Promise<RemoteRecallResult> & { hostUrls?: string[] }) | null, deadlineAt: number): Promise<{ result?: RemoteRecallResult; report: RecallRemoteReport }> {
+  async _awaitRemote(remotePromise: (Promise<RemoteRecallResult> & { hostUrls?: string[]; skipped?: RecallRemoteSkip }) | null, deadlineAt: number): Promise<{ result?: RemoteRecallResult; report: RecallRemoteReport }> {
     if (!remotePromise) return { report: { state: 'not_dialed', hosts: [] } }
+    if (remotePromise.skipped) return { report: { state: 'not_dialed', hosts: [], skipped: remotePromise.skipped } }
     const waited = Number.isFinite(deadlineAt)
       ? await settleBy(remotePromise, deadlineAt + Plur.REMOTE_SETTLE_GRACE_MS)
       : { done: true as const, value: await remotePromise }
@@ -356,7 +372,7 @@ export const remoteResultsMethods: RemoteResultsMethods & ThisType<Plur> = {
     return Date.now() + resolveRecallDeadlineMs(options?.deadline_ms)
   },
 
-  async _mergeRemoteRecall(local: Engram[], remotePromise: (Promise<RemoteRecallResult> & { hostUrls?: string[] }) | null, options: (RecallOptions & { include_expired?: boolean }) | undefined, limit: number, deadlineAt: number = Infinity): Promise<{ engrams: Engram[]; remote: RecallRemoteReport }> {
+  async _mergeRemoteRecall(local: Engram[], remotePromise: (Promise<RemoteRecallResult> & { hostUrls?: string[]; skipped?: RecallRemoteSkip }) | null, options: (RecallOptions & { include_expired?: boolean }) | undefined, limit: number, deadlineAt: number = Infinity): Promise<{ engrams: Engram[]; remote: RecallRemoteReport }> {
     // Team rows from a warm cache sit among the local results.
     this._noteSeenRows(local)
     const { result: remote, report } = await this._awaitRemote(remotePromise, deadlineAt)

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, statSync, utimesSync } from 'fs'
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync, readFileSync, statSync, utimesSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { execFileSync } from 'child_process'
@@ -41,10 +41,14 @@ it('expiry distinguishes unknown, absent, near and expired', () => {
 
 let root: string, repo: string, plur: Plur | undefined
 beforeEach(() => {
-  root = mkdtempSync(join(tmpdir(), 'plur-server-line-'))
+  // Resolved: trust entries are compared against the resolved repository path, and on
+  // macOS the temporary folder is behind a link (/var -> /private/var).
+  root = realpathSync(mkdtempSync(join(tmpdir(), 'plur-server-line-')))
   repo = join(root, 'repo'); mkdirSync(repo)
   execFileSync('git', ['init', '-q', repo])
   execFileSync('git', ['-C', repo, 'remote', 'add', 'origin', 'https://gitlab.example.com/team/backend.git'])
+  // Trusted: an origin-derived team scope needs a trusted repository (security audit 2026-11-06).
+  writeFileSync(join(root, 'folders.yaml'), `folders:\n  - path: ${JSON.stringify(repo)}\n    trusted: true\n`)
 })
 afterEach(() => { plur?.close(); plur = undefined; vi.restoreAllMocks(); rmSync(root, { recursive: true, force: true }) })
 it('reads cached server and queue state without a network call', async () => {

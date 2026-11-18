@@ -1141,12 +1141,18 @@ function installedDirsNamed(packsDir: string, manifestName: string | undefined):
   }).sort()
 }
 
+// security audit 2026-11-06: PLUR's own entries in the packs directory are never a pack, and only a real directory is.
+const RESERVED_PACK_ENTRY = /^registry\.yaml(\..*)?$/i
+
 /**
  * Resolve `name` as a direct child of `packsDir`, or throw. The name is caller-supplied
  * (CLI and MCP uninstall); `..` would reach the PLUR root, which uninstall then `rmSync`s.
  * Containment is checked on the RESOLVED path, not by pattern-matching the name.
  */
 function resolveInside(packsDir: string, name: string, op: string): string {
+  if (RESERVED_PACK_ENTRY.test(name) || isTransientPackDir(name)) {
+    throw new Error(`[plur] refusing to ${op} pack "${name}": that name is reserved for PLUR's own pack bookkeeping in ${packsDir}.`)
+  }
   const base = path.resolve(packsDir)
   const candidate = path.resolve(base, name)
   const contained = candidate !== base && candidate.startsWith(base + path.sep)
@@ -1158,6 +1164,9 @@ function resolveInside(packsDir: string, name: string, op: string): string {
       `read or delete outside the packs directory.`,
     )
   }
+  let st: fs.Stats | undefined
+  try { st = fs.lstatSync(candidate) } catch { /* absent */ }
+  if (st && !st.isDirectory()) throw new Error(`[plur] refusing to ${op} pack "${name}": ${candidate} is not a pack directory.`)
   return candidate
 }
 
@@ -1192,6 +1201,9 @@ export function uninstallPack(packsDir: string, name: string): UninstallResult {
     } else {
       throw new Error(`Pack not found: ${name}. Use 'plur packs list' to see installed packs.`)
     }
+  }
+  if (!fs.lstatSync(packDir).isDirectory()) {
+    throw new Error(`Pack not found: ${name}. Use 'plur packs list' to see installed packs.`)
   }
 
   // Count engrams and get manifest name before removal

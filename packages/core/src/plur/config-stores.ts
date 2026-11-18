@@ -443,6 +443,15 @@ export const configStoresMethods: ConfigStoresMethods & ThisType<Plur> = {
     if (!scope || typeof scope !== 'string') {
       throw new Error(`addStore: scope must be a non-empty string, got ${typeof scope}`)
     }
+    // security audit 2026-11-06: a scope feeds id prefixes, config and routing keys, so it must match the scope grammar
+    if (!/^[A-Za-z0-9][A-Za-z0-9:._@/-]{0,199}$/.test(scope)) {
+      throw new Error(`addStore: scope "${scope}" has characters a scope cannot contain (letters, digits and : . _ @ / - only)`)
+    }
+    // `global` (and `local`) is where every unscoped save lands. Binding it to a
+    // remote url would send every future default-scope memory off the machine.
+    if (isRemote && (scope === 'global' || scope === 'local')) {
+      throw new Error(`addStore: scope "${scope}" is a built-in local scope and cannot be bound to a remote store`)
+    }
 
     // Pick up any out-of-process config edit before we dedup/write.
     this.reloadConfigIfChanged()

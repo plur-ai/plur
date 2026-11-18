@@ -11,7 +11,7 @@
  *   - Sensitivity: the collapse applies the existing writeback rules inside
  *     scope_settings (and on a compat scope's top-level metadata): ordinary
  *     writeback keeps unknown `forbid` categories and nested keys, an
- *     authoritative server update replaces `forbid`.
+ *     authoritative server update adds to `forbid` (union, never removes).
  *   - Compat scope: its top-level metadata stays where it is on an unrelated
  *     writeback and is updated in place when it changes.
  */
@@ -159,7 +159,7 @@ describe('server entry collapse — sensitivity writeback rules inside scope_set
     expect(srv.scope_settings['group:acme/compat']).toBeUndefined()
   })
 
-  it('an authoritative server update replaces forbid inside scope_settings', () => {
+  it('an authoritative server update lands in forbid inside scope_settings, as a union', () => {
     const p = write(FWD)
     const plur = new Plur({ path: dirname(p) })
     const discovery: RemoteScopeDiscovery = {
@@ -169,9 +169,12 @@ describe('server entry collapse — sensitivity writeback rules inside scope_set
     }
     plur.persistScopeMetadata([discovery])
     const srv = readRaw(p).stores[0]
-    expect(srv.scope_settings['group:acme/team'].sensitivity.forbid).toEqual(['infra'])
+    // The server's 'infra' is written (not discarded by the raw-forbid
+    // restore), and the local 'secrets' is kept: a server answer may only add
+    // categories, never remove one (security audit 2026-11-06).
+    expect(srv.scope_settings['group:acme/team'].sensitivity.forbid).toEqual(['secrets', 'infra'])
     const team = (loadConfig(p).stores ?? []).find(s => s.scope === 'group:acme/team')
-    expect(team?.sensitivity?.forbid).toEqual(['infra'])
+    expect(team?.sensitivity?.forbid).toEqual(['secrets', 'infra'])
   })
 })
 

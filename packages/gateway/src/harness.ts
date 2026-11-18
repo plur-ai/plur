@@ -4,6 +4,7 @@
  */
 export {
   isPlurHookSpec,
+  isThisMachinesPlurHookSpec,
   recordedCliEntries,
   isPlurHookCommand,
   matchesPlurHookLauncher,

@@ -375,14 +375,17 @@ export function isEnterpriseServerEntry(raw: unknown): raw is Record<string, unk
 }
 
 
-/** scope → url for every remote entry whose normalized url is not `exceptUrl`:
- *  the scopes another server already serves. */
+/** scope → where it is served, for every store entry other than the server at `exceptUrl`.
+ *  security audit 2026-11-06: path stores count as claimed, or a discovered url entry would take their scope over. */
 export function scopesServedElsewhere(rawStores: unknown[], exceptUrl: string): Map<string, string> {
   const out = new Map<string, string>()
   for (const r of rawStores) {
-    if (!isPlainObject(r) || typeof r.url !== 'string' || normalizeEndpointUrl(r.url) === exceptUrl) continue
+    if (!isPlainObject(r)) continue
+    if (typeof r.url === 'string' && normalizeEndpointUrl(r.url) === exceptUrl) continue
+    const where = typeof r.url === 'string' ? r.url : typeof r.path === 'string' ? `path:${r.path}` : undefined
+    if (!where) continue
     const scopes = [...stringList(r.scopes), ...stringList(r.pinned_scopes), ...(typeof r.scope === 'string' ? [r.scope] : [])]
-    for (const sc of scopes) if (!out.has(sc)) out.set(sc, r.url)
+    for (const sc of scopes) if (!out.has(sc)) out.set(sc, where)
   }
   return out
 }
