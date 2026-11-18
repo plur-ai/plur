@@ -2,6 +2,50 @@
 
 ## 0.23.1
 
+### Security
+
+Fixes from a source-level security review of the whole repository. Each has a
+regression test. (#1858)
+
+- A repository's git origin picks a team scope only when you have trusted the
+  repository. In an untrusted repository, a folder you have not decided on asks
+  first and names the scope; a folder that is on stays local and reports
+  `untrusted-origin`. (#1860)
+- Recall never sends a query that contains a secret, or that a write to the
+  same team scope would refuse, to a team server. The report says the remote
+  leg was skipped and why (categories only).
+- An `llm_base_url` an agent passes to a tool must be a loopback address or a
+  URL you listed under `llm.base_urls` in `config.yaml`; otherwise nothing is
+  sent.
+- `plur_sync` no longer adds a git remote an agent names. You set one up in a
+  terminal with `plur sync <remote>`.
+- `plur_stores_add` with a URL checks the token and scope with the server, as
+  `plur stores add --url` does, before `config.yaml` changes.
+- `plur_packs_export` writes only under `~/plur-packs/<name>`. A reserved or
+  non-directory pack name is refused instead of being moved to another name.
+- Models load at a pinned revision, and each file must match its recorded
+  sha256. An existing offline cache keeps working when its files match; a
+  mismatched file is refused and the error names the folder to delete.
+- A sync pull is refused when the remote adds anything other than PLUR's own
+  store and pack files, and the sibling stores (episodes, tensions,
+  candidates) stay locked while a pull rewrites them.
+- File modes: the Cursor rule file and `hook-observe` files are owner-only, and
+  `engrams.db` and other files derived from the store are never more readable
+  than `engrams.yaml`. A YAML store that expands far beyond its own size
+  through aliases is refused.
+- A committed `.claude/settings.json` hook no longer marks a folder as on, and
+  hooks a repository ships do not count as this machine's install.
+- Harvested and model-inferred memories are marked `inferred` and pass the
+  prompt-injection check; the OpenClaw `/recall` and other slash commands are
+  owner-only.
+- Antigravity hooks follow the folder map for every workspace root, not only
+  the first. A server that reports a different organisation than the one it
+  was set up with does not change its scopes; a server's `forbid` list only
+  adds to the local one.
+- Remote store ids, scope names and prefixes are validated and escaped; a
+  scope cannot be bound to a remote store as `global` or `local`.
+- `plur-langchain` requires Python 3.10 or later and `plur-ai` 0.23.0 or later.
+
 ### Claude's directory plugin
 
 A PLUR plugin for Claude's directory. (#1870)
