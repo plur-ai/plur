@@ -203,6 +203,19 @@ anchors:
       - "packages/mcp/test/init-follows-global-1832.test.ts::no installed server: a fresh entry is the pinned npx"
       - "packages/mcp/test/init-follows-global-1832.test.ts::an older pin is re-pinned to this version, env kept"
       - "packages/mcp/test/init-follows-global-1832.test.ts::@latest is still healed"
+  packages/mcp/src/index.ts#settingsRaw:
+    kind: guarantee
+    rule: >-
+      plur-mcp init writes ~/.claude/settings.json with a backup and an atomic replace, and never over a file that
+      changed after it was read or through a hard link.
+    tests:
+      - >-
+        packages/mcp/test/init-hooks-settings-write.test.ts::an existing file is backed up before the hooks are added,
+        and keeps the user settings
+      - packages/mcp/test/init-hooks-settings-write.test.ts::a hard-linked settings file is not rewritten in place
+      - >-
+        packages/core/test/instruction-section-write-failure.test.ts::a file that changed since the caller read it is
+        not written at all
   packages/mcp/src/index.ts#stripPlurHooks:
     kind: guarantee
     rule: Removing PLUR's hooks never removes a user's hook.

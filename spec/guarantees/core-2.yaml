@@ -691,6 +691,18 @@ anchors:
       - >-
         packages/core/test/pack-lifecycle-conformance.test.ts::a licence source outside the closed set never reaches the
         typed view
+  packages/core/src/packs.ts#RESERVED_PACK_ENTRY:
+    kind: guarantee
+    rule: >-
+      PLUR's own entries in the packs directory (registry.yaml and its siblings) are never treated as a pack, and only a
+      real directory is one.
+    tests:
+      - >-
+        packages/core/test/pack-reserved-registry-name.test.ts::refuses a source folder named registry.yaml and leaves
+        the registry intact
+      - >-
+        packages/core/test/pack-reserved-registry-name.test.ts::uninstall refuses the registry file and other
+        non-directory entries
   packages/core/src/packs.ts#UninstallResult:
     kind: note
     why: "Explains why the result type is the literal true: uninstall throws when the pack is absent."
@@ -1237,6 +1249,13 @@ anchors:
       - >-
         packages/core/test/recall-deadline-1586-audit.test.ts::a lock released just after the deadline does not let the
         write land
+  packages/core/src/remote-recall.ts#RecallRemoteReport:
+    kind: guarantee
+    rule: A recall report for a query kept on this machine names the forbidden categories only, never the matched text.
+    tests:
+      - >-
+        packages/core/test/remote-recall-query-redaction.test.ts::reports a withheld query in the remote report, with
+        the categories and not the text
   packages/core/src/remote-recall.ts#RemoteStoreStatusEntry:
     kind: note
     why: Instructs renderers not to present an old observation as the server's current state.

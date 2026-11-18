@@ -189,6 +189,18 @@ anchors:
     rule: A dismissed scope is not offered again when the server re-advertises it in different letter case.
     tests:
       - packages/core/test/scope-discovery.test.ts::dismissed-scope matching is case-insensitive
+  packages/core/src/plur/discovery.ts#localForbid:
+    kind: guarantee
+    rule: >-
+      The persisted forbid list is the union of the local effective forbid and the server's; a server answer may add
+      categories but never removes one.
+    tests:
+      - >-
+        packages/core/test/scope-metadata-forbid-union.test.ts::keeps infra forbidden on disk and keeps infra content
+        off the server
+      - >-
+        packages/core/test/server-entry-writeback-identity.test.ts::an authoritative server update lands in forbid
+        inside scope_settings, as a union
   packages/core/src/plur/discovery.ts#results:
     kind: guarantee
     rule: >-
@@ -931,6 +943,11 @@ anchors:
       Rating a pack memory that is not found never claims absence when a store could not be reached; the message names
       the unreached store.
     none: no test rates a missing pack id with an unreachable store
+  packages/core/src/plur/maintenance.ts#maintenanceMethods.ingest:
+    kind: guarantee
+    rule: Ingest drops harvested text that carries a prompt injection, even from extract-only previews.
+    tests:
+      - packages/core/test/ingest-injection-gate.test.ts::drops injection text and stamps saved rows inferred
   packages/core/src/plur/maintenance.ts#primary:
     kind: guarantee
     rule: A write never waits for the background embedding pass it starts.
@@ -1293,6 +1310,15 @@ anchors:
       - >-
         packages/core/test/user-scope-remote-recall.test.ts::a path-backed store with the exact scope wins the read too:
         its url case twin is not dialed
+  packages/core/src/plur/remote-results.ts#text:
+    kind: guarantee
+    rule: >-
+      A recall query that a write to the dialed scopes would refuse (a secret, or a category those scopes forbid) never
+      leaves the machine.
+    tests:
+      - >-
+        packages/core/test/remote-recall-query-redaction.test.ts::recallHybrid and injectHybrid withhold a query with a
+        pasted secret; a clean query is sent as is
   packages/core/src/plur/routing.ts#RoutingMethods:
     kind: guarantee
     rule: >-

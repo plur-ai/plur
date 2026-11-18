@@ -307,8 +307,8 @@ anchors:
         packages/core/test/server-entry-writeback-identity.test.ts::an unrelated writeback keeps unknown forbid
         categories and nested keys in scope_settings
       - >-
-        packages/core/test/server-entry-writeback-identity.test.ts::an authoritative server update replaces forbid
-        inside scope_settings
+        packages/core/test/server-entry-writeback-identity.test.ts::an authoritative server update lands in forbid inside
+        scope_settings, as a union
   packages/core/src/server-discovery.ts#(module):
     kind: guarantee
     rule: a failed, unauthorised or malformed scope answer from the server never replaces a non-empty cached scope list
@@ -495,6 +495,13 @@ anchors:
   packages/core/src/storage-indexed.ts#nsId:
     kind: note
     why: points to the shared id-namespacing rule every loader uses
+  packages/core/src/storage-indexed.ts#prepareIndexFiles:
+    kind: guarantee
+    rule: engrams.db (and so its WAL and SHM files) is never wider than the tightest store file it mirrors.
+    tests:
+      - >-
+        packages/core/test/store-artifact-mode.test.ts::engrams.db, new or existing wider, narrowed by a tighter
+        secondary store
   packages/core/src/storage-indexed.ts#primaryEngrams:
     kind: guarantee
     rule: a queued remote-only save is never copied into the SQLite index
@@ -864,6 +871,16 @@ anchors:
       - SYN-1
       - SYN-4
       - SYN-6
+  packages/core/src/sync.ts#assertIncomingAllowlisted:
+    kind: guarantee
+    rule: >-
+      A pull is refused when the incoming commits add or change anything but allowlisted regular files, so a pushed
+      config, trust or key file never lands locally.
+    tests:
+      - >-
+        packages/core/test/sync-pull-allowlist.test.ts::a pushed config.yaml / trust.yaml / keys file never lands
+        locally
+      - packages/core/test/sync-pull-allowlist.test.ts::an ordinary store change from a teammate still pulls
   packages/core/src/sync.ts#assertNoUnmergedStoreFiles:
     kind: guarantee
     rule: sync refuses to stage while a store file is unmerged, so conflict markers are never committed and pushed
@@ -1055,6 +1072,12 @@ anchors:
       - >-
         packages/core/test/sync-two-devices-offline.test.ts::one record per pair survives and keeps the most advanced
         state
+  packages/core/src/sync.ts#storeFileMode:
+    kind: guarantee
+    rule: Files derived from a store take that store file's permission mode.
+    tests:
+      - "packages/core/test/store-artifact-mode.test.ts::control: derived files take the store mode when it is wider"
+      - packages/core/test/store-artifact-mode.test.ts::daily snapshot and sidecar
   packages/core/src/sync.ts#SYNC_PATHS:
     kind: guarantee
     rule: >-
@@ -1121,6 +1144,26 @@ anchors:
       - >-
         packages/core/test/telemetry-miss-signal.test.ts::default-off install makes zero network calls (a miss is still
         silent)
+  packages/core/src/telemetry-miss-signal.ts#fingerprintKey:
+    kind: guarantee
+    rule: >-
+      The fingerprint key is random, owner-only, created once beside the install id, and never sent; a miss-signal
+      failure never disturbs recall.
+    tests:
+      - >-
+        packages/core/test/miss-signal-salted-fingerprint.test.ts::a guessed query hashed with plain SHA-256 does not
+        match, and the owner-only key is never sent
+      - packages/core/test/miss-signal-salted-fingerprint.test.ts::stable within one install, different across installs
+  packages/core/src/telemetry-miss-signal.ts#fingerprintQuery:
+    kind: guarantee
+    rule: >-
+      A miss-signal query fingerprint is an HMAC under this install's secret key, so a guessed query cannot be confirmed
+      by hashing it.
+    tests:
+      - >-
+        packages/core/test/miss-signal-salted-fingerprint.test.ts::a guessed query hashed with plain SHA-256 does not
+        match, and the owner-only key is never sent
+      - packages/core/test/miss-signal-salted-fingerprint.test.ts::stable within one install, different across installs
   packages/core/src/telemetry.ts#(module):
     kind: guarantee
     rule: telemetry is off unless the user turns it on; an install never opts in implicitly

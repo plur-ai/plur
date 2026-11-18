@@ -292,6 +292,15 @@ anchors:
     rule: The idempotency key is never derived from the engram id, and no key means no header.
     tests:
       - packages/core/test/outbox-flush-budget.test.ts::sends an idempotency key that is NOT the local engram id
+  packages/core/src/store/remote-store.ts#readBodyCapped:
+    kind: guarantee
+    rule: >-
+      A remote response body over its byte cap is refused: an oversized content-length before reading, a stream
+      cancelled at the cap, so the excess is never buffered.
+    tests:
+      - packages/core/test/remote-store-response-cap.test.ts::refuses an oversized page body without buffering it
+      - packages/core/test/remote-store-response-cap.test.ts::me() refuses an oversized body without buffering it
+      - "packages/core/test/remote-store-response-cap.test.ts::control: an ordinary 3-row page and /me body load"
   packages/core/src/store/remote-store.ts#RemoteAbortedError:
     kind: guarantee
     rule: A request cut by the caller's own deadline never marks the host down or feeds the breaker.
@@ -325,6 +334,13 @@ anchors:
       - packages/core/test/remote-exists-by-id.test.ts::returns false ONLY on an authoritative 404
       - packages/core/test/remote-exists-by-id.test.ts::THROWS on a transport failure rather than reporting absence
       - packages/core/test/remote-exists-by-id.test.ts::is BOUNDED
+  packages/core/src/store/remote-store.ts#RemoteStore.load:
+    kind: guarantee
+    rule: A remote page with more rows than requested is refused and not cached, so pages times limit bounds the cache.
+    tests:
+      - >-
+        packages/core/test/remote-store-response-cap.test.ts::refuses a page carrying more rows than the requested
+        limit, and does not cache it
   packages/core/src/store/remote-store.ts#RemoteStore.patch:
     kind: note
     why: "States an assumption about the server: it applies a PATCH atomically."
