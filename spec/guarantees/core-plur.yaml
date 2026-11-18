@@ -1140,6 +1140,9 @@ anchors:
       - >-
         packages/core/test/recall-deadline-1586.test.ts::hybrid recall returns within the deadline with a
         never-answering server and a store lock held in-process
+      - >-
+        packages/core/test/primary-hybrid-store-legs-1787.test.ts::a query embedding that misses the recall deadline still
+        returns the keyword match (REC-7)
     promises:
       - REC-7
   packages/core/src/plur/recall.ts#localLeg:
@@ -1243,6 +1246,18 @@ anchors:
   packages/core/src/plur/recall.ts#store:
     kind: note
     why: Explains why only the touched rows are re-read under the lock; uses "only ever" descriptively about the lookups.
+  packages/core/src/plur/recall.ts#storeLegs:
+    kind: guarantee
+    rule: In a remote-only folder, hybrid recall never asks the personal primary store's own searches.
+    tests:
+      - >-
+        packages/core/test/primary-hybrid-store-legs-1787.test.ts::in a remote-only folder, hybrid recall asks neither of
+        the personal primary store's own searches
+      - >-
+        packages/core/test/folder-remote-only-every-method.test.ts::returns no personal statement and creates or changes
+        no permanent row
+    promises:
+      - OFF-1
   packages/core/src/plur/remote-results.ts#personalScope:
     kind: guarantee
     rule: >-

@@ -8,18 +8,25 @@
  *   `loadFiltered`) happens during the recall;
  * - the scope restriction, the permitted-scope allow-list and the visibility
  *   grants go INTO both store searches (dropping them is an authorization bug);
- * - `domain` is honoured on the meaning leg, which the store call cannot take;
+ * - `domain` goes into the meaning search, so other domains near the query do
+ *   not use up its limit, and is re-applied to its rows for a store that
+ *   ignores it;
+ * - a meaning search that misses the recall deadline still returns the
+ *   keyword match (REC-7);
  * - a store that has not embedded every memory falls back to the in-memory
  *   path and says so in `degraded_reason`, with complete results;
  * - a failing store search falls back rather than failing the recall;
- * - a store without `searchVector` keeps the previous path.
+ * - a store without `searchVector` keeps the previous path;
+ * - in a remote-only folder neither store search is asked (OFF-1).
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync } from 'fs'
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { EXACT_VECTOR_INDEX, MemoryPrimaryStore, Plur } from '../src/index.js'
 import * as emb from '../src/embeddings.js'
+import yaml from 'js-yaml'
+import { StubServer } from './helpers/stub-server.js'
 import type { Engram } from '../src/schemas/engram.js'
 
 function words(text: string): Set<string> {
@@ -76,9 +83,11 @@ class SearchingStore extends MemoryPrimaryStore {
     this.vectorOpts.push(opts ?? {})
     if (this.vectorFails) throw new Error('vector index offline')
     const rows = await this.all()
+    const domain = opts?.domain as string | undefined
     return this.meaningAnswer
       .map(id => rows.find(e => e.id === id))
       .filter((e): e is Engram => !!e && e.status === 'active')
+      .filter(e => !domain || (e.domain ?? '').startsWith(domain))
       .slice(0, limit)
       .map(engram => ({ engram, score: 0.9 }))
   }
@@ -168,13 +177,42 @@ describe('hybrid recall uses the primary store\'s own searches (#1787)', () => {
     expect(store.keywordOpts[0]).toHaveProperty('visibilityGrants')
   })
 
-  it('applies the domain filter to the meaning leg, which the store call cannot take', async () => {
+  it('applies the domain filter to the meaning leg', async () => {
     const { plur, store, ids } = await open(new SearchingStore(), s => (s === MEANING ? 'ops.secrets' : 'eng.db'))
     store.meaningAnswer = [ids[MEANING]]
     const r = await plur.recallHybridWithMeta(QUESTION, { limit: 5, domain: 'eng' })
     expect(store.keywordOpts[0]).toMatchObject({ domain: 'eng' })
+    expect(store.vectorOpts[0]).toMatchObject({ domain: 'eng' })
     expect(r.engrams.map(e => e.id)).not.toContain(ids[MEANING])
     expect(r.engrams[0]?.id).toBe(ids[KEYWORD])
+  })
+
+  it('re-applies the domain filter for a store whose meaning search ignores it', async () => {
+    class DomainBlindStore extends SearchingStore {
+      override async searchVector(q: Float32Array, limit: number, opts?: Opts) {
+        const { domain: _ignored, ...rest } = opts ?? {}
+        const hits = await super.searchVector(q, limit, rest)
+        this.vectorOpts[this.vectorOpts.length - 1] = opts ?? {}
+        return hits
+      }
+    }
+    const { plur, store, ids } = await open(new DomainBlindStore(), s => (s === MEANING ? 'ops.secrets' : 'eng.db'))
+    store.meaningAnswer = [ids[MEANING]]
+    const r = await plur.recallHybridWithMeta(QUESTION, { limit: 5, domain: 'eng' })
+    expect(r.engrams.map(e => e.id)).not.toContain(ids[MEANING])
+    expect(r.engrams[0]?.id).toBe(ids[KEYWORD])
+  })
+
+  // Review of #1898: 12 rows of another domain nearer the query used up the
+  // meaning search's limit, and the one meaning-only match in the asked
+  // domain was dropped after the search.
+  it('a meaning-only match in the asked domain is not crowded out by nearer rows of another domain', async () => {
+    const { plur, store, ids } = await open(new SearchingStore(), s => (s === MEANING ? 'eng.secrets' : 'ops.db'))
+    const ops: string[] = []
+    for (let i = 0; i < 12; i++) ops.push((await plur.learn(`Operations note number ${i} about the night shift`, { scope: 'global', domain: 'ops.notes' })).id)
+    store.meaningAnswer = [...ops, ids[MEANING]]
+    const r = await plur.recallHybridWithMeta(QUESTION, { limit: 2, domain: 'eng' })
+    expect(r.engrams.map(e => e.id)).toContain(ids[MEANING])
   })
 
   it('falls back to the in-memory ranking while the store lacks embeddings, and says so', async () => {
@@ -197,6 +235,64 @@ describe('hybrid recall uses the primary store\'s own searches (#1787)', () => {
     expect(store.fullReads.length).toBeGreaterThan(0)
     expect(r.engrams[0]?.id).toBe(ids[KEYWORD])
     expect(r.degraded_reason).toBeUndefined()
+  })
+
+  // REC-7 on the store path: a meaning search that misses the recall deadline
+  // (a cold or slow model) still returns the keyword match, as the in-memory
+  // path does, instead of an empty, incomplete answer.
+  it('a query embedding that misses the recall deadline still returns the keyword match (REC-7)', async () => {
+    const { plur, store, ids } = await open(new SearchingStore())
+    store.meaningAnswer = [ids[MEANING]]
+    emb._setCachedEmbedder({
+      name: 'slow-test', dim: 64, modelId: 'test/slow',
+      embed: (t: string) => new Promise(res => setTimeout(() => res(bagOfWords(t)), 3000)),
+      embedBatch: async (ts: string[]) => ts.map(t => bagOfWords(t)),
+    })
+    const t0 = Date.now()
+    const r = await plur.recallHybridWithMeta(QUESTION, { limit: 5, deadline_ms: 500 })
+    expect(Date.now() - t0).toBeLessThan(2500)
+    expect(r.local_complete).toBeUndefined()
+    expect(r.degraded_reason).toBe('semantic_deadline')
+    expect(r.engrams[0]?.id).toBe(ids[KEYWORD])
+    expect(r.results_complete).toBe(false)
+    expect(store.fullReads).toEqual([])
+    // Let the abandoned embedding settle before the store is torn down.
+    await new Promise(res => setTimeout(res, 3000))
+  }, 15_000)
+
+  it('in a remote-only folder, hybrid recall asks neither of the personal primary store\'s own searches', async () => {
+    const TOKEN = 'store-legs-ro-token'
+    const TEAM = 'group:acme/client'
+    const server = new StubServer(TOKEN)
+    const { url } = await server.start()
+    const base = realpathSync(mkdtempSync(join(tmpdir(), 'plur-1787-ro-')))
+    dirs.push(base)
+    const prevHome = process.env.HOME
+    const home = join(base, 'home'), root = join(home, '.plur'), work = join(home, 'client')
+    mkdirSync(root, { recursive: true }); mkdirSync(work, { recursive: true })
+    process.env.HOME = home
+    try {
+      writeFileSync(join(root, 'config.yaml'), yaml.dump({ index: false, stores: [{ url, token: TOKEN, scope: TEAM, shared: true, readonly: false }] }))
+      server.setMe({ scopes: [TEAM] })
+      const store = new SearchingStore()
+      const plur = new Plur({ path: root, store, autoDiscover: false })
+      await plur.ready()
+      const personal = await plur.learn(`${KEYWORD} PERSONALZEBRA`, { scope: 'global' })
+      store.meaningAnswer = [personal.id]
+      writeFileSync(join(root, 'folders.yaml'), yaml.dump({ version: 1, folders: [{ path: work, plur: 'remote-only', scope: TEAM }] }))
+      plur.bindFolder(work)
+      expect(plur.remoteOnlyFolder()?.scope).toBe(TEAM)
+      store.vectorOpts = []
+      store.keywordOpts = []
+      const r = await plur.recallHybridWithMeta(QUESTION, { limit: 5 })
+      expect(store.vectorOpts).toEqual([])
+      expect(store.keywordOpts).toEqual([])
+      expect(r.engrams.map(e => e.statement).join('\n')).not.toContain('PERSONALZEBRA')
+      plur.close?.()
+    } finally {
+      process.env.HOME = prevHome
+      await server.stop()
+    }
   })
 
   it('a store without searchVector keeps the previous in-memory path', async () => {

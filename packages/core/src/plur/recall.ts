@@ -82,9 +82,12 @@ export interface RecallMethods {
    * store that cannot report missing vectors, or the store has not
    * embedded every memory yet (`store_embeddings_incomplete`, which the caller
    * reports in `degraded_reason`).
+   * `onKeyword` receives the keyword leg's ranking as soon as it is in, so a
+   * meaning search that misses the recall deadline still leaves the keyword
+   * match to answer with (REC-7).
    */
   /** @internal */
-  _primaryHybridRecall(adapter: StorageAdapter, query: string, limit: number, rerank?: RerankOptions, options?: Omit<RecallOptions, 'mode' | 'llm'>, onFused?: (r: HybridSearchResult) => void): Promise<{ result: HybridSearchResult } | { fallback: DegradedReason | null }>
+  _primaryHybridRecall(adapter: StorageAdapter, query: string, limit: number, rerank?: RerankOptions, options?: Omit<RecallOptions, 'mode' | 'llm'>, onFused?: (r: HybridSearchResult) => void, onKeyword?: (engrams: Engram[]) => void): Promise<{ result: HybridSearchResult } | { fallback: DegradedReason | null }>
 
   /** Search engrams using LLM-assisted semantic filtering. Async, requires llm function. */
   recallAsync(query: string, options: RecallOptions & { llm: LlmFunction }): Promise<Engram[]>
@@ -537,6 +540,8 @@ export const recallMethods: RecallMethods & ThisType<Plur> = {
     // embedding leg is done (only the reranker can still be late then).
     let candidates: Engram[] | undefined
     let fused: HybridSearchResult | undefined
+    /** The store path's keyword ranking, once in: the deadline fallback when no candidates were loaded (REC-7). */
+    let storeKeyword: Engram[] | undefined
     /** Why the semantic leg was skipped this call, when it was. */
     let semanticSkipped: string | null = null
     const searchOpts = { signal: localAbort.signal, deadlineAt, onFused: (r: HybridSearchResult) => { fused = r } }
@@ -582,7 +587,7 @@ export const recallMethods: RecallMethods & ThisType<Plur> = {
       let storeFallback: DegradedReason | null = null
       const hybrid = async (n: number, rr?: RerankOptions): Promise<HybridSearchResult> => {
         if (storeLegs) {
-          const answered = await this._primaryHybridRecall(storeLegs, query, n, rr, options, searchOpts.onFused)
+          const answered = await this._primaryHybridRecall(storeLegs, query, n, rr, options, searchOpts.onFused, kw => { storeKeyword = kw })
           if ('result' in answered) return answered.result
           storeFallback = answered.fallback
         }
@@ -624,6 +629,16 @@ export const recallMethods: RecallMethods & ThisType<Plur> = {
       localAbort.abort()
       if (fused) lateFallback = { ...fused, embedderError: fused.embedderError ?? Plur.DEGRADED_MESSAGES.reranker_deadline, degraded_reason: 'reranker_deadline' }
       else if (candidates) lateFallback = keywordOnly(candidates, 'semantic_deadline')
+      // Store path: no candidates are loaded, but the store's keyword leg ran
+      // alongside the query embedding — answer with it, as the in-memory path does.
+      else if (storeKeyword) lateFallback = {
+        engrams: storeKeyword.slice(0, limit),
+        mode: 'hybrid-degraded',
+        embedderError: Plur.DEGRADED_MESSAGES.semantic_deadline,
+        degraded_reason: 'semantic_deadline',
+        topScore: null,
+        reranked: 0,
+      }
     }
     if (local.done && local.error !== undefined) throw local.error
     if (!local.done || semanticSkipped !== null) this._maybeFillEmbeddingCache()
@@ -892,7 +907,27 @@ export const recallMethods: RecallMethods & ThisType<Plur> = {
     }
   },
 
-  async _primaryHybridRecall(adapter: StorageAdapter, query: string, limit: number, rerank?: RerankOptions, options?: Omit<RecallOptions, 'mode' | 'llm'>, onFused?: (r: HybridSearchResult) => void): Promise<{ result: HybridSearchResult } | { fallback: DegradedReason | null }> {
+  async _primaryHybridRecall(adapter: StorageAdapter, query: string, limit: number, rerank?: RerankOptions, options?: Omit<RecallOptions, 'mode' | 'llm'>, onFused?: (r: HybridSearchResult) => void, onKeyword?: (engrams: Engram[]) => void): Promise<{ result: HybridSearchResult } | { fallback: DegradedReason | null }> {
+    const wantReranker = rerank?.reranker && !isRerankerOff(rerank.reranker)
+    const embLimit = wantReranker ? Math.max(limit * 3, 50) : limit * 2
+    const bm25Limit = wantReranker ? Math.max(limit * 3, 50) : limit * 3
+    // The lexical leg gets the deterministic rewrite; the vector leg and the
+    // reranker keep the original query (as hybridSearchWithMeta does).
+    const lexicalQuery = isQueryRewriteDisabled() ? query : rewriteLexicalQuery(query)
+    // The keyword leg starts BEFORE the query embedding (REC-7): a cold or slow
+    // model can miss the recall deadline, and the deadline fallback answers with
+    // this ranking (handed over through `onKeyword`) rather than with nothing.
+    // Secondary-store and pack engrams are not in the store: read once, ranked
+    // in memory on both legs. If the in-memory path answers after all, this
+    // search was spent for nothing — the price of a keyword answer on time.
+    const keywordEarly = (async () => {
+      const outsiders = await this._engramsOutsidePrimaryStore(options)
+      const keyword = await this._primaryKeywordLeg(adapter, lexicalQuery, bm25Limit, options, outsiders)
+      onKeyword?.(keyword)
+      return { outsiders, keyword }
+    })()
+    // Settled even when nothing awaits it (an early fallback, or the meaning search throws first).
+    keywordEarly.catch(() => {})
     const { embed } = await import('../embeddings.js')
     const queryVec = await embed(query, 'query')
     // Embedder disabled or failed: the in-memory path reports that (mode
@@ -909,30 +944,18 @@ export const recallMethods: RecallMethods & ThisType<Plur> = {
           return { fallback: 'store_embeddings_incomplete' }
         }
       }
-      const wantReranker = rerank?.reranker && !isRerankerOff(rerank.reranker)
-      const embLimit = wantReranker ? Math.max(limit * 3, 50) : limit * 2
-      const bm25Limit = wantReranker ? Math.max(limit * 3, 50) : limit * 3
-      // The lexical leg gets the deterministic rewrite; the vector leg and the
-      // reranker keep the original query (as hybridSearchWithMeta does).
-      const lexicalQuery = isQueryRewriteDisabled() ? query : rewriteLexicalQuery(query)
-      // Secondary-store and pack engrams are not in the store: read once, ranked in memory on both legs.
-      const outsiders = await this._engramsOutsidePrimaryStore(options)
-      const keywordLeg = (): Promise<Engram[]> => this._primaryKeywordLeg(adapter, lexicalQuery, bm25Limit, options, outsiders)
-      // A store that reports missing vectors (the gate above passed) answers
-      // both legs at once. One that cannot may have no vectors yet, which an
-      // empty meaning answer reveals; ask it first, so a fallback to the
-      // in-memory path does not also pay for an unused keyword search.
+      // A store that cannot report missing vectors may have none yet, which an
+      // empty meaning answer reveals (see below).
       const gated = typeof adapter.listEngramsMissingEmbeddings === 'function'
-      const keywordEarly = gated ? keywordLeg() : null
-      // Settled even if the meaning search throws first (the catch below falls back).
-      keywordEarly?.catch(() => {})
       // The scope restriction goes INTO the k-NN query, not onto its results.
       const hits = await adapter.searchVector(queryVec, embLimit, {
         scopes: options?.scopes,
         scope: options?.scope,
         visibilityGrants: this._grantedScopes(),
+        // In the k-NN query, so `embLimit` is not spent on other domains (#1899).
+        domain: options?.domain,
       })
-      // `searchVector` takes no domain; apply it here with _filterEngrams' rule.
+      // Re-applied here with _filterEngrams' rule, for a store that ignores `domain`.
       const domain = options?.domain
       const surviving = new Set(this._applyResidualFilters(hits.map(h => h.engram), options)
         .filter(e => !domain || e.domain?.startsWith(domain))
@@ -944,7 +967,7 @@ export const recallMethods: RecallMethods & ThisType<Plur> = {
       // it has none yet: rank in memory as before. With the gate passed, no
       // hit means no visible memory is near the query, and the keyword leg stands.
       if (primaryScored.length === 0 && !gated) return { fallback: null }
-      const keyword = await (keywordEarly ?? keywordLeg())
+      const { outsiders, keyword } = await keywordEarly
       const extra = this._applyResidualFilters(outsiders, options)
       const outsiderScored = extra.length > 0
         ? await embeddingSearchWithScores(extra, query, embLimit, this.paths.root)

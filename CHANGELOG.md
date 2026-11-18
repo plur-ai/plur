@@ -74,8 +74,12 @@ A PLUR plugin for Claude's directory. (#1870)
   and domain still restrict both searches. While the store has not yet stored
   a vector for every memory, recall ranks in process as before, starts the
   backfill, and reports `degraded_reason: store_embeddings_incomplete`; the
-  results are still complete. Stores without these searches, the default YAML
-  store and PGlite are unchanged. (#1787)
+  results are still complete. If the query embedding misses the recall
+  deadline (a cold or slow model), the store's keyword match is returned with
+  `degraded_reason: semantic_deadline`, as on the in-process path. The domain
+  filter goes into the store's meaning search too, so nearer memories of
+  another domain no longer use up its limit. Stores without these searches,
+  the default YAML store and PGlite are unchanged. (#1787)
 
 ### Fixes
 

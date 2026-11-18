@@ -246,11 +246,14 @@ export interface StorageAdapter {
    * Vector similarity search (cosine). `opts.scopes`, the `scope` visibility filter
    * and `visibilityGrants` must be applied IN the k-NN query, not to returned rows,
    * or `limit` is spent on discarded rows ({@link ScopeRestriction}).
+   * `domain` (a prefix match, as in {@link StorageFilter}) belongs in the k-NN
+   * query too. Core re-applies it to the returned rows, so an adapter that
+   * ignores it returns correct rows, just fewer of them.
    */
   searchVector(
     query: Float32Array,
     limit: number,
-    opts?: ScopeRestriction & Pick<StorageFilter, 'scope' | 'visibilityGrants'>,
+    opts?: ScopeRestriction & Pick<StorageFilter, 'scope' | 'visibilityGrants' | 'domain'>,
   ): Promise<VectorSearchHit[]>
   /**
    * Upsert an embedding for a specific engram.

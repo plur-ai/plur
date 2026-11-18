@@ -711,7 +711,7 @@ export class PGLiteAdapter implements DerivedIndexAdapter {
   async searchVector(
     query: Float32Array,
     limit: number,
-    opts?: ScopeRestriction & Pick<StorageFilter, 'scope' | 'visibilityGrants'>,
+    opts?: ScopeRestriction & Pick<StorageFilter, 'scope' | 'visibilityGrants' | 'domain'>,
   ): Promise<VectorSearchHit[]> {
     const db = await this.getDb()
     const totalRes = await db.query('SELECT COUNT(*)::int AS c FROM engram_embeddings')
@@ -722,6 +722,7 @@ export class PGLiteAdapter implements DerivedIndexAdapter {
       scopes: opts?.scopes,
       scope: opts?.scope,
       visibilityGrants: opts?.visibilityGrants,
+      domain: opts?.domain,
     }
     if (this.hasVector) {
       // pgvector path. Cosine distance = 1 - cosine similarity. The query
