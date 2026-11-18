@@ -13,4 +13,4 @@ grep -qs hook-inject "$config/settings.json" "$project/settings.json" "$project/
 # Keeps each project's notes to that project, matching the server's setting.
 export PLUR_FOLDER_SCOPE=project
 
-exec npx -y @plur-ai/cli@0.23.0 "$@"
+exec npx -y @plur-ai/cli@0.23.1 "$@"

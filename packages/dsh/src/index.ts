@@ -43,7 +43,7 @@ export const name = 'plur'
 export const inject = ['systemPrompt', 'tools']
 
 /** Kept in step with package.json by scripts/release.sh --dsh. */
-export const VERSION = '0.1.0'
+export const VERSION = '0.1.1'
 
 /**
  * Section order. The convention in dsh is -100 harness identity, 0 deployment

@@ -1,6 +1,6 @@
 {
   "name": "@plur-ai/claw",
-  "version": "0.20.0",
+  "version": "0.20.1",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -28,10 +28,10 @@
     "postinstall": "node dist/setup.js 2>/dev/null || true"
   },
   "dependencies": {
-    "@plur-ai/core": "workspace:>=0.23.0 <1"
+    "@plur-ai/core": "workspace:>=0.23.1 <1"
   },
   "peerDependencies": {
-    "@plur-ai/core": ">=0.23.0 <1",
+    "@plur-ai/core": ">=0.23.1 <1",
     "openclaw": ">=2026.6.5"
   },
   "peerDependenciesMeta": {
