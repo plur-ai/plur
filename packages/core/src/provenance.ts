@@ -461,8 +461,16 @@ function agentNodes(engram: Engram): {
   nodes: Node[]; attributedTo?: string; associatedWith?: string
   usedModel?: string; onBehalfOf?: string
 } {
-  const a = (engram as any).attribution as Engram['attribution']
-  if (!a) return { nodes: [] }
+  const recorded = (engram as any).attribution as Engram['attribution']
+  if (!recorded) return { nodes: [] }
+  // Until #1470, core recorded itself in the runtime slot (`runtime: plur-core`)
+  // as the writing software; since then `runtime` is the calling client and
+  // core is the writing tool (`tool: plur-core`). Core is never a calling
+  // client, so an older record is read in the current meaning: the same
+  // software exports the same way, as a tool, whichever slot it was stored in.
+  const a = recorded.runtime?.name === 'plur-core'
+    ? { ...recorded, runtime: undefined, tool: recorded.tool ?? recorded.runtime }
+    : recorded
   const nodes: Node[] = []
   let attributedTo: string | undefined
   let associatedWith: string | undefined

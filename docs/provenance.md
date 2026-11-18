@@ -188,8 +188,24 @@ By default PLUR records `attribution.tool: { name: 'plur-core' }` and marks
 `asserted_by` as `unidentified` unless an identity is configured or supplied.
 MCP writes also record the calling app's name and version from the initialize
 handshake in `attribution.runtime`. Without client information, runtime stays
-unset. These defaults apply to individual learns, batches, and session-end
-suggestions; existing engrams are not rewritten.
+unset. These defaults apply to individual learns, batches, session-end
+suggestions and promoted team copies; existing engrams are not rewritten.
+
+The app's name and version are whatever the client sends, and nothing checks
+them. Before they are stored, line breaks, control characters, bidirectional
+controls and zero-width characters become single spaces, and each is cut to
+128 characters. A name with nothing left records no runtime. A `runtime` you
+pass yourself, as below, is kept as given and not replaced by the client's.
+
+**`runtime` changed meaning after 0.23.0.** Up to that version, core
+recorded itself there (`runtime: { name: 'plur-core' }`) as the software that
+wrote the engram. Now `runtime` is the calling app, and core is
+recorded as `tool: { name: 'plur-core' }`. Engrams written earlier keep the old
+shape on disk. Read an old `runtime: plur-core` as "written by core, calling
+app not recorded". The provenance export does this for you: `plur-core` is
+exported as a tool (`pa:AgentTool`) whichever field holds it, so a store with
+old and new engrams describes the same software one way. History events follow
+the same change: their default actor names `plur-core` as the tool.
 
 To record yourself as well, pass it at the point of learning:
 

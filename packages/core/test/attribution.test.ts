@@ -356,7 +356,9 @@ describe('who caused an event, as distinct from who asserted the engram (#959)',
     expect(events.length).toBeGreaterThan(0)
     for (const e of events) {
       expect(e.actor?.asserted_by, `${e.event} has no actor`).toBe('local:alex')
-      expect(e.actor?.runtime?.name, `${e.event} has no runtime`).toBe('plur-core')
+      // Core is the writing tool; `runtime` is the calling client (#1470).
+      expect(e.actor?.tool?.name, `${e.event} has no tool`).toBe('plur-core')
+      expect(e.actor?.runtime, `${e.event} names core as the runtime`).toBeUndefined()
     }
   })
 })

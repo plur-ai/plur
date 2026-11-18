@@ -1500,7 +1500,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
               asserted_by: { type: 'string', description: 'Who or what asserted it. Any address: a local name, a Decentralized Identifier, or "unidentified".' },
               runtime: {
                 type: 'object',
-                description: 'The calling app. Set automatically from MCP initialize.clientInfo when available.',
+                description: 'The calling app, with its version. Leave it out: it is filled from the MCP initialize clientInfo. A value given here is kept as given instead.',
                 properties: { name: { type: 'string' }, version: { type: 'string' } },
               },
               model: {
