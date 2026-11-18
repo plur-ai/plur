@@ -336,8 +336,11 @@ export interface RecallOptions {
  * Why a hybrid recall or injection answered without (part of) its semantic
  * leg: the model is not on disk (run `plur doctor`), the
  * semantic leg missed the recall deadline, or only the reranker did.
+ * `store_embeddings_incomplete`: the primary store can search by meaning
+ * itself but has not embedded every memory yet, so the recall ranked in
+ * memory over the full candidate set instead (results complete, slower).
  */
-export type DegradedReason = 'embedding_model_missing' | 'semantic_deadline' | 'reranker_deadline'
+export type DegradedReason = 'embedding_model_missing' | 'semantic_deadline' | 'reranker_deadline' | 'store_embeddings_incomplete'
 
 export interface InjectOptions {
   budget?: number
