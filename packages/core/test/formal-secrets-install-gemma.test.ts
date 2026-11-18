@@ -25,6 +25,10 @@ vi.mock('../src/embedders/transformers-base.js', () => ({
   envOf: () => null,
   refuseMissingModelOffline: async () => {},
   localOnlyOptions: () => ({}),
+  // Pinned-model checks (security audit 2026-11-06): a pass-through here, tested in their own files.
+  verifyPinnedModel: async () => async () => {},
+  pinnedLoadOptions: () => ({}),
+  disposeQuietly: async () => {},
 }))
 
 import { makeEmbeddingGemmaAdapter, _resetEmbeddingGemmaCache } from '../src/embedders/embedding-gemma.js'
