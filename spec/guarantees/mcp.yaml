@@ -179,6 +179,19 @@ anchors:
   packages/mcp/src/index.ts#compareSemver:
     kind: note
     why: "A caveat: calendar versions would compare as far-future, and packs ship semver."
+  packages/mcp/src/index.ts#hooksShapeProblem:
+    kind: guarantee
+    rule: >-
+      A malformed hooks section in Claude Code settings is refused: init skips the hooks step, names the offending
+      path, leaves the file unchanged, and does not throw.
+    tests:
+      - >-
+        packages/mcp/test/init-malformed-hooks-1352.test.ts::an entry that is null: hooks skipped and named, file
+        unchanged, init completes
+      - >-
+        packages/mcp/test/init-malformed-hooks-1352.test.ts::an entry whose hooks is an object: hooks skipped and
+        named, file unchanged, init completes
+      - packages/mcp/test/init-malformed-hooks-1352.test.ts::names the first offending path
   packages/mcp/src/index.ts#installClaudeUserMcp:
     kind: guarantee
     rule: >-
