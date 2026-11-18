@@ -285,10 +285,10 @@ capabilities:
     today: holds
     evidence: mcp/test/folder-off.test.ts.
   - id: OFF-4
-    promise: In a folder I have not decided about yet, nothing is read from or written to memory until I choose, and my choice applies only to that folder.
+    promise: In a folder I have not decided about yet, nothing is read from or written to memory until I choose, and my choice applies only to that folder. This does not cover a client that names no project folder and starts in my home folder or the filesystem root; there, memory runs as before.
     kind: deterministic
     today: holds
-    evidence: 'Eval 2026-10-17 via the MCP server (packages/mcp/README.md ~79, ~92; folder-gate.ts; server.ts gate). Undecided folder A: learn, recall, recall_hybrid, inject, inject_hybrid, session_start and plur_admin (capture, timeline, similarity_search, learn, recall; lean profile) all answer the folder question, return no memory text, change no memory file, write no folders.yaml, send nothing to the team server, and call nothing on the engine but the folder lookup and config reads. After answering yes for A (the offered command, run as plur folders set runs it): memory runs in A directly and through plur_admin; the map gains an entry for A only; sibling B stays ask and a new session in B gets the question; A''s nonce is refused for B and from another session. Mutants OFF-4-1..3 killed.'
+    evidence: 'Eval 2026-10-17 via the MCP server (packages/mcp/README.md ~79, ~92; folder-gate.ts; server.ts gate). Undecided folder A: learn, recall, recall_hybrid, inject, inject_hybrid, session_start and plur_admin (capture, timeline, similarity_search, learn, recall; lean profile) all answer the folder question, return no memory text, change no memory file, write no folders.yaml, send nothing to the team server, and call nothing on the engine but the folder lookup and config reads. After answering yes for A (the offered command, run as plur folders set runs it): memory runs in A directly and through plur_admin; the map gains an entry for A only; sibling B stays ask and a new session in B gets the question; A''s nonce is refused for B and from another session. Mutants OFF-4-1..3 killed. Owner decision 2026-11-02 (plur-ai/plur#1812): with no client roots and the server started in the home folder or a filesystem root, memory runs, as pinned by mcp/test/folder-ask.test.ts ("without roots, a client started in the home folder is not asked"); the promise excludes that case rather than changing the behaviour.'
 
 - key: team
   name: Team stores and being offline
@@ -517,11 +517,10 @@ capabilities:
     today: broken
     evidence: plur-mcp init installs fewer hooks than plur init (mcp/src/index.ts buildPlurHooks vs cli init buildEnforcementHooks).
   - id: INS-2
-    promise: Setting up PLUR keeps my other client settings, and the doctor reports a memory connection it could not verify as a failure.
+    promise: Setting up PLUR keeps my other client settings, and the doctor never reports a memory connection it could not verify as healthy.
     kind: deterministic
-    today: broken
-    evidence: 'Eval 2026-10-17 red: plur doctor --no-handshake says overall ok and exits 0 without starting the memory server (cli/src/commands/doctor.ts ~1452, `skipHandshake || handshake.ok`); failure line: ''expected the doctor not to say "ok" for a memory connection it did not verify; it said ok (handshake: {"ok":false,"error":"skipped (--no-handshake)"})''. Green parts: plur init and plur-mcp init keep other MCP servers, unrelated ~/.claude.json keys, other hooks, permissions, env and statusLine; MCP plur_doctor fails an unreachable team store and says ok:false.'
-    decide: Should a doctor run that skipped the server check say 'unverified' (not ok, non-zero exit, as the Codex sub-check already does) or 'fail'? The eval accepts either, only not 'ok'.
+    today: holds
+    evidence: 'Gated green in evals/baseline.json (INS2). plur doctor --no-handshake reports overall "unverified", not "ok", and exits non-zero (cli/src/commands/doctor.ts: overall is fail, unverified or ok; anything but ok exits 1). plur init and plur-mcp init keep other MCP servers, unrelated ~/.claude.json keys, other hooks, permissions, env and statusLine; MCP plur_doctor fails an unreachable team store and says ok:false. Owner decision 2026-11-02 (plur-ai/plur#1812): an unverified connection stays "unverified" rather than "fail"; the promise says it is never reported as healthy.'
 
 - key: agent-behaviour
   name: What an agent with PLUR actually does

@@ -1,0 +1,16 @@
+anchors:
+  packages/core/src/intent/rewrite.ts#(module):
+    kind: guarantee
+    rule: Query rewriting changes only the keyword search query, never strips role words, keeps absolute dates, and returns
+      the original when too little would remain.
+    lean:
+    - PlurSpec/R2Retrieval.lean:content_kept
+    tests:
+    - packages/core/test/intent-rewrite.test.ts::KEEPS ISO dates
+    - packages/core/test/intent-rewrite.test.ts::hybridSearchWithMeta feeds the REWRITTEN query to the BM25 leg
+  packages/core/src/intent/rewrite.ts#rewriteLexicalQuery:
+    kind: guarantee
+    rule: A rewrite too thin to retrieve on is never returned; the original query is used instead.
+    tests:
+    - packages/core/test/intent-rewrite.test.ts::returns the original when stripping would leave < 2 content tokens
+    - packages/core/test/intent-rewrite.test.ts::returns the original when temporal stripping would gut the query

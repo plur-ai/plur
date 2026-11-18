@@ -23,7 +23,7 @@ async function readStdin(): Promise<string> {
 
 /**
  * `plur stores add --url <u> --scope <s> --token <t>|--token-env <VAR>|--token -`
- * (#1265). Verifies the token against the server's /me before anything is
+ * Verifies the token against the server's /me before anything is
  * written (Plur.addRemoteStore); refuses, writing nothing, when the token is
  * rejected or the scope is not one it is authorised for. The token is never
  * printed: not in text output, not in --json, not in an error.
@@ -55,7 +55,7 @@ async function addRemote(args: string[], plur: ReturnType<typeof createPlur>, fl
   try {
     result = await plur.addRemoteStore({
       url: url!, token, scope: scope!,
-      // #1561: only the variable's name goes into config.yaml.
+      // Only the variable's name goes into config.yaml.
       ...(tokenEnv ? { tokenEnv } : {}),
       ...(readonly ? { readonly } : {}),
       ...(args.includes('--overwrite-scope') ? { overwriteScope: true } : {}),
@@ -63,10 +63,10 @@ async function addRemote(args: string[], plur: ReturnType<typeof createPlur>, fl
   } catch (err) {
     // AddRemoteStoreError messages are already token-free; anything else (an
     // addStore scope conflict, a write failure) is scrubbed here as well —
-    // every encoding of the token, not only the exact string (audit of #1272).
+    // every encoding of the token, not only the exact string.
     const raw = err instanceof Error ? err.message : String(err)
     let msg = redactToken(raw, token)
-    // Core names its option; a CLI user needs the flag (review of #1272).
+    // Core names its option; a CLI user needs the flag.
     if (err instanceof AddRemoteStoreError && err.code === 'scope_conflict') {
       msg = msg.replace('pass overwriteScope to replace that entry', 're-run with --overwrite-scope to replace that entry')
     }
@@ -87,7 +87,7 @@ async function addRemote(args: string[], plur: ReturnType<typeof createPlur>, fl
     token_rotated: `Updated the token for ${url} (scope: ${result.scope}) after it verified.`,
     overwritten: `Reassigned scope ${result.scope} to ${url}.`,
   }[result.status] + (result.status === 'already_registered' ? '' : kept) +
-    // A server entry has one key for all its scopes (#1631): say which ones it now serves.
+    // A server entry has one key for all its scopes: say which ones it now serves.
     (result.token_scopes ? ` The key is shared by every scope of that server entry: ${result.token_scopes.join(', ')}.` : '')
   if (shouldOutputJson(flags)) {
     outputJson(redactTokenDeep({
@@ -122,7 +122,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     const readonly = args.includes('--readonly')
     const result = plur.addStore(path, scope, { shared, readonly })
 
-    // #406: a local store is keyed by its PATH, so adding a NEW scope to an
+    // A local store is keyed by its PATH, so adding a NEW scope to an
     // already-registered path is a no-op for that scope (the existing entry's
     // scope wins). Don't report a plain success — say the requested scope was
     // not added.
@@ -184,10 +184,9 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       registered.forEach(r => {
         if (!r.ok) { outputText(`${r.url}: register failed — ${r.error}`); return }
         outputText(`${r.url}: added ${r.added.length} scope(s)${r.added.length ? ` (${r.added.join(', ')})` : ''}`)
-        // `skipped` now has three causes (a personal-family scope refused by the
-        // #382 guard, a scope whose addStore threw — e.g. an endpoint conflict
-        // from #397 — OR a dismissed scope the batch path respects, scope-audit
-        // 2026-07-24), so the label stays neutral rather than asserting one cause.
+        // `skipped` has three causes (a refused personal-family scope, a scope
+        // whose addStore threw — e.g. an endpoint conflict — or a dismissed
+        // scope), so the label stays neutral rather than asserting one cause.
         if (r.skipped.length) outputText(`  skipped ${r.skipped.length} scope(s) (not auto-registered): ${r.skipped.join(', ')}`)
       })
     } else {
@@ -198,9 +197,8 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   }
 
   if (subcommand === 'prune') {
-    // #1356: removes ONLY entries that name the primary engrams file. They are
-    // ignored at load already (#1319) but keep warning on every run until
-    // they are gone. Any other store is left alone.
+    // Removes ONLY entries that name the primary engrams file. They are
+    // ignored at load but warn on every run until they are gone. Any other store is left alone.
     let removed
     try {
       removed = plur.removeDuplicatePrimaryStores()
@@ -218,10 +216,10 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   }
 
   if (!subcommand || subcommand === 'list') {
-    // Async variant — accurate remote store engram_count (issue #184)
+    // Async variant — accurate remote store engram_count
     const storeList = await plur.listStoresAsync()
     // Stores found from here that were not added because their folder has no
-    // decision of its own (#1588, #1589 audit L3), with the command that adds them.
+    // decision of its own, with the command that adds them.
     let skipped: Array<{ path: string; folder: string }> = []
     try { skipped = plur.skippedProjectStores(process.cwd()) } catch { /* a hint never fails the list */ }
     if (shouldOutputJson(flags)) {
@@ -243,15 +241,15 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
 }
 
 /**
- * The text for project stores that were found but not added (#1589 audit L3).
+ * The text for project stores that were found but not added.
  * Shared with `plur doctor`. The command is built by core's
- * `folderSetOnCommand` (#1589 audit round 2): the folder quoted for the shell,
- * `--path` when the store `root` is not ~/.plur, and no command at all for a
- * folder the folder question refuses (#1418), whose path is shown escaped.
+ * `folderSetOnCommand`: the folder quoted for the shell, `--path` when the
+ * store `root` is not ~/.plur, and no command at all for a folder the folder
+ * question refuses, whose path is shown escaped.
  */
 export function skippedStoreLines(skipped: Array<{ path: string; folder: string }>, root: string): string[] {
   if (skipped.length === 0) return []
-  const lines = ['', `Found ${skipped.length === 1 ? 'a memory store that was' : `${skipped.length} memory stores that were`} not added, because ${skipped.length === 1 ? 'its folder has' : 'their folders have'} no decision of ${skipped.length === 1 ? 'its' : 'their'} own (#1588):`]
+  const lines = ['', `Found ${skipped.length === 1 ? 'a memory store that was' : `${skipped.length} memory stores that were`} not added, because ${skipped.length === 1 ? 'its folder has' : 'their folders have'} no decision of ${skipped.length === 1 ? 'its' : 'their'} own:`]
   for (const s of skipped) {
     const command = folderSetOnCommand(s.folder, root)
     // The path is data, never a shell word: escaped, so a pasted line runs

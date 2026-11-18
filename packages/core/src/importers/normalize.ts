@@ -1,5 +1,5 @@
 /**
- * Normalization helpers shared by the migration importers (issue #441).
+ * Normalization helpers shared by the migration importers.
  */
 import type { ImportEngramType } from './types.js'
 

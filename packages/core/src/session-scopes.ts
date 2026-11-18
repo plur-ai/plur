@@ -1,62 +1,17 @@
 /**
- * Per-session default write scope (convergence Phase 2 — concurrency
- * correctness).
- *
- * ### The defect this replaces
- *
- * `Plur` held the session default in a single instance field, `_sessionScope`,
- * set by `setSessionScope()` and read by `_guardSensitiveScope()` on every
- * unscoped write. One field, one instance, every caller.
- *
- * That is safe under exactly one condition: one session per `Plur` instance,
- * executing without interleaving. Neither half holds any more. `learnRouted()`
- * is already `async` and already awaits a network round-trip between reading
- * the session scope and persisting the engram, and a deployment that serves
- * several concurrent sessions from one instance — which is the whole point of
- * the convergence work — has several sessions racing on that field. The
- * failure is silent and directional: session B calls `setSessionScope('B')`
- * while session A is mid-`learnRouted`, and A's engram lands in B's scope. A
- * write crossing a scope boundary is precisely the outcome scoping exists to
- * prevent.
- *
- * ### The shape
- *
- * `packages/claw/src/context-engine.ts` already runs one shared `Plur` across
- * concurrent sessions and solves this the only way it can be solved: a
- * `Map<sessionKey, scope>` plus explicit threading of the scope into each call.
- * This class is that map, moved into core so every consumer gets it rather than
- * each re-deriving it.
- *
- * ### Resolution order
- *
- * A session that has registered a scope gets its own — always, regardless of
- * what any other session does. A session that has NOT registered one inherits
- * the process-default slot, which is what the single-session CLI and MCP
- * deployments use and what `setSessionScope(scope)` without a key still sets.
- * So the existing single-session behaviour is byte-for-byte unchanged, and
- * isolation is opt-in per session by registering.
- *
- * Registering `null` for a session is meaningful and distinct from not
- * registering: it pins that session to "no session scope", so unscoped writes
- * auto-route instead of inheriting the process default.
+ * Per-session default write scope: a `Map<sessionKey, scope>`, because `learnRouted()` awaits the network between
+ * reading the scope and persisting, so one instance-wide scope would let concurrent sessions write into each
+ * other's scope.
+ * A session with a registered scope gets its own; an unregistered one inherits the process-default slot (what
+ * `setSessionScope(scope)` without a key sets). Registering `null` pins "no session scope", so unscoped writes
+ * auto-route instead of inheriting the default.
  */
 
 /**
- * Decision E7 (2026-09-26): the "no session" sentinel.
- *
- * Pass it as `LearnContext.session` (learn / learnRouted), `RecallOptions.session`
- * or `InjectOptions.session_id` when the caller KNOWS it has no session — e.g. an
- * MCP call without a `session_id` while several sessions are open, where
- * falling back to the process-default slot would hand this write whichever
- * session scope was set last (possibly a team scope). With `NO_SESSION` the
- * registry answers `null`: neither a keyed registration nor the process-default
- * slot applies, so an unscoped write takes the genuinely-unscoped path
- * (auto-route / `unscoped_default`, `scope_source` 'routed' | 'default'). An
- * explicit `scope` still wins.
- *
- * It is a string (the `session` fields are strings) that no real session id
- * can collide with. It is never registered (`set` refuses it), never recorded
- * as a session id in provenance, and never persisted on an engram.
+ * The "no session" sentinel, for `LearnContext.session`, `RecallOptions.session` or `InjectOptions.session_id` when
+ * the caller KNOWS it has no session: the registry answers `null`, so an unscoped write takes the unscoped path
+ * (auto-route / `unscoped_default`) instead of the last-set process default. An explicit `scope` still wins.
+ * No real session id can collide with it; it is never registered, recorded in provenance or persisted.
  */
 export const NO_SESSION = '\u0000plur:no-session'
 
@@ -90,7 +45,7 @@ export class SessionScopeRegistry {
    * slot only when the session has no registration of its own.
    */
   get(session?: string): string | null {
-    // Decision E7: the sentinel has no default at all — not even the process slot.
+    // The sentinel has no default at all, not even the process slot.
     if (session === NO_SESSION) return null
     if (session !== undefined && this.scopes.has(session)) {
       return this.scopes.get(session) ?? null
@@ -99,10 +54,10 @@ export class SessionScopeRegistry {
   }
 
   /**
-   * The session's OWN registration only — never the process slot. `null` for
+   * The session's OWN registration only, never the process slot. `null` for
    * no session, `NO_SESSION`, or a session that never registered. Used where
-   * an inherited process default must not count as the caller's choice (the
-   * personal `user:` remote dial, #1515 audit F2).
+   * an inherited process default must not count as the caller's choice (e.g.
+   * the personal `user:` remote dial).
    */
   own(session?: string): string | null {
     if (session === undefined || session === NO_SESSION) return null

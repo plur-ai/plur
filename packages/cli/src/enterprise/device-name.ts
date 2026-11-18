@@ -1,10 +1,9 @@
 /**
- * The device name a sign-in sends, and whether a browser can be opened here
- * (#1638, plan C Task 3). Pure: the caller passes the host name, platform and
- * environment.
+ * The device name a sign-in sends, and whether a browser can be opened here.
+ * Pure: the caller passes the host name, platform and environment.
  */
 
-/** Longest device name the server accepts (`/api/v1/auth/device`, C3). */
+/** Longest device name the server accepts (`/api/v1/auth/device`). */
 export const DEVICE_NAME_MAX = 80
 
 const PLATFORM_LABEL: Partial<Record<NodeJS.Platform, string>> = {

@@ -4,25 +4,18 @@ import { isDeepStrictEqual } from 'util'
 
 /**
  * A broken folders.yaml, pinpointed and — where the fix is unambiguous —
- * repaired (#1526). Pure text in, text out: no filesystem here, so the same
- * checks serve the loader, the MCP gate, `plur doctor`, `plur folders list`
- * and `plur folders repair`.
- *
- * Every message names the line (and column, when there is one) and says what
- * is wrong in plain words. It quotes at most the KEY on that line, and only
- * when the key is a plain identifier: never a path, a scope or any other value
- * from the file, which may be private.
- *
- * The repair is line-based, so every comment survives: it only re-indents
- * lines, renames a misspelled top-level key, corrects a `plur:` mode whose case
- * or one letter is wrong (when exactly one mode matches), or gives an empty
- * file the minimal valid map. Anything else is reported as needing a hand fix
- * and nothing is changed — there is no half repair.
+ * repaired. Pure text in, text out, shared by the loader, the MCP gate,
+ * `plur doctor` and `plur folders list|repair`.
+ * - Messages name the line (and column) and quote at most a plain-identifier
+ *   KEY, never a path, scope or other value (which may be private).
+ * - The repair is line-based (comments survive): re-indent, rename a misspelled
+ *   top-level key, fix a near-miss `plur:` mode, or fill an empty file.
+ *   Anything else needs a hand fix and nothing changes — no half repair.
  */
 
-// The one schema the loader, the MCP gate and the repair share. #1521 (0.22)
-// extended it here: `plur` gains `remote-only` (also in MODES below), and an
-// empty `folders:` (null) is valid and means no entries.
+// The one schema the loader, the MCP gate and the repair share. `plur` may be
+// `remote-only` (also in MODES below), and an empty `folders:` (null) is valid
+// and means no entries.
 export const FolderEntrySchema = z.object({
   path: z.string().min(1),
   plur: z.enum(['on', 'off', 'ask', 'remote-only']).optional(),
@@ -185,13 +178,12 @@ export function editDistance(a: string, b: string): number {
 }
 
 /**
- * The entry key a misspelling most likely means, or null (#1530 re-review
- * R2). Only `plur` and `path` — the two keys whose loss silently drops a
+ * The entry key a misspelling most likely means, or null. Only `plur` and `path` — the two keys whose loss silently drops a
  * decision — and only a near-miss that reads as the same word typed wrong:
  * another case (`Plur`), two neighbouring letters swapped (`plru`, `paht`),
  * or one inner letter missing (`pur`, `pth`). An added or changed letter is a
  * different word (`paths`, `pat`, `plus`, `blur`), and so is a negation
- * (`un…`, `not…`): those stay custom keys, as before.
+ * (`un…`, `not…`): those stay custom keys.
  */
 export function suggestEntryKey(key: string): string | null {
   const k = key.toLowerCase()
@@ -358,12 +350,12 @@ export function suggestMode(value: string): string | null {
   const t = value.replace(/^[ \t]+|[ \t]+$/g, '')
   if (!/^[\x21-\x7e]+$/.test(t)) return null
   const lower = t.toLowerCase()
-  // Another case of a literal mode (`ON`, `Off`): that mode (#1530 re-review R3).
+  // Another case of a literal mode (`ON`, `Off`): that mode.
   if ((MODES as readonly string[]).includes(lower)) return lower
   if (t.length < 3 || YES_NO.has(lower)) return null
   // One letter off: only ever `off` or `ask`, and only when `on` is not just
   // as close — a guess never switches memory on (`ok`, `in`, `onn` stay put).
-  // Never `remote-only` either (GLM round 13 on #1663): a guess must not put a
+  // Never `remote-only` either: a guess must not put a
   // folder into a confidentiality mode the user did not finish writing.
   const near = MODES.filter(m => editDistance(lower, m) === 1)
   return near.length === 1 && near[0] !== 'on' && near[0] !== 'remote-only' ? near[0] : null
@@ -397,7 +389,7 @@ function valueSpan(l: Line): { start: number; end: number; value: string } | nul
  * The parser's reason without any text from the file. js-yaml quotes alias,
  * anchor, tag and directive names (`unidentified alias "x"`, `unknown tag !<x>`),
  * which are whatever the user typed: those become a fixed phrase, and any other
- * quoted or bracketed token is dropped (#1530 review F3).
+ * quoted or bracketed token is dropped.
  */
 function safeReason(reason: string): string {
   if (/alias|anchor/i.test(reason)) return 'it uses a YAML alias or anchor, which a folder map does not support'
@@ -424,9 +416,9 @@ function topLine(st: Structure, key: string): Line | undefined {
 }
 
 /**
- * Check folders.yaml text. Strict where the loader used to be lenient: an
- * empty file and an unknown top-level key are problems (they drop every
- * decision silently), exactly as the MCP gate (#1519) treats them.
+ * Check folders.yaml text. Strict: an empty file and an unknown top-level key
+ * are problems (they drop every
+ * decision silently), exactly as the MCP gate treats them.
  */
 export function checkFolderMapText(text: string): FolderMapCheck {
   const s = scan(text)
@@ -468,8 +460,7 @@ export function checkFolderMapText(text: string): FolderMapCheck {
     }
   }
   // A misspelled entry key (`plru: off`) would drop that decision silently,
-  // exactly like a misspelled top-level key: it is a problem too (#1530
-  // review). A key that is not near any of the map's keys (`note:`) passes.
+  // exactly like a misspelled top-level key: it is a problem too. A key that is not near any of the map's keys (`note:`) passes.
   const entriesRaw = Array.isArray(obj.folders) ? obj.folders as unknown[] : []
   entriesRaw.forEach((e, idx) => {
     if (!e || typeof e !== 'object' || Array.isArray(e)) return
@@ -477,7 +468,7 @@ export function checkFolderMapText(text: string): FolderMapCheck {
       if (ENTRY_KEYS.has(k) || !SAFE_KEY.test(k)) continue
       const want = suggestEntryKey(k)
       // A near-miss is a problem only when the entry lacks the real key:
-      // otherwise it is just another custom key (#1530 re-review R2).
+      // otherwise it is just another custom key.
       if (!want || Object.prototype.hasOwnProperty.call(e, want)) continue
       const at = st.entries[idx]?.keys.get(k)
       issues.push({ ...(at ? { line: at.n, column: at.lead.length + 1 } : {}), fixable: !!at,
@@ -557,7 +548,7 @@ export function planFolderMapRepair(text: string, opts: { diff?: boolean } = {})
   const fixes: FolderMapIssue[] = []
   let out = s.lines.map(l => l.text)
 
-  // Narrow by construction (#1530 re-review): before anything is planned,
+  // Narrow by construction: before anything is planned,
   // refuse every file the line-based repair could read differently from
   // YAML. Every line counts toward the cap, comments and lone CRs included.
   if (s.lines.length > MAX_REPAIR_LINES) {
@@ -583,7 +574,7 @@ export function planFolderMapRepair(text: string, opts: { diff?: boolean } = {})
 
   const st = structure(s)
   // Lines the line-based repair could read differently from the YAML parser
-  // are never touched: the whole repair is refused (#1530 review F2).
+  // are never touched: the whole repair is refused.
   if (st.block) {
     return refuse(check, `line ${st.block.n}: ${keyName(st.block.key)} starts a block of text (\`|\` or \`>\`); plur folders repair does not change a file that holds one`)
   }
@@ -675,7 +666,7 @@ export function planFolderMapRepair(text: string, opts: { diff?: boolean } = {})
   if (after === text) return unfixable(check)
   const recheck = checkFolderMapText(after)
   if (!recheck.ok) return unfixable(recheck)
-  // The hard rule (#1530 review): the result holds exactly the entries, keys
+  // The hard rule: the result holds exactly the entries, keys
   // and values written on their own lines in the original; only an active
   // `plur:` mode may change, and only to the mode its case or letter points at.
   const broken = keepsWhatWasWritten(s, st, after)
@@ -683,12 +674,11 @@ export function planFolderMapRepair(text: string, opts: { diff?: boolean } = {})
   const implicit = onWithoutLiteralOn(s, st, after)
   if (implicit === null) return refuse(check, 'plur folders repair cannot show that the repair keeps every entry exactly as written')
   if (implicit.length === 0) return finish(text, after, fixes, opts)
-  // A legacy entry (#1567): on only through `scope:` / `trusted: true`, as
-  // 0.21.0 and earlier wrote it. It is repaired only when the repair leaves
-  // every one of its own lines exactly as written and they parse on their
-  // own; the repair then writes `plur: on` beside them, so the entry says in
-  // its own lines what it meant before the map broke. Anything else is the
-  // #1530 rule: a repair never brings memory back on.
+  // A legacy entry: on only through `scope:` / `trusted: true`, with no
+  // `plur:` key. It is repaired only when the repair leaves every one of its
+  // own lines exactly as written and they parse on their own; the repair then
+  // writes `plur: on` beside them, so the entry says in its own lines what it
+  // meant before the map broke. Otherwise a repair never brings memory back on.
   const problemLines = new Set(check.issues.map(i => i.line).filter((n): n is number => n !== undefined))
   const add = new Map<number, string>()   // line index after which `plur: on` goes → its indentation
   for (const e of implicit) {
@@ -716,7 +706,7 @@ export function planFolderMapRepair(text: string, opts: { diff?: boolean } = {})
   const recheck2 = checkFolderMapText(after2)
   if (!recheck2.ok) return unfixable(recheck2)
   // The added lines change exactly those entries' `plur`, and nothing else:
-  // the same entries, the same paths, scopes and grants (#1567).
+  // the same entries, the same paths, scopes and grants.
   if (!onlyAddsPlurOn(after, after2, implicit)) {
     return refuse(check, 'plur folders repair cannot show that the repair keeps every entry exactly as written')
   }
@@ -726,8 +716,8 @@ export function planFolderMapRepair(text: string, opts: { diff?: boolean } = {})
 /**
  * A line that uses YAML beyond what a folder map needs — a tag (`!x`, `!!str`),
  * an anchor (`&a`), an alias (`*a`) or a block scalar (`|`, `>`) — anywhere
- * outside quotes and comments, or null. One plain check over the whole file
- * (#1530 re-review R1): such a file is never repaired.
+ * outside quotes and comments, or null. One plain check over the whole file:
+ * such a file is never repaired.
  */
 function yamlFeatureLine(s: Scan): Line | null {
   for (const l of s.lines) {
@@ -746,8 +736,8 @@ function yamlFeatureLine(s: Scan): Line | null {
  * their own lines is literally `plur: on` (any case), or null when the result
  * does not parse. `on` means `plur: on`, or no `plur` with a `scope` or
  * `trusted: true` — the resolver's rule. This is the promise itself, checked
- * on the result: a repair never switches memory on (#1530 re-review), except
- * a legacy entry the caller proves untouched (#1567).
+ * on the result: a repair never switches memory on, except
+ * a legacy entry the caller proves untouched.
  */
 function onWithoutLiteralOn(s: Scan, st: Structure, after: string): number[] | null {
   let parsed: unknown
@@ -759,7 +749,7 @@ function onWithoutLiteralOn(s: Scan, st: Structure, after: string): number[] | n
     const r = st.roles[i]
     if ((r.role !== 'item' && r.role !== 'entry-key') || l.key !== 'plur') return
     // The token as written, not the decoded value: an escape (`"\x6fn"`)
-    // means `on` to YAML but is not a literal `on` (final review S1).
+    // means `on` to YAML but is not a literal `on`.
     const span = valueSpan(l)
     if (span && !span.value.includes('\\') && span.value.toLowerCase() === 'on') literalOn[r.entry] = true
   })
@@ -959,7 +949,7 @@ export function unifiedDiff(before: string, after: string, fromLabel: string, to
 }
 
 // ---------------------------------------------------------------------------
-// In-place edits (#1562): `plur folders set` / `rm` keep the user's lines.
+// In-place edits: `plur folders set` / `rm` keep the user's lines.
 // ---------------------------------------------------------------------------
 
 /** Entries a write changes, by their index in the file's `folders:` list. */
@@ -981,16 +971,12 @@ function inlineYaml(v: unknown): string | null {
 }
 
 /**
- * The folder map's text with only the changed entries' lines rewritten (#1562):
- * every comment, blank line and untouched entry stays as the user wrote it,
- * the way `plur folders repair` edits lines in place. A changed entry keeps
- * each of its lines whose key and value did not change (an inline comment
- * there survives); the rest of its lines are rewritten in its own
- * indentation. A removed entry loses its own lines only; new entries go after
- * the last one. Null when the text is not a plain, valid block list this can
- * edit safely (a flow list, a block scalar, an entry not written as
- * `- key: value`, or a count that does not match) — the caller then writes
- * the whole map. The caller checks the result reads back as intended.
+ * The folder map's text with only the changed entries' lines rewritten, the
+ * way `plur folders repair` edits in place: comments, blank lines and untouched
+ * entries (and unchanged lines inside changed ones) stay. Removed entries lose
+ * only their lines; new entries go after the last one. Null when the text is
+ * not a plain valid block list of `- key: value` entries — the caller then
+ * writes the whole map and checks the result reads back as intended.
  */
 export function editFolderMapText(text: string, edit: FolderMapTextEdit): string | null {
   if (!checkFolderMapText(text).ok) return null

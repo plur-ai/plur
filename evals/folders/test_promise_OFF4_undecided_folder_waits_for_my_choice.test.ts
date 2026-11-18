@@ -1,5 +1,7 @@
 // OFF-4: In a folder I have not decided about yet, nothing is read from or
 // written to memory until I choose, and my choice applies only to that folder.
+// This does not cover a client that names no project folder and starts in my
+// home folder or the filesystem root; there, memory runs as before.
 //
 // Driven through the MCP server, the way an agent reaches PLUR, with a stub
 // team server mounted and live recall on. Two folders, A and its sibling B,

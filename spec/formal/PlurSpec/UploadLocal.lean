@@ -20,7 +20,48 @@ def retryKey (old : Option Nat) (fresh : Nat) : Nat := old.getD fresh
 theorem retries_keep_key (old fresh : Nat) : retryKey (some old) fresh = old := rfl
 
 def mutate (dryRun : Bool) : Bool := !dryRun
-theorem dry_run_no_mutation : mutate true = false := rfl
+
+/-- `uploadLocal`'s per-id preparation, branch for branch: what the row is
+under the lock decides the case. -/
+inductive Case | missing | onServer | noDest | queuedElsewhere | secret | eligible
+  deriving DecidableEq
+
+inductive Outcome | failed | alreadyOnServer | demotedSecret | sent
+  deriving DecidableEq
+
+/-- One id: the reported outcome, whether the primary store is written, and
+whether the id joins the flush selection. -/
+def prepareId (dryRun : Bool) : Case → Outcome × Bool × Bool
+  | .missing | .noDest | .queuedElsewhere => (.failed, false, false)
+  | .onServer => (.alreadyOnServer, false, false)
+  | .secret => (.demotedSecret, !dryRun, false)
+  | .eligible => if dryRun then (.sent, false, false) else (.sent, true, true)
+
+/-- The whole call: ids written, ids selected (the flush runs only when this
+is nonempty), and the reported outcomes. -/
+def uploadRun (dryRun : Bool) (caseOf : Nat → Case) : List Nat → List Nat × List Nat × List Outcome
+  | [] => ([], [], [])
+  | id :: ids =>
+    let (o, w, sel) := prepareId dryRun (caseOf id)
+    let (ws, sels, os) := uploadRun dryRun caseOf ids
+    (if w then id :: ws else ws, if sel then id :: sels else sels, o :: os)
+
+/-- For every id list and every state of every row: a dry run writes no row and
+selects nothing, so no flush runs; and it reports, id for id, the outcome a
+real run reports at preparation. -/
+theorem dry_run_no_mutation (caseOf : Nat → Case) (ids : List Nat) :
+    (uploadRun true caseOf ids).1 = [] ∧ (uploadRun true caseOf ids).2.1 = [] ∧
+    (uploadRun true caseOf ids).2.2 = (uploadRun false caseOf ids).2.2 := by
+  induction ids with
+  | nil => exact ⟨rfl, rfl, rfl⟩
+  | cons id ids ih =>
+    obtain ⟨h1, h2, h3⟩ := ih
+    cases hc : caseOf id <;> simp [uploadRun, prepareId, hc, h1, h2, h3]
+
+/-- Non-vacuity: the real run writes and selects an eligible id, and demotes a secret one. -/
+theorem real_run_writes :
+    uploadRun false (fun i => if i = 1 then .eligible else .secret) [1, 2] = ([1, 2], [1], [.sent, .demotedSecret]) := by
+  decide
 
 inductive Receipt | sent | duplicate | reviewHeld deriving DecidableEq
 def receipt (review duplicate : Bool) : Receipt :=

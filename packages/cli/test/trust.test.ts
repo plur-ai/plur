@@ -52,7 +52,11 @@ describe('plur trust / untrust (D2)', () => {
 
   it('trust is idempotent', () => {
     run(`trust ${grant(target)}`)
-    run(`trust ${grant(target)}`)
+    // A second nonce-redeemed grant finds the folder decided and is refused;
+    // the grant stays recorded once.
+    let refused = ''
+    try { run(`trust ${grant(target)}`) } catch (e) { refused = String((e as { stdout?: string }).stdout ?? '') }
+    expect(JSON.parse(refused.trim()).code).toBe('nonce-stale')
     const list = JSON.parse(run('trust --list'))
     expect(list.count).toBe(1)
   })

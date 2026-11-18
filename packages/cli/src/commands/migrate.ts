@@ -30,10 +30,10 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     return
   }
 
-  // A remote-only folder never uses the personal store (gate review of #1663):
-  // migrating it from there (up or down, which also copies the corpus to a
-  // .bak file) is refused, as restore and sync are. An unreadable folder map
-  // leaves this command as on development (decision 1).
+  // A remote-only folder never uses the personal store: migrating it from
+  // there (up or down, which also copies the corpus to a .bak file) is
+  // refused, as restore and sync are. An unreadable folder map does not block
+  // this command.
   if (subcommand === 'up' || subcommand === 'down') {
     let policy: ReturnType<typeof resolveFolderPolicy> | null = null
     try { policy = resolveFolderPolicy(process.cwd(), { root: dirname(paths.engrams), readOnly: true }) } catch { policy = null }
@@ -47,7 +47,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     try {
       const result = runMigrations(paths.engrams, paths.config)
 
-      // #1046: if an orphaned PGLite store is sitting next to this corpus,
+      // If an orphaned PGLite store is sitting next to this corpus,
       // carry its embedding vectors into the JSON cache the yaml/sqlite
       // tiers read — otherwise the tier switch re-embeds the whole corpus
       // in the background while hybrid recall silently runs BM25-only.
@@ -55,10 +55,9 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       // and harmless to re-run (existing cache entries win).
       const storageRoot = dirname(paths.engrams)
       const pgliteDir = join(storageRoot, 'store.pglite')
-      // Same resolver the engine uses (#1061): `backend: pglite` in
-      // config.yaml selects the tier exactly as PLUR_BACKEND does, and a
-      // bare env test ran the orphan-export path — and printed "can now be
-      // deleted" — against an index the user's config was actively using.
+      // Same resolver the engine uses: `backend: pglite` in config.yaml
+      // selects the tier exactly as PLUR_BACKEND does, so an index the
+      // user's config is actively using is never treated as orphaned.
       const pgliteExplicit = resolveBackendTier({
         env: process.env.PLUR_BACKEND,
         config: loadConfig(paths.config).backend,
@@ -72,7 +71,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       if (shouldOutputJson(flags)) {
         outputJson(embeddingsReport ? { ...result, pglite_embeddings: embeddingsReport } : result)
       } else {
-        // Confirmation of a requested mutation → suppressed by --quiet (#730).
+        // Confirmation of a requested mutation → suppressed by --quiet.
         if (embeddingsReport && embeddingsReport.status === 'done' && embeddingsReport.ported > 0) {
           outputInfo(`Ported ${embeddingsReport.ported} embedding vector(s) from the orphaned PGLite store into the embeddings cache`, flags)
           const skipped = embeddingsReport.stale + embeddingsReport.wrongDim

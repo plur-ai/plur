@@ -18,7 +18,7 @@
     "@types/node": "^22.0.0"
   },
   "license": "Apache-2.0",
-  "description": "HTTP client for the provenance gateway (session manifest uploads and downloads) — internal, bundled into @plur-ai/cli and @plur-ai/mcp",
+  "description": "HTTP client for the provenance gateway (session manifest uploads and downloads) \u2014 internal, bundled into @plur-ai/cli and @plur-ai/mcp",
   "homepage": "https://plur.ai",
   "repository": {
     "type": "git",
@@ -30,6 +30,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./harness": {
+      "types": "./dist/harness.d.ts",
+      "import": "./dist/harness.js"
     }
   },
   "private": true

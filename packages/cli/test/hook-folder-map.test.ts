@@ -178,6 +178,9 @@ describe('Claude Code hooks read the folder map (#1347)', () => {
     expect(scoped).toContain('Project scope: project:mapped — use this scope for plur_learn calls')
   })
 
+  // D1, revised (owner, 2026-11-14: "load memories but ignore untrusted
+  // settings"): the first prompt carries the memories, without the repo's
+  // scope, next to the one-time trust question.
   it('an untrusted .plur.yaml remote asks once, offers --trusted, and never shows the token', () => {
     writeFileSync(join(repo, '.plur.yaml'), 'scope: project:fixture\nremote_url: http://127.0.0.1:9\nremote_token: secret-fixture-token\n')
     const ask = context(cli(['hook-inject'], payload(PROMPT, 'cc-untrusted')).stdout)
@@ -185,11 +188,12 @@ describe('Claude Code hooks read the folder map (#1347)', () => {
     expect(ask).toContain('127.0.0.1:9')
     expect(ask).toContain(`plur folders set ${repo} --trusted --nonce ${nonceOf(ask, '--trusted')}`)
     expect(ask).not.toContain('secret-fixture-token')
-    expect(ask).not.toContain('ZEPHYRQUILL')
+    expect(ask).toContain('ZEPHYRQUILL')
+    expect(ask).not.toContain('Project scope: project:fixture')
     expect(cli(['hook-inject'], payload(PROMPT, 'cc-untrusted')).stdout).toBe('')
-    // Yes, trust it → the next prompt injects under the repo's scope.
+    // Yes, trust it → the next session injects under the repo's scope.
     expect(cli(['folders', 'set', repo, '--trusted', '--nonce', nonceOf(ask, '--trusted')]).status).toBe(0)
-    expect(context(cli(['hook-inject'], payload(PROMPT, 'cc-untrusted')).stdout)).toContain('Project scope: project:fixture')
+    expect(context(cli(['hook-inject'], payload(PROMPT, 'cc-untrusted-2')).stdout)).toContain('Project scope: project:fixture')
   })
 
   // #1418 review, blocking 1: the untrusted file's values reached the agent
@@ -336,12 +340,14 @@ describe('Codex hooks read the folder map (#1347)', () => {
     expect(context(cli(['hook-codex-inject'], prompt('cx-on')).stdout)).toContain('ZEPHYRQUILL')
   })
 
+  // D1, revised (owner, 2026-11-14): every prompt recalls; only the first
+  // carries the trust question.
   it('an untrusted .plur.yaml remote asks once', () => {
     writeFileSync(join(repo, '.plur.yaml'), 'remote_url: http://127.0.0.1:9\nremote_token: secret-fixture-token\n')
     const ask = context(cli(['hook-codex-inject'], prompt('cx-untrusted')).stdout)
     expect(ask).toContain('--trusted')
     expect(ask).not.toContain('secret-fixture-token')
-    expect(cli(['hook-codex-inject'], prompt('cx-untrusted')).stdout).toBe('')
+    expect(context(cli(['hook-codex-inject'], prompt('cx-untrusted')).stdout)).not.toContain('--trusted')
   })
 })
 
@@ -424,11 +430,13 @@ describe('Antigravity hooks read the folder map (#1347)', () => {
     expect(context(cli(['hook-agy-pre-invocation'], pre('ag-nows', 0, 0, [])).stdout)).toContain('ZEPHYRQUILL')
   })
 
+  // D1, revised (owner, 2026-11-14): every turn recalls; only the first
+  // carries the trust question.
   it('an untrusted .plur.yaml remote asks once', () => {
     writeFileSync(join(repo, '.plur.yaml'), 'remote_url: http://127.0.0.1:9\nremote_token: secret-fixture-token\n')
     const ask = context(cli(['hook-agy-pre-invocation'], pre('ag-untrusted', 0)).stdout)
     expect(ask).toContain('--trusted')
     expect(ask).not.toContain('secret-fixture-token')
-    expect(cli(['hook-agy-pre-invocation'], pre('ag-untrusted', 2, 1)).stdout).toBe('')
+    expect(context(cli(['hook-agy-pre-invocation'], pre('ag-untrusted', 2, 1)).stdout)).not.toContain('--trusted')
   })
 })

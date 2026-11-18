@@ -1,28 +1,12 @@
 /**
- * The provenance gateway's HTTP API — PLUR's only network client for
- * provenance (#1657). The gateway stores on Swarm and signs with its notary;
- * PLUR carries no Swarm or Bee client. The gateway address is a user setting
- * (`receipts.gateway_url`); `DEFAULT_GATEWAY_URL` is the default we ship.
- *
- * Calls (the ones the @datafund/swarm-provenance SDK and the Datacore
- * provenance module's `lib/gateway.py` make):
- *
+ * The provenance gateway's HTTP API — PLUR's only network client for provenance (the
+ * gateway stores on Swarm and notarises; PLUR has no Swarm/Bee client). Address:
+ * `receipts.gateway_url`, default `DEFAULT_GATEWAY_URL`. Calls (as the SDK makes them):
  *   POST /api/v1/pool/acquire                    {"size":"small"} -> {batch_id}
  *   POST /api/v1/data/?stamp_id=..&sign=notary   multipart file "provenance.json"
  *   GET  /api/v1/data/<reference>                -> {data, content_hash, signatures[]}
  *   GET  /api/v1/notary/info                     -> {enabled, available, address}
- *
- * Every request uses the free tier (`X-Payment-Mode: free`): about three
- * requests a minute, and an upload costs two. Free pool stamps last about a
- * day; `receipts.stamp_id` names a stamp bought through the gateway instead.
- *
- * The uploaded document is the SDK's metadata shape:
- *   {"data": base64(bytes), "content_hash": sha256(bytes), "stamp_id": ...}
- *
- * Network: only when the user turned uploads on (`receipts.store: swarm`) or
- * asked to verify a reference. Lives outside @plur-ai/core, which makes no
- * provenance network calls. Checking the notary's signature (secp256k1,
- * keccak) stays in the CLI (`plur verify --manifest`).
+ * Free tier (`X-Payment-Mode: free`); network only when `receipts.store: swarm` or verifying.
  */
 import { createHash, randomUUID } from 'crypto'
 import type { WormStore, WormPutResult } from '@plur-ai/core'
@@ -35,7 +19,7 @@ export const EXPERIMENTAL_NOTE = 'Experimental: session manifests and Swarm stor
  * The notary the default gateway signs with. A signature on a document
  * downloaded from the default gateway is checked against THIS address, not the
  * one the gateway reports about itself, so a compromised gateway cannot vouch
- * for its own forgeries (0.23 code review, finding 9).
+ * for its own forgeries.
  */
 export const DEFAULT_NOTARY_ADDRESS = '0x085656cBb5548B07295d2FeBD2fFCEe596c3c63A'
 
@@ -63,7 +47,7 @@ export function expectedNotaryFor(
 
 /**
  * Whether the signer a gateway reports for an upload is the notary expected
- * for that gateway (code review of 0.23, R5). A comparison of addresses only —
+ * for that gateway. A comparison of addresses only —
  * a claim, not a verification: the signature itself is checked by `plur
  * verify --manifest`. `expected` is null when no notary is known for the
  * gateway (not the default one, nothing pinned).
@@ -116,7 +100,7 @@ export class ProvenanceGateway implements WormStore {
     let res: Response
     let text: string
     // The abort timer covers the body as well as the headers: a gateway that
-    // sends headers and then stalls must not hang the caller (0.23 audit, 18).
+    // sends headers and then stalls must not hang the caller.
     try {
       try {
         res = await f(this.baseUrl.replace(/\/+$/, '') + path, {
@@ -179,8 +163,8 @@ export class ProvenanceGateway implements WormStore {
     // back once, best-effort: the upload has already succeeded either way.
     // On the free tier (about 3 requests a minute) this read-back can be the
     // request over the limit: a short Retry-After is waited out once, a long
-    // one is not, and the result says the signature is still to be read
-    // (code review of 0.23, R4) — `plur verify --manifest` reads it later.
+    // one is not, and the result says the signature is still to be read —
+    // `plur verify --manifest` reads it later.
     let pending = false
     if (sigs === undefined) {
       for (let attempt = 0; attempt < 2 && sigs === undefined; attempt++) {

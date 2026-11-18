@@ -2,20 +2,13 @@ import { createPlur, type GlobalFlags } from '../plur.js'
 import { shouldOutputJson, outputJson, outputText, outputInfo, exit } from '../output.js'
 
 /**
- * `plur scopes` (#647) — the user-facing surface for authorized-but-unregistered
- * shared scopes. The session-start "N scopes available" hint is agent-facing
- * only; this command is where a human actually decides per scope:
- *
- *   plur scopes                 list authorized-but-unregistered shared scopes
+ * `plur scopes` — where a human decides on authorized-but-unregistered shared scopes:
+ *   plur scopes                 list them
  *   plur scopes register <s>    register one scope
- *   plur scopes dismiss  <s>    remember "don't offer this one" (persisted)
- *   plur scopes --reoffer       clear all dismissals — offer them again
- *
- * Dismissed scopes are excluded from the list (and the session-start hint) until
- * `--reoffer`. Personal-family scopes are never offered (see registerScope/#382).
- *
- * Exit code: a refused `register` exits 1 in text and JSON mode alike; the JSON
- * body (`success: false`, `error`) is still written to stdout.
+ *   plur scopes dismiss  <s>    stop offering it (persisted; also hides it from the session-start hint)
+ *   plur scopes --reoffer       clear all dismissals
+ * Personal-family scopes are never offered. A refused `register` exits 1 in text and JSON mode; JSON still goes
+ * to stdout.
  */
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const plur = createPlur(flags)
@@ -44,8 +37,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       if (json) {
-        // A refused registration exits 1 in both modes (decision S1). exitCode,
-        // not process.exit(), so the piped JSON body is never truncated.
+        // exitCode, not process.exit(), so the piped JSON body is never truncated.
         process.exitCode = 1
         return outputJson({ success: false, action: 'register', scope, error: msg })
       }
@@ -71,8 +63,8 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     return outputJson({ success: failures.length === 0, action: 'list', scopes: offered, failures })
   }
 
-  // Don't report an empty offer when we simply couldn't reach the remote (#656):
-  // if nothing is offerable AND a remote failed, that's an error, not "nothing to do".
+  // If nothing is offerable AND a remote failed, that is an error (the remote
+  // was unreachable), not "nothing to do".
   if (offered.length === 0 && failures.length > 0) {
     const urls = failures.map(f => f.url).join(', ')
     return exit(1, `Could not reach ${failures.length} remote store(s): ${urls}. ` +
@@ -89,7 +81,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   if (failures.length > 0) {
     outputText(`\n(warning: could not reach ${failures.map(f => f.url).join(', ')} — that store's scopes may be missing above.)`)
   }
-  // Next-step hints → suppressed by --quiet (#730); the listing above stays.
+  // Next-step hints are suppressed by --quiet; the listing above stays.
   outputInfo(`\nRegister one:  plur scopes register <scope>`, flags)
   outputInfo(`Dismiss one:   plur scopes dismiss <scope>`, flags)
 }

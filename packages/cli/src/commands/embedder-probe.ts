@@ -2,20 +2,11 @@ import { embed } from '@plur-ai/core'
 import { createPlur, type GlobalFlags } from '../plur.js'
 
 /**
- * Hidden subcommand: spawn-target for `plur doctor`'s embedder probe.
- *
- * Why this exists: onnxruntime-node has a known SIGABRT crash on macOS during
- * thread pool cleanup on process exit (issue #197). When that happens in the
- * doctor process itself, doctor exits with code 134 even though everything else
- * is healthy. Running the probe in a subprocess isolates the crash — the
- * subprocess dies, parent stays alive, doctor reports embedder status
- * gracefully and exits with the correct overall code.
- *
- * Contract: writes a single line of JSON to stdout, then exits 0. If the
- * underlying probe crashes (SIGABRT, OOM, etc.) the parent detects the
- * non-zero exit code and reports the embedder as degraded.
- *
- * JSON shape matches the `embedder` field of DoctorReport.
+ * Hidden subcommand: spawn-target for `plur doctor`'s embedder probe. Runs in a
+ * subprocess because onnxruntime-node can SIGABRT on macOS at exit, which would
+ * otherwise make doctor itself exit 134. Contract: writes one line of JSON
+ * (shape of DoctorReport's `embedder` field) to stdout and exits 0; a non-zero
+ * exit makes the parent report the embedder as degraded.
  */
 export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   // Refuse to run when not invoked by the parent `plur doctor` process.

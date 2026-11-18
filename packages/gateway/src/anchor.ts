@@ -1,6 +1,6 @@
 /**
  * Store a session manifest through the provenance gateway (which keeps it on
- * Swarm) and keep a local record of it (#1657).
+ * Swarm) and keep a local record of it.
  *
  * Shared by `plur manifest --anchor` and the MCP server's session end, so both
  * upload the same canonical bytes and write the same record:

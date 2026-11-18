@@ -3,7 +3,7 @@
  *
  * Modest multipliers (≤1.5×) so wrong classification cannot silently
  * destroy good rankings. The default `general` profile is the neutral
- * baseline — all multipliers = 1.0, i.e. exactly the pre-feature behavior.
+ * baseline — all multipliers = 1.0, i.e. no reweighting.
  *
  * Toggle the whole feature off via env: PLUR_INTENT_ROUTING=off.
  */
@@ -23,7 +23,7 @@ export interface IntentRoutingProfile {
   entityBoost: number
 }
 
-/** Neutral baseline — identical to pre-feature behavior. */
+/** Neutral baseline — no reweighting. */
 const NEUTRAL: IntentRoutingProfile = {
   bm25Weight: 1.0,
   vectorWeight: 1.0,
@@ -75,7 +75,7 @@ export function routeForIntent(intent: QueryIntent): IntentRoutingProfile {
 
 /**
  * Returns true if intent routing is globally disabled via env var.
- * Default ON (feature ships on by default — graceful degradation makes it safe).
+ * On by default: the modest multipliers make a wrong classification harmless.
  */
 export function isIntentRoutingDisabled(): boolean {
   const v = process.env.PLUR_INTENT_ROUTING

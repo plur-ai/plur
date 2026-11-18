@@ -60,7 +60,7 @@ export const CUSTOM_MESSAGES = [
   'StoreEntry requires exactly one of path or url',
   'At least one of example or analogy must be provided',
   'A promoted insight must be grounded (grounding=verified); speculative dreams cannot be promoted until re-grounded.',
-  'must not contain control characters or newlines (directive-surface hardening, #345)',
+  'must not contain control characters or newlines (directive-surface hardening)',
   'sha256 must be 64 lowercase hex chars',
 ]
 

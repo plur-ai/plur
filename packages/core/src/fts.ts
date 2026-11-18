@@ -10,94 +10,44 @@ const STOP_WORDS = new Set([
 /**
  * Shortest token `ftsTokenize` can emit.
  *
- * NOT the same number as the word-path length filter below, and the two parted
- * company in #782. The whitespace path still discards anything under three
- * characters; the Han bigram path emits tokens of exactly two.
+ * NOT the same number as the word-path length filter below: the whitespace
+ * path discards anything under three characters (two for dense scripts), while
+ * the space-less bigram path emits tokens of exactly two.
  *
- * Anything reasoning about the shortest STORED token must read this constant
- * rather than restate the word-path floor. `PostgresAdapter.reversePrefixes`
- * did restate it — as a literal `3`, under a docstring asserting no stored
- * token could be shorter — and #782 silently made that assertion false. It did
- * not misbehave only because Han and ASCII alphabets are disjoint, so the arm
- * it feeds could never fire on a bigram. An invariant that holds by accident
- * is one refactor away from holding not at all.
+ * Anything reasoning about the shortest STORED token (e.g.
+ * `PostgresAdapter.reversePrefixes`) must read this constant rather than
+ * restate the word-path floor.
  */
 export const MIN_TOKEN_LENGTH = 2
 
 /**
  * Version of `ftsTokenize`'s output contract. Bump on ANY change that can alter
- * the token list produced for the same input.
- *
- * Exists because a store may derive tokens at WRITE time and compare them
- * against freshly-tokenized query terms at READ time — `PostgresAdapter` does
- * exactly that, and it is what lets the BM25 pushdown claim exactness: `df`
- * counted in SQL over stored tokens, `tf` counted in JS over live text,
- * guaranteed to agree because one tokenizer produced both.
- *
- * The guarantee holds only while the tokenizer that wrote the rows and the one
- * asking the question are the same tokenizer. When they are not, nothing
- * throws. Rows written before #782 contain no Han at all, so a Chinese query
- * simply never matches them — the corpus reports that it does not contain the
- * engram, which is indistinguishable from the engram not existing. Silent, and
- * wrong in the one direction a search index must never be wrong.
- *
- * History:
- *   1 — original. `\w`-based word split, three-character floor, stop words.
- *   2 — #782. Han runs additionally indexed as overlapping character bigrams.
- *   3 — #833. Unicode character class (`\p{L}\p{N}\p{M}`), space-less-run
- *       bigrams widened past Han, two-character floor for dense scripts.
- *   4 — 2026-08-13 panel. `Script_Extensions` rather than `Script` for the
- *       space-less run, so characters that belong to a script without BEING
- *       that script join their run instead of splitting it. Also caps
- *       bigram emission per run at {@link MAX_SPACELESS_RUN_CHARS} (#899).
- *
- * (Entry 3 is retrospective: #833 bumped the constant to 3 and did not record
- * why, which is the one thing this ledger exists to prevent.)
+ * the token list for the same input.
+ * Stores that tokenize at write time (e.g. `PostgresAdapter`'s exact BM25
+ * pushdown) rely on one tokenizer producing both stored and query tokens; a
+ * mismatch fails silently (rows never match), so such stores reindex when
+ * this changes.
  */
 export const TOKENIZER_VERSION = 4
 
 /** Tokenize text into searchable terms */
 /**
- * Scripts written without spaces between words (#833).
- *
- * #782 covered Han only. These are indexed as character BIGRAMS rather than
- * words, because there is no whitespace to split on and a per-language
- * segmenter is a dependency this package will not take.
- *
- * `Script_Extensions`, NOT `Script` (2026-08-13 panel). A character's `Script`
- * is its single primary script; its `Script_Extensions` is every script that
- * USES it. The difference is not academic — U+30FC ー, the prolonged sound mark
- * in essentially every Japanese loanword, has `Script=Common`, so under
- * `Script` it terminated the run:
- *
- *     ftsTokenize('コンピューター')  →  ["ーター","コン","ンピ","ピュ"]
- *
- * …which indexes fragments split at the wrong place, so a query for ベース did
- * not match a document containing it. `Script_Extensions=Katakana` includes
- * U+30FC, and the same correction covers the Han iteration mark 々, the
- * Japanese/Korean iteration and repetition marks, and Thai's THANTHAKHAT.
- * #833's before/after table happened to use テストデプロイ, which contains no
- * prolonged mark, so the hole survived the review that introduced it.
+ * Scripts written without spaces between words, indexed as character BIGRAMS
+ * (no per-language segmenter dependency).
+ * Uses `Script_Extensions`, NOT `Script`: marks like U+30FC ー (Script=Common),
+ * 々 and Thai's THANTHAKHAT would otherwise split runs in the wrong place.
  */
 const SPACELESS_RUN = /[\p{Script_Extensions=Han}\p{Script_Extensions=Hiragana}\p{Script_Extensions=Katakana}\p{Script_Extensions=Thai}\p{Script_Extensions=Khmer}\p{Script_Extensions=Lao}\p{Script_Extensions=Myanmar}]{2,}/gu
 
 /**
  * Scripts whose words are routinely one or two characters, so the Latin-shaped
- * `length > 2` floor erases them (#833). Korean is the reported case:
- * 도커 ("docker") is two syllable blocks and vanished entirely.
+ * `length > 2` floor would erase them. Korean example: 도커 ("docker") is two
+ * syllable blocks.
  */
 /**
- * Longest space-less run that gets fully bigram-indexed (#899).
- *
- * 512 characters is far above any real statement in a space-less script — a
- * Japanese or Chinese engram statement runs to tens of characters, not
- * hundreds — and far below the scale at which a single pasted document starts
- * to dominate a shared GIN index. Chosen to be a no-op for every engram the
- * store is meant to hold, and a bound for the ones it is not.
- *
- * Changing this alters the token list for long runs, so it is covered by
- * {@link TOKENIZER_VERSION}: bump the version and reindex, or stored tokens
- * and query tokens stop agreeing.
+ * Longest space-less run that gets fully bigram-indexed: far above any real
+ * statement, far below what lets one pasted document dominate a shared GIN
+ * index. Changing it alters tokens, so bump {@link TOKENIZER_VERSION} and reindex.
  */
 export const MAX_SPACELESS_RUN_CHARS = 512
 
@@ -108,20 +58,17 @@ export function ftsTokenize(text: string): string[] {
 
   // PART 1 — the character class must keep MARKS, not just letters and digits.
   //
-  // `\w` is ASCII-only, so every non-Latin script was stripped here and
-  // tokenized to nothing, and accented Latin was cut at each accent
-  // (déploiement -> ["ploiement","fran","ais"]). The obvious repair,
-  // `\p{L}\p{N}`, is NOT sufficient and this was measured: Devanagari vowel
-  // signs and Thai tone marks are NONSPACING MARKS (\p{Mn}), so Hindi still
-  // returned [] and Thai came back shattered into fragments the length filter
-  // then ate. \p{M} is what makes those scripts survive.
+  // `\w` is ASCII-only: it would strip every non-Latin script and cut
+  // accented Latin at each accent. `\p{L}\p{N}` alone is not sufficient
+  // either: Devanagari vowel signs and Thai tone marks are NONSPACING MARKS
+  // (\p{Mn}), so without \p{M} Hindi tokenizes to nothing and Thai shatters
+  // into fragments the length filter then drops.
   const wordSource = lower
     // PART 2a — remove space-less runs BEFORE splitting on whitespace.
     //
-    // Ordering dependency, also measured: with part 1 applied the Unicode class
-    // now PRESERVES a Han run as a single "word", so leaving it in the word
-    // path indexes the whole run AND all its bigrams — 测试部署应该用 came back
-    // as the run plus all six bigrams. Strip here, re-add as bigrams below.
+    // Ordering dependency: the Unicode class above preserves a Han run as a
+    // single "word", so leaving it in the word path would index the whole run
+    // AND all its bigrams. Strip here, re-add as bigrams below.
     .replace(SPACELESS_RUN, ' ')
     .replace(/[^\p{L}\p{N}\p{M}_\s]/gu, ' ')
 
@@ -129,31 +76,24 @@ export function ftsTokenize(text: string): string[] {
     .split(/\s+/)
     // PART 3 — the length floor is Latin-centric.
     //
-    // `length > 2` silently kills two-character words, which are ordinary in
-    // dense scripts: 도커 ("docker") vanished entirely. Relaxed to two for those
-    // scripts only, so English stop-noise ("a", "of") is filtered exactly as
-    // before.
+    // `length > 2` would kill two-character words, which are ordinary in
+    // dense scripts (도커, "docker"). Relaxed to two for those scripts only, so
+    // English stop-noise ("a", "of") is still filtered.
     //
-    // Deliberately NOT relaxed to one. #833's table lists a lone 猫 as a failing
-    // case, and it stays failing: MIN_TOKEN_LENGTH = 2 is load-bearing —
-    // `PostgresAdapter.reversePrefixes` reads it, and this file records that
-    // #782 already broke a RESTATED copy of that invariant once and only got
-    // away with it because Han and ASCII alphabets are disjoint. Emitting
-    // length-1 tokens would make the constant wrong again, this time for real,
-    // and widening it is a change to the pushdown's contract rather than to the
-    // tokenizer's. A single character also cannot be bigram-indexed, so it has
-    // no route into the index either way.
+    // Deliberately NOT relaxed to one (a lone 猫 is not indexed):
+    // MIN_TOKEN_LENGTH = 2 is load-bearing — `PostgresAdapter.reversePrefixes`
+    // reads it, and emitting length-1 tokens would change the pushdown's
+    // contract. A single character also cannot be bigram-indexed.
     .filter(w => w.length > 2 || (w.length === 2 && DENSE_SCRIPT.test(w)))
     .filter(w => !STOP_WORDS.has(w))
 
-  // Space-less scripts, indexed as character bigrams (#782, widened in #833).
+  // Space-less scripts, indexed as character bigrams.
   // Read from `lower`, not from wordSource — the runs were stripped there.
   for (const run of lower.match(SPACELESS_RUN) ?? []) {
-    // Capped (#899). A run of length n emits n-1 bigrams, and every one becomes
+    // Capped. A run of length n emits n-1 bigrams, and every one becomes
     // a row in Postgres's GIN index — so a 5,000-character CJK engram writes
     // ~5,000 index entries where English prose of the same length writes a few
-    // hundred. Uncapped, one pasted document can dominate the index for the
-    // whole store.
+    // hundred. Uncapped, one pasted document could dominate the index.
     //
     // The cap is per RUN, not per engram, so ordinary statements — which are
     // assertions, not documents — are untouched: nothing here changes for a run
@@ -170,13 +110,11 @@ export function ftsTokenize(text: string): string[] {
  * The context fields that enrich a statement into searchable text.
  *
  * Named separately from `Engram` so a not-yet-stored write can be turned into
- * the SAME text an existing engram would produce (#854). Dedup compares an
- * incoming statement against stored engrams; embedding the bare statement on
- * one side and enriched text on the other is not a like-for-like comparison,
- * and it measurably destroys the signal — a distinct pair (staging port 8080 vs
- * 8081) scores 0.9749 bare and 0.8512 enriched, while a genuine duplicate goes
- * 0.9689 -> 0.9878. Context pushes the two classes APART; dropping it from one
- * side collapses them together.
+ * the SAME text an existing engram would produce. Dedup compares an incoming
+ * statement against stored engrams; embedding the bare statement on one side
+ * and enriched text on the other is not a like-for-like comparison. Context
+ * pushes distinct pairs and genuine duplicates apart; dropping it from one side
+ * collapses them together.
  */
 export interface SearchTextFields {
   statement: string
@@ -210,12 +148,10 @@ export function searchTextFrom(fields: SearchTextFields): string {
  * Build searchable text from all engram fields.
  *
  * `tags` is read defensively. A schema-validated Engram always has it, but this
- * function is also reached from paths that splice in partially-built objects —
- * learnBatch's dedup accumulator being the case that actually shipped. There the
- * unguarded read threw, the throw was swallowed by a surrounding catch, and
- * dedup silently degraded to hash-only for the rest of the batch. A crash that
- * is caught and ignored is worse than either a crash or a default, so this takes
- * the default.
+ * function is also reached from paths that splice in partially-built objects
+ * (e.g. learnBatch's dedup accumulator). There an unguarded read would throw
+ * into a surrounding catch and silently degrade dedup, so this takes the
+ * default instead.
  */
 export function engramSearchText(engram: Engram): string {
   const parts = [engram.statement]
@@ -236,7 +172,7 @@ export function engramSearchText(engram: Engram): string {
   if (engram.source) parts.push(engram.source)
   // Dual-coding cues: example + analogy are *meant* to be alternate retrieval
   // anchors — same memory, different verbal route in. Including them in the
-  // search corpus is the whole point of the field. plur-ai/plur#139.
+  // search corpus is the whole point of the field.
   if (engram.dual_coding) {
     if (engram.dual_coding.example) parts.push(engram.dual_coding.example)
     if (engram.dual_coding.analogy) parts.push(engram.dual_coding.analogy)
@@ -252,31 +188,13 @@ export function engramSearchText(engram: Engram): string {
 }
 
 /**
- * Hash of the exact text an engram's embedding was computed from (#812).
- *
- * Stored beside the vector so a store can answer "is this vector still the
- * right one for this engram?" — a question nothing could ask before, because
- * `engram_embeddings` held only `(engram_id, embedding)`. Without it a dedup
- * UPDATE/MERGE could rewrite a statement and semantic recall would go on
- * ranking it by the old text forever.
- *
- * Hashes the RAW `engramSearchText` — the string actually passed to `embed()` —
- * NOT its tokenization (audit 2026-08-03, finding 9). Hashing the tokenized
- * form was lossy in exactly the direction that matters: `ftsTokenize` drops
- * stop words, drops tokens under three characters, strips punctuation and
- * lowercases. So "use X" -> "do not use X" produced an IDENTICAL hash — `do` is
- * too short, `not` is a stop word — while the embedded text, and therefore the
- * correct vector, had changed completely. A meaning-inverting edit is precisely
- * the edit this mechanism exists to catch.
- *
- * md5, not the sha256 used by the file-backed cache in `embeddings.ts`. Not a
- * security boundary — a change detector. The two hashes never meet.
- *
- * The WRITER hashes the text it actually embedded, rather than the store
- * re-deriving it at write time. An engram updated between the backfill's batch
- * read and its upsert would otherwise get a hash of the NEW text attached to a
- * vector of the OLD text — permanently stale while claiming to be current.
- * Hashing what we embedded makes that case self-healing.
+ * Hash of the exact text an engram's embedding was computed from, stored beside
+ * the vector so a rewritten statement is not ranked by its old vector.
+ * - Hashes the RAW `engramSearchText` passed to `embed()`, not its lossy
+ *   tokenization (which drops stop words: "use X" vs "do not use X").
+ * - md5: a change detector, not a security boundary.
+ * - The WRITER hashes what it embedded, so a concurrent update self-heals
+ *   instead of pairing a new-text hash with an old-text vector.
  */
 export function embeddingContentHash(engram: Engram): string {
   return hashEmbeddedText(engramSearchText(engram))
@@ -288,20 +206,10 @@ export function hashEmbeddedText(text: string): string {
 }
 
 /**
- * Corpus-wide statistics for IDF, supplied by a store that can compute them
- * without materialising the corpus (convergence Phase 4, #711).
- *
- * `computeIdf`'s default behaviour derives `N` and `df` from the engrams it is
- * handed. That is correct only when it is handed the WHOLE corpus, which is
- * true today because search loads everything. It stops being true the moment
- * narrowing is pushed into the store: given 200 candidates out of 50,000
- * engrams, deriving `N = 200` scores a term that is rare corpus-wide but common
- * among the candidates as if it were common — the exact inversion IDF exists to
- * prevent.
- *
- * The failure is silent. Every score is a plausible number, every test that
- * checks "the right rows came back" still passes, and the only symptom is
- * quietly worse ranking. So a store that narrows MUST also supply these.
+ * Corpus-wide IDF statistics, supplied by a store that can compute them without
+ * materialising the corpus. `computeIdf` otherwise derives `N` and `df` from the
+ * engrams it is handed, which is wrong for a narrowed candidate set and fails
+ * silently (only ranking degrades). A store that narrows MUST supply these.
  */
 export interface CorpusStats {
   /** Total number of documents in the corpus — not in the candidate set. */
@@ -323,25 +231,16 @@ export interface CorpusStats {
    * construction the documents containing a query term. Every candidate then
    * looks shorter than average, the length penalty is under-applied, and the
    * ranking shifts.
-   *
-   * This was the hole in the original parity claim: `df` and `N` came from the
-   * corpus while `avgdl` came from the candidates, so the two paths agreed only
-   * on fixtures uniform enough to hide it.
    */
   avgDocLength: number
 }
 
 /**
  * True when a document term matches a query term under BM25's matching rule.
- *
- * Single definition so `ftsScore`, `computeIdf`, and any store implementing
- * {@link CorpusStats} cannot drift apart. They must agree exactly: `df` counted
- * under one rule and `tf` counted under another produces scores that are not
- * BM25 at all, with no error to signal it.
- *
- * Forward (`t.includes(qt)`) finds `transferWithAuthorization` from `auth`.
- * Reverse is bounded to a prefix so `deploy` still matches `deploying` while
- * `yin` no longer matches it (#721).
+ * The single definition shared by `ftsScore`, `computeIdf` and
+ * {@link CorpusStats} stores: `df` and `tf` counted under different rules is
+ * not BM25, silently. Forward is substring (`auth` → `transferWithAuthorization`);
+ * reverse is prefix-only (`deploy` matches `deploying`, `yin` does not).
  */
 export function termMatches(t: string, qt: string): boolean {
   return t.includes(qt) || qt.startsWith(t)
@@ -389,28 +288,12 @@ export function computeIdf(
 }
 
 /**
- * Extend store-supplied corpus statistics with documents that live OUTSIDE
- * that store, so a union of primary + outsider engrams is scored against the
- * union's true statistics instead of the primary corpus's.
- *
- * Why this exists: scoring outsiders (secondary-store and pack engrams) with
- * primary-only stats leaves any query term that is ABSENT from the primary
- * corpus at `df = 0`, so `computeIdf` prices it as maximally rare —
- * `log(N/1)`, unbounded in primary-corpus size and completely decoupled from
- * the term's real prevalence among the outsiders. Measured before this
- * function existed: a query mixing one primary-corpus term with one term
- * common across a 196-engram secondary store ranked the single strongest
- * primary match at position 197, below every weak outsider row. Team-specific
- * jargon is exactly the vocabulary that is common in a team store and absent
- * from a personal one, so the failure mode sat on the normal multi-store path,
- * not an edge case.
- *
- * The outsiders are already fully materialised in memory by the time the
- * union is ranked (that is how they got into the candidate list), so exact
- * union figures cost one tokenisation pass — there is nothing to approximate.
- * `df` counts under {@link termMatches}, the same rule `computeIdf`'s local
- * path applies; see the CorpusStats.df doc for why drifting from that rule is
- * worse than supplying no stats at all.
+ * Extend store-supplied corpus statistics with outsider documents (secondary
+ * stores, packs), so the union is scored against its true statistics.
+ * With primary-only stats, a term absent from the primary corpus gets `df = 0`
+ * and maximal IDF, letting weak outsider rows outrank strong primary matches.
+ * Outsiders are already in memory, so figures are exact. `df` counts under
+ * {@link termMatches}, the same rule `computeIdf` uses (see CorpusStats.df).
  */
 export function extendCorpusStats(
   stats: CorpusStats,
@@ -536,10 +419,7 @@ export function searchEngramsScored(
   // From `stats` when narrowing happened, because `engrams` is then the
   // candidate set, whose mean length has no reason to equal the corpus mean —
   // it can fall either side of it. Using it mis-applies BM25's length penalty
-  // and reorders results, which is precisely how the two paths diverged while
-  // `df` and `N` agreed. Pinned by the length-skew fixture in
-  // corpus-stats.test.ts, which is mutation-checked: reverting this line
-  // reverses the ranking there.
+  // and reorders results. Pinned by the length-skew fixture in corpus-stats.test.ts.
   const avgDocLength = stats
     ? stats.avgDocLength
     : engrams.length > 0

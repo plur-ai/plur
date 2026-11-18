@@ -129,9 +129,9 @@ describe('incremental write seam through Plur (#740)', () => {
       counting.reset()
       await plur.learn('use PostgreSQL for production', { type: 'behavioral' })
       // learn(): one load() under the lock + one loadCached() for the merged
-      // dedup view — then the write itself reuses that corpus. saves === 1 and
-      // loads === 1 is the pre-seam cost; a store-level append that re-parsed
-      // would show as loads === 2.
+      // dedup view — then the write itself reuses that corpus. The queue hold
+      // reads the new id through loadCached; a store-level append that
+      // re-parsed would show as a second load().
       expect(counting.saves).toBe(1)
       expect(counting.loads).toBe(1)
       expect(counting.cachedLoads).toBeLessThanOrEqual(2)

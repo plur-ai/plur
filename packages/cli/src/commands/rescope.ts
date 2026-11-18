@@ -3,7 +3,7 @@ import { shouldOutputJson, outputJson, outputText, exit } from '../output.js'
 
 const USAGE =
   'Usage: plur rescope <engram-id> [<engram-id> ...] --to <scope> [--keep-local] [--dry-run]\n' +
-  '  Moves engram(s) to another scope (#676). Remote target scopes (configured\n' +
+  '  Moves engram(s) to another scope. Remote target scopes (configured\n' +
   '  writable stores) receive a pushed copy (server assigns the id) and the local\n' +
   '  original is retired with a superseded_by link; local targets (local, global,\n' +
   '  project:*) are rewritten in place, preserving id and activation.\n' +

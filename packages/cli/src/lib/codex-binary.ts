@@ -71,7 +71,7 @@ export function codexAppBinary(
 }
 
 /**
- * Which Codex binary to run (#1603).
+ * Which Codex binary to run.
  * Windows: a `codex` on PATH by PATHEXT order (`codex.exe`, `codex.cmd`, …),
  * never npm's extensionless sh shim; else the Codex app's codex.exe
  * (codexAppBinary). On darwin/linux return null so runCodex keeps native
@@ -95,7 +95,7 @@ export function resolveCodexBinary(
 /**
  * Is Codex installed here (doctor)? Everywhere: the Codex home folder exists.
  * Windows also: a codex init would find (PATH or the Codex app's binary).
- * darwin/linux keep the home-folder check alone (audit M1 on #1604).
+ * darwin/linux keep the home-folder check alone.
  */
 export function codexInstalled(
   env: NodeJS.ProcessEnv = process.env,

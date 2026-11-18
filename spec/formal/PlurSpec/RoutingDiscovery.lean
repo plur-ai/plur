@@ -6,10 +6,10 @@ cache write (`_updateRawStores`) writes the same bytes under the same lock, now 
 `writeConfigFile` (Persistence §AtomicTemp); no routing or acceptance code changed.
 
 Models of `packages/core/src/store-resolver.ts` (resolveScopeTarget, urlGroupsForScope,
-remoteOf), the write paths in `packages/core/src/index.ts` that read it (the router
+remoteOf), the write paths in `packages/core/src/plur/` that read it (the router
 `_resolveRemoteStoreForScope`, the scan gate `_hasUrlStoreForScope`, the outbox flush
 `routeFor`), `packages/core/src/server-discovery.ts` (acceptDiscoveredScopes) and the cache
-write of `Plur.refreshServerScopes` (index.ts, with `discoveryChanged`). Findings, verdicts and
+write of `Plur.refreshServerScopes` (plur/discovery.ts, with `discoveryChanged` in plur/helpers.ts). Findings, verdicts and
 replays: `spec/formal/findings/routing-discovery.md`. Checked against branch formal2/epic-1797
 (b22f01d0) plus the fixes in this round.
 
@@ -477,7 +477,7 @@ def route (personal : S → Bool) (orgOf : S → Option O) (s : S) (l : List (En
   | .remote e true => some e
   | _ => none
 
-/-- The outbox flush's store (index.ts `routeFor`): after the conflict hold, the first
+/-- The outbox flush's store (plur/outbox.ts `routeFor`): after the conflict hold, the first
 writable url entry with exactly the queued scope. `target_url` is not consulted. -/
 def flushPick (personal : S → Bool) (orgOf : S → Option O) (s : S) (l : List (Entry S U O)) :
     Option (Entry S U O) :=
@@ -882,7 +882,7 @@ theorem refresh_reachable :
 /-! ### Which entry an answer is written to (D4; credential binding, Codex round 2 finding 1)
 
 An entry is abstracted to its identity: the normalized url and the credential revision the
-request used (`credentialRevision` in index.ts: the source, `token` or `token_env:<NAME>`, plus
+request used (`serverCredential(...).revision` in plur/helpers.ts: the source, `token` or `token_env:<NAME>`, plus
 a sha256 fingerprint of the resolved token; never the token). `p` is the entry as read before
 the request; `l` is the `stores` list as it is under the config lock, which another process may
 have changed in between in any way. Nothing is assumed about `l`. -/
@@ -1047,7 +1047,7 @@ theorem no_write_to_other_scope (personal : S → Bool) (orgOf : S → Option O)
     route personal orgOf s l ≠ some e :=
   fun h => he (route_exact personal orgOf s l e h).2.1
 
-/-- The explicit-scope id lookups (index.ts `_scopedUrlEntry`: forget, feedback; row 34):
+/-- The explicit-scope id lookups (plur/routing.ts `_scopedUrlEntry`: forget, feedback; row 34):
 `none` = refused, no server asked (ScopeConflictError for two servers; since the gate of
 #1667 also a scope a company server withholds, "not granted to you on <server>");
 `some none` = no url store claims the scope exactly (the local paths and the guards run; the
@@ -1097,7 +1097,7 @@ theorem lookup_refuses_unauthorized (personal : S → Bool) (orgOf : S → Optio
     lookup personal orgOf s l = none := by
   unfold lookup; rw [h]
 
-/-- The remote walk forget and feedback run after the local paths (index.ts). With an
+/-- The remote walk forget and feedback run after the local paths (plur/forget-rescope.ts, plur/feedback-pin.ts). With an
 explicit scope (`some t`) it only visits url entries whose scope is exactly `t` (gate of
 #1667); without one (`none`) every url entry, as before. -/
 def walk (t : Option S) (l : List (Entry S U O)) : List (Entry S U O) :=

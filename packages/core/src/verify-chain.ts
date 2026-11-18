@@ -1,31 +1,12 @@
 /**
- * Chain verification for the history log (#1053).
- *
- * The gap this closes, in the reviewer's words: "Nothing anywhere in
- * packages/core, packages/cli or packages/mcp ever verifies prev/hash
- * linkage." #1051 writes a chain and #1052 checkpoints it, but nothing ever
- * checked either, so a fork, a broken link or a deletion was silent. A chain
- * nobody verifies is a chain that proves nothing.
- *
- * ## What this can and cannot establish
- *
- * It detects every edit that does NOT recompute the chain — content tampering
- * (the event no longer hashes to its recorded `hash`), a broken link, a
- * deleted event, a fork, a `prev` pointing at nothing.
- *
- * It cannot, from the log alone, detect a rewrite that recomputes every `prev`
- * and `hash` over the remaining events: that file is internally consistent by
- * construction. This is the ceiling of any self-contained hash chain and the
- * reason checkpoints exist — a checkpoint pins a `chain_head` that a later
- * rewrite cannot reproduce, so `checkpoint_head_missing` catches exactly that
- * case for everything written before the checkpoint. Anchoring a checkpoint
- * externally extends the same argument past the boundary of this file.
- *
- * Verification is never a bare bool. A bool is not anchorable and hides where
- * the chain broke, so the result names each break, each fork, and the
- * unprotected legacy range, and refusal is its own outcome distinct from both
- * "verified" and "broken" — per docs/design/failure-must-be-distinguishable.md
- * and the same rule the enterprise audit surface follows.
+ * Chain verification for the history log: prev/hash linkage and checkpoints.
+ * - Detects every edit that does NOT recompute the chain (tampered content,
+ *   broken link, deleted event, fork, dangling `prev`).
+ * - Cannot detect a full recompute from the log alone; checkpoints pin a
+ *   `chain_head` a rewrite cannot reproduce (`checkpoint_head_missing`).
+ * - The result is never a bare bool: it names each break, fork and unprotected
+ *   legacy range, and refusal is its own outcome
+ *   (docs/design/failure-must-be-distinguishable.md).
  */
 import * as fs from 'node:fs'
 import { join } from 'node:path'
@@ -41,7 +22,7 @@ export type BreakReason =
   | 'declared_gap'             // prev is null mid-chain: a writer could not take the lock
   | 'signature_invalid'        // a checkpoint's signature does not verify against the registered key
 
-/** Result of signature verification for one checkpoint (#1056). */
+/** Result of signature verification for one checkpoint. */
 export type SignatureVerdict =
   | 'valid'           // signature checks out against the registered public key
   | 'invalid'         // signature does not verify (wrong key, tampered bytes)
@@ -77,7 +58,7 @@ export interface ChainVerifyResult {
   chain_head:         string | null
   total_events:       number
   verified_events:    number
-  /** Pre-#1051 events carrying no hash/prev, wherever they appear in the log. */
+  /** Unchained events carrying no hash/prev, wherever they appear in the log. */
   unprotected_legacy: { from: number; to: number; count: number } | null
   breaks:             ChainBreak[]
   forks:              ChainFork[]
@@ -87,12 +68,12 @@ export interface ChainVerifyResult {
    *
    * Reported rather than refused: it is a write that was still in flight (or a
    * writer that crashed mid-flush), so the chain up to it is intact and the
-   * honest answer is "verified, and one append was in progress" — not "cannot
-   * verify". Never null-and-silent: a caller that wants to know is told.
+   * honest answer is "verified, and one append was in progress", not "cannot
+   * verify".
    */
   torn_tail: { month: string; line: number } | null
   /**
-   * Per-checkpoint signature results (#1056). Populated only when
+   * Per-checkpoint signature results. Populated only when
    * `verifyChain` is called with `{ verifySignatures: true }`.
    * null means signatures were not checked.
    */
@@ -100,7 +81,7 @@ export interface ChainVerifyResult {
   /**
    * The store's content differs from what the newest checkpoint attested, and
    * history records changes after that checkpoint that explain it (a learn, an
-   * edit, a retire). Ordinary use since the last checkpoint — reported, never
+   * edit, a retire). Ordinary use since the last checkpoint: reported, never
    * a break. null when the store matches, or there is no checkpoint. A
    * difference that history does NOT explain is a `store_hash_mismatch` break.
    */
@@ -116,9 +97,9 @@ interface Scanned { month: string; index: number; event: HistoryEvent }
 
 /**
  * Every engram id a history event names: its own, and any id-shaped string
- * anywhere in its data (code review of 0.23, R7) — event writers and verify
- * share no field list that could drift. Ids from sync pulls of stores with
- * free-form ids are named in `data.engram_ids`, read here verbatim.
+ * anywhere in its data, so event writers and verify share no field list that
+ * could drift. Ids from sync pulls of stores with free-form ids are named in
+ * `data.engram_ids`, read here verbatim.
  */
 function eventEngramIds(ev: HistoryEvent): string[] {
   const out: string[] = []
@@ -131,9 +112,9 @@ function eventEngramIds(ev: HistoryEvent): string[] {
     if (typeof v === 'string') out.push(v)
     else if (Array.isArray(v)) for (const x of v) if (typeof x === 'string') out.push(x)
   }
-  // Anywhere else, only a value that IS an id counts — never an id mentioned
+  // Anywhere else, only a value that IS an id counts, never an id mentioned
   // inside free text such as a statement preview or a reason, which would let
-  // an event about one memory excuse an edit to another (third review).
+  // an event about one memory excuse an edit to another.
   const walk = (v: unknown, depth: number): void => {
     if (depth > 6) return
     if (typeof v === 'string') { if (WHOLE_ENGRAM_ID.test(v)) out.push(v) }
@@ -169,7 +150,7 @@ const GENESIS_CLAIM = '(genesis)'
 export interface VerifyChainOptions {
   /**
    * When true, verify Ed25519 signatures on checkpoint events against the
-   * store's `keys.yaml` registry (#1056). An unknown signer is a named
+   * store's `keys.yaml` registry. An unknown signer is a named
    * `unknown_signer` result, not a chain break. An invalid signature IS a
    * chain break (signature field reports it as `invalid`).
    * Default: false (chain-only verification).
@@ -181,9 +162,9 @@ export interface VerifyChainOptions {
  * Verify the whole history chain for a store.
  *
  * Reads raw lines rather than going through `readHistory`, which silently
- * skips malformed lines (history.ts:390). A verifier that skipped them would
- * report a clean chain over a file it could not fully read — the benign-zero
- * this surface exists to refuse. A line that will not parse is a refusal.
+ * skips malformed lines. A verifier that skipped them would report a clean
+ * chain over a file it could not fully read. A line that will not parse is a
+ * refusal.
  */
 export function verifyChain(root: string, options?: VerifyChainOptions): ChainVerifyOutcome {
   const verifySignatures = options?.verifySignatures === true
@@ -218,15 +199,9 @@ export function verifyChain(root: string, options?: VerifyChainOptions): ChainVe
       } catch (err) {
         // A writer that crashed, or one still flushing, leaves the file's LAST
         // line incomplete. That is an in-flight write, and refusing on it would
-        // make every concurrent append a spurious "cannot verify" — an alarm
-        // that fires when nothing is wrong is an alarm that gets ignored.
+        // make every concurrent append a spurious "cannot verify".
         // A malformed line ANYWHERE ELSE cannot be explained that way and is
         // real corruption.
-        //
-        // This is the distinction .datacore/lib/ledger/log.py already draws:
-        // append() truncates a torn final line under the lock and read_events()
-        // skips it, while a bad line elsewhere raises CorruptLogError naming
-        // the file and its 1-based line number.
         if (i === lastContentLine && month === months[months.length - 1]) {
           torn_tail = { month, line: i + 1 }
           continue
@@ -259,18 +234,12 @@ export function verifyChain(root: string, options?: VerifyChainOptions): ChainVe
     store_changed_since_checkpoint: null,
   }
 
-  // Unchained (pre-#1051) events. They carry neither hash nor prev; per runbook
-  // law 8 that is an "unprotected legacy range" — a first-class outcome, never
-  // an error and never silently upgraded.
+  // Unchained events carry neither hash nor prev: an "unprotected legacy
+  // range", a first-class outcome, never an error and never silently upgraded.
   //
-  // Counted WHEREVER they appear, not only as a leading run. Treating a leading
-  // run as legacy and everything after it as tampering assumed a store crosses
-  // the chain boundary exactly once, which is not the ordinary rollout shape: a
-  // chained build runs, then any non-chaining path writes, and the store now
-  // interleaves. Reported as `hash_mismatch` ("content was edited") those
-  // events made a real pre-chain store return exit 1 with roughly 920 breaks
-  // citing tampering, with `unprotected_legacy: null` actively denying the
-  // legacy region existed. Nothing was edited.
+  // Counted WHEREVER they appear, not only as a leading run: a store can
+  // interleave chained and unchained writes (e.g. a non-chaining path writing
+  // after a chaining build), and those events are not tampering.
   const legacyIdx = scanned.map((s, i) => (s.event.hash === undefined ? i : -1)).filter(i => i >= 0)
   if (legacyIdx.length > 0) {
     result.unprotected_legacy = {
@@ -286,24 +255,24 @@ export function verifyChain(root: string, options?: VerifyChainOptions): ChainVe
   let sawFirstChained = false
   // The chained event before a run of declared gaps. A writer that timed out
   // on the lock appends its gap event unlocked, possibly after the lock holder
-  // read the tail but before it wrote — so the holder's event links to the
-  // event BEFORE the gap, correctly (0.23 release audit, finding 8). The gap
-  // itself stays a `declared_gap` break; the holder's link is not a mismatch.
+  // read the tail but before it wrote, so the holder's event links to the
+  // event BEFORE the gap, correctly. The gap itself stays a `declared_gap`
+  // break; the holder's link is not a mismatch.
   let beforeGap: string | null | undefined
   // Every chained event so far claimed no predecessor. Only then is a null
-  // prev a genesis claim (two writers racing on an empty store — a fork); after
-  // a real link it is a declared gap, not a second genesis (formal finding F2).
+  // prev a genesis claim (two writers racing on an empty store: a fork); after
+  // a real link it is a declared gap, not a second genesis.
   let allGenesisSoFar = true
 
-  // Every event, in order. Unchained ones are skipped inside the loop rather
-  // than by starting past a leading run — they can appear anywhere.
+  // Every event, in order. Unchained ones are skipped inside the loop because
+  // they can appear anywhere.
   for (let k = 0; k < scanned.length; k++) {
     const { month, index, event } = scanned[k]
     const id = event.engram_id || `(${event.event})`
 
     // An unchained event is not a break. It is uncovered, which is what
     // `unprotected_legacy` reports, and `verified` already means "the chain
-    // holds over everything it covers" — not "everything is covered".
+    // holds over everything it covers", not "everything is covered".
     //
     // It does NOT advance `expectedPrev`: the next chained event's predecessor
     // is the last CHAINED event, because that is what appendHistory's tail-seek
@@ -327,14 +296,9 @@ export function verifyChain(root: string, options?: VerifyChainOptions): ChainVe
     const linksPastGap = prev !== null && beforeGap !== undefined && prev === beforeGap
     if (sawFirstChained && prev !== expectedPrev && !linksPastGap) {
       // A null prev mid-chain is what appendHistory writes when it cannot take
-      // the chain lock. #1052 calls that "a DECLARED GAP ... never mistaken for
-      // tampering", and it is the honest choice -- but reporting it as
-      // `prev_mismatch` IS mistaking it for tampering, because that is the
-      // reason a rewritten link produces. Under the contention #1052 itself
-      // measured, a busy machine would show BROKEN with a tampering reason for
-      // a log nobody touched, which is the alarm-that-cries-wolf this surface
-      // exists to avoid. Its own reason code, so an operator can tell a
-      // concurrency artifact from an edit.
+      // the chain lock: a declared gap, not tampering. It gets its own reason
+      // code so an operator can tell a concurrency artifact from an edit;
+      // `prev_mismatch` is the reason a rewritten link produces.
       result.breaks.push({
         month, index, event_id: id,
         reason: prev === null ? 'declared_gap' : 'prev_mismatch',
@@ -342,12 +306,10 @@ export function verifyChain(root: string, options?: VerifyChainOptions): ChainVe
       })
     }
 
-    // Genesis is a claim too. Excluding `prev: null` meant the ONE fork shape
-    // the lock-failure path can actually produce was the one not labelled a
-    // fork: two concurrent writers on an empty store both take the gap path,
-    // both write `prev: null`, and the result was `forks: []` plus a single
-    // prev_mismatch. Keyed under a sentinel that cannot collide with a hash —
-    // hashes are 64 hex characters, this is not.
+    // Genesis is a claim too: two concurrent writers on an empty store both
+    // take the gap path and both write `prev: null`, which must be reported as
+    // a fork. Keyed under a sentinel that cannot collide with a hash (hashes
+    // are 64 hex characters).
     if (prev !== null || allGenesisSoFar) {
       const claimKey = prev ?? GENESIS_CLAIM
       const claims = prevClaims.get(claimKey) ?? []
@@ -400,7 +362,7 @@ export function verifyChain(root: string, options?: VerifyChainOptions): ChainVe
   }
 
   // Checkpoints pin a head. If the chain no longer contains it, everything
-  // below that checkpoint was rewritten — the one rewrite the linkage checks
+  // below that checkpoint was rewritten: the one rewrite the linkage checks
   // above cannot see.
   for (const { month, index, event } of scanned) {
     if (event.event !== 'checkpoint') continue
@@ -413,17 +375,15 @@ export function verifyChain(root: string, options?: VerifyChainOptions): ChainVe
     })
   }
 
-  // The checkpoint's whole purpose is to attest the STORE, and nothing checked
-  // it: verifyChain read `chain_head` and ignored `store_hash`, so a store whose
-  // engrams.yaml had been replaced wholesale -- the chain left untouched --
-  // verified as OK. Compare the NEWEST checkpoint only: older ones attest older
-  // states and are expected to differ.
+  // The checkpoint attests the STORE: a store whose engrams.yaml was replaced
+  // wholesale, with the chain untouched, must not verify. Compare the NEWEST
+  // checkpoint only: older ones attest older states and are expected to differ.
   //
   // The store hash attests content only (attestStore), so recalls and
   // feedback never move it. A difference is then either a change history
-  // records after the checkpoint — ordinary use, reported in
-  // `store_changed_since_checkpoint` — or one it does not, which is the edit
-  // behind PLUR's back the check exists for (0.23 release audit, finding 1).
+  // records after the checkpoint (ordinary use, reported in
+  // `store_changed_since_checkpoint`) or one it does not, which is an edit
+  // made outside PLUR.
   const newestIdx = scanned.map(s => s.event.event).lastIndexOf('checkpoint')
   const newestCheckpoint = newestIdx >= 0 ? scanned[newestIdx] : undefined
   if (newestCheckpoint) {
@@ -442,7 +402,7 @@ export function verifyChain(root: string, options?: VerifyChainOptions): ChainVe
           actual = now.store_hash
           actualBuckets = now.store_buckets
         } catch (err) {
-          // Never "verified" over a store that cannot be read (audit finding 11).
+          // Never "verified" over a store that cannot be read.
           return { status: 'cannot_verify', reason: `could not read the store the newest checkpoint attests: ${(err as Error).message}` }
         }
       }
@@ -451,10 +411,10 @@ export function verifyChain(root: string, options?: VerifyChainOptions): ChainVe
       if (differs) {
         const after = scanned.slice(newestIdx + 1).filter(s => CONTENT_EVENTS.has(s.event.event))
         const since = after.length
-        // Localise the difference (code review of 0.23, finding 2): every
-        // group whose fingerprint moved must hold a memory that history names
-        // as changed since the checkpoint. Checkpoints written before groups
-        // existed fall back to "any recorded change explains it".
+        // Localise the difference: every group whose fingerprint moved must
+        // hold a memory that history names as changed since the checkpoint.
+        // Checkpoints written without groups fall back to "any recorded change
+        // explains it".
         const attestedBuckets = Array.isArray(data.store_buckets) && data.store_buckets.length === STORE_BUCKETS ? data.store_buckets as string[] : null
         let explained = since > 0
         if (attestedBuckets && actualBuckets) {
@@ -480,10 +440,10 @@ export function verifyChain(root: string, options?: VerifyChainOptions): ChainVe
 
   result.torn_tail = torn_tail
 
-  // Signature verification (#1056). Performed AFTER chain verification so a
+  // Signature verification. Performed AFTER chain verification so a
   // caller that only wants chain integrity can skip the key-registry read.
   //
-  // An unknown signer is a named `unknown_signer` result, not a chain break —
+  // An unknown signer is a named `unknown_signer` result, not a chain break:
   // the chain itself is intact, we just cannot verify the external attestation.
   // An invalid signature IS a named failure in `signatures`, and also registers
   // as a break so the exit code signals actionable failure.
@@ -491,8 +451,8 @@ export function verifyChain(root: string, options?: VerifyChainOptions): ChainVe
     for (const { month, index, event } of scanned) {
       if (event.event !== 'checkpoint') continue
       // signer and signature are top-level HistoryEvent fields (excluded from
-      // canonical bytes). Older checkpoints stored signer in event.data — fall
-      // back to that for any written before this migration.
+      // canonical bytes). Older checkpoints stored signer in event.data, so
+      // fall back to that.
       const dataSigner = (event.data as { signer?: unknown }).signer
       const signer = typeof event.signer === 'string' ? event.signer
         : typeof dataSigner === 'string' ? dataSigner
@@ -503,7 +463,7 @@ export function verifyChain(root: string, options?: VerifyChainOptions): ChainVe
       if (sigB64 === null) {
         verdict = 'unsigned'
       } else if (signer === null) {
-        // Signature present but no signer field — treat as unknown.
+        // Signature present but no signer field: treat as unknown.
         verdict = 'unknown_signer'
       } else {
         const pubKeyB64 = lookupPublicKey(root, signer)
@@ -526,7 +486,7 @@ export function verifyChain(root: string, options?: VerifyChainOptions): ChainVe
       result.signatures!.push(sigResult)
 
       // An invalid signature is a break: the checkpoint can no longer be trusted
-      // as an external attestation. Unknown signer is NOT a break — it may just
+      // as an external attestation. Unknown signer is NOT a break: it may just
       // mean the key was not registered on this machine yet.
       if (verdict === 'invalid') {
         result.breaks.push({
@@ -539,25 +499,15 @@ export function verifyChain(root: string, options?: VerifyChainOptions): ChainVe
     }
   }
 
-  // A torn tail does not make the chain broken — everything before it verified.
+  // A torn tail does not make the chain broken: everything before it verified.
   result.ok = result.breaks.length === 0 && result.forks.length === 0
   return { status: result.ok ? 'verified' : 'broken', result }
 }
 
 /**
- * The store's CANONICAL hash, or null when it cannot be computed.
- *
- * Must be the digest a checkpoint records, or the comparison is meaningless.
- * This function used to hash the raw file bytes while `emitCheckpoint` recorded
- * the canonical JSON of the parsed document -- two different preimages, so the
- * value printed by `plur verify` could never equal the value in any checkpoint,
- * and the doc comment claiming it was "used to compare a checkpoint's recorded
- * store_hash against the file today" described something that could not happen.
- * Raw-byte hashing was rejected on purpose in #1052 (LF vs CRLF, emitter, OS);
- * reintroducing it in the verifier was the harder half of that bug to see.
- *
- * Null rather than throwing: a store may legitimately be absent (nothing has
- * been learned yet), and that is not a verification failure.
+ * The store's CANONICAL hash (canonical JSON of the parsed document — the
+ * digest a checkpoint records; raw bytes vary by platform), or null when it
+ * cannot be computed. An absent store is not a verification failure.
  *
  * @param engramsPath - absolute path to engrams.yaml.
  * @returns the canonical store hash, or null when absent or unparseable.

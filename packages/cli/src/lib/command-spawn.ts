@@ -18,7 +18,7 @@ function isFile(p: string): boolean {
  * one of those extensions is tried as given first; a name with a path
  * separator is not searched on PATH. Null when nothing matches. Needed because
  * Node only searches for `.exe`/`.com` itself, so an npm-installed `codex.cmd`
- * is ENOENT to `execFileSync('codex')` (#1603).
+ * is ENOENT to `execFileSync('codex')`.
  */
 export function findWindowsCommand(name: string, env: NodeJS.ProcessEnv = process.env): string | null {
   const exts = (envGet(env, 'PATHEXT') || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean).map(e => e.toLowerCase())
@@ -65,7 +65,7 @@ export function cmdExeSpawn(line: string, env: NodeJS.ProcessEnv = process.env):
 /**
  * How to spawn `file` with `args`, without a shell, on this platform.
  *
- * darwin/linux: unchanged. Windows: `file` is looked up on PATH + PATHEXT; a
+ * darwin/linux: as given. Windows: `file` is looked up on PATH + PATHEXT; a
  * `.exe`/`.com` is spawned directly, and a `.cmd`/`.bat` (npm's shims) runs
  * through `cmd.exe /d /v:off /s /c "<quoted line>"` (cmdExeSpawn) — current
  * Node refuses to spawn a `.cmd` directly (CVE-2024-27980 hardening). Same

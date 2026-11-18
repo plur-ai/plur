@@ -1,5 +1,5 @@
 /**
- * Generic JSON / JSONL / CSV importer (issue #441).
+ * Generic JSON / JSONL / CSV importer.
  *
  * The foundation importer: any memory store that can export rows can be
  * imported. Field names are resolved in three steps:

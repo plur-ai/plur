@@ -14,14 +14,12 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     if (arg === '--agent' && i + 1 < args.length) { agent = args[++i]; i++ }
     else if (arg === '--session' && i + 1 < args.length) { session_id = args[++i]; i++ }
     // `--` ends flag parsing: the next token is the summary, verbatim, even when
-    // it starts with `-` (decision S4; formal r2 follow-up). Before, `--`
-    // itself became the summary.
+    // it starts with `-`.
     else if (arg === '--') { if (!summary && i + 1 < args.length) summary = args[i + 1]; break }
     else if (!summary) { summary = arg; i++ }
     else { i++ }
   }
 
-  // Read from stdin if no positional argument
   if (!summary && !process.stdin.isTTY) {
     const chunks: Buffer[] = []
     for await (const chunk of process.stdin) chunks.push(chunk)
@@ -32,8 +30,8 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     exit(1, 'Usage: plur capture <summary> [--agent <name>] [--session <id>]')
   }
 
-  // A remote-only folder captures no timeline (owner decision on #1521);
-  // createPlur bound the instance to this folder.
+  // A remote-only folder captures no timeline; createPlur bound the instance
+  // to this folder.
   let episode
   try {
     episode = plur.capture(summary, { agent, session_id })

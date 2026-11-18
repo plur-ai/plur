@@ -1,16 +1,12 @@
 /**
- * `plur-mcp packs …` — the branch logic, separated from the process (#545).
+ * `plur-mcp packs …` — the branch logic, separated from the process.
  *
- * This lived inline in `index.ts`, which is the binary entrypoint: importing it
- * runs a top-level `process.argv` dispatch and calls `process.exit`. So the only
- * way to test the CLI branches was to spawn a real process — and spawning is the
- * contention class #793 had to serialise a whole vitest project to contain.
- *
- * The branches here are the only real logic in the command (`runPacks`
- * otherwise delegates to already-tested core): missing argument, unknown
- * subcommand, and not-found. Returning a result instead of writing and exiting
- * makes those three assertable in-process, and leaves `index.ts` with the one
- * job a binary should have — turn a result into streams and an exit code.
+ * `index.ts` is the binary entrypoint: importing it runs a top-level
+ * `process.argv` dispatch and calls `process.exit`, so logic there can only be
+ * tested by spawning a process. The branches here (missing argument, unknown
+ * subcommand, not-found) return a result instead of writing and exiting, so
+ * they are assertable in-process; `index.ts` only turns the result into
+ * streams and an exit code.
  */
 
 /** What `installPack` reports back; `neutralized` is optional so a stub can omit it. */
@@ -76,8 +72,7 @@ export async function packsCommand(args: string[], plur: PacksCapablePlur): Prom
     if (!arg) return fail('Usage: plur-mcp packs uninstall <name>\n')
     try {
       // No not-found branch: `uninstallPack` throws when the pack is absent, so
-      // reaching this line already means it was removed. The `else` that used
-      // to sit here could not run — see `UninstallResult.removed` (#545).
+      // reaching this line already means it was removed.
       const result = plur.uninstallPack(arg)
       return ok(`Uninstalled pack '${result.name}' (${result.engram_count} engrams removed)\n`)
     } catch (err) {

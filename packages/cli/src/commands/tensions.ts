@@ -2,57 +2,17 @@ import { createPlur, type GlobalFlags } from '../plur.js'
 import { remoteOnlyCommandRefusal } from '../lib/folder-gate.js'
 import { shouldOutputJson, outputJson, outputText, outputInfo, exit } from '../output.js'
 import type { LlmFunction } from '@plur-ai/core'
-
-/** Create an OpenAI-compatible LLM function from base URL + key + model. */
-function makeHttpLlm(baseUrl: string, apiKey: string, model = 'gpt-4o-mini'): LlmFunction {
-  return async (prompt: string): Promise<string> => {
-    const response = await fetch(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model,
-        messages: [{ role: 'user', content: prompt }],
-        temperature: 0.1,
-      }),
-    })
-    if (!response.ok) {
-      throw new Error(`LLM API error: ${response.status} ${response.statusText}`)
-    }
-    const data = (await response.json()) as any
-    return data.choices?.[0]?.message?.content ?? ''
-  }
-}
-
-function getLlmFunction(): LlmFunction | undefined {
-  const openrouterKey = process.env.OPENROUTER_API_KEY
-  const openaiKey = process.env.OPENAI_API_KEY
-  if (openrouterKey) return makeHttpLlm('https://openrouter.ai/api/v1', openrouterKey, 'openai/gpt-4o-mini')
-  if (openaiKey) return makeHttpLlm('https://api.openai.com/v1', openaiKey, 'gpt-4o-mini')
-  return undefined
-}
+import { makeHttpLlm, llmFromEnv } from '@plur-ai/gateway/harness'
 
 /**
- * plur tensions — scan for contradictions, manage the tension lifecycle (#181).
- *
- * Usage:
- *   plur tensions                              # list persisted tensions (unresolved)
- *   plur tensions --status all                 # include dismissed/resolved
- *   plur tensions --scan                       # LLM scan; NEW detections are persisted
- *   plur tensions --scan --no-persist          # dry-run scan (no records, no suppress-list)
- *   plur tensions --scan --scope project:plur  # narrow to one scope
- *   plur tensions --scan --domain plur.core    # narrow to one domain
- *   plur tensions --scan --min-confidence 0.8  # stricter threshold
- *   plur tensions --scan --max-pairs 100       # check more pairs
- *   plur tensions --scan --batch-size 1        # sequential single-pair judging (no batching)
- *   plur tensions --scan --temporal-discount   # days-apart confidence discount (#240, default off)
- *   plur tensions --scan --model claude-haiku-... --llm-base-url ... --llm-api-key ...
- *   plur tensions confirm T-2026-0703-001      # mark a detection as a real conflict
- *   plur tensions dismiss T-2026-0703-001      # false positive — suppress the pair
- *   plur tensions resolve T-2026-0703-001 --winner ENG-...   # keep winner, retire loser
- *   plur tensions --json                       # machine-readable output
+ * plur tensions — scan for contradictions, manage the tension lifecycle.
+ *   plur tensions [--status all] [--json]   # list persisted tensions (default: unresolved)
+ *   plur tensions --scan [--no-persist]     # LLM scan; NEW detections persisted (dry-run: none)
+ *     scan filters/tuning: --scope, --domain, --min-confidence, --max-pairs,
+ *     --batch-size 1 (no batching), --temporal-discount (off by default),
+ *     --model, --llm-base-url, --llm-api-key
+ *   plur tensions confirm|dismiss <id>      # real conflict | false positive (suppress pair)
+ *   plur tensions resolve <id> --winner ENG-...   # keep winner, retire loser
  */
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   let scan = false
@@ -62,7 +22,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   let minConfidence = 0.7
   let maxPairs = 50
   let batchSize = 5
-  // #240: undefined → fall back to config (tensions.temporal_discount)
+  // undefined → fall back to config (tensions.temporal_discount)
   let temporalDiscount: boolean | undefined
   let statusFilter: string | undefined
   let action: 'confirm' | 'dismiss' | 'resolve' | undefined
@@ -98,13 +58,11 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   // reads persisted tensions and engrams, so a write-guarded engine prevents
   // lazy engine side-effects from mutating the store as a side-effect of a
   // query. Scan and lifecycle actions (confirm / dismiss / resolve) mutate
-  // state and get a standard writable engine. (An earlier version passed
-  // `{ readonly: true }` here before the option existed and it was silently
-  // discarded — #731 is the real implementation.)
+  // state and get a standard writable engine.
   const isListMode = !scan && !action
   const plur = createPlur(flags, { readonly: isListMode })
 
-  // --- Lifecycle actions (#181) ---
+  // --- Lifecycle actions ---
   if (action) {
     if (!tensionId) {
       exit(1, `Usage: plur tensions ${action} <T-YYYY-MMDD-NNN>${action === 'resolve' ? ' --winner <engram-id>' : ''}`)
@@ -146,7 +104,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     const llm: LlmFunction | undefined =
       llmBaseUrl
         ? makeHttpLlm(llmBaseUrl, llmApiKey ?? '', llmModel)
-        : getLlmFunction()
+        : llmFromEnv()
 
     if (!llm) {
       exit(
@@ -158,7 +116,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     }
 
     if (!shouldOutputJson(flags)) {
-      // Progress banner → suppressed by --quiet (#730).
+      // Progress banner → suppressed by --quiet.
       outputInfo(`Scanning ${engrams.length} engrams for contradictions…`, flags)
       if (scope) outputInfo(`  scope: ${scope}`, flags)
       if (domain) outputInfo(`  domain: ${domain}`, flags)
@@ -167,11 +125,11 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     }
 
     const { scanForTensions } = await import('@plur-ai/core')
-    // #240: config.yaml `tensions:` block supplies temporal defaults
+    // config.yaml `tensions:` block supplies temporal defaults
     // (temporal_domains, snapshot_pairs, temporal_discount); an explicit
     // --temporal-discount / --no-temporal-discount flag overrides.
     const tensionsConfig = plur.getTensionsConfig()
-    // #181: recorded pairs are excluded (suppress-list) and new detections
+    // Recorded pairs are excluded (suppress-list) and new detections
     // persisted, unless --no-persist (dry run).
     const result = await scanForTensions(engrams, llm, {
       min_confidence: minConfidence,
@@ -228,7 +186,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       outputText('')
     })
 
-    // Next-step hints → suppressed by --quiet; the findings above stay (#730).
+    // Next-step hints → suppressed by --quiet; the findings above stay.
     outputInfo('Next steps:', flags)
     outputInfo('  plur tensions confirm <T-id>                       # real conflict', flags)
     outputInfo('  plur tensions dismiss <T-id>                       # false positive, suppress', flags)
@@ -236,7 +194,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     return
   }
 
-  // --- List mode (#181): persisted tension records ---
+  // --- List mode: persisted tension records ---
   const records = statusFilter === 'all'
     ? plur.listTensions()
     : plur.listTensions({ status: statusFilter ? [statusFilter as any] : ['detected', 'confirmed'] })

@@ -1,9 +1,9 @@
 /**
- * Where provenance records are kept (#965).
+ * Where provenance records are kept.
  *
- * Deliberately separate from the code that builds them. Enterprise will store
- * records in a database later, and should be able to do that without touching
- * the generator. So the contract here is two operations and nothing else.
+ * Deliberately separate from the code that builds them, so another backend
+ * (such as a database) can store records without touching the generator. The
+ * contract is therefore minimal.
  *
  * Anchoring a record to Swarm or a blockchain is NOT part of this. That is a
  * separate step, and the Swarm provenance toolkit already covers it.
@@ -21,13 +21,6 @@ export interface ProvenanceStore {
   list(engramId: string): Promise<string[]>
 }
 
-/**
- * Records as files on disk, the default.
- *
- * One directory per engram, one file per record, named by the time it was
- * written. Records accumulate rather than overwrite: a record is a snapshot of
- * state that keeps changing, so a later one does not make an earlier one wrong.
- */
 /**
  * A record's content, with the moment it was written removed.
  *
@@ -51,24 +44,23 @@ function substance(body: string): string {
   }
 }
 
+/**
+ * Records as files on disk, the default.
+ *
+ * One directory per engram, one file per record, named by the time it was
+ * written. Records accumulate rather than overwrite: a record is a snapshot of
+ * state that keeps changing, so a later one does not make an earlier one wrong.
+ * `subdir` is `config.provenance.path`.
+ */
 export class FileProvenanceStore implements ProvenanceStore {
-  /**
-   * `subdir` is `config.provenance.path`. It was declared with a default of
-   * 'provenance' and read nowhere, so the setting was documented but inert —
-   * the directory name was hardcoded below. Threading it through here is what
-   * makes the config key mean something; the default keeps every existing
-   * store on the same path it already uses.
-   */
   /** Where records go: `root/<subdir>`, checked to be inside `root`. */
   private readonly base: string
 
   constructor(private readonly root: string, subdir: string = 'provenance') {
-    // The configured subdirectory is arbitrary operator-supplied text. It used
-    // to be sanitised by character class, which kept `.` and so let `..` through
-    // untouched: `provenance.path: ".."` wrote every record one level ABOVE the
-    // store. Containment is decided on the RESOLVED path instead, the way the
-    // pack installer decides it (`resolveInside` in packs.ts): whatever the text
-    // is, the only question is whether it ends up strictly inside the root.
+    // The configured subdirectory is arbitrary operator-supplied text (`..`
+    // included), so containment is decided on the RESOLVED path, the way the
+    // pack installer does it (`resolveInside` in packs.ts): whatever the text
+    // is, it must end up strictly inside the root.
     const base = resolve(root)
     const candidate = resolve(base, subdir.trim() || 'provenance')
     if (candidate === base || !candidate.startsWith(base + sep)) {
@@ -95,9 +87,8 @@ export class FileProvenanceStore implements ProvenanceStore {
 
     // Records are kept as a timestamped series, because a record made before an
     // engram was revised genuinely differs from one made after. An IDENTICAL
-    // record is not a version — it is the same answer asked for twice. A tester
-    // ran the command five times and got five identical files, which turns a
-    // useful history into a directory nobody trusts.
+    // record is not a version — it is the same answer asked for twice, so it
+    // is not written again.
     const newest = this.newestIn(dir)
     if (newest && substance(fs.readFileSync(newest, 'utf8')) === substance(body)) return newest
 
@@ -170,7 +161,7 @@ export class MemoryProvenanceStore implements ProvenanceStore {
 }
 
 /**
- * When to write a provenance record (#966).
+ * When to write a provenance record.
  *
  * The config schema is `.partial()`, so an absent key yields undefined rather
  * than a default. The default therefore lives here, in one place, instead of

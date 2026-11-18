@@ -22,5 +22,11 @@ import PlurSpec.LegacyProjectCleanup
 import PlurSpec.UploadLocal
 import PlurSpec.UploadCommand
 import PlurSpec.Provenance
+import PlurSpec.BackendScopes
+import PlurSpec.FolderRules
+import PlurSpec.HookCounters
+import PlurSpec.SecretsInstall
+import PlurSpec.RemoteHealth
+import PlurSpec.McpTools
 
 /-! Root of the PlurSpec models. One file per component; R2* = second verification round. -/

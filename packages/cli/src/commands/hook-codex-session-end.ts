@@ -15,40 +15,27 @@ import {
 } from '../lib/codex-hook-io.js'
 
 /**
- * plur hook-codex-session-end — Codex `SessionEnd` hook.
- *
- * Codex clamps SessionEnd timeouts (to 3s) and forces them to run
- * synchronously even if declared async, so this stays deliberately cheap:
- * it removes this session's sentinel and counters, and opportunistically
- * sweeps stale ones. It does NOT try to capture a closing episode the way
- * Claude Code's `hook-session-end` does — that call can take longer than
- * the budget, and being killed mid-write is worse than not writing.
- *
- * Closing the memory lifecycle properly remains the agent's job via
- * `plur_session_end`; the PostToolUse nudge reminds it.
- *
- * It does retry queued team writes (the outbox, #1269), inside a budget that
- * fits the 3s clamp and is skipped outright when nothing is queued. Unlike an
- * episode capture, a flush cut short loses nothing: undelivered entries stay
- * queued. `runCodexHook` force-exits afterwards, so nothing lingers.
- *
- * Input:  JSON on stdin — { session_id, reason, ... }
- * Output: nothing.
+ * plur hook-codex-session-end — Codex `SessionEnd` hook. Codex clamps it to 3s and runs it
+ * synchronously, so it only removes this session's sentinel/counters and sweeps stale ones —
+ * no episode capture (being killed mid-write is worse than not writing).
+ * It retries queued team writes within the budget, skipped when nothing is queued; a cut-short
+ * flush loses nothing. `runCodexHook` force-exits afterwards.
+ * Input: JSON on stdin { session_id, reason, ... }. Output: nothing.
  */
 export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   await runCodexHook('codex session-end', async () => {
     const input = readStdinJson()
-    // #1347: this session's ask-flow nonces expire with it, whatever the mode.
+    // This session's ask-flow nonces expire with it, whatever the mode.
     const endingId = typeof input.session_id === 'string' ? input.session_id : ''
     if (endingId) try { endFolderNonceSession(plurRoot(flags), endingId) } catch { /* best-effort */ }
-    // Otherwise silent unless the folder map says on (#1347).
+    // Otherwise silent unless the folder map says on.
     const dir = payloadDir(input)
     const policy = hookFolderPolicy(dir, flags)
     if (!isWorkingMode(policy)) return
     const sessionId = codexSessionId(input)
     if (sessionId && sessionDirSafeToSweep(sessionDir())) {
-      // Never unlink through a symlinked or foreign directory (cli#8) — the
-      // same rule the stale sweep already follows.
+      // Never unlink through a symlinked or foreign directory — the same rule
+      // the stale sweep follows.
       for (const p of [
         sentinelPath(sessionId),
         counterPath(sessionId, 'guard-count'),
@@ -59,7 +46,7 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
       cleanupStaleSessionFiles()
     }
 
-    // Bound to the payload's folder, not this process's (gate review of #1663).
+    // Bound to the payload's folder, not this process's.
     await flushOutboxForHook(flags, { hook: 'hook-codex-session-end', budgetMs: HOOK_OUTBOX_BUDGET_MS.codexSessionEnd, folder: { dir, policy } })
   })
 }

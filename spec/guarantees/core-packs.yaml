@@ -1,0 +1,157 @@
+anchors:
+  packages/core/src/packs/download.ts#downloadAndExtractPack:
+    kind: guarantee
+    rule: A pack download error never echoes the signed URL or its credentials.
+    tests:
+    - packages/core/test/audit-pack-download.test.ts::never echoes a signed URL on an HTTP error
+    - packages/core/test/audit-pack-download.test.ts::aborts a download that stalls past the timeout, without echoing the
+      URL
+  packages/core/src/packs/export.ts#assertSafePackName:
+    kind: guarantee
+    rule: A pack name that would escape its output directory or is not a legal identifier is refused, never rewritten.
+    none: no test exports a pack with an unsafe name
+  packages/core/src/packs/export.ts#c:
+    kind: guarantee
+    rule: An exported pack never carries a pinned flag or a locked commitment.
+    tests:
+    - packages/core/test/packs.test.ts::export strips pinned + unlocks commitment
+  packages/core/src/packs/export.ts#exportEngrams:
+    kind: guarantee
+    rule: An exported pack carries no identifier only this store can resolve, such as session or episode ids.
+    none: no test checks that session and episode ids are stripped on export
+  packages/core/src/packs/export.ts#ExportOptions:
+    kind: note
+    why: Explains why pack provenance is on by default and independent of the per-engram setting.
+  packages/core/src/packs/export.ts#frontmatter.license:
+    kind: guarantee
+    rule: Export refuses to run without a chosen licence, so the pack licence is never the schema default.
+    tests:
+    - packages/core/test/provenance-pack.test.ts::refuses to export a pack with no licence chosen
+    - packages/core/test/provenance-pack.test.ts::never writes a licence nobody chose
+  packages/core/src/packs/export.ts#packLicense:
+    kind: guarantee
+    rule: Export refuses to run without a chosen licence.
+    tests:
+    - packages/core/test/provenance-pack.test.ts::refuses to export a pack with no licence chosen
+  packages/core/src/packs/export.ts#provenanceFiles:
+    kind: guarantee
+    rule: Pack provenance records only engrams that passed the privacy scan.
+    tests:
+    - packages/core/test/provenance-pack.test.ts::never ships a record for an engram the privacy scan refused
+  packages/core/src/packs/export.ts#shipsProvenance:
+    kind: note
+    why: Explains that the provenance flag sits inside the integrity hash while the records do not.
+  packages/core/src/packs/integrity.ts#computed:
+    kind: note
+    why: Explains why the check recomputes in the version the pack shipped.
+  packages/core/src/packs/integrity.ts#computePackIntegrity:
+    kind: guarantee
+    rule: The v2 integrity value hashes the raw bytes of SKILL.md, manifest.yaml and engrams.yaml as named, length-prefixed
+      parts, so moved bytes or a missing file change it.
+    lean:
+    - PlurSpec/PacksV2.lean:frame_injective
+    - PlurSpec/PacksV2.lean:v2_boundary_distinct
+    - PlurSpec/PacksV2.lean:v2_missing_ne_empty
+    - PlurSpec/PacksV2.lean:v2_covers_manifest
+    tests:
+    - 'packages/core/test/pack-integrity-v2.test.ts::boundary shift: v1 collides, v2 does not'
+    - packages/core/test/pack-integrity-v2.test.ts::is the documented construction, byte for byte
+  packages/core/src/packs/integrity.ts#migratePackIntegrity:
+    kind: guarantee
+    rule: Migration never blesses a modified pack, never touches the shipped INTEGRITY file, and running it twice changes
+      nothing.
+    lean:
+    - PlurSpec/PacksV2.lean:migrate_idempotent
+    tests:
+    - packages/core/test/pack-integrity-v2.test.ts::a real run re-baselines only the clean pack, and never blesses the modified
+      one
+    - packages/core/test/pack-integrity-v2.test.ts::is idempotent
+  packages/core/src/packs/integrity.ts#packIntegrityMatches:
+    kind: guarantee
+    rule: An integrity value in any format other than v1 or v2 never matches.
+    tests:
+    - packages/core/test/pack-integrity-v2.test.ts::packIntegrityMatches reads both formats and refuses anything else
+  packages/core/src/packs/privacy.ts#out:
+    kind: guarantee
+    rule: Installing a pack strips the pinned tier and priority along with pinned, so a pack can never claim the hard pinned
+      tier.
+    tests:
+    - packages/core/test/pack-lifecycle-conformance.test.ts::install strips both, reports both, and the installed copy carries
+      neither
+  packages/core/src/packs/privacy.ts#PrivacyIssue:
+    kind: guarantee
+    rule: A pack that hides files behind links, special files or a truncated walk is refused at install; an oversize provenance
+      record does not abort it.
+    tests:
+    - packages/core/test/pack-file-scan.test.ts::is refused when a directory is a link
+    - packages/core/test/pack-lifecycle-conformance.test.ts::installs, counts the record as unreadable, and leaves it behind
+  packages/core/src/packs/privacy.ts#sanitizePackEngrams:
+    kind: guarantee
+    rule: Pack engrams lose pinned and locked before they reach the store, and each neutralized field is counted.
+    tests:
+    - packages/core/test/pack-lifecycle-conformance.test.ts::sanitizePackEngrams counts each field on its own
+    - packages/core/test/packs.test.ts::install strips pinned + unlocks commitment from pack engrams
+  packages/core/src/packs/privacy.ts#scanPrivacy:
+    kind: guarantee
+    rule: Private engrams are never exported, a pack shipping one is refused at install, and they are still scanned for secrets.
+    tests:
+    - evals/packs/test_promise_PCK1_export_excludes_private.test.ts::exports the shareable memory and holds back the rest
+    - packages/core/test/pack-lifecycle-conformance.test.ts::refuses, names the engram, and installs nothing
+    promises:
+    - PCK-1
+  packages/core/src/packs/privacy.ts#SECRET_SCAN_EXCLUDE:
+    kind: note
+    why: Explains which fields the secret scan skips and why; the excluded fields never reach a pack.
+  packages/core/src/packs/privacy.ts#serializeForSecretScan:
+    kind: guarantee
+    rule: The secret scan covers every exported field and exempts only PLUR's own bookkeeping keys, never other underscore
+      keys.
+    tests:
+    - packages/core/test/pack-file-scan.test.ts::still blocks a credential in a field beside the statement
+  packages/core/src/packs/registry.ts#findRegistryRowIndex:
+    kind: guarantee
+    rule: Packs from different directories never share a registry row, even with the same manifest name.
+    lean:
+    - PlurSpec/PacksV2.lean:shared_name_separate
+    tests:
+    - packages/core/test/pack-registry-dir.test.ts::two directories whose manifests share a name keep separate baselines
+  packages/core/src/packs/registry.ts#isAmbiguousLegacyRow:
+    kind: guarantee
+    rule: A legacy row another installed directory could own is never verified against as that pack's baseline.
+    tests:
+    - packages/core/test/pack-registry-dir.test.ts::listPacks reports both unverified, not one of them modified
+    - packages/core/test/pack-registry-dir.test.ts::migrate skips both as skipped-ambiguous-legacy-row and leaves the row
+      alone
+  packages/core/src/packs/registry.ts#isDirNow:
+    kind: guarantee
+    rule: A directory vanishing mid-walk never aborts a listing or a migration.
+    tests:
+    - packages/core/test/pack-integrity-migrate-race.test.ts::listPacks and loadAllPacks survive the same race
+  packages/core/src/packs/registry.ts#PackRegistryUnreadableError:
+    kind: guarantee
+    rule: An unreadable pack registry is refused rather than read as empty, so no pack loses its baseline.
+    tests:
+    - packages/core/test/registry-config-integrity-805.test.ts::refuses a corrupt registry instead of erasing every other
+      pack
+  packages/core/src/packs/registry.ts#removeFromRegistry:
+    kind: guarantee
+    rule: Uninstalling a pack removes its own registry row and never another pack's.
+    lean:
+    - PlurSpec/PacksV2.lean:uninstall_preserves_others
+    tests:
+    - packages/core/test/pack-registry-dir.test.ts::uninstalling one leaves the other ok, not unverified
+    - packages/core/test/pack-registry-dir.test.ts::a legacy row shared by two directories is not removed when only one of
+      them is uninstalled
+  packages/core/src/packs/registry.ts#saveRegistry:
+    kind: guarantee
+    rule: The registry is written atomically and fsynced, so no half-written file is ever visible.
+    tests:
+    - packages/core/test/registry-config-integrity-805.test.ts::writes the registry atomically
+  packages/core/src/packs/registry.ts#withRegistryLock:
+    kind: guarantee
+    rule: Concurrent installers never lose each other's registry rows.
+    none: no test runs two installers concurrently against one registry
+  packages/core/src/packs/staging.ts#fsyncTree:
+    kind: guarantee
+    rule: A filesystem that cannot fsync a directory never fails an otherwise good install.
+    none: no test makes the staging fsync fail

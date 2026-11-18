@@ -1,18 +1,8 @@
 /**
- * Embedder adapter interface — Sprint 0 PR 4 (feat/embedder-bake-off).
- *
- * Four candidate models live behind this shape so the benchmark harness can
- * swap them via --embedder and the PGLite vector column can be sized at
- * construction time based on `dim`.
- *
- * Adapters are responsible for:
- *   - lazy model load on first embed call
- *   - pooling + normalisation suitable for their family (CLS for BGE, mean
- *     for MiniLM, model-specific for EmbeddingGemma)
- *   - returning Float32Arrays of exactly `dim` floats
- *
- * Adapters must be stateless w.r.t. caller — repeated embed("foo") calls
- * produce identical output once the model is loaded.
+ * Embedder adapter interface: models swap via --embedder, and `dim` sizes the
+ * PGLite vector column at construction. Adapters load lazily, pool and
+ * normalise per family (CLS for BGE, mean for MiniLM), return exactly `dim`
+ * floats, and are deterministic once loaded.
  */
 
 /** Asymmetric embedding role — models that use role-aware prefixes (e.g. EmbeddingGemma)
@@ -32,12 +22,12 @@ export interface EmbedderAdapter {
   embed(text: string, role?: EmbedRole): Promise<Float32Array>
   /** Embed N texts. Output order matches input order. */
   embedBatch(texts: string[]): Promise<Float32Array[]>
-  /** Optional (#1586 round 3): the model is loaded in this process. */
+  /** Optional: the model is loaded in this process. */
   isLoaded?(): boolean
-  /** Optional (#1586 rounds 3-6): are the model's files on disk where a load
+  /** Optional: are the model's files on disk where a load
    *  would read them? Null when the adapter cannot tell. */
   modelPresent?(): Promise<boolean | null>
-  /** Optional (#1586 round 6): the embedder is a remote API (no local model,
+  /** Optional: the embedder is a remote API (no local model,
    *  no cold start), so no background cache fill is started for it. */
   readonly remote?: boolean
   /**

@@ -1,0 +1,46 @@
+"packages/core/src/folders.ts#resolveFolderPolicy":
+  lean: ["PlurSpec/FolderRules.lean:off_always_off", "PlurSpec/FolderRules.lean:remote_only_kept", "PlurSpec/FolderRules.lean:untrusted_asks", "PlurSpec/FolderRules.lean:explicit_ask_kept", "PlurSpec/FolderRules.lean:home_keeps_asking"]
+"packages/core/src/folders.ts#resolveExplicitFolderPolicy":
+  lean: ["PlurSpec/FolderRules.lean:malformed_never_on"]
+"packages/core/src/folders.ts#FolderPolicy":
+  lean: ["PlurSpec/FolderRules.lean:malformed_never_on"]
+"packages/core/src/folders.ts#folderOffEntries":
+  lean: ["PlurSpec/FolderRules.lean:off_always_off"]
+"packages/core/src/folders.ts#modeEntries":
+  lean: ["PlurSpec/FolderRules.lean:remote_only_kept"]
+"packages/core/src/folder-map-check.ts#near":
+  lean: ["PlurSpec/FolderRules.lean:guess_never_on", "PlurSpec/FolderRules.lean:guess_never_remote_only"]
+"packages/core/src/folder-map-check.ts#YES_NO":
+  lean: ["PlurSpec/FolderRules.lean:suggest_safe"]
+"packages/core/src/folder-map-check.ts#parses":
+  tests: ["packages/core/test/formal-folder-rules-writes.test.ts::a parseable map with a wrong mode keeps its own indentation"]
+"packages/core/src/folder-ask.ts#trust":
+  lean: ["PlurSpec/FolderRules.lean:issued_grants_only_its_answer", "PlurSpec/FolderRules.lean:issued_works_once", "PlurSpec/FolderRules.lean:trusted_distinguished"]
+"packages/core/src/folder-ask.ts#skippedStoreHintClaimed":
+  tests: ["packages/core/test/formal-folder-rules-writes.test.ts::with no marker folder, the lookup creates none", "packages/core/test/formal-folder-rules-writes.test.ts::with a marker folder, the lookup adds and removes nothing"]
+"packages/core/src/folders.ts#verifyFolderNonce":
+  lean: ["PlurSpec/FolderRules.lean:verify_binds", "PlurSpec/FolderRules.lean:unbound_record_authorises_nothing", "PlurSpec/FolderRules.lean:failed_write_keeps_nonce"]
+"packages/core/src/folders.ts#setFolderEntryUnlocked":
+  lean: ["PlurSpec/FolderRules.lean:nonce_single_use"]
+"packages/core/src/folders.ts#map":
+  lean: ["PlurSpec/FolderRules.lean:failed_write_keeps_nonce"]
+"packages/core/src/folders.ts#hostFolderNonces":
+  lean: ["PlurSpec/FolderRules.lean:no_start_no_match", "PlurSpec/FolderRules.lean:match_same_pid_close", "PlurSpec/FolderRules.lean:reused_pid_far_start"]
+"packages/core/src/folders.ts#load":
+  tests: ["packages/core/test/formal-folder-rules-writes.test.ts::importing trust.yaml never overwrites a map another writer created meanwhile"]
+"packages/core/src/folders.ts#lockHeld":
+  tests: ["packages/core/test/formal-folder-rules-writes.test.ts::parallel folder-map writes from several processes lose none"]
+"packages/core/src/plur/folders-policy.ts#policy":
+  tests: ["packages/core/test/formal-folder-rules-writes.test.ts::bindFolder honours the legacy grant and writes no folders.yaml"]
+"packages/mcp/src/folder-gate.ts#ancestorHosts":
+  lean: ["PlurSpec/FolderRules.lean:no_start_no_match", "PlurSpec/FolderRules.lean:match_same_pid_close"]
+"packages/mcp/src/folder-gate.ts#isFilesystemRoot":
+  tests: ["packages/mcp/test/formal-folder-rules-gate.test.ts::a filesystem root is never asked about, and no nonce is issued for it", "packages/mcp/test/formal-folder-rules-gate.test.ts::with a filesystem root among the roots, only the project folder is asked about"]
+"packages/mcp/src/folder-gate.ts#createFolderGate.check":
+  tests: ["packages/mcp/test/formal-folder-rules-gate.test.ts::a decided folder: the gate reads the decision only, and never sets the process-wide scope slot"]
+"packages/mcp/src/folder-gate.ts#createFolderGate":
+  lean: ["PlurSpec/FolderRules.lean:check_runs_only_on", "PlurSpec/FolderRules.lean:check_ask_never_runs"]
+  tests: ["packages/mcp/test/formal-folder-rules-gate.test.ts::an off decision read while checking the folders turns memory off, even when the earlier off check saw on"]
+"packages/mcp/src/folder-gate.ts#off":
+  lean: ["PlurSpec/FolderRules.lean:check_runs_only_on"]
+  tests: ["packages/mcp/test/formal-folder-rules-gate.test.ts::an off decision read while checking the folders turns memory off, even when the earlier off check saw on"]

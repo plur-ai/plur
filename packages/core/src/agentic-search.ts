@@ -19,16 +19,14 @@ export async function agenticSearch(
   limit: number,
   llm: LlmFunction,
 ): Promise<Engram[]> {
-  // Step 1: BM25 pre-filter to top 30 candidates (cheap, fast)
+  // BM25 pre-filter to the top 30 candidates.
   const candidates = searchEngrams(engrams, query, Math.min(30, engrams.length))
 
   if (candidates.length === 0) return []
   if (candidates.length <= limit) {
-    // Few enough candidates — let LLM rank them all
     return agenticRerank(candidates, query, limit, llm)
   }
 
-  // Step 2: LLM selects the most relevant ones
   return agenticRerank(candidates, query, limit, llm)
 }
 
@@ -41,7 +39,7 @@ async function agenticRerank(
   limit: number,
   llm: LlmFunction,
 ): Promise<Engram[]> {
-  // Build the numbered list for the LLM — include enriched context
+  // Numbered list for the LLM, with entity and validity context.
   const numbered = candidates.map((e, i) => {
     const extra: string[] = []
     if (e.entities?.length) extra.push(`entities: ${e.entities.map(x => x.name).join(', ')}`)
@@ -71,13 +69,11 @@ Rules:
 
     if (text.toLowerCase() === 'none') return []
 
-    // Parse comma-separated numbers
     const indices = text
       .split(',')
       .map(s => parseInt(s.trim(), 10) - 1) // 1-indexed → 0-indexed
       .filter(i => !isNaN(i) && i >= 0 && i < candidates.length)
 
-    // Deduplicate while preserving order
     const seen = new Set<number>()
     const unique: number[] = []
     for (const i of indices) {
@@ -89,7 +85,7 @@ Rules:
 
     return unique.slice(0, limit).map(i => candidates[i])
   } catch {
-    // LLM failed — fall back to BM25 results
+    // LLM failed: fall back to BM25 order.
     return candidates.slice(0, limit)
   }
 }

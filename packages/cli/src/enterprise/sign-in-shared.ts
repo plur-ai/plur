@@ -1,6 +1,6 @@
 /**
  * What `plur login` (commands/login.ts) and the one-time config.json move
- * (enterprise/legacy-login.ts) share (#1638): the server origin rule, the
+ * (enterprise/legacy-login.ts) share: the server origin rule, the
  * `/me` probe and the personal scope it gives, the message for a refused
  * takeover of the personal scope, and the owner-only backup of a file that
  * holds a key. Kept apart so neither of those modules imports the other.
@@ -115,8 +115,7 @@ export function holderLine(h: ScopeHolder): string {
 }
 
 /**
- * The message for a refused takeover of the personal scope (owner decision on
- * B5: refuse; the installer offers to remove the stale entry). Names every
+ * The message for a refused takeover of the personal scope. Names every
  * entry that holds the scope and the command that removes them.
  */
 export function takeoverMessage(err: PersonalScopeTakenError, origin: string, configPath: string,
@@ -154,7 +153,7 @@ export interface BackupHost {
  * `<root>/backups/<stamp>/<name>` and return the copy's path. The folder and
  * the copy are owner-only from the outset — 0700/0600 on Unix, an owner-only
  * access list on Windows, verified — through the cleanup's backup writer,
- * which uses core's `protectOwnerOnly` (#1631). Throws, leaving no copy with
+ * which uses core's `protectOwnerOnly`. Throws, leaving no copy with
  * content, when that protection cannot be established.
  */
 export function backupSecretFile(root: string, source: string, host: BackupHost = {}): string {

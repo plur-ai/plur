@@ -2,9 +2,9 @@
  * plur-migrate — find PLUR calls left un-awaited by the 0.16 async migration.
  *
  * Reports by default. `--write` applies only the rewrites that are
- * unambiguous; everything structural is listed for a human, because the
- * codemods that did this migration inside PLUR itself were wrong in ways no
- * test caught before they were right. See `scan.ts` for the specific hazards.
+ * unambiguous; everything structural is listed for a human, because an
+ * automatic rewrite there can change program meaning. See `scan.ts` for the
+ * specific hazards.
  */
 import { readFileSync, writeFileSync, readdirSync, statSync } from 'node:fs'
 import { join, relative, extname } from 'node:path'
@@ -87,21 +87,15 @@ export function run(argv: string[]): number {
 
   const all: Finding[] = []
   let changed = 0
-  // Counted from what applyFixes actually did (formal R2, mcp#8): the summary
-  // used to report every fixable site as fixed, including ones it skipped.
+  // Counted from what applyFixes actually did, so skipped sites are not reported as fixed.
   let appliedTotal = 0
   const notApplied = new Set<Finding>()
   for (const f of files) {
     let src: string
     try { src = readFileSync(f, 'utf8') } catch { continue }
-    // Cheap pre-filter, DERIVED from the method table rather than hand-written.
-    //
-    // It used to list ten names while `NEWLY_ASYNC` held twenty-eight, so a file
-    // whose only calls were `setPinned`, `receipt` or `installPack` was skipped
-    // outright — and the run then printed "no un-awaited PLUR calls found" and
-    // exited 0. Telling someone their migration is clean when it is not is the
-    // worst thing this tool can do; it is the one output they will act on
-    // without checking.
+    // Cheap pre-filter, derived from the method table so it never skips a file
+    // the scanner would flag: a false "no un-awaited calls found" is the one
+    // output users act on without checking.
     if (!PREFILTER.test(src)) continue
 
     const findings = scanSource(relative(process.cwd(), f) || f, src)
@@ -150,8 +144,7 @@ export function run(argv: string[]): number {
   }
   // Non-zero whenever un-awaited calls remain, so this composes in CI: sites
   // that need a human, and — in report-only mode — fixable sites not yet
-  // written (formal R2, mcp#8: report-only used to exit 0 with work
-  // outstanding, which a CI gate reads as "migration done").
+  // written (exit 0 would read to a CI gate as "migration done").
   return manual.length > 0 || (!write && fixable.length > 0) ? 2 : 0
 }
 

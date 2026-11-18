@@ -6,23 +6,15 @@ import { ensureSessionDir } from './codex-hook-io.js'
 import { safeSessionKey } from './session-key.js'
 
 /**
- * State directory for the Claude Code `hook-inject` family: session markers,
- * reminder clocks, inject locks and the per-session task file.
- *
- * On Linux `$TMPDIR` is usually the shared /tmp. The directory is therefore
- * created 0700 and must be a real directory owned by this user
- * (`ensureSessionDir`, the check the Codex/Cursor/Antigravity families already
- * use). A directory that fails the check — a planted symlink, or one another
- * user created — is refused, and state goes to a private directory under the
- * PLUR root instead, but only if THAT passes the same check. When both are
- * refused this returns null and callers persist nothing: a refused directory
- * is never written to (formal conflict H, spec/formal R2CLI §FR5
- * `Dir.conflict_H_unique` — the only policy that is both safe and persistent).
+ * State directory for the Claude Code `hook-inject` family (markers, reminder clocks, inject locks, task file).
+ * `$TMPDIR` may be shared, so it must be a real 0700 directory owned by this user (`ensureSessionDir`); otherwise a
+ * private directory under the PLUR root is used if it passes the same check. Both refused → null and callers
+ * persist nothing.
  */
 export function hookSessionDir(): string | null {
   const shared = join(tmpdir(), 'plur-sessions')
   if (ensureSessionDir(shared)) return shared
-  // `||`, not `??`: an empty PLUR_PATH means unset, never "the cwd" (H3).
+  // `||`, not `??`: an empty PLUR_PATH means unset, never "the cwd".
   const fallback = join(process.env.PLUR_PATH || join(homedir(), '.plur'), 'hook-sessions')
   return ensureSessionDir(fallback) ? fallback : null
 }

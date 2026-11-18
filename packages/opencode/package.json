@@ -12,9 +12,10 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@plur-ai/core": "workspace:*"
+    "@plur-ai/core": "workspace:>=0.23.0 <1"
   },
   "peerDependencies": {
+    "@plur-ai/core": ">=0.23.0 <1",
     "@opencode-ai/plugin": ">=1.18.0",
     "@opencode/plugin": ">=2.0.23 <3"
   },

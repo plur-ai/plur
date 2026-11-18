@@ -1,5 +1,3 @@
-// src/session-state.ts
-
 interface ToolCallRecord {
   tool: string
   args_keys: string

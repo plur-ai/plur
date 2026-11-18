@@ -6,14 +6,14 @@ export interface PlurPaths {
   root: string
   engrams: string
   episodes: string
-  /** Persisted tension records (#181). */
+  /** Persisted tension records. */
   tensions: string
   candidates: string
   packs: string
   exchange: string
   config: string
   db: string
-  /** PGLite data directory (ADR-0001, opt-in via backend: pglite). */
+  /** PGLite data directory (opt-in via backend: pglite). */
   pglite: string
 }
 

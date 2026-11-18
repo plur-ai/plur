@@ -2,6 +2,52 @@
 
 ## 0.23.1
 
+### Security
+
+Fixes from a source-level security review of the whole repository. Each has a
+regression test. (#1858)
+
+- A repository's git origin picks a team scope only when you have trusted the
+  repository. In an untrusted repository, a folder you have not decided on asks
+  first and names the scope; a folder that is on stays local and reports
+  `untrusted-origin`. (#1860)
+- Recall never sends a query that contains a secret, or that a write to the
+  same team scope would refuse, to a team server. The report says the remote
+  leg was skipped and why (categories only).
+- An `llm_base_url` an agent passes to a tool must be a loopback address or a
+  URL you listed under `llm.base_urls` in `config.yaml`; otherwise nothing is
+  sent.
+- `plur_sync` no longer adds a git remote an agent names. You set one up in a
+  terminal with `plur sync <remote>`.
+- `plur_stores_add` with a URL checks the token and scope with the server, as
+  `plur stores add --url` does, before `config.yaml` changes.
+- `plur_packs_export` writes only under `~/plur-packs/<name>`. A reserved or
+  non-directory pack name is refused instead of being moved to another name.
+- Models load at a pinned revision, and each file must match its recorded
+  sha256. An existing offline cache keeps working when its files match; a
+  mismatched file is refused and the error names the folder to delete.
+- A sync pull is refused when the remote adds anything other than PLUR's own
+  store and pack files, and the sibling stores (episodes, tensions,
+  candidates) stay locked while a pull rewrites them.
+- File modes: the Cursor rule file and `hook-observe` files are owner-only, and
+  `engrams.db` and other files derived from the store are never more readable
+  than `engrams.yaml`. A YAML store that expands far beyond its own size
+  through aliases is refused.
+- A committed `.claude/settings.json` hook no longer marks a folder as on, and
+  hooks a repository ships do not count as this machine's install.
+- Harvested and model-inferred memories are marked `inferred` and pass the
+  prompt-injection check; the OpenClaw `/recall` and other slash commands are
+  owner-only.
+- Antigravity hooks follow the folder map for every workspace root, not only
+  the first. A server that reports a different organisation than the one it
+  was set up with does not change its scopes; a server's `forbid` list only
+  adds to the local one.
+- Remote store ids, scope names and prefixes are validated and escaped; a
+  scope cannot be bound to a remote store as `global` or `local`.
+- `plur-langchain` requires Python 3.10 or later and `plur-ai` 0.23.0 or later.
+
+### Claude's directory plugin
+
 A PLUR plugin for Claude's directory. (#1870)
 
 - `plugins/plur`: the MCP server, a skill, and hooks for automatic memory behind
@@ -10,6 +56,68 @@ A PLUR plugin for Claude's directory. (#1870)
   without directing the model.
 - `PLUR_FOLDER_SCOPE=project`: a folder that is on and has no scope gets one named
   after its repository, so one project's notes are not injected into another.
+
+### Changes
+
+- A repository `.plur.yaml` that asks for a scope, domain or team server, in
+  a folder you have not trusted, no longer stops memory there. Memory loads as
+  if the file asked for nothing: none of its settings are used and its server
+  is never contacted. The Claude Code, Codex, Cursor and Antigravity hooks and
+  the opencode plugin add the trust question next to the memories once per
+  session, so you can trust it, keep memory on without its settings, or turn
+  memory off. Your own `off`, `remote-only`, `ask` or scope entries still
+  decide, and a folder map PLUR cannot read still means no memory. (#1879)
+
+### Fixes
+
+- After `npm install -g @plur-ai/cli@latest @plur-ai/mcp@latest`, `plur init`
+  moves every editor config PLUR wrote to the new version. Entries that launch
+  the installed MCP server (`~/.plur/bin/plur-mcp`, or Node plus the installed
+  package for OpenCode) follow the upgrade unchanged. Where no installed server
+  is found, init records `npx -y @plur-ai/mcp@<version>`, and now updates an
+  older pinned version on every run in Claude Code, Claude Desktop, Cursor,
+  Antigravity, OpenCode and `plur-mcp init`, as it already did for Codex. Newer
+  pins and custom entries are left alone, and configs still never record
+  `@latest` (#1069). `plur-mcp init` also uses the installed MCP server when
+  `plur init` has set it up, and pins its npx hook fallback. Messages that read
+  as "do not install latest" now say: install the latest version globally;
+  tool configs record the exact version. The release announcement's update
+  line now runs `plur init`. (#1832)
+- The opencode, OpenClaw and DeepSeek Harness plugins no longer pin the exact
+  `@plur-ai/core` they were built with. Each depends on the core it was last
+  published with, or later (below 1.0; the release sets the floor), so
+  installing a plugin at `latest` gets the current core instead of an older
+  one opening the same `~/.plur` store. The release script now refuses to
+  ship a core that a published plugin does not accept, and says which plugins
+  to release with it. (#1831)
+- The update notice, `plur_status` and `plur doctor`'s opencode plugin check
+  ask your own npm which version `latest` names, so they use the same
+  registry, scoped `@plur-ai:registry` mirror, proxy, certificate and token as
+  `npm install`. Behind a company mirror the notice reports the mirror's
+  `latest` instead of npmjs.org's, so the suggested `npm i -g …@latest`
+  installs the version it names. When that registry cannot be reached, PLUR
+  says `Could not reach <host> to check for updates (<reason>). No update is
+  advertised.` and runs normally; it never shows a version it saw earlier as
+  current. The MCP server and the OpenClaw plugin keep the answer in the
+  store's `cache/update-check.json` (6 hours, 30 minutes after a failure), so a
+  restart within that time asks npm nothing. (#1833)
+- `plur_doctor` and `plur_session_start` report the local engram count. The
+  doctor used to count the embedding cache, which also holds team engrams
+  cached from a server, so a machine with no local engrams reported about a
+  thousand; `status()` now reports local and remote-cached counts apart, and a
+  cold remote cache is reported as not loaded yet rather than empty. (#1822)
+- On a team-only install (no local engrams, the team's memory on the server),
+  the doctor's engram store check passes instead of failing. (#1828)
+- On Windows, `plur doctor` names the missing Microsoft Visual C++ runtime when
+  the embedding model fails to load, instead of reporting a binding file that
+  exists as "could not be found". (#1824)
+- The first remote recall in a `plur recall` process gets the 5 s warm-up
+  budget, so it no longer times out while later calls answer in about a
+  second. (#1825)
+- `plur-hermes`: the memory provider implements every optional method of
+  Hermes's `MemoryProvider` (including `shutdown()`), so Hermes no longer logs
+  `AttributeError` warnings when it closes an idle session, and Hermes's recall
+  line now reports how many memories PLUR recalled. (#1851, #1863, #1869)
 
 ## 0.23.0
 

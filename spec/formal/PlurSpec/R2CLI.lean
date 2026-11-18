@@ -23,7 +23,9 @@ Checked against the merge of main into #1228 (2026-09-30: #1276, #1300, #1353,
   (`writerKey`). `closer_finds_writer` is re-proved for the new key.
 - §3 holds, with notes in the section: the marker key and the lock, which
   run() now takes and releases through `takeInjectLock`/`releaseInjectLock`.
-- §4 to §7 hold. The counters still use `ticketCounter`. doctor's
+- §4 to §7 hold. The Cursor, Claude Code Stop, Codex and Antigravity
+  counters all use `ticketCounter` (HookCounters §1,
+  `ticket_distinct_any_schedule`). doctor's
   `hookHarnesses`/`readyLine` are unchanged, and #1270 changed only its hook
   classifier (Adapters §3).
 
@@ -112,8 +114,42 @@ verdict in `sessionsDir()` and wrote regardless. FIXED: write only when vetted. 
 def writesOrig (_ensureOk : Bool) : Bool := true
 def writesFixed (ensureOk : Bool) : Bool := ensureOk
 
-theorem fixed_writes_only_vetted (ok : Bool) (h : writesFixed ok = true) : ok = true := h
+/-- `ensureSessionDir` on an existing dir: refuse a symlink or a foreign owner;
+tighten our own group/other-writable dir with chmod, refusing if that fails.
+Returns the dir as it is afterwards. -/
+def ensure (chmodOk : Bool) (d : Dir) : Option Dir :=
+  if d.symlink || !d.ownedByMe then none
+  else if d.gow then (if chmodOk then some { d with gow := false } else none)
+  else some d
+
+/-- The files in the Cursor session dir. `markSessionStarted`: both writes only
+after `ensureSessionDir` vets the dir. -/
+def markStarted (chmodOk : Bool) (d : Dir) (files : List String) : List String :=
+  match ensure chmodOk d with
+  | some _ => "marker" :: "reminded" :: files
+  | none => files
+
+/-- Cursor `incrementCounter`: checks `sessionDirTrusted` (never creates), then
+appends its ticket; a refused dir reports the counter as exceeded. -/
+def cursorIncr (max : Nat) (d : Dir) (files : List String) (n : Nat) : List String × Nat :=
+  if trusted d then ("ticket" :: files, n) else (files, max)
+
+/-- Every Cursor session-dir write lands in a dir that is, at that moment, a real
+owner-only dir of this user; a refused dir is left byte-for-byte unchanged and
+the counter fails open. -/
+theorem fixed_writes_only_vetted (ok : Bool) (d : Dir) (files : List String) (max n : Nat) :
+    (markStarted ok d files ≠ files → ∃ d', ensure ok d = some d' ∧ trusted d' = true) ∧
+    ((cursorIncr max d files n).1 ≠ files → trusted d = true) ∧
+    (plantable d = true → ensure ok d = none → markStarted ok d files = files) ∧
+    (trusted d = false → cursorIncr max d files n = (files, max)) := by
+  cases d with
+  | mk s o g =>
+    cases s <;> cases o <;> cases g <;> cases ok <;>
+      simp [markStarted, cursorIncr, ensure, trusted, plantable]
 theorem orig_writes_refused : writesOrig false = true := rfl
+/-- Non-vacuity: our own 0755 dir is tightened and written. -/
+theorem fixed_writes_tightened (files : List String) :
+    markStarted true ⟨false, true, true⟩ files = "marker" :: "reminded" :: files := rfl
 
 /-- Tool names as Claude Code builds them: `mcp__<server>__<tool>`. -/
 inductive Tool where
@@ -211,10 +247,47 @@ theorem orig_removes_live : (stepOrig 5 (.valid 30 true true)).removed = true :=
 /-- Non-vacuity: a dead session's stale checkpoint IS recovered and removed. -/
 theorem orphan_recovered : stepFixed 5 true (.valid 30 true false) = ⟨true, true, true⟩ := rfl
 
-/-- hook-session-end (#217, unchanged): unlink iff capture succeeded. -/
-def sessionEnd (captureOk : Bool) : Outcome := ⟨captureOk, captureOk, false⟩
-theorem session_end_removed_only_after_capture (ok : Bool)
-    (h : (sessionEnd ok).removed = true) : (sessionEnd ok).captured = true := h
+/-- hook-session-end `closeSession`, branch for branch. The folder decision of
+the payload and of the checkpoint's own folder, the parse result and the
+capture result are inputs. -/
+inductive Mode where | on | remoteOnly | off | unresolved
+deriving DecidableEq
+
+inductive Found where | none | corrupt | valid
+deriving DecidableEq
+
+def sessionEndStep (session : Mode) (found : Found) (cpFolder : Option Mode) (captureOk : Bool) :
+    Outcome :=
+  if session = .off || session = .unresolved then keep          -- not a working mode
+  else match found with
+    | .none | .corrupt => keep                                    -- corrupt is retained
+    | .valid =>
+      if session = .remoteOnly || cpFolder = some .remoteOnly then ⟨false, true, false⟩
+      else if cpFolder = some .unresolved then keep
+      else ⟨captureOk, captureOk, false⟩
+
+/-- The checkpoint is removed only after a successful capture, or as the
+deliberate drop of a remote-only session's checkpoint. A corrupt checkpoint, an
+unresolvable checkpoint folder and a failed capture always keep it. -/
+theorem session_end_removed_only_after_capture (m : Mode) (f : Found) (c : Option Mode) (ok : Bool)
+    (h : (sessionEndStep m f c ok).removed = true) :
+    (sessionEndStep m f c ok).captured = true ∨ m = .remoteOnly ∨ c = some .remoteOnly := by
+  cases m <;> cases f <;> cases ok <;> rcases c with _ | ⟨_ | _ | _ | _⟩ <;>
+    simp_all [sessionEndStep, keep]
+
+theorem session_end_keeps_on_failure (m : Mode) (f : Found) (c : Option Mode)
+    (hm : m ≠ .remoteOnly) (hc : c ≠ some .remoteOnly) :
+    (sessionEndStep m f c false).removed = false := by
+  cases m <;> cases f <;> rcases c with _ | ⟨_ | _ | _ | _⟩ <;>
+    simp_all [sessionEndStep, keep]
+
+theorem session_end_keeps_corrupt (m : Mode) (c : Option Mode) (ok : Bool) :
+    (sessionEndStep m .corrupt c ok).removed = false := by
+  cases m <;> cases ok <;> simp [sessionEndStep, keep]
+
+/-- Non-vacuity: an ordinary session with a good capture is closed and removed. -/
+theorem session_end_closes : sessionEndStep .on .valid (some .on) true = ⟨true, true, false⟩ := by
+  decide
 
 /-- Store root: `--path`, then PLUR_PATH, then ~/.plur. -/
 def rootFixed (flag env : Option String) (home : String) : String :=

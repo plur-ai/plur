@@ -1,0 +1,144 @@
+# Backing changes from the remote-health cluster (spec/formal/PlurSpec/RemoteHealth.lean).
+# Each entry lists the full backing (existing plus new); none of the previous backings are dropped.
+packages/core/src/store/remote-store.ts#HOST_DOWN_COOLDOWN_MS:
+  lean:
+    - PlurSpec/RemoteHealth.lean:marked_iff_last_net
+    - PlurSpec/RemoteHealth.lean:answered_clears
+    - PlurSpec/RemoteHealth.lean:other_origin_untouched
+    - PlurSpec/RemoteHealth.lean:dead_host_dials_once
+  tests:
+    - packages/core/test/remote-host-breaker.test.ts::fetchBounded PROBES during an open cooldown instead of fast-failing
+    - packages/core/test/formal-remote-health-store.test.ts::an HTTP error or a malformed body from a live host never marks it, and clears an earlier mark
+packages/core/src/store/remote-store.ts#RemoteAbortedError:
+  lean:
+    - PlurSpec/RemoteHealth.lean:caller_abort_never_marks
+    - PlurSpec/RemoteHealth.lean:marked_iff_last_net
+  tests:
+    - packages/core/test/formal-remote-health-store.test.ts::a request cut by the caller's own deadline throws RemoteAbortedError and does not mark the host
+    - packages/core/test/formal-remote-health-store.test.ts::a caller signal already aborted before the request does not mark the host
+packages/core/src/store/remote-store.ts#LOAD_FETCH_TIMEOUT_MS:
+  tests:
+    - packages/core/test/formal-remote-health-store.test.ts::a page fetch that never receives headers is cut after LOAD_FETCH_TIMEOUT_MS
+    - packages/core/test/formal-remote-health-store.test.ts::a bounded request that never answers throws RemoteTimeoutError after LOAD_FETCH_TIMEOUT_MS
+packages/core/src/store/remote-store.ts#body:
+  tests:
+    - packages/core/test/formal-remote-health-store.test.ts::a 200 whose body is JSON null reads as an older server with no fields
+    - packages/core/test/remote-me-contract.test.ts
+packages/core/src/store/remote-store.ts#dropped:
+  tests:
+    - packages/core/test/remote-me-contract.test.ts::a dropped C1 value is logged by field and reason only, never by its value
+packages/core/src/store/remote-store.ts#why:
+  tests:
+    - packages/core/test/formal-remote-health-store.test.ts::malformed scope metadata is logged by path and code only, never with server values
+packages/core/src/remote-recall.ts#TokenHealth:
+  lean:
+    - PlurSpec/R2CoreB.lean:noninterference
+    - PlurSpec/R2CoreB.lean:other_tokens_irrelevant
+    - PlurSpec/RemoteHealth.lean:respond_token_isolation
+    - PlurSpec/RemoteHealth.lean:others_never_touch
+    - PlurSpec/RemoteHealth.lean:other_token_survives
+  tests:
+    - packages/core/test/formal-r2-coreb-health.test.ts::a healthy token interleaved with a revoked one does not reset the revoked token
+    - packages/core/test/formal-r2-coreb-health.test.ts::never persists a token in the health file
+    - packages/core/test/formal-remote-health-breaker.test.ts::one token's 403s and 429 leave another token's record untouched
+packages/core/src/remote-recall.ts#isLegacyRateLimitCooldown:
+  kind: guarantee
+  rule: A breaker cooldown is never read as an older file's host-wide 429, whatever another token's 429 left in last_state.
+  lean:
+    - PlurSpec/RemoteHealth.lean:breaker_never_legacy
+    - PlurSpec/RemoteHealth.lean:breaker_trial_reachable
+    - PlurSpec/RemoteHealth.lean:save_clears_breaker
+    - PlurSpec/RemoteHealth.lean:legacy_still_honoured
+  tests:
+    - packages/core/test/formal-remote-health-breaker.test.ts::the breaker still allows its trial read after the half-open wait
+    - packages/core/test/formal-remote-health-breaker.test.ts::a successful save still ends the breaker cooldown
+    - packages/core/test/formal-remote-health-breaker.test.ts::the write leg reports the cooldown as the breaker, not a rate limit
+    - packages/core/test/formal-remote-health-breaker.test.ts::a host-wide 429 cooldown from an older file is still honoured to its end
+packages/core/src/remote-recall.ts#recordWriteOutcome:
+  lean:
+    - PlurSpec/RemoteHealth.lean:save_clears_breaker
+    - PlurSpec/RemoteHealth.lean:writeFail_inv
+  tests:
+    - packages/core/test/outbox-circuit-breaker.test.ts::opens the breaker after the threshold of write failures
+    - packages/core/test/outbox-circuit-breaker.test.ts::a write SUCCESS clears the count, so both legs see a recovered host
+packages/core/src/remote-recall.ts#claimHalfOpenTrial:
+  lean:
+    - PlurSpec/RemoteHealth.lean:at_most_one_trial
+    - PlurSpec/RemoteHealth.lean:breaker_trial_reachable
+  tests:
+    - packages/core/test/recall-deadline-1586-audit.test.ts::the loser does not erase half_open_trial_at, and a third process does not dial a second trial
+    - packages/core/test/recall-deadline-1586-audit.test.ts::with the health-file lock held by a live process, a due trial is not dialed
+packages/core/src/remote-recall.ts#dialHost:
+  lean:
+    - PlurSpec/RemoteHealth.lean:refusal_never_counts
+  tests:
+    - packages/core/test/remote-recall.test.ts::403 requires 2 CONSECUTIVE before reading as revocation (forbidden)
+packages/core/src/remote-recall.ts#RATE_LIMIT_MAX_COOLDOWN_MS:
+  lean:
+    - PlurSpec/RemoteHealth.lean:rate_limit_capped
+  tests:
+    - packages/core/test/formal-remote-health-breaker.test.ts::a Retry-After above one hour is honoured for at most one hour
+packages/core/src/remote-recall.ts#HostRecallOutcome:
+  tests:
+    - packages/core/test/formal-remote-health-breaker.test.ts::an HTTP 500 outcome detail carries the status only, never the server's text
+packages/core/src/remote-recall.ts#processHostRows:
+  tests:
+    - packages/core/test/formal-remote-health-breaker.test.ts::a server row without tags is given an empty tag list
+packages/core/src/remote-recall.ts#readApplyWrite:
+  lean:
+    - PlurSpec/RemoteHealth.lean:time_never_backwards
+  tests:
+    - packages/core/test/formal-remote-health-breaker.test.ts::a record time never moves backwards when an older observation is saved
+packages/core/src/remote-recall.ts#persistHostChanges:
+  lean:
+    - PlurSpec/RemoteHealth.lean:untouched_survives
+    - PlurSpec/RemoteHealth.lean:increments_add
+    - PlurSpec/RemoteHealth.lean:other_token_survives
+  tests:
+    - packages/core/test/remote-recall.test.ts::a writer with a stale entry snapshot does not erase another writer
+    - 'packages/core/test/recall-deadline-1586-audit.test.ts::a dial writes only the fields it changed: another token'
+packages/core/src/remote-recall.ts#PRINT_FIELDS:
+  lean:
+    - PlurSpec/RemoteHealth.lean:skip_never_written
+  tests:
+    - packages/core/test/remote-recall.test.ts::a remoteRecall persist does not erase a concurrent hook-header claim
+packages/core/src/remote-recall.ts#update:
+  tests:
+    - packages/core/test/formal-remote-health-breaker.test.ts::a write outcome is applied to the entry as it is now, not an earlier read
+packages/core/src/remote-recall.ts#withRemoteHealthLock:
+  tests:
+    - packages/core/test/formal-remote-health-breaker.test.ts::with the health-file lock held, recall still answers and the header is still claimed
+packages/core/src/remote-recall.ts#writeRemoteHealth:
+  tests:
+    - packages/core/test/formal-remote-health-breaker.test.ts::an unwritable health file never breaks recall
+    - packages/core/test/formal-remote-health-breaker.test.ts::health writes leave no temporary file behind
+packages/core/src/remote-recall.ts#settleBy:
+  tests:
+    - 'packages/core/test/formal-remote-health-breaker.test.ts::never rejects: a rejection comes back as a result, a slow promise as not done'
+packages/core/src/remote-recall.ts#RECALL_BOOKKEEPING_LOCK_WAIT_MS:
+  tests:
+    - packages/core/test/recall-deadline-1586-audit.test.ts::a lock released just after the deadline does not let the write land
+packages/core/src/remote-recall.ts#(module):
+  lean:
+    - PlurSpec/RemoteHealth.lean:complete_means_reached
+    - PlurSpec/RemoteHealth.lean:deadline_neutral
+  tests:
+    - packages/core/test/remote-recall.test.ts::host down → local results still served, degradation recorded
+    - 'packages/core/test/formal-remote-health-results.test.ts::recallWithMeta: results_complete is false and the host is named'
+  promises:
+    - TEAM-1
+    - TEAM-2
+packages/core/src/plur/remote-results.ts#remoteResultsMethods._startRemoteRecall:
+  lean:
+    - PlurSpec/GitFolder.lean:adapter_local_never_dials
+    - PlurSpec/RemoteHealth.lean:complete_means_reached
+    - PlurSpec/RemoteHealth.lean:new_catch_incomplete
+  tests:
+    - packages/core/test/git-folder-binding.test.ts::local and unknown bindings never dial even always-dial stores
+    - 'packages/core/test/formal-remote-health-results.test.ts::recallWithMeta: results_complete is false and the host is named'
+packages/core/src/seen-on-server.ts#(module):
+  lean:
+    - PlurSpec/RemoteHealth.lean:append_survives_one_rotation
+    - PlurSpec/RemoteHealth.lean:append_keeps
+  tests:
+    - 'packages/core/test/seen-on-server-store.test.ts::S1: concurrent writers lose no line while the file is being bounded'

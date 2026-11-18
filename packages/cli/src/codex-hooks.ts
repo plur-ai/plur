@@ -3,20 +3,10 @@ import { dirname } from 'path'
 import { isPlurHookCommand } from './lib/hook-command.js'
 
 /**
- * Support for Codex's `~/.codex/hooks.json`.
- *
- * Structurally IDENTICAL to Claude Code's `.claude/settings.json` hooks
- * section — `hooks[event]` is an array of `{matcher, hooks: [...]}` wrapper
- * objects — which is why this file can be so much smaller than
- * `cursor-hooks.ts` (Cursor nests one level shallower and needed its own
- * merge implementation).
- *
- * Codex accepts hooks from either `~/.codex/hooks.json` or a `[hooks]` table
- * in `~/.codex/config.toml`, and warns when both exist for the same layer
- * ("loading hooks from both … prefer a single representation"). We write the
- * JSON file: it needs no TOML dependency, it reuses the shape the Claude
- * Code builders already emit, and it keeps PLUR's hooks out of the file the
- * user hand-edits for models and MCP servers.
+ * Support for Codex's `~/.codex/hooks.json` — structurally identical to Claude Code's
+ * settings.json hooks section. We write this JSON file rather than a `[hooks]` table in
+ * config.toml (Codex warns if both exist): no TOML dependency, and PLUR's hooks stay
+ * out of the file the user hand-edits.
  */
 
 export interface CodexHookSpec {
@@ -38,19 +28,9 @@ export interface CodexHooksConfig {
 
 /**
  * Build PLUR's Codex hook contribution, given the resolved shim/CLI command.
- *
- * NOTHING HERE MAY SET `async: true`. Codex does support async hooks as of
- * 0.149.1 (they were silently skipped in 0.146.0), but an async hook's
- * `additionalContext` is delivered at the "next safe point" — i.e. NOT to
- * the turn that triggered it. For a `codex exec` one-shot that means never.
- * Claude Code's `hook-inject` made the same move to sync for the same reason
- * (#1313; it was async with a 90s timeout). These hooks are synchronous —
- * hybrid-first with a BM25 fallback on a soft deadline (`injectWithFallback`)
- * — and `codex-hooks.test.ts` asserts the no-async invariant.
- *
- * Timeouts are SECONDS here (Codex's unit), not the milliseconds Gemini CLI
- * uses. Codex's own default is 600s; ours are deliberately tight so a wedged
- * hook cannot hang a turn.
+ * NOTHING HERE MAY SET `async: true`: async `additionalContext` arrives after the
+ * triggering turn (never, for `codex exec`). `codex-hooks.test.ts` asserts this.
+ * Timeouts are SECONDS (Codex's unit), deliberately tight so a wedged hook cannot hang a turn.
  */
 export function buildCodexHooks(cmd: string): Record<string, CodexHookEntry[]> {
   return {
@@ -66,8 +46,7 @@ export function buildCodexHooks(cmd: string): Record<string, CodexHookEntry[]> {
       },
     ],
 
-    // Per-prompt injection — the load-bearing hook. Verified reaching the
-    // model on codex-cli 0.149.1.
+    // Per-prompt injection — the load-bearing hook.
     UserPromptSubmit: [
       {
         hooks: [{
@@ -98,7 +77,7 @@ export function buildCodexHooks(cmd: string): Record<string, CodexHookEntry[]> {
       },
     ],
 
-    // Auto-rate injected engrams from the reply (#1310). Stop carries
+    // Auto-rate injected engrams from the reply. Stop carries
     // `last_assistant_message`; the hook prints nothing, which is Codex's
     // valid "no opinion" Stop result.
     Stop: [
@@ -123,7 +102,7 @@ export function buildCodexHooks(cmd: string): Record<string, CodexHookEntry[]> {
 
 /**
  * A hook is PLUR's when PLUR's own launcher runs a `hook-*` subcommand —
- * the shared matcher (decision H2 "prefix"), so a new Codex hook needs no
+ * the shared prefix matcher, so a new Codex hook needs no
  * list update. A user's own `./scripts/hook-codex-lint.sh`, or any hook-*
  * run by another binary, is not PLUR's and is never deleted by
  * `plur init --codex`.

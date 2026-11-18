@@ -1,28 +1,11 @@
 /**
- * PGLiteAdapter — PGLite-backed storage adapter (ADR-0001, Sprint 0 PR 2).
- *
- * Substrate: PGLite (WASM Postgres) + pgvector + Apache AGE. YAML on disk is
- * the source of truth; this adapter is a rebuildable index.
- *
- * Write order (invariant):
- *   1. caller writes YAML
- *   2. caller calls syncFromYaml() to mirror into PGLite
- * If step 2 fails, YAML still wins on next `plur sync`.
- *
- * Vector storage: when pgvector loads cleanly, we use a `vector(N)` column
- * (or `halfvec(N)` at the fp16 precision tier, #223) with a cosine-similarity
- * ORDER BY. When pgvector isn't available (rare — the extension ships in
- * PGLite as of 0.4.x), we fall back to BYTEA storage and compute cosine in
- * TypeScript. Same external behavior either way.
- *
- * Concurrency: PGLite is single-writer per process. We serialize through a
- * lightweight async mutex on this adapter so concurrent `reindex()` /
- * `upsertEmbedding()` calls from the same process see a consistent final
- * state.
- *
- * Graph (AGE / Cypher): loaded if available; the engram graph schema lands
- * in a future PR. We initialize the extension so it's ready for #200, but
- * the public adapter surface in this PR is relational + vector.
+ * PGLiteAdapter (ADR-0001): WASM Postgres + pgvector + Apache AGE as a
+ * rebuildable index; YAML on disk is the source of truth.
+ * - Write order (invariant): caller writes YAML, then calls syncFromYaml();
+ *   if the sync fails, YAML still wins on the next `plur sync`.
+ * - Vectors: `vector(N)`/`halfvec(N)`, or BYTEA + JS cosine without pgvector.
+ * - Concurrency: PGLite is single-writer; an async mutex serializes writes.
+ * - AGE graph is initialized if available; the public surface is relational + vector.
  */
 import { existsSync, statSync, readFileSync } from 'fs'
 import { createHash } from 'crypto'
@@ -49,9 +32,9 @@ const DEFAULT_VECTOR_DIM = 384
 /**
  * Minimal async mutex — serializes writes inside the adapter.
  *
- * The class itself moved to the leaf module `async-mutex.ts` in convergence
- * Phase 2 so the locking layer can use it without importing this adapter. The
- * re-export keeps the historical import path (#271 tests, any consumer) valid.
+ * The class lives in the leaf module `async-mutex.ts` so the locking layer can
+ * use it without importing this adapter; re-exported here for existing
+ * importers.
  */
 import { AsyncMutex } from './async-mutex.js'
 
@@ -59,7 +42,7 @@ import { AsyncMutex } from './async-mutex.js'
  * A YAML fingerprint whose timestamps were within this window of the moment it
  * was recorded is "racy": the file could change again inside the same timestamp
  * tick without changing its stat identity (FAT: 2 s; HFS+: 1 s). Such a match is
- * confirmed by hashing the bytes (formal round 2, core-persistence#9).
+ * confirmed by hashing the bytes.
  */
 const RACY_FINGERPRINT_MS = 3_000
 
@@ -94,16 +77,11 @@ async function loadPgliteAge(): Promise<unknown | null> {
 }
 
 /**
- * Precision tier for the embedding column (#223).
- *   - `float32` → pgvector `vector(N)`  (4 bytes/dim — historical layout)
- *   - `halfvec` → pgvector `halfvec(N)` (2 bytes/dim — ~50% smaller,
- *      -0.2 to -0.5pp recall; pgvector >= 0.7, bundled 0.8.1 in PGLite 0.4.x)
- *
- * Latency caveat (measured 2026-07-02, 1k engrams @ 384d): halfvec exact
- * scans are ~3-10x slower than float32 in PGLite because the WASM build has
- * no F16C — every fp16 element is software-converted per distance call
- * (~3ms → ~11-33ms mean per search at 1k rows; both fine interactively).
- * halfvec trades CPU for storage here; float32 stays the default.
+ * Precision tier for the embedding column.
+ *   - `float32` → pgvector `vector(N)` (4 bytes/dim, default)
+ *   - `halfvec` → pgvector `halfvec(N)` (2 bytes/dim, slight recall loss;
+ *      pgvector >= 0.7). Exact scans are ~3-10x slower in WASM (no F16C), so
+ *      it trades CPU for storage and float32 stays the default.
  */
 export type VectorPrecision = 'float32' | 'halfvec'
 
@@ -117,17 +95,11 @@ export interface PGLiteAdapterOptions {
   /** Vector dimension for the embedding column (default: 384 — BGE-small). */
   vectorDim?: number
   /**
-   * Desired precision for the embedding column (#223).
-   *
-   * UNSET means "keep whatever the store already uses" (float32 for new
-   * stores) — option-less constructors (dim-check, tests, older callers)
-   * must never silently migrate a store. When SET and the existing column
-   * differs, the column is migrated lazily on init via an atomic in-place
-   * `ALTER TABLE ... USING embedding::<type>(N)` cast: embeddings are
-   * preserved (cast, not re-embedded), and the existing column dim is kept
-   * so the #219 dim-mismatch check stays honest. YAML remains the source of
-   * truth either way — `plur sync --full` drops and rebuilds the index from
-   * YAML at the configured precision (ADR-0001 rebuildability invariant).
+   * Desired embedding-column precision. UNSET keeps the store's existing type
+   * (option-less constructors must never migrate a store). When set and
+   * different, the column is cast in place on init (embeddings preserved,
+   * existing dim kept). `plur sync --full` rebuilds from YAML at the
+   * configured precision (ADR-0001).
    */
   precision?: VectorPrecision
 }
@@ -135,11 +107,9 @@ export interface PGLiteAdapterOptions {
 export class PGLiteAdapter implements DerivedIndexAdapter {
   /**
    * This adapter is a DERIVED index — YAML (the `PrimaryStore`) owns the data
-   * and every row here is rebuildable via `reindex()`. Declaring the role means
-   * callers no longer have to assume it: `requiresIndexSync()` reads this field
-   * to decide whether a write needs a follow-up sync, and a future
-   * `role: 'primary'` backend answers the same question correctly without any
-   * caller changes.
+   * and every row here is rebuildable via `reindex()`. `requiresIndexSync()`
+   * reads this field to decide whether a write needs a follow-up sync, so a
+   * `role: 'primary'` backend needs no caller changes.
    */
   readonly role = 'index' as const
   /**
@@ -148,7 +118,7 @@ export class PGLiteAdapter implements DerivedIndexAdapter {
    * row and `ORDER BY ... LIMIT k` returns the true top-k. Recall is 1.0 by
    * construction; there is nothing to tune and nothing to lose.
    *
-   * `format` tracks the column's ACTUAL element type after init (#223), which
+   * `format` tracks the column's ACTUAL element type after init, which
    * is why this is a getter and not a frozen constant: a store migrated to
    * `halfvec` really does store fp16 and really does score marginally
    * differently from a float32 tier. See ADR-0005.
@@ -175,7 +145,7 @@ export class PGLiteAdapter implements DerivedIndexAdapter {
    */
   private activeVecType: 'vector' | 'halfvec' = 'vector'
   /**
-   * ACTUAL dim of the embedding column after init (#335). For existing
+   * ACTUAL dim of the embedding column after init. For existing
    * stores this is the on-disk column's dim, which may differ from the
    * requested `vectorDim` — writes are enforced against reality, not the
    * request. Null on the BYTEA fallback (no column constraint), where
@@ -261,7 +231,7 @@ export class PGLiteAdapter implements DerivedIndexAdapter {
     // doesn't churn engram rows. Use vector when available, BYTEA fallback.
     if (this.hasVector) {
       // New stores are created at the requested precision (float32 when the
-      // knob is unset — the historical layout).
+      // knob is unset).
       const wantType = PRECISION_TYPE[this.precision ?? 'float32']
       await db.exec(`
         CREATE TABLE IF NOT EXISTS engram_embeddings (
@@ -278,15 +248,14 @@ export class PGLiteAdapter implements DerivedIndexAdapter {
         );
       `)
     }
-    // #812: the text this vector was computed from, so a changed engram gets a
+    // The text this vector was computed from, so a changed engram gets a
     // changed vector. Additive + idempotent, so an existing store gains it on
     // next open. Deliberately NOT a foreign key to `engrams`: `reindex()`
     // deletes every engram row and re-inserts it, and ON DELETE CASCADE would
-    // therefore discard the whole embedding table on every reindex — the exact
-    // cache the comment there says is preserved on purpose. Orphans left by
-    // real removals are swept set-wise in `syncFromYaml` instead.
+    // discard the whole embedding table, which reindex preserves on purpose.
+    // Orphans left by real removals are swept set-wise in `syncFromYaml`.
     await db.exec('ALTER TABLE engram_embeddings ADD COLUMN IF NOT EXISTS content_hash TEXT;')
-    // #1046: one row recording the YAML state this index was last synced from,
+    // One row recording the YAML state this index was last synced from,
     // so an unchanged file can skip the whole re-upsert. See syncFromYaml.
     await db.exec(`
       CREATE TABLE IF NOT EXISTS sync_state (
@@ -294,8 +263,8 @@ export class PGLiteAdapter implements DerivedIndexAdapter {
         v TEXT NOT NULL
       );
     `)
-    // AGE engram graph (#200 lands the actual edges; we just create the
-    // graph here so the schema is ready).
+    // AGE engram graph: created here so the schema is ready; no edges are
+    // written yet.
     if (this.hasAge) {
       try {
         const exists = await db.query("SELECT 1 FROM ag_catalog.ag_graph WHERE name = 'engram_graph'")
@@ -326,30 +295,20 @@ export class PGLiteAdapter implements DerivedIndexAdapter {
   }
 
   /**
-   * Lazy precision migration (#223). Runs once per init, inside initSchema.
-   *
-   * - `precision` unset → adopt the existing column type, migrate nothing.
-   * - `precision` set and column differs → atomic in-place
-   *   `ALTER TABLE ... TYPE <type>(dim) USING embedding::<type>(dim)`.
-   *   The cast preserves every stored embedding (float32→float16 rounds,
-   *   float16→float32 widens) — no re-embedding, no seq-scan window: DDL in
-   *   Postgres is transactional, so readers see the old or the new column,
-   *   never neither. The EXISTING dim is kept (not this.vectorDim) so a
-   *   precision migration can't mask a #219 dim mismatch.
-   * - Any dependent hnsw/ivfflat index is dropped first (its opclass is
-   *   type-specific and would abort the ALTER) and recreated with the
-   *   matching opclass inside the same transaction — the gbrain pattern.
-   *   (This adapter itself creates no vector index yet; exact scan at
-   *   current corpus sizes. The recreation is for stores where one was
-   *   added out-of-band.)
-   * - Failure is non-fatal: activeVecType keeps tracking the on-disk
-   *   column, so reads/writes continue at the old precision.
+   * Lazy precision migration, once per init inside initSchema.
+   * - `precision` unset → adopt the existing column type.
+   * - Set and different → one transactional `ALTER TABLE ... USING
+   *   embedding::<type>(dim)` cast; no re-embedding. Keeps the EXISTING dim so
+   *   a precision change cannot mask a dim mismatch.
+   * - Dependent hnsw/ivfflat indexes are dropped and recreated in the same
+   *   transaction (their opclass is type-specific).
+   * - Failure is non-fatal: activeVecType keeps tracking the on-disk column.
    */
   private async ensureColumnPrecision(db: any): Promise<void> {
     const info = await this.readEmbeddingColumnInfo(db)
     if (!info) return // BYTEA fallback or exotic column — nothing to manage
     this.activeVecType = info.type
-    // #335: track the on-disk dim so writes are enforced against reality
+    // Track the on-disk dim so writes are enforced against reality
     // (existing stores keep their column; see upsertEmbedding).
     this.activeVecDim = info.dim
     if (this.precision === undefined) return // keep-existing semantics
@@ -421,7 +380,7 @@ export class PGLiteAdapter implements DerivedIndexAdapter {
       params.push(filter.status)
     }
     if (filter.scopes !== undefined) {
-      // Permitted-scope allow-list pushdown (Phase 3). EXACT membership — no
+      // Permitted-scope allow-list pushdown. EXACT membership — no
       // hierarchy expansion, no personal-family pass-through: the caller has
       // already resolved identity to a complete set of permitted scopes, so
       // widening it here would grant access the authorization layer did not.
@@ -435,26 +394,20 @@ export class PGLiteAdapter implements DerivedIndexAdapter {
     }
     if (filter.scope) {
       // Read-side scope filter, three parts OR'd:
-      //  (1) personal-family pass-through — ALL non-shared scopes (local, global,
-      //      user:*, agent:*, …), not just 'global'. The old `scope = 'global'`
-      //      dropped local/user:/agent: under a project-scope recall (#402, the
-      //      pre-#353 behavior storage-indexed already fixed via its `personal`
-      //      column). This is the SQL form of isPersonalScope = NOT isSharedScope,
-      //      kept in sync with SHARED_SCOPE_PREFIXES in scope-util.ts.
-      //  (2) segment-aware membership (#383): the requested scope, exactly or a
-      //      descendant on a REAL delimiter (`:`/`/`) — never a sibling prefix.
-      //  (3) mounted-scope visibility grants (#775): one segment-aware triple
-      //      per granted scope (config.stores), so team engrams in mounted
-      //      scopes pass a project-scope visibility filter like the personal
-      //      family. VISIBILITY ONLY — the `scopes` authorization clause above
-      //      is never widened by grants. SQL twin of makeVisibilityPredicate
+      //  (1) personal-family pass-through: every non-shared scope (SQL form of
+      //      isPersonalScope; keep in sync with SHARED_SCOPE_PREFIXES). The
+      //      family prefix is case-folded like isSharedScope, or `Group:x`
+      //      would pass as personal (Postgres LIKE is case-sensitive).
+      //  (2) the requested scope or a descendant on a real `:`/`/` delimiter,
+      //      never a sibling prefix.
+      //  (3) mounted-scope grants: VISIBILITY ONLY, never widening the `scopes`
+      //      authorization clause. SQL twin of makeVisibilityPredicate
       //      (scope-util.ts); keep all four arms in lockstep.
       let clause =
-        `((NOT (${col}scope LIKE 'group:%' OR ${col}scope LIKE 'project:%' OR ${col}scope LIKE 'space:%' OR ${col}scope LIKE 'team:%' OR ${col}scope LIKE 'org:%' OR ${col}scope = 'public' OR ${col}scope LIKE 'public:%' OR ${col}scope LIKE 'public/%'))`
+        `((NOT (lower(${col}scope) LIKE 'group:%' OR lower(${col}scope) LIKE 'project:%' OR lower(${col}scope) LIKE 'space:%' OR lower(${col}scope) LIKE 'team:%' OR lower(${col}scope) LIKE 'org:%' OR lower(${col}scope) = 'public' OR lower(${col}scope) LIKE 'public:%' OR lower(${col}scope) LIKE 'public/%'))`
         + ` OR ${col}scope = $${i++} OR ${col}scope LIKE $${i++} || ':%' ESCAPE '\\' OR ${col}scope LIKE $${i++} || '/%' ESCAPE '\\'`
       // Escaped for the same reason as the Postgres copy — these two clauses
-      // must stay identical; they have drifted before, and that drift was an
-      // authorization bypass.
+      // must stay identical; drift between them is an authorization bypass.
       params.push(filter.scope, escapeLikePattern(filter.scope), escapeLikePattern(filter.scope))
       for (const g of filter.visibilityGrants ?? []) {
         clause += ` OR ${col}scope = $${i++} OR ${col}scope LIKE $${i++} || ':%' ESCAPE '\\' OR ${col}scope LIKE $${i++} || '/%' ESCAPE '\\'`
@@ -471,20 +424,10 @@ export class PGLiteAdapter implements DerivedIndexAdapter {
   }
 
   /**
-   * Parse a `data` row back to an Engram. PGLite returns JSONB as parsed JSON.
-   *
-   * Normalise + validate, matching `storage-postgres.ts`'s `parseRow` (#877).
-   * This returned `row.data` VERBATIM, which is the same defect that adapter's
-   * own doc comment records having already been fixed there — two loaders
-   * disagreeing about what a valid engram looks like, so a row whose JSONB
-   * lacked `associations` crashed `recall()`. It also meant a pre-#866 row kept
-   * `reference_count` and never gained `write_count`, and `write_count` gates
-   * retirement: one `forget()` would retire an engram with five corroborating
-   * writes.
-   *
-   * A row that cannot be parsed is returned as-is rather than dropped — losing
-   * an engram silently is worse than passing along one that is odd, and the
-   * caller's own guards still apply.
+   * Parse a `data` row (JSONB) back to an Engram, normalising and validating
+   * like `storage-postgres.ts`'s `parseRow` (e.g. missing `associations`,
+   * legacy `reference_count` → `write_count`).
+   * An unparseable row is returned as-is, never silently dropped.
    */
   private parseRow(row: { data: any }): Engram {
     const raw = typeof row.data === 'string' ? JSON.parse(row.data) : row.data
@@ -527,7 +470,7 @@ export class PGLiteAdapter implements DerivedIndexAdapter {
         // Clearing (rather than setting) keeps the rebuild honest: the next
         // sync re-derives it from the file it actually reads.
         //
-        // NOT catch-swallowed (data-loss audit F4): this statement runs
+        // NOT catch-swallowed: this statement runs
         // inside BEGIN/COMMIT, and a swallowed error here would leave the
         // transaction aborted so the following COMMIT silently acts as
         // ROLLBACK — reindex() reporting success having rebuilt nothing.
@@ -543,18 +486,11 @@ export class PGLiteAdapter implements DerivedIndexAdapter {
   }
 
   /**
-   * Cheap identity for the YAML file: size, mtime, ctime and inode — no read.
-   *
-   * Deliberately not a content hash on the hot path: the point of the guard in
-   * {@link syncFromYaml} is to avoid touching the corpus at all when nothing
-   * changed. But a stat identity alone CAN mask a change (formal round 2,
-   * core-persistence#9, replayed): a same-size rewrite inside one timestamp tick
-   * — a feedback counter going 1 → 2 on a filesystem with coarse timestamps, the
-   * reason yaml-primary-store.ts never trusts mtime alone (#25) — keeps every
-   * field. So the recorded fingerprint also carries a content hash and a `racy`
-   * flag, set when the file's timestamps were within {@link RACY_FINGERPRINT_MS}
-   * of the moment it was recorded (git's "racily clean" rule): a racy stat match
-   * is confirmed by re-hashing the bytes before it is trusted.
+   * Cheap YAML identity: size, mtime, ctime and inode, no read, so
+   * {@link syncFromYaml} can skip unchanged files. Because a same-size rewrite
+   * within one timestamp tick keeps every field, the fingerprint also carries a
+   * content hash and a `racy` flag (timestamps within {@link RACY_FINGERPRINT_MS}
+   * of recording, git's "racily clean" rule); a racy match is re-hashed first.
    */
   private yamlStat(): { key: string; mtimeMs: number; ctimeMs: number } | null {
     try {
@@ -576,7 +512,7 @@ export class PGLiteAdapter implements DerivedIndexAdapter {
       const v = JSON.parse(String(r.rows[0].v))
       return typeof v?.stat === 'string' && typeof v?.hash === 'string' && typeof v?.racy === 'boolean' ? v : null
     } catch {
-      return null // pre-#1046 store (no table), or a pre-round-2 `size:mtime` row
+      return null // older store without the table, or an old-format `size:mtime` row
     }
   }
 
@@ -589,22 +525,11 @@ export class PGLiteAdapter implements DerivedIndexAdapter {
   }
 
   /**
-   * syncFromYaml: incremental — upsert what YAML says exists, delete
-   * primary-source rows that YAML no longer contains.
-   *
-   * This is the steady-state write path called after every YAML mutation
-   * (see Plur._syncIndex), AND it runs unconditionally from the Plur
-   * constructor — which is what made #1046 expensive. "Incremental" here only
-   * ever meant "does not DROP the table first": the loop below re-upserts
-   * EVERY engram, one awaited round-trip each, so a 5,031-engram store paid
-   * 5,031 sequential WASM-Postgres statements on every single process start.
-   * For the hook family — a fresh process per hook — that is the whole budget,
-   * and it degraded from slow to a hang as the corpus grew.
-   *
-   * The fingerprint guard makes the unchanged case free. A stat match is
-   * trusted only when it is not racy; otherwise the bytes are hashed and
-   * compared (see {@link yamlStat}), so a same-size, same-tick rewrite is not
-   * mistaken for "unchanged".
+   * syncFromYaml: upsert what YAML contains, delete primary-source rows it no
+   * longer has. Runs after every YAML mutation and from the Plur constructor;
+   * a changed file re-upserts every engram, which would eat a hook's budget.
+   * The fingerprint guard makes the unchanged case free: a stat match is trusted
+   * only when not racy, otherwise bytes are re-hashed (see {@link yamlStat}).
    */
   async syncFromYaml(): Promise<void> {
     return this.mutex.run(async () => {
@@ -640,7 +565,7 @@ export class PGLiteAdapter implements DerivedIndexAdapter {
       try {
         const ids = new Set<string>()
         if (existsSync(this.yamlPath)) {
-          // A queued remote-only save is never mirrored here (gate review of #1663).
+          // A queued remote-only save is never mirrored here.
           const engrams = withoutRemoteOnlyQueued(loadEngrams(this.yamlPath))
           await this.upsertEngramsTx(db, engrams, 'primary')
           for (const e of engrams) ids.add(e.id)
@@ -658,15 +583,12 @@ export class PGLiteAdapter implements DerivedIndexAdapter {
         } else {
           await db.exec("DELETE FROM engrams WHERE source = 'primary'")
         }
-        // #812: sweep vectors whose engram is gone. `engram_embeddings` has no
-        // cascading FK on this tier (see the schema comment — a cascade would
-        // empty the table on every `reindex()`), so a removal used to leave the
-        // vector behind indefinitely. That mattered beyond wasted space:
-        // `generateEngramId` mints `max(same-day id) + 1`, so compacting the
-        // highest engram of a day frees that id for the next `learn()`, and the
-        // new, unrelated engram inherited the dead vector — recall ranking it as
-        // whatever the removed engram used to say. Set-based and inside the same
-        // transaction as the deletes above, so it costs one statement per sync.
+        // Sweep vectors whose engram is gone. `engram_embeddings` has no
+        // cascading FK on this tier (a cascade would empty the table on every
+        // `reindex()`). A left-behind vector is not just wasted space:
+        // `generateEngramId` mints `max(same-day id) + 1`, so a freed id can be
+        // reused by an unrelated engram, which would inherit the dead vector.
+        // Set-based and inside the same transaction as the deletes above.
         await db.exec('DELETE FROM engram_embeddings WHERE engram_id NOT IN (SELECT id FROM engrams)')
         // Inside the transaction: a rollback must not leave the index claiming
         // to be in sync with a file it never finished reading.
@@ -689,31 +611,20 @@ export class PGLiteAdapter implements DerivedIndexAdapter {
   }
 
   /**
-   * Upsert many engrams in chunked multi-row statements.
-   *
-   * The per-engram version below issues one awaited round-trip each, which is
-   * fine for a `learn()` of one engram and catastrophic for a full corpus
-   * pass: 5,031 engrams took over ten minutes, because the cost here is
-   * round-trips into WASM Postgres, not the inserts themselves. Batching turns
-   * that into ~11 statements.
-   *
-   * CHUNK is bounded by Postgres's 65,535-parameter ceiling: 7 params per row
-   * caps a single statement at 9,362 rows. 500 leaves an order of magnitude of
-   * headroom and keeps the parameter array small enough not to matter.
+   * Upsert many engrams in chunked multi-row statements (round-trips into WASM
+   * Postgres dominate). CHUNK 500 stays far below Postgres's 65,535-parameter
+   * limit at 7 params per row.
    */
   private async upsertEngramsTx(db: any, engrams: Engram[], source: string): Promise<void> {
-    // One row per id BEFORE batching (data-loss audit F7): a multi-row
-    // `INSERT ... ON CONFLICT DO UPDATE` containing the same id twice is a
-    // Postgres ERROR ("cannot affect row a second time"), which once turned a
-    // tolerated condition into a permanently failing sync.
+    // One row per id BEFORE batching: a multi-row `INSERT ... ON CONFLICT DO
+    // UPDATE` containing the same id twice is a Postgres ERROR ("cannot affect
+    // row a second time"), which would make the sync fail permanently.
     //
-    // Owner decision P1 (2026-09-27, "keep both, rename one"): the SAME rule as
-    // the loader — the first copy keeps the id, a later different copy gets the
-    // loader's fresh id, an exact duplicate is kept once. This used to keep the
-    // LAST copy, so recall surfaced one engram while YAML-path feedback and
-    // forget acted on the other. Batches from `loadEngrams` are already
-    // resolved (and the rename recorded in history there); this is idempotent
-    // on them and only acts on a batch that did not come through the loader.
+    // Same rule as the loader ("keep both, rename one"): the first copy keeps
+    // the id, a later different copy gets the loader's fresh id, an exact
+    // duplicate is kept once, so recall and YAML-path feedback/forget act on
+    // the same engram. Idempotent on batches from `loadEngrams`, which are
+    // already resolved.
     const { engrams: unique, renames } = resolveDuplicateIds(engrams)
     if (renames.length > 0) {
       logger.warning(
@@ -779,21 +690,11 @@ export class PGLiteAdapter implements DerivedIndexAdapter {
   }
 
   /**
-   * BM25 search. PGLite has full-text search, but at the corpus sizes we care
-   * about (a few thousand to a hundred thousand engrams) it's cheaper and
-   * yields identical results to load the candidate set into JS and run the
-   * existing BM25 scorer. This also keeps fts.ts as the single ranking
-   * authority (one tokenizer, one IDF computation).
-   *
-   * `opts.scopes` is pushed into the candidate SELECT via loadFiltered, so the
-   * BM25 scorer only ever sees permitted engrams — IDF and the top-N cut are
-   * both computed over the in-scope corpus, not over the org's.
-   *
-   * The FULL StorageFilter is honoured (#775): this used to forward only
-   * `scopes` and silently drop a caller's `scope` visibility filter (and
-   * `domain`), which the interface doc explicitly calls a silent-wrong-results
-   * bug. The Postgres primary `searchBM25` already spreads the whole filter —
-   * this keeps the two in lockstep, `visibilityGrants` included.
+   * BM25 search over a candidate set loaded into JS, so fts.ts stays the single
+   * ranking authority (one tokenizer, one IDF).
+   * `opts.scopes` is pushed into the SELECT (loadFiltered), so IDF and top-N are
+   * computed over permitted engrams only. The FULL StorageFilter (`scope`,
+   * `domain`, `visibilityGrants`) is honoured, in lockstep with Postgres `searchBM25`.
    */
   async searchBM25(query: string, opts: { limit: number } & StorageFilter): Promise<Engram[]> {
     const { limit, ...filter } = opts
@@ -802,21 +703,10 @@ export class PGLiteAdapter implements DerivedIndexAdapter {
   }
 
   /**
-   * Vector search. Uses pgvector when available, JS cosine otherwise.
-   * Returns scored results so callers can fuse with BM25 via RRF.
-   *
-   * `opts.scopes` is applied INSIDE the k-NN query (Phase 3 scope pushdown),
-   * never to the returned rows. Post-filtering an org-wide neighbour list is
-   * the dilution bug: `LIMIT` would be spent on engrams the caller may not
-   * see, so asking for N in-scope results would silently return fewer.
-   * Filtering in the query means `limit` counts permitted rows only.
-   *
-   * `opts.scope` + `opts.visibilityGrants` (#775) ride the same filter: the
-   * k-NN WHERE gets the full visibility clause (personal pass-through,
-   * segment-aware containment, escaped grant triples) via buildFilterClause,
-   * exactly like searchBM25/loadFiltered. Without them the vector leg spent
-   * `limit` on rows the visibility filter was about to discard, so a granted
-   * team engram could never surface through vector search.
+   * Vector search (pgvector, or JS cosine); returns scores for RRF fusion.
+   * `opts.scopes`, `opts.scope` and `opts.visibilityGrants` are applied INSIDE
+   * the k-NN query via buildFilterClause, never to returned rows: post-filtering
+   * would spend `limit` on rows the caller cannot see and return fewer results.
    */
   async searchVector(
     query: Float32Array,
@@ -826,7 +716,7 @@ export class PGLiteAdapter implements DerivedIndexAdapter {
     const db = await this.getDb()
     const totalRes = await db.query('SELECT COUNT(*)::int AS c FROM engram_embeddings')
     if (Number(totalRes.rows[0].c) === 0) return []
-    // status defaults to 'active' (historical behaviour) but stays overridable.
+    // status defaults to 'active' but stays overridable.
     const filter: StorageFilter = {
       status: 'active',
       scopes: opts?.scopes,
@@ -835,7 +725,7 @@ export class PGLiteAdapter implements DerivedIndexAdapter {
     }
     if (this.hasVector) {
       // pgvector path. Cosine distance = 1 - cosine similarity. The query
-      // param is cast to the column's ACTUAL type (#223) — pgvector's <=>
+      // param is cast to the column's ACTUAL type — pgvector's <=>
       // operators are per-type, so a halfvec column needs a halfvec operand.
       // $1 is the query vector, so the filter's placeholders start at $2 and
       // LIMIT takes whatever number is free after them.
@@ -877,22 +767,22 @@ export class PGLiteAdapter implements DerivedIndexAdapter {
   async upsertEmbedding(engramId: string, vector: Float32Array, contentHash?: string): Promise<void> {
     return this.mutex.run(async () => {
       const db = await this.getDb()
-      // #335 storage-boundary contract: a wrong-shape vector must never be
+      // Storage-boundary contract: a wrong-shape vector must never be
       // persisted. On the pgvector path this turns a cryptic pgvector error
       // into a targeted one; on the BYTEA fallback (no column constraint)
-      // this is the ONLY guard — previously any length was silently stored
-      // and cosineSimilarity later returned garbage over min(a, b).
+      // this is the ONLY guard — otherwise any length would be stored and
+      // cosineSimilarity would return garbage over min(a, b).
       const expectedDim = this.activeVecDim ?? this.vectorDim
       if (vector.length !== expectedDim) {
         throw new Error(
           `[pglite] Refusing to persist a ${vector.length}-dim embedding for "${engramId}": ` +
-          `this store's embedding ${this.hasVector ? 'column' : 'table'} is ${expectedDim}-dim (#335). ` +
+          `this store's embedding ${this.hasVector ? 'column' : 'table'} is ${expectedDim}-dim. ` +
           `The active embedder (PLUR_EMBEDDER) and the indexed store must agree — ` +
           `run 'plur sync --reembed --full' to rebuild the index at the active embedder's dim.`,
         )
       }
       if (this.hasVector) {
-        // Cast to the column's actual type (#223): halfvec parses the same
+        // Cast to the column's actual type: halfvec parses the same
         // "[...]" literal and rounds to fp16 on write.
         const literal = vectorLiteral(vector)
         await db.query(
@@ -915,7 +805,7 @@ export class PGLiteAdapter implements DerivedIndexAdapter {
     })
   }
 
-  /** True if `engram_id` already has a row in engram_embeddings. Used by the auto-embed path to skip already-indexed engrams (#226 B-1). */
+  /** True if `engram_id` already has a row in engram_embeddings. Used by the auto-embed path to skip already-indexed engrams. */
   async hasEmbedding(engramId: string): Promise<boolean> {
     const db = await this.getDb()
     const res = await db.query(
@@ -927,9 +817,9 @@ export class PGLiteAdapter implements DerivedIndexAdapter {
 
   /**
    * True when `engramId` has an embedding computed from exactly `contentHash`
-   * (#812) — the skip condition the auto-embed pass needs instead of
-   * `hasEmbedding`, which only ever asked whether SOME vector existed and so
-   * let an edited engram keep the vector of its previous text indefinitely.
+   * — the skip condition for the auto-embed pass. `hasEmbedding` only asks
+   * whether SOME vector exists, which would let an edited engram keep the
+   * vector of its previous text.
    *
    * Both sides are hashed in JS by `embeddingContentHash`, since this tier's
    * `engrams` table has no `search_text` column for SQL to hash. A row stored
@@ -953,7 +843,7 @@ export class PGLiteAdapter implements DerivedIndexAdapter {
     return info?.dim ?? null
   }
 
-  /** Actual pgvector type of the embedding column ('vector' | 'halfvec'), or null on the BYTEA fallback. Used by tests + diagnostics for the #223 precision tiers. */
+  /** Actual pgvector type of the embedding column ('vector' | 'halfvec'), or null on the BYTEA fallback. Used by tests + diagnostics for the precision tiers. */
   async getVectorColumnType(): Promise<'vector' | 'halfvec' | null> {
     const db = await this.getDb()
     if (!this.hasVector) return null

@@ -10,13 +10,13 @@ import { ScopeSettingsSchema, type StoreEntry, type ServerStoreEntry } from './s
  * reread of a writeback. Stripped by storeEntryForDisk before any writeback. */
 export const EXPANDED_FROM = '_expanded_from' as const
 
-// Safe grammar for server-supplied scope strings (#426, #408).
+// Safe grammar for server-supplied scope strings.
 const SCOPE_RE = /^[\w:./-]+$/
 
 /**
  * Returns true when a raw YAML object should be loaded as a server entry.
  * A server entry has both `url` and an own `scopes` key. The `enterprise`
- * block is NOT required (preserves the #1220 fixture).
+ * block is NOT required.
  */
 export function isServerStoreEntry(raw: unknown): boolean {
   if (!raw || typeof raw !== 'object') return false
@@ -34,7 +34,7 @@ export function isServerStoreEntry(raw: unknown): boolean {
 export function serverEntryIdentityBase(raw: unknown): string {
   const o = raw as Record<string, unknown>
   // The url by its canonical endpoint identity: two spellings of one server
-  // are one identity (Codex round 3, finding 2).
+  // are one identity.
   const url = typeof o.url === 'string' ? normalizeEndpointUrl(o.url) : o.url
   return JSON.stringify([url, o.scope, o.scopes, o.pinned_scopes, o.readonly, o.token_env])
 }
@@ -47,8 +47,7 @@ export function serverEntryIdentityBase(raw: unknown): string {
  * entry wherever it now sits, and an inserted entry with a different base
  * never matches. The token is not part of the base, so two entries that
  * differ only in their token share it; the collapse writes nothing for such a
- * base and rotation refuses it (owner decision 17;
- * spec/formal/findings/store-entry.md C3, routing-discovery.md D5).
+ * base and rotation refuses it.
  */
 export function serverEntryIdentities(rawStores: unknown[]): (string | undefined)[] {
   const seen = new Map<string, number>()
@@ -99,7 +98,7 @@ export function expandServerEntry(entry: ServerStoreEntry, identity: string): St
     // scope_settings value can never redirect a scope or swap its token.
     const settings = metadataOnly(entry.scope_settings?.[scope])
     // The compat `scope` also owns the entry's top-level metadata (dial,
-    // description, covers, sensitivity, unknown keys): an older client wrote
+    // description, covers, sensitivity, unknown keys): an older client writes
     // it there for that scope, and dropping it would, for one, lose a
     // `dial: never` and dial a server the user excluded. An explicit
     // `scope_settings[scope]` value takes precedence.
@@ -125,7 +124,7 @@ export function expandServerEntry(entry: ServerStoreEntry, identity: string): St
     results.push(expanded as unknown as StoreEntry)
   }
   // Never log the scope text itself: it may carry control characters that forge
-  // log lines (#408). The url is reduced to its origin, so no userinfo reaches the log.
+  // log lines. The url is reduced to its origin, so no userinfo reaches the log.
   if (badScopes) {
     logger.warning(`[plur:config] dropping ${badScopes} scope(s) that fail the safe grammar from server entry ${safeOrigin(entry.url)}`)
   }
@@ -133,8 +132,8 @@ export function expandServerEntry(entry: ServerStoreEntry, identity: string): St
 }
 
 /**
- * A raw server entry with its compat `scope` changed to `newScope` (discovery,
- * Codex round 4 finding 2). The top level's metadata (every key that is not
+ * A raw server entry with its compat `scope` changed to `newScope` (used by
+ * discovery). The top level's metadata (every key that is not
  * identity, credentials or routing: dial, description, covers, sensitivity,
  * unknown keys) belongs to the OLD compat scope, so it moves into
  * `scope_settings[oldScope]` first, where keys already set win, and leaves the
@@ -176,13 +175,13 @@ function metadataOnly(obj: object | undefined): Record<string, unknown> {
  * The metadata of a raw per-scope entry (every key that is not identity,
  * credentials or routing: dial, description, covers, sensitivity, unknown
  * keys), as it moves into a server entry's `scope_settings[scope]` when the
- * entry is folded into it (#1631, registerEnterpriseServer).
+ * entry is folded into it (registerEnterpriseServer).
  */
 export function entryMetadata(raw: Record<string, unknown>): Record<string, unknown> {
   return metadataOnly(raw)
 }
 
-/** True when a scope string passes the safe grammar expansion keeps (#426, #408). */
+/** True when a scope string passes the safe grammar expansion keeps. */
 export function isSafeScopeName(scope: string): boolean {
   return SCOPE_RE.test(scope)
 }
@@ -197,30 +196,13 @@ const RESERVED_ENTRY_KEYS = new Set<string>([
 export { safeOrigin }
 
 /**
- * Collapse expanded per-scope entries back into the original server entries
- * before writing to disk.
- *
- * Typed entries are grouped by their `EXPANDED_FROM` identity and matched to
- * the raw entry with the same identity in the freshly read `rawStores`; an
- * identity with no raw match (the entry was changed or removed since load)
- * writes nothing, and neither does an identity base two server entries share
- * (on disk now, or at load). For each matched server entry the per-scope metadata
- * fields (dial, description, covers, sensitivity) from its typed entries are
- * written back; every other field (scope, scopes, pinned_scopes, discovery,
- * enterprise, url, token, token_env, readonly) is left byte-identical.
- *
- * Where a field is written: `scope_settings[scope]`, except for the compat
- * `scope`, whose field stays at the top level when that is where it already
- * is (an older client reads it there) and no `scope_settings` value overrides it.
- *
- * `sensitivity` follows the per-scope writeback rule
- * ({@link mergeSensitivityForWriteback}): unknown `forbid` categories and
- * nested keys on disk survive, unless the scope is in
- * `serverSensitivityScopes` (the server's policy was just synced).
- *
- * Returns a new rawStores array of the same length where server entry
- * positions carry the updated collapsed entry and non-server positions are
- * unchanged.
+ * Collapse expanded per-scope entries back into their server entries before
+ * writing. Entries are matched to `rawStores` by `EXPANDED_FROM` identity; an
+ * unmatched or shared identity writes nothing. Only per-scope metadata (dial,
+ * description, covers, sensitivity) is written, to `scope_settings[scope]`
+ * (the compat `scope` stays top-level where it already is); all other fields
+ * stay byte-identical. `sensitivity` follows {@link mergeSensitivityForWriteback}.
+ * Returns a same-length array; non-server positions are unchanged.
  */
 export function collapseExpandedStores(
   typed: StoreEntry[],
@@ -243,11 +225,11 @@ export function collapseExpandedStores(
   if (!expandedById.size) return rawStores
   const ids = serverEntryIdentities(rawStores)
 
-  // Owner decision 17: a base shared by two server entries (they differ only
-  // in their token) cannot say which of them a typed entry came from, so
-  // nothing is written for it — the same refusal as key rotation. Ambiguous
-  // in the fresh read (two on disk now) or at load (a typed entry from `#1`
-  // or later). Model: spec/formal/PlurSpec/StoreEntry.lean §3.
+  // A base shared by two server entries (they differ only in their token)
+  // cannot say which of them a typed entry came from, so nothing is written
+  // for it — the same refusal as key rotation. Ambiguous in the fresh read
+  // (two on disk now) or at load (a typed entry from `#1` or later).
+  // Model: spec/formal/PlurSpec/StoreEntry.lean §3.
   const ambiguous = new Set<string>()
   const rawBases = new Set<string>()
   for (const id of ids) {

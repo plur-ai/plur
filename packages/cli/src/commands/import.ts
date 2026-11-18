@@ -1,8 +1,8 @@
 /**
- * `plur import --from <source> --path <file>` (issue #441).
+ * `plur import --from <source> --path <file>`.
  *
- * FLAG SPLIT — deliberate deviation from the other commands: per the issue
- * spec, `--path` here is the INPUT FILE to import. The storage-directory
+ * FLAG SPLIT — deliberate deviation from the other commands: `--path` here is
+ * the INPUT FILE to import. The storage-directory
  * override (what the global `--path` means everywhere else) is `--store` for
  * this command. `$PLUR_PATH` still applies when `--store` is not given.
  *
@@ -63,11 +63,9 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     }
   }
 
-  // Via createPlur, not `new Plur` directly (evaluator audit minor): the CLI
-  // entrypoint drains background index work through getLastPlurInstance()
-  // before exiting, and import — the one command with the largest bulk
-  // write — was the one command whose instance the drain could not see.
-  // createPlur honours --store by mapping it onto flags.path.
+  // Via createPlur, not `new Plur` directly: the CLI entrypoint drains
+  // background index work through getLastPlurInstance() before exiting, and
+  // only sees instances made by createPlur. --store is mapped onto flags.path.
   const plur = createPlur({ ...flags, path: store || flags.path })
   const report = await importFrom(plur, { from, path: file, mapping, dryRun, scope })
 

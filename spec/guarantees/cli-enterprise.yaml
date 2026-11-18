@@ -1,0 +1,44 @@
+anchors:
+  packages/cli/src/enterprise/backup.ts#(module):
+    kind: note
+    why: "Documents the Backup function type's contract; the rule itself is stated and anchored at backupWriter."
+  packages/cli/src/enterprise/backup.ts#backupWriter:
+    kind: guarantee
+    rule: "Backups of key-holding files are owner-only from creation, never overwrite an existing backup, and nothing is written when owner-only protection cannot be set up."
+    tests: ["packages/cli/test/enterprise-device-login.test.ts::a backup that cannot be made owner-only is refused, and no copy of the key is left", "packages/cli/test/enterprise-device-login.test.ts::the config.yaml backup of --remove-stale: folder and file get an owner-only access list, verified"]
+  packages/cli/src/enterprise/backup.ts#fd:
+    kind: guarantee
+    rule: "A backup file is always created new and never opened through an existing file or planted link."
+    none: "no test plants a file or link at the backup path"
+  packages/cli/src/enterprise/device-name.ts#deviceName:
+    kind: guarantee
+    rule: "The device name is at most 80 UTF-16 units, is never cut inside a surrogate pair, and carries no character the server refuses."
+    tests: ["packages/cli/test/enterprise-device-login.test.ts::names the device after the host and platform, at most 80 characters", "packages/cli/test/enterprise-device-login.test.ts::no half of a surrogate pair"]
+  packages/cli/src/enterprise/device-name.ts#SERVER_REFUSED:
+    kind: note
+    why: "Mirrors the server's own device-name rule; a fact about the server."
+  packages/cli/src/enterprise/legacy-login.ts#(module):
+    kind: guarantee
+    rule: "A legacy config.json key is moved into config.yaml only when the server accepts it and no sign-in to that server exists, the file leaves only once an owner-only copy exists, and the key is never printed."
+    lean: ["PlurSpec/Login.lean:written_only_after_ok", "PlurSpec/Login.lean:moved_only_when_copied"]
+    tests: ["packages/cli/test/enterprise-device-login.test.ts::a config.json for a server config.yaml already signs in to: the newer key in config.yaml is kept", "packages/cli/test/enterprise-device-login.test.ts::a config.json whose sign-in the server rejects is not moved into config.yaml"]
+  packages/cli/src/enterprise/sign-in-shared.ts#backupSecretFile:
+    kind: guarantee
+    rule: "A copy of a key-holding file is owner-only from the start; if that cannot be ensured it throws and leaves no copy with content."
+    tests: ["packages/cli/test/enterprise-device-login.test.ts::a backup that cannot be made owner-only is refused, and no copy of the key is left"]
+  packages/cli/src/enterprise/sign-in-shared.ts#errorCode:
+    kind: guarantee
+    rule: "A failed request is described by its system error code only, never by the error message, which could quote server text."
+    none: "no test checks that the message is left out"
+  packages/cli/src/enterprise/sign-in-shared.ts#fetchMe:
+    kind: guarantee
+    rule: "Asking the server who a key belongs to never throws, and the reason it gives never contains the key."
+    none: "no test calls the /me check with a failing server and inspects the reason"
+  packages/cli/src/enterprise/sign-in-shared.ts#normaliseHost:
+    kind: guarantee
+    rule: "An enterprise host over plain http is refused unless it is a loopback address."
+    none: "no test passes a non-loopback http:// host"
+  packages/cli/src/enterprise/sign-in-shared.ts#readJson:
+    kind: guarantee
+    rule: "Reading a response body as JSON never throws; anything that is not an object gives undefined."
+    none: "no test covers a malformed response body here"

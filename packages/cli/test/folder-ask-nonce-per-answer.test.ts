@@ -54,6 +54,7 @@ function offers(text: string): Offer[] {
 const set = (flags: string[], nonce: string) => cli(['folders', 'set', repo, ...flags, '--nonce', nonce])
 const mapPath = () => join(dir, '.plur', 'folders.yaml')
 const mapBytes = () => (existsSync(mapPath()) ? readFileSync(mapPath(), 'utf8') : null)
+const undecide = () => { rmSync(mapPath(), { force: true }); rmSync(join(dir, '.plur', 'trust.yaml'), { force: true }) }
 
 beforeEach(() => {
   dir = realpathSync(mkdtempSync(join(tmpdir(), 'plur-ask-nonce-')))
@@ -90,9 +91,14 @@ describe('an untrusted .plur.yaml: one nonce per offered answer', () => {
     const all = offers(text)
     expect(all.map(o => o.flags.join(' '))).toEqual(['--trusted', '--on', '--off'])
     expect(new Set(all.map(o => o.nonce)).size).toBe(all.length)
+    // Each answer is redeemed on the undecided folder the question was shown
+    // for: a decided folder refuses every nonce (nonce-stale), so the map and
+    // the legacy trust list are cleared before each redemption, the reuse included.
     for (const o of all) {
+      undecide()
       const first = set(o.flags, o.nonce)
       expect(first.status, `${o.flags.join(' ')}: ${first.stderr}`).toBe(0)
+      undecide()
       expect(set(o.flags, o.nonce).status, `${o.flags.join(' ')} reused`).not.toBe(0)
     }
   })
@@ -112,9 +118,14 @@ describe('an undecided folder: one nonce per offered answer', () => {
     expect(new Set(all.map(o => o.nonce)).size).toBe(all.length)
     // No offered nonce grants --trusted, which this question never offers.
     for (const o of all) expect(set(['--trusted'], o.nonce).status).not.toBe(0)
+    // Each answer is redeemed on the undecided folder the question was shown
+    // for: a decided folder refuses every nonce (nonce-stale), so the map and
+    // the legacy trust list are cleared before each redemption, the reuse included.
     for (const o of all) {
+      undecide()
       const first = set(o.flags, o.nonce)
       expect(first.status, `${o.flags.join(' ')}: ${first.stderr}`).toBe(0)
+      undecide()
       expect(set(o.flags, o.nonce).status, `${o.flags.join(' ')} reused`).not.toBe(0)
     }
   })

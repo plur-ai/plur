@@ -1,39 +1,11 @@
 /**
  * One evaluator for engram validity windows, shared by retrieval and injection.
- *
- * ## The defect this replaces
- *
- * Validity was decided by comparing a timestamp STRING against today's DATE
- * string, in four places that each rewrote the same two lines. Lexically
- * `'2026-09-07T01:00:00Z' > '2026-09-07'` is true at every hour of that day,
- * because the `T` sorts after the end of the shorter string — so an RFC 3339
- * instant was read backwards in both directions.
- *
- * Measured at a fixed clock of 2026-09-07T12:00:00Z (#1150):
- *
- * | stored                              | should be | was       |
- * | ----------------------------------- | --------- | --------- |
- * | `valid_from: 2026-09-07T01:00:00Z`  | eligible  | hidden    |
- * | `valid_until: 2026-09-07T01:00:00Z` | expired   | eligible  |
- *
- * The same wrong pair appeared in `list()`, in `recall()` and in injection,
- * because the comparison was duplicated rather than shared. The expiry
- * direction is the one that matters: an instruction that lapsed hours ago still
- * entered the agent's context, and reads exactly like a current one.
- *
- * `spec/ENGRAM-STANDARD-v1.md` requires accepting both forms and
- * `TemporalSchema` does accept both, so these were valid stored records rather
- * than malformed input.
- *
- * ## The rule
- *
- * A bare `YYYY-MM-DD` denotes a whole DAY — that is the documented behaviour and
- * it is preserved exactly. An RFC 3339 value denotes an INSTANT and is compared
- * as one, offset included. So `valid_from` opens at the start of its day (or at
- * its instant), and `valid_until` closes at the END of its day (or at its
- * instant) — which is why a date-only expiry of `2026-09-06` is still valid all
- * through the 6th and expired on the 7th.
- *
+ * Timestamps are compared as instants, never as strings (lexical comparison of
+ * date-only vs RFC 3339 values is wrong all day long); both forms are accepted
+ * (`spec/ENGRAM-STANDARD-v1.md`, `TemporalSchema`).
+ * The rule: a bare `YYYY-MM-DD` is a whole DAY, an RFC 3339 value an INSTANT
+ * (offset included). `valid_from` opens at the start of its day; `valid_until`
+ * closes at the END of its day, so an expiry of the 6th is valid through the 6th.
  * @module
  */
 import type { Engram } from './schemas/engram.js'
@@ -50,23 +22,11 @@ const DAY_MS = 86_400_000
 const HAS_ZONE = /(?:Z|[+-]\d{2}:?\d{2})$/i
 
 /**
- * Pin a timestamp to UTC when it names no zone (#1157).
- *
- * `Date.parse('2026-09-07T01:00:00')` — no `Z`, no offset — resolves in the
- * HOST's local time, so the same stored engram expires at different moments on
- * different machines, and a team sharing a store disagrees about which rules
- * are live. `TemporalSchema` accepts any string, and `salvageRemoteRow` copies
- * server values verbatim, so a store emitting naive timestamps reaches this
- * function unchanged.
- *
- * UTC is the right default rather than an arbitrary one: every timestamp this
- * codebase MINTS is `toISOString()`, which is UTC, so a naive value is a
- * foreign or hand-edited one and reading it as UTC agrees with the rest of the
- * store instead of with whoever happens to be running the query.
- *
- * Exported for the regression test. The behavioural test can only tell the
- * difference in a non-UTC timezone, and CI runs in UTC — so the mechanism has
- * to be assertable directly, or a reintroduction ships green.
+ * Pin a timestamp to UTC when it names no zone. A naive value would otherwise
+ * parse in the host's local time and expire at different moments per machine;
+ * such values only arrive hand-edited or from remote rows, and UTC matches
+ * every `toISOString()` value the store mints.
+ * Exported for tests (the difference only shows in a non-UTC timezone).
  */
 export function pinToUtc(value: string): string {
   return HAS_ZONE.test(value) ? value : `${value}Z`
@@ -85,9 +45,8 @@ function opensAt(value: string): number | null {
 /**
  * Last instant a bound includes, in epoch ms; `null` when unparseable.
  *
- * A date-only value closes at the END of that day — the whole-day semantics the
- * lexical comparison happened to get right for this form, and the reason a
- * date-only `valid_until` must not be treated as midnight.
+ * A date-only value closes at the END of that day; a date-only `valid_until`
+ * must not be treated as midnight.
  */
 function closesAt(value: string): number | null {
   const ms = Date.parse(DATE_ONLY.test(value) ? `${value}T23:59:59.999Z` : pinToUtc(value))
@@ -157,21 +116,10 @@ export function isCurrentlyValid(temporal: Temporal, nowMs: number): boolean {
 }
 
 /**
- * Interpret an "evaluate as of" parameter as an instant.
- *
- * Callers that expose a `now` option take a `YYYY-MM-DD` string or an RFC 3339
- * instant. A whole day is not an instant, so it has to be resolved to one, and
- * the END of the day is the resolution that preserves existing behaviour:
- * under the old lexical comparison a date-only `valid_until` equal to `now` was
- * NOT expired (the strings compared equal), which is the same answer end-of-day
- * gives. Resolving to midnight instead would expire everything a day early.
- *
- * The sibling functions treat an unparseable bound as ABSENT, because stored
- * engrams have their fields validated by `TemporalSchema` and hiding content
- * over a data error is the worse outcome. A caller-supplied evaluation instant
- * is not that case: it is an explicit argument, so an unparseable value throws
- * a `RangeError` rather than silently answering as of the present moment (#1166).
- *
+ * Interpret an "evaluate as of" parameter as an instant. A whole day resolves
+ * to its END, so a date-only `valid_until` equal to `now` is NOT expired.
+ * Unlike stored bounds (unparseable → absent), an explicit unparseable `now`
+ * throws rather than silently answering as of the present.
  * @param now - `YYYY-MM-DD`, or an RFC 3339 instant, or nothing for the
  *   current moment.
  * @throws {RangeError} When `now` is provided but cannot be parsed as a date or instant.

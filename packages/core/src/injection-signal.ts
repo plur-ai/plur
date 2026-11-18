@@ -1,56 +1,12 @@
 /**
- * Automatic rating of injected engrams from the assistant's reply (#1310).
- *
- * An editor hook knows which engrams it injected this session and, at the end
- * of a turn, what the assistant replied. From those two it can often tell
- * whether an engram was used (the reply repeats it) or contradicted (the reply
- * corrects it). This module is the ONE implementation of that heuristic; it is
- * a port of plur-hermes's `_detect_injection_signal` (#1086), with the negative
- * rule tightened.
- *
- * Rules, first match wins:
- *
- *   1. The statement appears verbatim in the reply (case, whitespace and
- *      punctuation ignored)                                  → positive, 0.95
- *   2. At least 80% of the statement's word trigrams appear
- *      in the reply (statements of three words or more)      → positive, 0.7–0.9
- *   3. One sentence of the reply holds BOTH a correction
- *      phrase AND the statement's distinctive words          → negative, 0.65
- *
- * A match under rule 1 or 2 is only positive when neither the sentence(s)
- * holding it nor the sentence right after carry a correction phrase. A reply
- * that quotes a memory in order to correct it ("your note says 'use npm' —
- * that is no longer true") is rated negative, never positive (#1318 review).
- *
- * The match itself is also checked where it sits (#1362): a negation in the
- * word right before it ("Do not use pnpm" against "Use pnpm") or a
- * verdict right after it ('"use npm" is outdated', '… does not apply here',
- * '… was dropped') makes it negative too. "No longer", "instead of", "rather
- * than" and "ignore" count as negations when they sit right before it. "Stop"
- * does not: "Stop — use pnpm for installs" follows the engram.
- * Only the words next to the match count, so a reply that follows the engram
- * and says "not" about something else in the same sentence stays positive.
- * Each occurrence (each run of consecutive trigrams, under rule 2) is judged on
- * its own. The reply is negative only when every occurrence is rejected, and
- * gets no verdict when some are rejected and some are not.
- *
- * Statements under three words have no trigrams; comparing bare words would
- * rate "Prefer pnpm" positive for any short reply containing both words, so
- * they are matched verbatim only.
- *
- * Rule 3 used to look at a ±100–200 character window around any correction
- * word. A reply that fixed an unrelated thing next to a shared word therefore
- * marked the engram wrong. Sentences are the unit now, and "distinctive words"
- * means at least two of the statement's longer non-stopwords (or all of them
- * when it has fewer), so one shared common word is not enough.
- *
- * Only verdicts at or above {@link AUTO_FEEDBACK_MIN_CONFIDENCE} are returned
- * by {@link rateInjectedEngrams}. What a caller does with them is decided
- * elsewhere: automatic feedback adjusts ranking only and never commitment
- * (see `applyFeedbackSignal`'s `source` option).
- *
- * Pure functions — no I/O — so hooks can run them before paying for a store
- * load, and a server-side deployment can reuse them.
+ * Automatic rating of injected engrams from the assistant's reply. First match wins:
+ *   1. Statement verbatim in the reply (case/space/punctuation ignored) → positive 0.95
+ *   2. ≥80% of its word trigrams in the reply (3+ words only)            → positive 0.7–0.9
+ *   3. One sentence holds a correction phrase AND ≥2 distinctive words   → negative 0.65
+ * A rule-1/2 match is negative when its sentence or the next carries a correction
+ * phrase, or a negation/verdict sits right next to the match. Each occurrence is
+ * judged alone (all rejected → negative, mixed → none). Returns only verdicts ≥
+ * {@link AUTO_FEEDBACK_MIN_CONFIDENCE}; never changes commitment. Pure, no I/O.
  */
 
 export type InjectionSignal = 'positive' | 'negative'
@@ -82,7 +38,7 @@ const LEADING_CORRECTION = /^(?:correction:|wrong,|incorrect,)/
 /**
  * Discourse markers that open corrections AND agreements alike: "Actually,
  * let me also run the tests" and "No, the tests passed" agree with the memory
- * (audit M3). They count only when the same sentence also contradicts
+ * They count only when the same sentence also contradicts
  * something (see CONTRADICTION_CUE).
  */
 const LEADING_MARKER = /^(?:actually,|no,)/
@@ -182,8 +138,8 @@ export function detectInjectionSignal(statement: string, reply: string): Injecti
 
   // isCorrection by sentence index, computed at most once per sentence. Every
   // occurrence asks about its own sentence and the next one; without the memo
-  // a long sentence full of occurrences was re-scanned once per occurrence,
-  // which is quadratic (a 1 MiB reply took over a minute).
+  // a long sentence full of occurrences is re-scanned once per occurrence,
+  // which is quadratic on large replies.
   const correctionMemo: Array<boolean | undefined> = new Array(sents.length)
   const sentenceCorrects = (i: number): boolean =>
     (correctionMemo[i] ??= isCorrection(sents[i]))
@@ -200,7 +156,7 @@ export function detectInjectionSignal(statement: string, reply: string): Injecti
 
   /**
    * Is the matched span flat[start..end] negated right before it or given a
-   * wrong/outdated verdict right after it, within its own sentence? (#1362)
+   * wrong/outdated verdict right after it, within its own sentence?
    */
   const rejectedInPlace = (start: number, end: number): boolean => {
     let k = start - 1
@@ -217,7 +173,7 @@ export function detectInjectionSignal(statement: string, reply: string): Injecti
   }
 
   /**
-   * One verdict from every occurrence of the match (#1362): negative only when
+   * One verdict from every occurrence of the match: negative only when
    * each occurrence is rejected or corrected, positive only when none is. A
    * reply that both rejects and follows the engram ("I did not X yet — doing
    * it now: X") gets no verdict, so one rejected occurrence never overrides a

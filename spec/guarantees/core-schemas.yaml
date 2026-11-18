@@ -1,0 +1,149 @@
+anchors:
+  packages/core/src/schemas/config.ts#DiscoveryCacheSchema:
+    kind: guarantee
+    rule: A discovery value written by a newer client never makes an older client drop the server entry.
+    tests:
+    - packages/core/test/multi-scope-store-entry.test.ts::a future or malformed discovery, enterprise, pinned_scopes or scope_settings
+      value keeps the entry and its token
+  packages/core/src/schemas/config.ts#DiscoveryCacheSchema.key_expires_at:
+    kind: guarantee
+    rule: An absent key expiry means unknown and a null one means no expiry; the two are never treated alike.
+    tests:
+    - packages/core/test/refresh-server-scopes.test.ts::key_expires_at null (no expiry) is written as null
+    - packages/core/test/codex2-refresh-server-scopes.test.ts::absent key_expires_at and gitlab_host become unknown
+  packages/core/src/schemas/config.ts#plainObjectOr:
+    kind: guarantee
+    rule: A malformed or future-version field value drops only that field, never the whole server entry and its token.
+    tests:
+    - packages/core/test/multi-scope-store-entry.test.ts::a future or malformed discovery, enterprise, pinned_scopes or scope_settings
+      value keeps the entry and its token
+  packages/core/src/schemas/config.ts#PlurConfigSchema.expiry:
+    kind: guarantee
+    rule: Recall always hides expired engrams, whatever the injection expiry mode.
+    promises:
+    - FDB-5
+  packages/core/src/schemas/config.ts#PlurConfigSchema.identity:
+    kind: guarantee
+    rule: The attributed identity is never taken from the operating system account.
+    tests:
+    - packages/core/test/attribution.test.ts::never takes the identity from the operating system account
+  packages/core/src/schemas/config.ts#PlurConfigSchema.pinned_hard_ratio:
+    kind: guarantee
+    rule: The hard pinned tier is bounded to the pinned quota and can never exceed it.
+    none: no test feeds a hard ratio outside 0..1
+  packages/core/src/schemas/config.ts#PlurConfigSchema.provenance:
+    kind: note
+    why: '"never" here is the name of the default setting value, not a rule.'
+  packages/core/src/schemas/config.ts#PlurConfigSchema.receipts:
+    kind: guarantee
+    rule: With receipts off no network call is made, and a Swarm receipt carries fingerprints only, never engram text, scope
+      names, tags or domains.
+    tests:
+    - 'evals/provenance/test_promise_PROOF4_off_means_no_upload.test.ts::no receipts setting at all: nothing is sent'
+    promises:
+    - PROOF-4
+    - PROOF-2
+  packages/core/src/schemas/config.ts#PlurConfigSchema.sync:
+    kind: guarantee
+    rule: A shared sync pushes only shared-scope, non-private engrams, and config is never synced.
+    promises:
+    - SYN-1
+    - SYN-4
+    - SYN-2
+  packages/core/src/schemas/config.ts#ServerStoreEntrySchema:
+    kind: guarantee
+    rule: Malformed values in a server entry are dropped, never the entry itself.
+    tests:
+    - packages/core/test/multi-scope-store-entry.test.ts::a future or malformed discovery, enterprise, pinned_scopes or scope_settings
+      value keeps the entry and its token
+  packages/core/src/schemas/config.ts#StoreEntrySchema.covers:
+    kind: guarantee
+    rule: A malformed metadata field never fails the whole store entry, so its url and token survive.
+    tests:
+    - packages/core/test/pr3-config-robustness.test.ts::a scalar `sensitivity` (not an object) survives
+    - packages/core/test/pr3-config-robustness.test.ts::a scalar (non-array) forbid → safe default, no Zod throw, entry not
+      dropped
+  packages/core/src/schemas/config.ts#StoreEntrySchema.dial:
+    kind: guarantee
+    rule: A store set to dial never is never dialled for live recall, and one set to always is dialled on every recall.
+    tests:
+    - 'packages/core/test/remote-recall.test.ts::dial: never excludes the entry; dial: always forces its host even with no
+      context'
+    - 'packages/core/test/server-entry-legacy-metadata.test.ts::dial: never on an entry that gained a scopes list still prevents
+      remote requests'
+  packages/core/src/schemas/config.ts#StoreEntrySchema.token_env:
+    kind: guarantee
+    rule: A token read from token_env is never written back to config.yaml; only the variable name is stored.
+    tests:
+    - packages/core/test/config-token-env-1561.test.ts::a write-back of the stores list keeps the reference and never stores
+      the value
+    - packages/core/test/config-token-env-1561.test.ts::addStore with tokenEnv writes the reference, not the token
+  packages/core/src/schemas/config.ts#TensionsConfigSchema.measured_under_pairs:
+    kind: guarantee
+    rule: The measured-under skip never applies to a pair from different stores or packs.
+    lean:
+    - PlurSpec/R2CoreB.lean:gate_never_crosses
+    tests:
+    - packages/core/test/tensions-measured-under-gate.test.ts::a cross-origin pair reaches the judge in every mode
+  packages/core/src/schemas/config.ts#VectorConfigSchema:
+    kind: guarantee
+    rule: Leaving vector precision unset never migrates the existing column.
+    tests:
+    - packages/core/test/pglite-precision.test.ts::keeps a halfvec column when reopened WITHOUT a precision option
+  packages/core/src/schemas/engram.ts#ATTRIBUTION_UNIDENTIFIED:
+    kind: guarantee
+    rule: With no identity configured the writer records the unidentified marker, never the OS account name.
+    tests:
+    - packages/core/test/attribution.test.ts::records the unidentified marker when nobody is configured
+    - packages/core/test/attribution.test.ts::never takes the identity from the operating system account
+  packages/core/src/schemas/engram.ts#EngramSchema.pinned:
+    kind: guarantee
+    rule: Pinned engrams are eligible on every session start but still stay within the token budget.
+    tests:
+    - evals/inject/test_promise_INJ6_pinned_first_omissions_named.test.ts::stays within budget and names every pinned rule
+      it left out
+    promises:
+    - INJ-6
+  packages/core/src/schemas/engram.ts#EngramSchema.pinned_tier:
+    kind: guarantee
+    rule: A write that would grow the hard pinned tier past its cap is rejected, and pins never outrank the origin order.
+    tests:
+    - packages/core/test/pinned-two-tier-safety.test.ts::updateEngram cannot promote an engram into an over-cap hard tier
+    - packages/core/test/pinned-two-tier-safety.test.ts::a remote re-pin that restores a hard tier over the cap is reverted
+      and refused
+  packages/core/src/schemas/engram.ts#ExtractionProvenanceSchema:
+    kind: note
+    why: Warning to maintainers not to seed one confidence value from another.
+  packages/core/src/schemas/engram.ts#getExtractionProvenance:
+    kind: guarantee
+    rule: Malformed extraction provenance is ignored and read as absent, never thrown.
+    tests:
+    - packages/core/test/extraction-provenance.test.ts::returns null (gracefully, no throw) when extraction is malformed
+  packages/core/src/schemas/engram.ts#InsightFieldSchema.grounding:
+    kind: guarantee
+    rule: An ungrounded insight is never surfaced, and a speculative one cannot be promoted until it is re-grounded.
+    tests:
+    - packages/core/test/schemas.test.ts::rejects promoting a speculative dream (promote-requires-grounding)
+  packages/core/src/schemas/engram.ts#InsightFieldSchema.operation:
+    kind: guarantee
+    rule: A dream insight is never promoted automatically.
+    tests:
+    - packages/core/test/schemas.test.ts::rejects promoting a speculative dream (promote-requires-grounding)
+  packages/core/src/schemas/scope-metadata.ts#ScopeSensitivitySchema:
+    kind: guarantee
+    rule: 'Sensitivity served by a remote can only tighten the leak guard: a remote allow is never persisted, while a local
+      allow is honoured.'
+    tests:
+    - packages/core/test/scope-metadata-trust.test.ts::drops a hostile remote allow; the guard still demotes sensitive content
+    - packages/core/test/scope-metadata-trust.test.ts::preserves and honors a hand-edited LOCAL allow through a metadata sync
+  packages/core/src/schemas/scope-metadata.ts#ScopeSensitivitySchema.forbid:
+    kind: guarantee
+    rule: A bad forbid value never fails the store entry; unknown categories are dropped and an empty result falls to the
+      safe default.
+    tests:
+    - packages/core/test/pr3-config-robustness.test.ts::a bad forbid category does NOT drop the entry
+    - packages/core/test/pr3-config-robustness.test.ts::partial-bad forbid keeps the VALID subset
+  packages/core/src/schemas/tension.ts#TensionCategorySchema:
+    kind: guarantee
+    rule: 'A contradiction''s category is advisory: resolution never branches on it.'
+    none: no test checks that resolution ignores the category

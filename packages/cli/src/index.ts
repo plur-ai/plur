@@ -10,17 +10,16 @@ import { CLI_VERSION as VERSION } from './version.js'
 
 // --- Main ---
 const argv = process.argv.slice(2)
-// `--` ends option parsing (formal verification S4, 2026-09-26): a statement
+// `--` ends option parsing: a statement
 // such as `plur learn -- "--help"` is data, not a request for help.
 const sep = argv.indexOf('--')
 const options = sep === -1 ? argv : argv.slice(0, sep)
 
-// Hook probe (decision H3's Windows CI job): with PLUR_HOOK_PROBE set to a
-// file path, a hook-* invocation appends its subcommand to that file and
-// exits 0 without running. The job runs every hook string `plur init`
-// generated through bash, pwsh and cmd, and this proves each one reached
-// the CLI with the right subcommand. Unset (always, outside that job), it
-// does nothing.
+// Hook probe (for the Windows CI job): with PLUR_HOOK_PROBE set to a file
+// path, a hook-* invocation appends its subcommand to that file and exits 0
+// without running. The job runs every hook string `plur init` generates
+// through bash, pwsh and cmd, and this proves each one reached the CLI with
+// the right subcommand. Unset (always, outside that job), it does nothing.
 if (process.env.PLUR_HOOK_PROBE && /^hook-/.test(argv[0] ?? '')) {
   const { appendFileSync } = await import('fs')
   appendFileSync(process.env.PLUR_HOOK_PROBE, `${argv[0]}\n`)
@@ -42,10 +41,10 @@ Commands:
   recall <query>          Search engrams
   inject <task>           Get relevant engrams for a task
   list                    List all engrams
-  forget <id>             Retire an engram [--scope <scope>] (target one store, #831)
-  restore [--list|--yes]  Inspect or restore a daily store snapshot (#799)
+  forget <id>             Retire an engram [--scope <scope>] (target one store)
+  restore [--list|--yes]  Inspect or restore a daily store snapshot
   ingest <content>        Extract and save engrams from content
-  import                  Import memories from another system (issue #441)
+  import                  Import memories from another system
                           --from <generic|gp-engram|mem0> --path <input-file>
                           [--dry-run] [--scope <s>] [--mapping <f>] [--store <dir>]
                           (for import, --path is the INPUT file; --store overrides storage)
@@ -65,7 +64,7 @@ Commands:
   packs migrate-integrity Re-baseline installed packs to sha256:v2: (dry run; --yes applies)
   similarity-search <q>   Search by cosine similarity with scores
   promote <id>            Promote an engram to active
-  rescope <id...> --to <scope>  Move engram(s) to another scope (#676)
+  rescope <id...> --to <scope>  Move engram(s) to another scope
                           [--keep-local] [--dry-run]; also: promote <id> --to <scope>
   upload                  Preview local memories for authorized team scopes
                           --yes sends; --only <id,…> limits the selection
@@ -73,34 +72,34 @@ Commands:
   stores list             List configured stores
   stores add <path>       Add a knowledge store
   stores add --url <u>    Add a remote store (verified; --scope, --token-env)
-  stores prune            Remove config.yaml store entries that name the primary store file (#1356)
-  remote                  Show this folder's team-store connection and check it (#1413)
+  stores prune            Remove config.yaml store entries that name the primary store file
+  remote                  Show this folder's team-store connection and check it
   remote --url <u> --token <t> --scope <s>
                           Connect this folder to a team store (verified; [--scopes a,b])
-  folders list            Your per-folder decisions (~/.plur/folders.yaml, #1347)
-  folders repair [--yes]  Fix a broken folders.yaml: shows the change, asks, keeps a backup (#1526)
+  folders list            Your per-folder decisions (~/.plur/folders.yaml)
+  folders repair [--yes]  Fix a broken folders.yaml: shows the change, asks, keeps a backup
   folders set <folder>    --scope <s> | --on | --off | --ask  [--trusted|--no-trusted] [--nonce <n>]
   folders rm <folder>     Remove a folder's entry
-  scopes                  List authorized-but-unregistered shared scopes (#647)
+  scopes                  List authorized-but-unregistered shared scopes
   scopes register <scope> Register one; scopes dismiss <scope>; scopes --reoffer
   outbox                  Show team-scoped writes queued for an unreachable store
-                          [--flush] to retry them now (#667)
-  checkpoint              Emit a checkpoint event — SHA-256 of the store + chain linkage (#1052)
-  verify                  Verify the history chain — exit 0 ok / 1 broken / 2 cannot verify (#1053)
-  verify --manifest <f|ref> Check a session memory manifest, from a file or Swarm (#1657)
-  manifest --session <id> Which engrams a session had in context, with hashes; --anchor stores it on Swarm (#1657)
-  keys init [--identity]  Generate Ed25519 key pair for signing checkpoints (#1055)
-  keys list               List registered public keys for this store (#1055)
+                          [--flush] to retry them now
+  checkpoint              Emit a checkpoint event — SHA-256 of the store + chain linkage
+  verify                  Verify the history chain — exit 0 ok / 1 broken / 2 cannot verify
+  verify --manifest <f|ref> Check a session memory manifest, from a file or Swarm
+  manifest --session <id> Which engrams a session had in context, with hashes; --anchor stores it on Swarm
+  keys init [--identity]  Generate Ed25519 key pair for signing checkpoints
+  keys list               List registered public keys for this store
   reindex-tokens          Re-derive BM25 tokens after a tokenizer change (Postgres only)
-  reindex-hashes          Repair engrams whose content_hash is stale or missing (#852)
+  reindex-hashes          Repair engrams whose content_hash is stale or missing
   init                    Wire PLUR into detected harnesses (Claude Code, Cursor, Codex, Antigravity)
   login <host>            Sign this device in to a PLUR server and save it (device flow)
-  login --status          Enterprise token validity per host (probe + expiry) (#587)
+  login --status          Enterprise token validity per host (probe + expiry)
   init --keep-opencode-plugin  Keep an intentionally older OpenCode plugin pin
   init --keep-codex-mcp    Keep an intentionally older Codex MCP launch entry
   doctor --codex          Check Codex MCP version and token forwarding in this environment
   doctor                  Diagnose Claude Code / Claude Desktop / Cursor / Codex / Antigravity / opencode integration
-  rerank-eval             Per-store reranker self-eval gate (advisory, #451)
+  rerank-eval             Per-store reranker self-eval gate (advisory)
                           [--reranker <name>] [--sample N] [--seed N] [--force]
   tensions [--scan]       List or scan for engram contradictions
   audit [--source X]      Audit working memory (claude-code|claw|hermes) for conflicts vs engrams
@@ -142,14 +141,14 @@ const { flags, args, error: flagError } = parseGlobalFlags(argv)
 // Before anything runs. A mistyped global flag must never reach a command that
 // would then act on the wrong store.
 if (flagError) exit(1, flagError)
-// Arm --quiet globally (#730) so no output site can forget it. Commands still
+// Arm --quiet globally so no output site can forget it. Commands still
 // pass `flags` to outputInfo where available; this covers the ones that don't.
 // hook-* commands are unaffected: their stdout is protocol JSON written
 // directly, never through outputInfo.
 setQuiet(flags.quiet === true)
 // `plur -- learn x`: `--` ends option parsing, so what follows it is data —
 // including the word that would have been the command. Say where it goes
-// instead of reporting "Unknown command: --" (audit 1228-c #3).
+// instead of reporting "Unknown command: --".
 if (args[0] === '--') {
   exit(1, args[1]
     ? `\`--\` goes after the command, not before it: plur ${args[1]} -- <value>`
@@ -187,9 +186,9 @@ const COMMANDS: Record<string, string> = {
   'similarity-search': './commands/similarity-search.js',
   stores: './commands/stores.js',
   remote: './commands/remote.js',
-  // Hidden from --help (#1413, design r3): trust is granted by the ask flow,
+  // Hidden from --help: trust is granted by the ask flow,
   // `plur folders set <dir> --trusted` or the trust.yaml import. Both keep
-  // working so existing scripts and runbooks do.
+  // working for existing scripts and runbooks.
   trust: './commands/trust.js',
   untrust: './commands/untrust.js',
   folders: './commands/folders.js',
@@ -203,10 +202,10 @@ const COMMANDS: Record<string, string> = {
   'reindex-hashes': './commands/reindex-hashes.js',
   migrate: './commands/migrate.js',
   init: './commands/init.js',
-  // Hidden alias of `remote` (#1413); `--verify` is bare `plur remote`.
+  // Hidden alias of `remote`; `--verify` is bare `plur remote`.
   'init-remote': './commands/init-remote.js',
-  // `login --status` (#587: token validity per host) and `login <host>`, the
-  // device sign-in (#1638) that saves the server's entry in config.yaml.
+  // `login --status` (token validity per host) and `login <host>`, the
+  // device sign-in that saves the server's entry in config.yaml.
   login: './commands/login.js',
   doctor: './commands/doctor.js',
   'rerank-eval': './commands/rerank-eval.js',
@@ -235,7 +234,7 @@ const COMMANDS: Record<string, string> = {
   'hook-agy-pre-invocation': './commands/hook-agy-pre-invocation.js',
   'hook-agy-guard': './commands/hook-agy-guard.js',
   // Hidden internal subcommand — spawned by `plur doctor` to isolate the
-  // ONNX embedder probe (issue #197). If the probe crashes with SIGABRT
+  // ONNX embedder probe. If the probe crashes with SIGABRT
   // on libc++ thread pool cleanup, only the subprocess dies; doctor stays alive.
   '_embedder-probe': './commands/embedder-probe.js',
 }
@@ -265,13 +264,13 @@ async function drainPendingIndexWork(): Promise<void> {
 }
 
 /**
- * `--` for the commands that do not parse it themselves (audit 1228-c #3).
+ * `--` for the commands that do not parse it themselves.
  *
  * The global parser passes `--` through so a command can see where values
- * start. Eight commands read it (below); every other one took `--` as its
- * first positional — `plur trust -- <dir>` trusted a directory named `--`,
- * `plur feedback -- <id> positive` looked up the id `--`. For those the
- * separator is dropped and the values after it stay positional. They parse
+ * start. Eight commands read it (below); every other one would take `--` as
+ * its first positional (`plur trust -- <dir>` would trust a directory named
+ * `--`). For those the separator is dropped and the values after it stay
+ * positional. They parse
  * any `-…` token as one of their own flags, so a value that begins with `-`
  * after `--` is refused rather than silently read as a flag.
  */
@@ -295,28 +294,27 @@ if (!command || !COMMANDS[command]) {
 
 try {
   const mod = await import(COMMANDS[command])
-  // A command that declares its flags gets them checked (#986). One that does
-  // not is unchanged, so this is adopted per command rather than all at once.
+  // A command that declares its flags gets them checked; one that does not
+  // is left alone, so this is adopted per command.
   if (Array.isArray(mod.FLAGS)) {
     const complaint = unknownFlagMessage(
       commandArgs, mod.FLAGS as string[], (mod.FLAGS_WITH_VALUES as string[]) ?? [])
     if (complaint) exit(1, complaint)
   }
   await mod.run(commandArgs, flags)
-  // #1046: background index work (the PGLite initial sync when that backend
+  // Drain background index work (the PGLite initial sync when that backend
   // is opted into, and the Postgres auto-embed pass — both tracked on
-  // waitForIndex()) used to be abandoned by every command except `sync`,
-  // which on PGLite meant a full-corpus pass restarted and killed on every
-  // invocation: the index never converged, found 64MB on disk with no
-  // `engrams` table at all. The default SQLite tier does no constructor-time
-  // background sync, so for most installs this drain is a no-op; where it
-  // isn't, the fingerprint guard makes an unchanged YAML nearly free.
+  // waitForIndex()). Abandoning it on every exit would restart and kill a
+  // full-corpus pass on each invocation, so the index would never converge.
+  // The default SQLite tier does no constructor-time background sync, so for
+  // most installs this is a no-op; where it isn't, the fingerprint guard
+  // makes an unchanged YAML nearly free.
   await drainPendingIndexWork()
   // A hook exits when its work is done, not when the event loop drains. An
   // outbox flush abandoned at its budget can leave a socket connecting (undici
   // rejects the aborted fetch but keeps its connector going until its own 10s
-  // connect timeout), and that handle alone held the process past Claude
-  // Code's 5s SessionEnd budget: "Hook cancelled". Through exitWhenStoreIdle,
+  // connect timeout), and that handle alone can hold the process past Claude
+  // Code's 5s SessionEnd budget ("Hook cancelled"). Through exitWhenStoreIdle,
   // as on the error path below, so the exit never lands in a store write.
   // Stdout first: on macOS a pipe is written asynchronously, and an exit with
   // the injection still buffered would hand the editor a truncated document.
@@ -325,14 +323,13 @@ try {
     await exitWhenStoreIdle()
   }
 } catch (err: any) {
-  // Hook commands never print errors to stdout (owner decision H1, formal
-  // field report cluster 5). An editor parses a hook's stdout as its result
+  // Hook commands never print errors to stdout. An editor parses a hook's stdout as its result
   // and shows a non-zero exit as a hook error, so an `{"error"}` document
   // there — e.g. from an injection that threw after the watchdog had stopped
   // the run — breaks the turn instead of failing open. Stderr, exit 0.
   // Every other command keeps its error document and exit 1.
   //
-  // The exit goes through exitWhenStoreIdle (#1349): the throw can arrive
+  // The exit goes through exitWhenStoreIdle: the throw can arrive
   // while a store write of this process is still in flight (the hybrid search
   // a hook abandoned at its deadline records its injection under
   // `engrams.yaml.lock`), and exiting there leaves that lock behind for every

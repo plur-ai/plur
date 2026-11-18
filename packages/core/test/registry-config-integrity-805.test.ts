@@ -28,7 +28,7 @@ import { tmpdir } from 'os'
 import yaml from 'js-yaml'
 import { installPack, listPacks, PackRegistryUnreadableError } from '../src/packs.js'
 import { setSchemaVersion, getSchemaVersion } from '../src/migrations/runner.js'
-import { withLock } from '../src/sync.js'
+import { withLock } from '../src/file-lock.js'
 
 /** Matches the shape probe/p08 builds — a pack ships SKILL.md, not pack.yaml. */
 function makePackSource(root: string, name: string): string {

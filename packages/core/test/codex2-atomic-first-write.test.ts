@@ -43,7 +43,7 @@ vi.mock('fs', async importOriginal => {
   return { ...fs, default: { ...fs, writeFileSync, writeSync }, writeFileSync, writeSync }
 })
 
-const { atomicWrite, CONFIG_FILE_MODE, _atomicWriteAcl } = await import('../src/sync.js')
+const { atomicWrite, CONFIG_FILE_MODE, _atomicWriteAcl } = await import('../src/atomic-write.js')
 const { SELF, writeSaved } = await import('./helpers/fake-acl.js')
 /** The fake icacls writing its /save file is not a content write of atomicWrite's. */
 const saveUnrecorded = (file: string, trustees: string[]) => { const was = rec.on; rec.on = false; try { writeSaved(file, trustees) } finally { rec.on = was } }

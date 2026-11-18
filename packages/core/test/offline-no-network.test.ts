@@ -1,12 +1,20 @@
 // With the machine declared offline, the update check makes no network call
-// at all: not through fetch, not through a raw socket, not through a DNS
-// lookup. Online, the check still asks the registry.
+// at all: not through npm, fetch, a raw socket or a DNS lookup. Online, the
+// check asks npm and nothing else.
 import dns from 'node:dns'
 import net from 'node:net'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { checkForUpdate, clearVersionCache, getCachedUpdateCheck, settleVersionChecks } from '../src/version-check.js'
 import { offlineByEnv, updateCheckDisabledByEnv } from '../src/offline.js'
 import { downloadsOffByEnv } from '../src/embedders/transformers-base.js'
+
+// The update check asks npm (npm-latest.ts); each lookup is recorded as an
+// attempt, next to any fetch, socket or DNS use.
+const npm = vi.hoisted(() => ({ attempts: [] as string[] }))
+vi.mock('../src/npm-latest.js', () => ({
+  UNKNOWN_REGISTRY: 'the configured npm registry',
+  npmLatest: async (pkg: string) => { npm.attempts.push(`npm view ${pkg}@latest`); return { state: 'ok', version: '99.0.0' } },
+}))
 
 const VARS = ['PLUR_OFFLINE', 'HF_HUB_OFFLINE', 'TRANSFORMERS_OFFLINE', 'PLUR_NO_UPDATE_CHECK', 'NO_UPDATE_NOTIFIER', 'PLUR_MODEL_DOWNLOAD'] as const
 
@@ -21,6 +29,7 @@ describe('offline switch', () => {
 
   beforeEach(() => {
     attempts.length = 0
+    npm.attempts = attempts
     for (const k of VARS) { saved.env[k] = process.env[k]; delete process.env[k] }
     globalThis.fetch = (async (input: unknown) => {
       attempts.push(`fetch ${String(input)}`)
@@ -53,7 +62,7 @@ describe('offline switch', () => {
 
   it('online, the update check asks the registry', async () => {
     const r = await checkForUpdate('@plur-ai/example', '1.0.0')
-    expect(attempts).toEqual(['fetch https://registry.npmjs.org/@plur-ai/example/latest'])
+    expect(attempts).toEqual(['npm view @plur-ai/example@latest'])
     expect(r.updateAvailable).toBe(true)
   })
 

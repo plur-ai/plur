@@ -35,7 +35,7 @@ vi.mock('child_process', async (importOriginal) => {
 
 const { execFileSync } = await import('child_process')
 const { Plur } = await import('../src/index.js')
-const { withLock } = await import('../src/sync.js')
+const { withLock } = await import('../src/file-lock.js')
 const { isolateGitConfig } = await import('./helpers/git-isolation.js')
 
 function git(args: string[], cwd: string): string {

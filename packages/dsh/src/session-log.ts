@@ -1,9 +1,9 @@
 /**
  * Shared helpers for walking a dsh session log.
  *
- * Four call sites need to read `agent.session.events`, and log-walking is
- * exactly where the design review found bugs. Centralised here so the rules live
- * in one place and are unit-tested once, without needing a Cordis context.
+ * Several call sites need to read `agent.session.events`, and log-walking is
+ * easy to get wrong. Centralised here so the rules live in one place and are
+ * unit-tested once, without needing a Cordis context.
  *
  * @module
  */
@@ -37,12 +37,8 @@ function textOf(message: unknown): string {
 }
 
 /**
- * Build the recall query for one turn: the human text entered in that turn.
- *
- * Plugin-sourced context is excluded deliberately. Including our own injected
- * block would make each recall query drift toward whatever we last recalled,
- * so memory would progressively retrieve itself instead of the user's actual ask.
- *
+ * Build the recall query for one turn from its human text only; our own
+ * injected context is excluded so recall does not drift toward itself.
  * @param events - the session's append-only log.
  * @param turn - the turn number currently being prepared.
  * @param proposed - messages the pre-step decision is about to enter, not yet logged.
