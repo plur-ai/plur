@@ -1,12 +1,11 @@
-diff --git a/packages/core/src/sync.ts b/packages/core/src/sync.ts
-index 050e48c3..5344d143 100644
---- a/packages/core/src/sync.ts
-+++ b/packages/core/src/sync.ts
-@@ -1691,6 +1691,7 @@ export function atomicWrite(filePath: string, content: string | Buffer, opts: At
+diff --git a/packages/core/src/atomic-write.ts b/packages/core/src/atomic-write.ts
+--- a/packages/core/src/atomic-write.ts
++++ b/packages/core/src/atomic-write.ts
+@@ -144,6 +144,7 @@
    const durable = opts.durable !== false
    const dir = dirname(filePath)
    if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
 +  writeFileSync(filePath, content); return // MUTANT: write in place, no temp file + rename
-   // Preserve the destination's permissions (audit 2026-08-03, finding 7).
-   //
-   // A replace-by-rename creates a NEW inode, so the result carries the tmp
+   // Preserve the destination's permissions: rename creates a new inode with the tmp's mode
+   // (0644 under umask 022), but config.yaml holds tokens and must stay 0600. Read the mode
+   // BEFORE writing and apply it to the tmp BEFORE the rename. No destination: platform default.

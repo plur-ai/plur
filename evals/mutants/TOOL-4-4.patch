@@ -1,10 +1,9 @@
 diff --git a/packages/core/src/learn-async.ts b/packages/core/src/learn-async.ts
-index fcff36f5..bc7599bd 100644
 --- a/packages/core/src/learn-async.ts
 +++ b/packages/core/src/learn-async.ts
-@@ -690,6 +690,9 @@ export async function learnBatch(
+@@ -638,6 +638,9 @@
        // Tag with the input position so a caller can map this result back to its
-       // input even though `results` is compacted (failed statements absent). #281
+       // input even though `results` is compacted (failed statements absent).
        results.push({ ...result, input_index: i })
 +      // MUTANT: batch lets an UPDATE or MERGE verdict overwrite again
 +      { const hit = (result as any).existing_id ?? (result as any).likely_duplicate_of?.id
