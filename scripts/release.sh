@@ -5,7 +5,8 @@
 #
 # Modes:
 #   default          Full release (bump, build, test, commit, tag, push,
-#                    canary npm publish + smoke test + promote, PyPI publish,
+#                    canary npm staging + owner passkey approval + smoke
+#                    test + promote, PyPI publish,
 #                    GH release, website deploy, tweet) for core/mcp/cli.
 #                    Claw is NOT touched unless --claw is provided.
 #   --claw <ver>     Also bump and publish @plur-ai/claw at <ver>. Claw has
@@ -23,7 +24,9 @@
 #                    core/mcp/cli's 0.19.4) — bumping it in lockstep would churn
 #                    its npm version for releases that do not touch it. Specify
 #                    explicitly when opencode should ride along.
-#   --dry-run        Bump + build + test + tweet preview, then stop before commit.
+#   --dry-run        Bump + build + test + tweet preview, print the
+#                    `npm stage publish` command for every package (stages
+#                    nothing), then stop before commit.
 #                    Files ARE mutated (versions bumped) — revert with git.
 #   --preview-tweet  Print the tweet that would be posted for <version>, exit.
 #                    No file mutations, no network. Use to iterate CHANGELOG
@@ -77,7 +80,8 @@
 #   3.8 Website version pre-flight: index.html softwareVersion must == $VERSION
 #   3.9 Packaged-artefact smoke: pack tarballs, install clean, drive the public API
 #   4.  Commit + tag + push
-#   5a. Publish npm to @next (canary)
+#   5a. Stage npm to @next (canary): pack, `npm stage publish`, wait for
+#       validation, then PAUSE for the owner's passkey approval (#1904)
 #   5b. Smoke test (npx by exact version; retries on npm-propagation ETARGET)
 #   5c. Promote @next → @latest
 #   6.  Publish PyPI (hermes)
@@ -95,8 +99,13 @@
 #   DEPLOY_TARGET   rsync target (default: deploy@209.38.243.88:/var/www/sites/plur.ai/)
 #
 # Requirements:
-#   - npm logged in as plur9
-#   - PYPI_TOKEN_PLUR_HERMES in .datacore/env/.env
+#   - npm authenticated as plur9 with the stage-only publish token
+#     (`creds get npm-publish-plur9 --consumer plur-release`); the owner's
+#     passkey approves each staged package at Step 5a (#1904)
+#   - On Linux, a `sed -i ''` shim first on PATH (see RELEASING.md)
+#   - PYPI_TOKEN_PLUR_HERMES from `creds get pypi-tokens --consumer plur-release`,
+#     fetched with the system Python first on PATH (a virtualenv makes it
+#     print an empty value; see RELEASING.md)
 #   - X API credentials (PLUR_X_*), updated in
 #     .datacore/secrets/spaces/5-plur.env then `creds sync`.
 #     .datacore/env/.env is GENERATED — editing it there is lost.
@@ -1113,8 +1122,13 @@ fi
 echo ""
 
 if [ "$DRY_RUN" = true ]; then
+  # Print the npm staging plan (#1904): every `npm stage publish` the real run
+  # would issue, in order. The helper runs neither npm nor pnpm in --dry-run.
+  bash "$REPO_ROOT/scripts/release-stage-publish.sh" --dry-run --version "$VERSION" \
+    --claw "$CLAW_VERSION" --dsh "$DSH_VERSION" --opencode "$OPENCODE_VERSION"
+  echo ""
   echo "=== DRY RUN — stopping before publish ==="
-  echo "Would commit, tag v$VERSION, push, publish all packages, create GH release, post tweet."
+  echo "Would commit, tag v$VERSION, push, stage all packages for passkey approval, create GH release, post tweet."
   exit 0
 fi
 
@@ -1242,56 +1256,19 @@ git push origin main
 git push origin "v$VERSION"
 echo ""
 
-# --- 5a. Publish npm to @next tag (canary) ---
-# Publish to the `next` dist-tag first, smoke-test, then promote to `latest`.
-# Reduces partial-publish blast radius: if the smoke test fails, @latest still
-# points to the prior good release. Users on @latest are unaffected.
-# Recovery: `npm dist-tag rm @plur-ai/<pkg> next` (the version stays published
-# but unflagged — npm's 72-hour unpublish rule means we can't delete; we ship
-# a 0.9.5 patch and deprecate 0.9.4 via `npm deprecate`).
-echo "--- Step 5a: Publish npm @next (canary) ---"
-for pkg in core cli mcp migrate; do
-  echo -n "  @plur-ai/$pkg@$VERSION → @next..."
-  if ! pnpm --filter "@plur-ai/$pkg" publish --access public --no-git-checks --tag next 2>&1 | tail -1; then
-    # Every other failure branch in this script prints its recovery steps;
-    # this one aborted bare (set -euo pipefail) and left you to reconstruct
-    # which of the four packages made it out. Blast radius is small — @latest
-    # only moves in Step 5c — but a partial @next needs finishing BY HAND: a
-    # full re-run fails Step 3.7 for every package already published.
-    echo ""
-    echo "FAIL: @plur-ai/$pkg@$VERSION did not reach @next."
-    echo "  Published so far this run: the packages BEFORE '$pkg' in (core cli mcp migrate)."
-    echo "  @latest has not moved; users are unaffected. To recover:"
-    echo "    1. Fix the cause, then for '$pkg' and each remaining package:"
-    echo "       pnpm --filter @plur-ai/<pkg> publish --access public --no-git-checks --tag next"
-    echo "    2. Verify: npm view @plur-ai/<pkg>@$VERSION dist-tags"
-    echo "    3. Continue manually from Step 5b (smoke from @next, then promote via"
-    echo "       npm dist-tag add @plur-ai/<pkg>@$VERSION latest), or roll back with"
-    echo "       npm dist-tag rm @plur-ai/<pkg> next"
-    exit 1
-  fi
-done
-if [ -n "$CLAW_VERSION" ]; then
-  echo -n "  @plur-ai/claw@$CLAW_VERSION → @next..."
-  pnpm --filter "@plur-ai/claw" publish --access public --no-git-checks --tag next 2>&1 | tail -1
-else
-  echo "  @plur-ai/claw: skipped (no --claw flag)"
-fi
-# dsh last: it depends on core. The viewer it serves is bundled into its own
-# dist, so there is no @plur-ai/ui to publish first.
-if [ -n "$DSH_VERSION" ]; then
-  echo -n "  @plur-ai/dsh@$DSH_VERSION → @next..."
-  pnpm --filter "@plur-ai/dsh" publish --access public --no-git-checks --tag next 2>&1 | tail -1
-else
-  echo "  @plur-ai/dsh: skipped (no --dsh flag)"
-fi
-if [ -n "$OPENCODE_VERSION" ]; then
-  echo -n "  @plur-ai/opencode@$OPENCODE_VERSION → @next..."
-  pnpm --filter "@plur-ai/opencode" publish --access public --no-git-checks --tag next 2>&1 | tail -1
-else
-  echo "  @plur-ai/opencode: skipped (no --opencode flag)"
-fi
-echo ""
+# --- 5a. Stage npm to @next (canary), owner approves with the passkey ---
+# The npm token can only STAGE a publish (#1904): `pnpm publish` gets 403
+# E_STAGE_REQUIRED. scripts/release-stage-publish.sh packs each package from its
+# own folder, stages it with `npm stage publish <tgz> --access public --tag next`
+# (core first), waits for npm's validation, then STOPS for the owner to approve
+# each package with the passkey and type `approved`. It returns once every
+# approved version resolves on the registry.
+# Publishing to `next` first keeps @latest on the prior good release until the
+# smoke test below passes. Recovery after approval: `npm dist-tag rm
+# @plur-ai/<pkg> next` (the version stays published but unflagged — npm's
+# 72-hour unpublish rule means we can't delete; we ship a patch and deprecate).
+bash "$REPO_ROOT/scripts/release-stage-publish.sh" --version "$VERSION" \
+  --claw "$CLAW_VERSION" --dsh "$DSH_VERSION" --opencode "$OPENCODE_VERSION"
 
 # --- 5b. Smoke test from npm ---
 # Install the just-published version by exact version number (not by tag) in
