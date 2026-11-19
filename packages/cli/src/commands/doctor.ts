@@ -59,7 +59,7 @@ interface ConfigFileReport {
   /**
    * Where the file's `hooks` section breaks the shape its harness reads, as
    * the first offending path (#1897). Set only then; `hasPlurHooks` is false,
-   * because the hooks cannot be read, and `plur init` skips the file.
+   * because the hooks are unreadable, and `plur init` skips the file.
    */
   hooksProblem?: string
 }

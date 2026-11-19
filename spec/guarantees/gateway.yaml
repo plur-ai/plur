@@ -30,3 +30,19 @@ anchors:
     kind: guarantee
     rule: "Hooks written from any CLI location init recorded earlier are still recognised as PLUR's, so re-init replaces them instead of duplicating."
     tests: ["packages/cli/test/hook-decisions-h2-h3.test.ts::claims an exec-form hook whose entry was recorded earlier"]
+  packages/gateway/src/hooks-shape.ts#hooksShapeProblem:
+    kind: guarantee
+    rule: >-
+      A malformed hooks section (Claude Code settings, Codex or Cursor hooks.json) is refused by every installer
+      leg: init skips the hooks step, names the offending path, leaves the file unchanged, and does not throw;
+      plur doctor reports the path instead of crashing.
+    tests:
+      - >-
+        packages/mcp/test/init-malformed-hooks-1352.test.ts::an entry that is null: hooks skipped and named, file
+        unchanged, init completes
+      - >-
+        packages/mcp/test/init-malformed-hooks-1352.test.ts::an entry whose hooks is an object: hooks skipped and
+        named, file unchanged, init completes
+      - packages/mcp/test/init-malformed-hooks-1352.test.ts::names the first offending path
+      - packages/gateway/test/hooks-shape.test.ts::names the first offending path
+      - packages/cli/test/malformed-hooks-1897.test.ts

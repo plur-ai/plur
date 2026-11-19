@@ -1,14 +1,4 @@
-/**
- * The one shape check every hook installer leg runs before it merges into a
- * user's hooks file (#1352, #1897). A hand-edited file that breaks the
- * structure made the installers and `plur doctor` throw midway. A malformed
- * section is refused instead: the caller skips the hooks step, names the
- * offending path, and never writes the file.
- *
- * Absent or null levels are fine (nothing to merge into). A hook's own fields
- * are not checked: a command-less hook is a prompt/agent hook, which the
- * PLUR-ownership matchers already handle (#1279).
- */
+// Hook-file shape checks shared by plur init, plur-mcp init and plur doctor.
 
 const isObject = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v)
@@ -18,6 +8,16 @@ const isObject = (v: unknown): v is Record<string, unknown> =>
  * hooks.json: event → list of entries → `hooks` list of hook objects)
  * departs from that shape, as the first offending path, or null when it can
  * be merged.
+ *
+ * The one shape check every hook installer leg runs before it merges into a
+ * user's hooks file (#1352, #1897). A hand-edited file that breaks the
+ * structure made the installers and `plur doctor` throw midway. A malformed
+ * section is refused instead: the caller skips the hooks step, names the
+ * offending path, and never writes the file.
+ *
+ * Absent or null levels are fine (nothing to merge into). A hook's own fields
+ * are not checked: a command-less hook is a prompt/agent hook, which the
+ * PLUR-ownership matchers already handle (#1279).
  */
 export function hooksShapeProblem(hooks: unknown): string | null {
   if (hooks === undefined || hooks === null) return null

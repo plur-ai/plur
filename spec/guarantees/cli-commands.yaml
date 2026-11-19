@@ -684,6 +684,13 @@ anchors:
     rule: A malformed Cursor hooks.json is refused, never overwritten.
     tests:
       - packages/cli/test/init-cursor.test.ts::refuses to overwrite a malformed .cursor/hooks.json
+  packages/cli/src/commands/init.ts#hooksShapeRefusal:
+    kind: guarantee
+    rule: >-
+      A hooks section that breaks the harness's shape skips that hooks step with the path named; the file is never
+      written.
+    tests:
+      - packages/cli/test/malformed-hooks-1897.test.ts
   packages/cli/src/commands/init.ts#installClaudeCodeMcp:
     kind: guarantee
     rule: >-

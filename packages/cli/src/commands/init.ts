@@ -887,7 +887,7 @@ function installCursor(cmd: string, root: string): string {
     try {
       const parsed: unknown = JSON.parse(readFileSync(hooksPath, 'utf8'))
       hooksFileUsable = !!parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-      // A `hooks` section the merge cannot walk is refused the same way (#1897).
+      // A `hooks` section the merge cannot walk is skipped the same way (#1897).
       if (hooksFileUsable) hooksShape = flatHooksShapeProblem((parsed as Record<string, unknown>).hooks)
     } catch { hooksFileUsable = false }
   }
@@ -1047,7 +1047,7 @@ function installCodex(cmd: string, root: string, keepLaunch: boolean, env: NodeJ
     try {
       const parsed: unknown = JSON.parse(readFileSync(hooksPath, 'utf8'))
       usable = typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
-      // A `hooks` section the merge cannot walk is refused the same way (#1897).
+      // A `hooks` section the merge cannot walk is skipped the same way (#1897).
       if (usable) shape = hooksShapeProblem((parsed as Record<string, unknown>).hooks)
     } catch { usable = false }
   }
