@@ -42,6 +42,7 @@ def test_save_context_learns_from_correction():
     outputs = {"response": "I was wrong. The correct way is to use PUT not POST."}
     memory.save_context({"input": "how do I update?"}, outputs)
     assert bridge.learn.called
+    assert bridge.learn.call_args.kwargs["claim_class"] == "inferred"
 
 
 def test_save_context_no_learn_when_disabled():
@@ -53,3 +54,24 @@ def test_save_context_no_learn_when_disabled():
 def test_clear_does_not_raise():
     memory, _ = _make_memory()
     memory.clear()
+
+
+def test_save_context_old_client_without_claim_class_fails_visibly():
+    memory, bridge = _make_memory()
+    bridge.learn.side_effect = TypeError("learn() got an unexpected keyword argument 'claim_class'")
+    with pytest.raises(TypeError, match="claim_class"):
+        memory.save_context({"input": "x"}, {"response": "I was wrong. The correct way is to use PUT not POST."})
+    assert bridge.learn.call_count == 1
+
+
+def test_save_context_still_swallows_other_learn_errors():
+    memory, bridge = _make_memory()
+    bridge.learn.side_effect = RuntimeError("cli failed")
+    memory.save_context({"input": "x"}, {"response": "I was wrong. The correct way is to use PUT not POST."})
+
+
+def test_save_context_still_swallows_unrelated_type_errors():
+    memory, bridge = _make_memory()
+    bridge.learn.side_effect = TypeError("unsupported operand type(s) for +: 'int' and 'str'")
+    memory.save_context({"input": "x"}, {"response": "I was wrong. The correct way is to use PUT not POST."})
+    assert bridge.learn.call_count == 1

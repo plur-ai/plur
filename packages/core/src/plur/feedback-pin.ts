@@ -8,12 +8,24 @@ import { logger } from '../logger.js'
 import type { Engram } from '../schemas/engram.js'
 import { assertScopeNamesATarget, isLocalOnlyScope } from '../scope-target.js'
 import { isScopeWithin } from '../scope-util.js'
-import { detectSecrets } from '../secrets.js'
+import { detectPromptInjection, detectSecrets } from '../secrets.js'
+import { randomUUID } from 'crypto'
 import { computeRecordHash } from '../session-manifest.js'
 import { resolveScopeTarget, ScopeConflictError } from '../store-resolver.js'
 import { FEEDBACK_SOURCE_CAPABILITY, RemoteStore } from '../store/remote-store.js'
 import { REMOTE_PROBE_TIMEOUT_MS } from './helpers.js'
 import { type MutationOutcome } from './types.js'
+
+/** What a remote push carries (minus scope and key); volatile local state is left out so a no-op update keeps its key. */
+function pushedContentSignature(engram: Engram): string {
+  const e = engram as any
+  return JSON.stringify([
+    e.statement, e.domain, e.type, e.tags, e.pinned, e.rationale, e.commitment,
+    e.temporal, e.valid_from, e.valid_until, e.relations?.supersedes, e.supersedes,
+    e.locked_reason, e.source, e.provenance, e.measured_under, e.knowledge_anchors,
+    e.dual_coding, e.attribution, e.claim_class, e.structured_data?._scopeSource,
+  ])
+}
 
 export interface FeedbackPinMethods {
   /**
@@ -43,7 +55,7 @@ export interface FeedbackPinMethods {
    *  - SOFT `_offendingHitsForScope`: infra-sensitive content at a shared scope is DEMOTED
    *    to local/private and stamped with `_demoted{from,to,patterns}`.
    */
-  saveMetaEngrams(metas: Engram[]): Promise<{ saved: number; skipped: number }>
+  saveMetaEngrams(metas: Engram[]): Promise<{ saved: number; skipped: number; injection_refused?: string[] }>
 
   /**
    * Update an existing engram by ID. Returns true if it was found and written,
@@ -421,7 +433,7 @@ export const feedbackPinMethods: FeedbackPinMethods & ThisType<Plur> = {
     } catch { /* best-effort — outcome logging must never break feedback */ }
   },
 
-  async saveMetaEngrams(metas: Engram[]): Promise<{ saved: number; skipped: number }> {
+  async saveMetaEngrams(metas: Engram[]): Promise<{ saved: number; skipped: number; injection_refused?: string[] }> {
     this._assertWritable()
     this._remoteOnlyRefuseLocalStore('Saving meta-engrams (they are written to the personal store)')
     return await this._withStoreLock(this.paths.engrams, async () => {
@@ -429,6 +441,7 @@ export const feedbackPinMethods: FeedbackPinMethods & ThisType<Plur> = {
       const existingIds = new Set(engrams.map(e => e.id))
       let saved = 0
       let skipped = 0
+      const injectionRefused: string[] = []
       // Hard-tier tokens accepted earlier in this batch; listPinned cannot see
       // them until the batch is written.
       let pendingHard = 0
@@ -437,6 +450,18 @@ export const feedbackPinMethods: FeedbackPinMethods & ThisType<Plur> = {
           skipped++
           continue
         }
+        // security audit 2026-11-06: model-inferred metas get learn()'s injection gate; a flagged one is skipped, not thrown
+        const injections = detectPromptInjection(this._hardScanText(meta.statement, this._engramContextFields(meta)))
+        if (injections.length > 0) {
+          logger.warning(
+            `[plur] meta-engram ${meta.id} skipped: prompt injection pattern (${injections[0].pattern}) in a model-inferred statement.`,
+          )
+          injectionRefused.push(meta.id)
+          skipped++
+          continue
+        }
+        // Model-inferred, so marked as such (ClaimClassSchema 'inferred').
+        if ((meta as any).claim_class === undefined) (meta as any).claim_class = 'inferred'
         pendingHard += await this._assertHardTierFits(meta, pendingHard)
         // Guard each meta on the FULL content (statement + context
         // fields) at its scope before persist. Do NOT call _guardExplicitUpdate
@@ -480,7 +505,7 @@ export const feedbackPinMethods: FeedbackPinMethods & ThisType<Plur> = {
         await this._writeEngrams(this.paths.engrams, engrams)
         await this._syncIndex()
       }
-      return { saved, skipped }
+      return { saved, skipped, ...(injectionRefused.length > 0 ? { injection_refused: injectionRefused } : {}) }
     })
   },
 
@@ -753,6 +778,13 @@ export const feedbackPinMethods: FeedbackPinMethods & ThisType<Plur> = {
           + `Rescope it to a store scope to deliver it.`,
         )
       }
+    }
+    // security audit 2026-11-06: a retarget or content edit is a new logical write, so it gets a new idempotency key
+    const moved = toWrite.scope !== stored.scope
+    if (pending && stored.status !== 'retired' && sd._outbox
+      && (moved || pushedContentSignature(stored) !== pushedContentSignature(toWrite))) {
+      sd._outbox = { ...((moved ? sd._outbox : storedSd!._outbox) as object), idempotency_key: randomUUID(), attempt_count: 0, last_error: '' }
+      changed = true
     }
     if (changed) (toWrite as any).structured_data = Object.keys(sd).length > 0 ? sd : undefined
   },

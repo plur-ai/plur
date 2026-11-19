@@ -4,6 +4,8 @@ import type { Episode } from './schemas/episode.js'
 import type { CaptureContext, TimelineQuery } from './types.js'
 import { withLock } from './file-lock.js'
 import { atomicWrite } from './atomic-write.js'
+import { storeFileMode } from './sync.js'
+import { dirname, join } from 'path'
 import { parseRecordArrayFile } from './engrams.js'
 
 function generateEpisodeId(): string {
@@ -34,7 +36,8 @@ export function captureEpisode(path: string, summary: string, context?: CaptureC
     // queries without being deleted by the next capture.
     const { valid, quarantined } = loadEpisodesWithQuarantine(path)
     const out = [...valid, episode, ...(quarantined as Episode[])]
-    atomicWrite(path, yaml.dump(out, { lineWidth: 120, noRefs: true }))
+    // security audit 2026-11-06: never wider than the store's engrams.yaml
+    atomicWrite(path, yaml.dump(out, { lineWidth: 120, noRefs: true }), { mode: storeFileMode(join(dirname(path), 'engrams.yaml')) })
   })
   return episode
 }

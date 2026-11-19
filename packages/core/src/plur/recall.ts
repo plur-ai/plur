@@ -8,6 +8,7 @@ import { Plur } from '../index.js'
 import { applyIntentRouting, classifyQuery, isIntentRoutingDisabled, isQueryRewriteDisabled, rewriteLexicalQuery, routeForIntent, type IntentRoutingProfile, type QueryIntent } from '../intent/index.js'
 import { logger } from '../logger.js'
 import { expandedSearch } from '../query-expansion.js'
+import { escapeRegExp } from '../redact-token.js'
 import { withoutRemoteOnlyQueued } from '../remote-only-rows.js'
 import {
     RECALL_BOOKKEEPING_LOCK_WAIT_MS, settleBy,
@@ -989,7 +990,7 @@ export const recallMethods: RecallMethods & ThisType<Plur> = {
       if (!entry.url) continue
       // remote-only: only the folder's own team store.
       if (this._remoteOnly && (entry.scope !== this._remoteOnly.scope || !this._isDeliverableTeamScope(entry.scope))) continue
-      const prefixRe = new RegExp(`^(ENG|ABS|META)-${storePrefix(entry.scope)}-`)
+      const prefixRe = new RegExp(`^(ENG|ABS|META)-${escapeRegExp(storePrefix(entry.scope))}-`)
       // A legacy-form id names this store only when no other url
       // store shares its old prefix; then its bare form is asked for.
       const oldPrefix = legacyStorePrefix(entry.scope)

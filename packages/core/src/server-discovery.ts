@@ -6,7 +6,9 @@
  * - A malformed list (`scopes_malformed`) or an answer with no `org_id` (every scope rejected, `org-prefix`) is
  *   `degraded` and never replaces a non-empty cache; only an explicit valid `[]` clears one.
  * - `not_synced`, or an older server answering [] without `scopes_status`, replaces only an empty cache.
- * - Accepted scopes are filtered to the server's org; a scope another entry already serves is refused.
+ * - An answer whose org_id differs from `cachedOrgId` is `degraded` with `orgChanged` (security audit 2026-11-06).
+ * - Accepted scopes are filtered to the server's org; a scope another store entry already serves (another
+ *   server, or a local path store) is refused.
  */
 import { isDeepStrictEqual } from 'node:util'
 import type { MeResponse } from './store/remote-store.js'
@@ -29,14 +31,18 @@ export interface AcceptedDiscovery {
   /** When replaceCache, the new list. When not, a copy of `cached`. */
   scopes: string[]
   rejected: ScopeRejection[]
+  /** The answer named another org than `cachedOrgId`; nothing was accepted. */
+  orgChanged?: true
 }
 
 export interface AcceptDiscoveredScopesInput {
   me: MeResponse | null
   error?: { status?: number; message: string }
   cached: string[]
-  /** scope → url of the other server entry that already serves it. */
+  /** scope → url (or `path:<dir>`) of the other store entry that already serves it. */
   otherServersScopes: ReadonlyMap<string, string>
+  /** `discovery.org_id` from sign-in or first discovery; an answer naming another org is not trusted. */
+  cachedOrgId?: string
 }
 
 const ORG_PREFIXED_KINDS = ['group', 'project', 'team', 'space'] as const
@@ -78,7 +84,7 @@ function filterScopes(
  * Never reads from disk, never writes to disk, no I/O.
  */
 export function acceptDiscoveredScopes(input: AcceptDiscoveredScopesInput): AcceptedDiscovery {
-  const { me, error, cached, otherServersScopes } = input
+  const { me, error, cached, otherServersScopes, cachedOrgId } = input
   const keep = (status: DiscoveryStatus, rejected: ScopeRejection[] = []): AcceptedDiscovery =>
     ({ status, replaceCache: false, scopes: [...cached], rejected })
   const empty = (status: DiscoveryStatus, rejected: ScopeRejection[] = []): AcceptedDiscovery =>
@@ -102,6 +108,11 @@ export function acceptDiscoveredScopes(input: AcceptDiscoveredScopesInput): Acce
   if (!me.org_id && me.scopes_status !== 'not_synced') {
     const rejected = me.scopes.map((scope): ScopeRejection => ({ scope, reason: 'org-prefix' }))
     return cached.length > 0 ? keep('degraded', rejected) : empty('degraded', rejected)
+  }
+
+  // security audit 2026-11-06: the org filter trusts this answer's org_id, so it is bound to the cached org
+  if (cachedOrgId && me.org_id && me.org_id.toLowerCase() !== cachedOrgId.toLowerCase()) {
+    return { ...keep('degraded', me.scopes.map((scope): ScopeRejection => ({ scope, reason: 'org-prefix' }))), orgChanged: true }
   }
 
   switch (me.scopes_status) {

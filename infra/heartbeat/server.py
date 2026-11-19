@@ -18,6 +18,9 @@ BIND_HOST = os.environ.get("HEARTBEAT_HOST", "127.0.0.1")
 BIND_PORT = int(os.environ.get("HEARTBEAT_PORT", "8001"))
 MAX_BODY = 1024  # bytes
 SOCKET_TIMEOUT = int(os.environ.get("HEARTBEAT_TIMEOUT", "10"))
+MAX_DAILY_BYTES = 16 * 1024 * 1024  # security audit 2026-11-06: the ingress is unauthenticated, so each day's file is capped
+MAX_COUNT = 10**9
+MAX_VERSION_LEN = 64
 
 UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -38,16 +41,16 @@ def validate(payload: dict) -> Optional[str]:
     missing = required - payload.keys()
     if missing:
         return f"missing fields: {', '.join(sorted(missing))}"
-    if not isinstance(payload["install_id"], str) or not UUID_RE.match(payload["install_id"]):
+    if not isinstance(payload["install_id"], str) or not UUID_RE.fullmatch(payload["install_id"]):
         return "install_id must be UUID v4"
-    if not isinstance(payload["version"], str) or not VERSION_RE.match(payload["version"]):
+    if not isinstance(payload["version"], str) or len(payload["version"]) > MAX_VERSION_LEN or not VERSION_RE.fullmatch(payload["version"]):
         return "version must match semver"
-    if payload["platform"] not in PLATFORMS:
+    if not isinstance(payload["platform"], str) or payload["platform"] not in PLATFORMS:
         return f"platform must be one of {PLATFORMS}"
-    if not isinstance(payload["date"], str) or not DATE_RE.match(payload["date"]):
+    if not isinstance(payload["date"], str) or not DATE_RE.fullmatch(payload["date"]):
         return "date must be YYYY-MM-DD"
     for field in ("learn_count", "recall_count", "session_count"):
-        if not isinstance(payload[field], int) or isinstance(payload[field], bool) or payload[field] < 0:
+        if not isinstance(payload[field], int) or isinstance(payload[field], bool) or payload[field] < 0 or payload[field] > MAX_COUNT:
             return f"{field} must be non-negative integer"
     return None
 
@@ -102,6 +105,9 @@ class HeartbeatHandler(BaseHTTPRequestHandler):
         date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         out_path = DATA_DIR / f"{date_str}.jsonl"
         DATA_DIR.mkdir(parents=True, exist_ok=True)
+        if out_path.exists() and out_path.stat().st_size >= MAX_DAILY_BYTES:
+            self.send_plain(429, "daily capacity reached")
+            return
 
         line = json.dumps(payload, separators=(",", ":")) + "\n"
         with open(out_path, "a") as f:

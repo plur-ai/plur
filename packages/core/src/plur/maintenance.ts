@@ -10,7 +10,7 @@ import { exportPack, installPack, listPacks, migratePackIntegrity, previewPack, 
 import { isRemoteOnlyQueued } from '../remote-only-rows.js'
 import type { Engram } from '../schemas/engram.js'
 import type { Episode } from '../schemas/episode.js'
-import { detectSecrets } from '../secrets.js'
+import { detectPromptInjection, detectSecrets } from '../secrets.js'
 import type { StorageAdapter } from '../storage-adapter.js'
 import { asDerivedIndex, requiresIndexSync } from '../storage-adapter.js'
 import { IndexedStorage } from '../storage-indexed.js'
@@ -508,6 +508,8 @@ export const maintenanceMethods: MaintenanceMethods & ThisType<Plur> = {
         if (!captured || captured.length < 5) continue
         if (seen.has(captured.toLowerCase())) continue
         if (!this.config.allow_secrets && detectSecrets(captured).length > 0) continue
+        // security audit 2026-11-06: harvested text the agent merely read never carries an injection, not even in previews
+        if (detectPromptInjection(captured).length > 0) continue
         seen.add(captured.toLowerCase())
         candidates.push({
           statement: captured,
@@ -530,6 +532,9 @@ export const maintenanceMethods: MaintenanceMethods & ThisType<Plur> = {
           scope: options?.scope ?? (this._remoteOnly ? undefined : 'global'),
           domain: options?.domain,
           source: candidate.source,
+          // Auto-harvested, not asserted by the user: the D4 injection gate in
+          // _validateLearnInput and the (inferred) render mark key on this.
+          claim_class: 'inferred',
         })
       }
     }

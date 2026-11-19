@@ -401,6 +401,16 @@ anchors:
     tests:
       - packages/cli/test/legacy-plur-yaml.test.ts::warns about tracked tokens without exposing the token
       - packages/cli/test/legacy-plur-yaml.test.ts::emits a safe tracked-token warning before later injection can fail
+  packages/cli/src/lib/no-follow-write.ts#componentsUnder:
+    kind: guarantee
+    rule: PLUR never writes through a symlink a repository committed anywhere on the path under the project.
+    tests:
+      - packages/cli/test/cursor-rule-symlink-write.test.ts::does not follow a symlinked leaf rule file
+      - packages/cli/test/cursor-rule-symlink-write.test.ts::does not write through a symlinked .cursor/rules directory
+      - packages/cli/test/cursor-rule-symlink-write.test.ts::does not write through a symlinked .cursor directory
+      - >-
+        packages/cli/test/init-cursor-symlink-write.test.ts::does not merge into a JSON file a .cursor/mcp.json symlink
+        points at
   packages/cli/src/lib/open-url.ts#urlOpener:
     kind: guarantee
     rule: On Windows a URL is opened with rundll32, never cmd /c start, so it is not split at &.

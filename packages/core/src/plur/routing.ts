@@ -7,6 +7,7 @@ import { personalStoreEntry } from '../scope-target.js'
 import { isScopeWithin } from '../scope-util.js'
 import { resolveScopeTarget, ScopeConflictError, urlGroupsForScope } from '../store-resolver.js'
 import { normalizeEndpointUrl, RemoteStore } from '../store/remote-store.js'
+import { escapeRegExp } from '../redact-token.js'
 import { REMOTE_PROBE_TIMEOUT_MS } from './helpers.js'
 
 export interface RoutingMethods {
@@ -350,7 +351,7 @@ export const routingMethods: RoutingMethods & ThisType<Plur> = {
       if (!store.path) continue
       if (storeScope !== undefined && store.scope !== storeScope) continue
       const prefix = storePrefix(store.scope)
-      const nsPattern = new RegExp(`^(ENG|ABS|META)-${prefix}-`)
+      const nsPattern = new RegExp(`^(ENG|ABS|META)-${escapeRegExp(prefix)}-`)
       if (nsPattern.test(id)) {
         // Strip the namespace prefix to get the original ID — or the id as it
         // is, when the store file already holds it namespaced.
@@ -370,7 +371,7 @@ export const routingMethods: RoutingMethods & ThisType<Plur> = {
 
   _stripRemotePrefix(id: string, scope: string): string {
     const prefix = storePrefix(scope)
-    const nsPattern = new RegExp(`^(ENG|ABS|META)-${prefix}-`)
+    const nsPattern = new RegExp(`^(ENG|ABS|META)-${escapeRegExp(prefix)}-`)
     if (nsPattern.test(id)) {
       return id.replace(nsPattern, '$1-')
     }

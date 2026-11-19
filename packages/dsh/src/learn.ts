@@ -8,7 +8,7 @@
  * @module
  */
 import type { Context } from '@deepseek-ai/cordis'
-import type { PlurClient } from './client.js'
+import type { MemoryFor } from './client.js'
 import type { Config } from './config.js'
 import type { Counters } from './counters.js'
 import { contain, writable, type WriteQueue } from './guard.js'
@@ -76,11 +76,12 @@ export interface CallerSession {
 export interface LearnDeps {
   config: Config
   counters: Counters
-  plur?: PlurClient
   /** Resolves the scope of the session the event came from. */
   /** The ONE shared write queue. Must not be created per-module. */
   queue: WriteQueue
   resolveScope: (session?: CallerSession) => Promise<string>
+  /** The folder map's answer for the session (security audit 2026-11-06). */
+  memoryFor: MemoryFor
 }
 
 interface TextBlock {
@@ -100,7 +101,7 @@ interface TextBlock {
  * @param deps - config, counters, the PLUR client, and scope resolution.
  */
 export function registerLearning(ctx: Context, deps: LearnDeps): void {
-  const { config, counters, plur, resolveScope, queue } = deps
+  const { config, counters, resolveScope, queue, memoryFor } = deps
   if (!config.autoLearn) return
 
   ctx.on('session/event', (session: unknown, event: unknown) => {
@@ -126,6 +127,10 @@ export function registerLearning(ctx: Context, deps: LearnDeps): void {
     // waits on a fire-and-forget write, and a soft timeout inside the queue
     // would release the slot while the write is still running.
     void queue(() => contain(async () => {
+      // Nothing is learned in a folder the user set `off` (security audit 2026-11-06).
+      const memory = await memoryFor(session as CallerSession)
+      if (memory.off) return
+      const plur = memory.plur
       const scope = await resolveScope(session as CallerSession)
       // Only count a write that a real engine actually performed. The facade
       // always HAS `learn` and resolves it to a no-op when core cannot load,

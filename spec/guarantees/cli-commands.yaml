@@ -102,6 +102,19 @@ anchors:
     rule: With --quiet, doctor drops only its banner; every finding, including the passing lines, still prints.
     tests:
       - packages/cli/test/quiet.test.ts::suppresses only the banner; every finding still prints
+  packages/cli/src/commands/doctor.ts#projectMcpServerApproved:
+    kind: guarantee
+    rule: >-
+      plur doctor never runs a project .mcp.json command the user has not approved in Claude Code; a file git tracks
+      never approves, and disabling the server by name wins.
+    tests:
+      - packages/cli/test/doctor.test.ts::never runs an unapproved project .mcp.json command (security audit 2026-11-06)
+      - >-
+        packages/cli/test/doctor.test.ts::runs a project .mcp.json approved with enableAllProjectMcpServers, but not one
+        disabled by name
+      - >-
+        packages/cli/test/doctor.test.ts::honours approval in the project .claude/settings.local.json only while git
+        does not track it
   packages/cli/src/commands/doctor.ts#spawnEnv:
     kind: note
     why: Explains why the probe uses the entry's own environment.
@@ -185,6 +198,18 @@ anchors:
   packages/cli/src/commands/forget.ts#withWarnings:
     kind: note
     why: "Uses \"always\" loosely: an ordinary retire keeps its old output shape."
+  packages/cli/src/commands/hook-agy-pre-invocation.ts#about:
+    kind: guarantee
+    rule: >-
+      In an undecided (ask) folder the Antigravity hook gives only the question, once per conversation, and never
+      memory.
+    tests:
+      - >-
+        packages/cli/test/hook-folder-map.test.ts::unmapped workspace: the first turn asks and replays the question
+        within the turn, later turns are silent
+      - >-
+        packages/cli/test/agy-workspace-all-roots.test.ts::memory cached while on is not replayed mid-turn after the
+        folder switches to ask
   packages/cli/src/commands/hook-agy-pre-invocation.ts#ask:
     kind: guarantee
     rule: Asking the folder question in Antigravity never registers the folder's .plur store.
@@ -192,6 +217,14 @@ anchors:
       - >-
         packages/cli/test/folder-ask-unsafe-paths.test.ts::config.yaml is unchanged by the question in all four editors,
         and the store never reaches another folder
+  packages/cli/src/commands/hook-agy-pre-invocation.ts#decision:
+    kind: guarantee
+    rule: >-
+      Every Antigravity workspace root decides, not only the first: any off root silences memory and a remote-only root
+      binds the session remote-only.
+    tests:
+      - "packages/cli/test/agy-workspace-all-roots.test.ts::[on, off] is silent: no recall, nothing injected"
+      - packages/cli/test/agy-workspace-all-roots.test.ts::[on, remote-only] binds the session remote-only
   packages/cli/src/commands/hook-agy-pre-invocation.ts#projectRemote:
     kind: guarantee
     rule: Antigravity recall resolves project settings from the workspace path, not the hook's working directory.
@@ -628,6 +661,14 @@ anchors:
     rule: Running init again does not duplicate PLUR's hooks.
     tests:
       - packages/cli/test/init.test.ts::is idempotent — re-running does not duplicate hooks or mcp entries
+  packages/cli/src/commands/init.ts#cliPkg:
+    kind: guarantee
+    rule: >-
+      plur init takes @plur-ai/mcp only from the CLI's own install root, never from a package planted in an ancestor
+      directory.
+    tests:
+      - "packages/cli/test/init-mcp-entry-install-root.test.ts::npm: a drive-root ancestor is ignored"
+      - "packages/cli/test/init-mcp-entry-install-root.test.ts::pnpm: above the store is ignored"
   packages/cli/src/commands/init.ts#CODEX_TRUST_NOTICE:
     kind: note
     why: >-
@@ -655,6 +696,16 @@ anchors:
       - >-
         packages/cli/test/init-claude-user-mcp-1561.test.ts::an unparseable ~/.claude.json is refused: neither it nor
         the old settings entry is touched
+  packages/cli/src/commands/init.ts#installCursor:
+    kind: guarantee
+    rule: >-
+      Setting up Cursor never writes through a .gitignore the project ships as a symlink (or as anything but a regular
+      file).
+    tests:
+      - packages/cli/test/init-cursor-symlink-write.test.ts::does not append to a file a .gitignore symlink points at
+      - >-
+        packages/cli/test/init-cursor-symlink-write.test.ts::still gitignores the generated rules for a regular
+        .gitignore
   packages/cli/src/commands/init.ts#installOpencode:
     kind: guarantee
     rule: An opencode config that does not parse, or has the wrong shape, is never coerced to empty and written over.
@@ -712,6 +763,9 @@ anchors:
       by a merge into an empty object.
     tests:
       - packages/cli/test/config-clobber-1059.test.ts::leaves the file byte-identical and reports the refusal
+  packages/cli/src/commands/init.ts#resolveMcpEntrypoint:
+    kind: note
+    why: Explains the development-checkout lookup; "never" describes what happened without it.
   packages/cli/src/commands/init.ts#run:
     kind: note
     why: Explains to maintainers that Cursor setup always comes with the Claude Code hooks; no rule of its own.
@@ -754,9 +808,6 @@ anchors:
       - >-
         packages/cli/test/init-user-settings-1467.test.ts::an untrusted .plur.yaml that asks for a scope: hooks move, no
         map entry
-  packages/cli/src/commands/init.ts#workspaceSibling:
-    kind: note
-    why: Explains the development-checkout lookup; "never" describes what happens without it.
   packages/cli/src/commands/init.ts#writePlurSection:
     kind: guarantee
     rule: A PLUR section the user wrote or edited is never replaced; only a text PLUR shipped is upgraded.

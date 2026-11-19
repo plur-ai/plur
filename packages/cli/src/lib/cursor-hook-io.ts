@@ -3,7 +3,8 @@ import { join, dirname } from 'path'
 import { tmpdir } from 'os'
 import { cursorContextRulePath, cursorReminderRulePath } from '../mcp-config.js'
 import { safeSessionKey } from './session-key.js'
-import { ensureSessionDir, sessionDirSafeToSweep, sessionDirTrusted, ticketCounter } from './codex-hook-io.js'
+import { unsafeComponentUnder } from './no-follow-write.js'
+import { ensureSessionDir, sessionDirSafeToSweep, sessionDirTrusted, ticketCounter, writeFileNoFollow } from './codex-hook-io.js'
 
 /**
  * Shared stdin-reading and sentinel-path helpers for the four hook-cursor-* commands.
@@ -204,10 +205,9 @@ export function removeGeneratedContextRules(dir: string): void {
  * `additional_context`). Mid-conversation re-reads are unconfirmed (limitation 4 above). `path` lets reminders use
  * their own file (`cursorReminderRulePath()`) so they never overwrite recalled engrams.
  */
-export function writeContextRule(content: string, path: string = cursorContextRulePath()): void {
+export function writeContextRule(content: string, path: string = cursorContextRulePath()): boolean {
+  // security audit 2026-11-06: the repository controls <workspace>/.cursor; never write through a link it ships.
+  if (unsafeComponentUnder(dirname(dirname(dirname(path))), path)) return false
   mkdirSync(dirname(path), { recursive: true })
-  writeFileSync(
-    path,
-    CONTEXT_RULE_HEADER + `${content}\n`,
-  )
+  return writeFileNoFollow(path, CONTEXT_RULE_HEADER + `${content}\n`)
 }

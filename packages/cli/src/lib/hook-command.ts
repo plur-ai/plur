@@ -135,6 +135,7 @@ export function claudeHookSpec(ctx: ClaudeHookContext, sub: string, ...extra: st
 
 export {
   isPlurHookSpec,
+  isThisMachinesPlurHookSpec,
   recordedCliEntries,
   isPlurHookCommand,
   matchesPlurHookLauncher,

@@ -125,6 +125,11 @@ anchors:
     kind: guarantee
     rule: "A tool call never throws into the host; a failing store becomes a message."
     tests: ["packages/dsh/test/tools.test.ts::a failing store degrades to a message instead of throwing into the host"]
+  packages/dsh/src/tools.ts#out:
+    kind: guarantee
+    rule: In an off folder every gated dsh tool answers with the reason and never reads or writes memory.
+    tests:
+      - "packages/dsh/test/folder-map-policy.test.ts::off: tools answer that PLUR is off and read or write nothing"
   packages/dsh/src/tools.ts#registerTools:
     kind: guarantee
     rule: "A tool definition the host rejects does not abort plugin mount."

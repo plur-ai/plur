@@ -11,7 +11,12 @@ anchors:
       - >-
         packages/core/test/formal-secrets-install-gemma.test.ts::returns the sentence_embedding output, not a pooled
         last_hidden_state
-  packages/core/src/embedders/embedding-gemma.ts#load:
+  packages/core/src/embedders/embedding-gemma.ts#makeEmbeddingGemmaAdapter.isLoaded:
+    kind: guarantee
+    rule: Checking whether the model is loaded never downloads it.
+    tests:
+      - packages/core/test/formal-secrets-install-gemma.test.ts::isLoaded never loads or downloads the model
+  packages/core/src/embedders/embedding-gemma.ts#verifyDownload:
     kind: guarantee
     rule: With downloads off, an EmbeddingGemma model missing from disk is refused before the library is asked.
     tests:
@@ -20,14 +25,23 @@ anchors:
         transport attempt after the failed check
     promises:
       - TEAM-5
-  packages/core/src/embedders/embedding-gemma.ts#makeEmbeddingGemmaAdapter.isLoaded:
-    kind: guarantee
-    rule: Checking whether the model is loaded never downloads it.
-    tests:
-      - packages/core/test/formal-secrets-install-gemma.test.ts::isLoaded never loads or downloads the model
   packages/core/src/embedders/index.ts#_resetEmbedderCache:
     kind: note
     why: Marks a test-only helper; production code not calling it is a convention, not a rule.
+  packages/core/src/embedders/model-pins.ts#ModelPin:
+    kind: guarantee
+    rule: >-
+      Every model PLUR loads is pinned to one commit and the sha256 of each file the load reads; a model with no pin, or
+      a file that does not match its pin, is refused.
+    tests:
+      - packages/core/test/model-pinning.test.ts::has a 40-hex revision and a sha256 for each file the load reads
+      - >-
+        packages/core/test/model-pinning.test.ts::a tampered cached file is refused before the load, naming the file and
+        the folder to delete
+      - >-
+        packages/core/test/model-pinning.test.ts::a tampered download is refused after the load, before the model is
+        used
+      - packages/core/test/model-pinning.test.ts::a model with no pin is refused
   packages/core/src/embedders/transformers-base.ts#completeIn:
     kind: note
     why: Explains why an unparsable config.json counts as no usable model at that location.

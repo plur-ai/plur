@@ -6,6 +6,7 @@ import { DISCOVERY_FUTURE_SKEW_MS, DISCOVERY_MAX_AGE_MS } from '../git-origin.js
 import { Plur } from '../index.js'
 import { decodeJwtExpiry, decodeJwtPayload } from '../jwt.js'
 import { logger } from '../logger.js'
+import { SENSITIVITY_CATEGORIES, type SensitivityCategory } from '../schemas/scope-metadata.js'
 import { checkOwnerOnly } from '../owner-only.js'
 import { redactToken } from '../redact-token.js'
 import type { StoreEntry } from '../schemas/config.js'
@@ -225,7 +226,7 @@ export interface DiscoveryMethods {
    * Skips personal-family scopes; writes nothing when the persisted result is unchanged.
    * TRUST RULE: remote sensitivity may only TIGHTEN the leak guard. A remote
    * `allow` is never persisted (it would let a hostile endpoint disarm the guard);
-   * only `forbid` is, sanitized to SENSITIVITY_CATEGORIES. A hand-edited local
+   * only `forbid` is, sanitized to SENSITIVITY_CATEGORIES and only ADDED to the local effective forbid (union), never replacing it. A hand-edited local
    * `allow` is kept. Changed `forbid` scopes are passed to persistStores
    * (`serverSensitivityScopes`) so the writeback merge does not discard them.
    */
@@ -544,8 +545,12 @@ export const discoveryMethods: DiscoveryMethods & ThisType<Plur> = {
           continue
         }
         const cached = stringList(entry.scopes)
-        const decision = acceptDiscoveredScopes({ me, error, cached, otherServersScopes: scopesServedElsewhere(rawStores, key) })
         const oldDiscovery = isPlainObject(entry.discovery) ? entry.discovery : {}
+        const cachedOrgId = typeof oldDiscovery.org_id === 'string' && oldDiscovery.org_id ? oldDiscovery.org_id : undefined
+        const decision = acceptDiscoveredScopes({ me, error, cached, otherServersScopes: scopesServedElsewhere(rawStores, key), cachedOrgId })
+        if (decision.orgChanged) {
+          logger.warning(`[plur:discovery] ${safeOrigin(url)} now reports org "${me?.org_id}" but was discovered as org "${cachedOrgId}"; its scopes were not changed. If the org really changed, remove the server entry and sign in again.`)
+        }
         let next: Record<string, unknown>
         if (decision.replaceCache && me) {
           const personal = decision.scopes.find(sc => sc.toLowerCase() === `user:${me.org_id}:${me.username}`.toLowerCase())
@@ -1003,8 +1008,10 @@ export const discoveryMethods: DiscoveryMethods & ThisType<Plur> = {
       // verbatim; sensitivity = local entry's policy (incl. any hand-edited
       // `allow` + nested unknowns) with only `forbid` taken from the server,
       // sanitized to the category enum. No server sensitivity → local untouched.
+      // security audit 2026-11-06: the persisted forbid is the union of the local effective forbid and the server's, never narrower
+      const localForbid: readonly SensitivityCategory[] = entry.sensitivity?.forbid?.length ? entry.sensitivity.forbid : SENSITIVITY_CATEGORIES
       const nextSensitivity = meta.sensitivity !== undefined
-        ? { ...(entry.sensitivity ?? { allow: [] }), forbid: sanitizeForbidCategories(meta.sensitivity.forbid) }
+        ? { ...(entry.sensitivity ?? { allow: [] }), forbid: [...new Set([...localForbid, ...sanitizeForbidCategories(meta.sensitivity.forbid)])] }
         : entry.sensitivity
       const nextCovers = meta.covers !== undefined ? meta.covers : entry.covers
       const nextDescription = meta.description !== undefined ? meta.description : entry.description

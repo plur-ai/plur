@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { execFileSync } from 'node:child_process'
@@ -15,7 +15,9 @@ let serverUrl: string, serverToken: string
 const closers: Array<() => void | Promise<void>> = []
 let warnings: string[]
 beforeEach(async () => {
-  root = mkdtempSync(join(tmpdir(), 'plur-opencode-git-boundary-'))
+  // Resolved: trust entries are compared against the resolved repository path, and on
+  // macOS the temporary folder is behind a link (/var -> /private/var).
+  root = realpathSync(mkdtempSync(join(tmpdir(), 'plur-opencode-git-boundary-')))
   repo = join(root, 'repo'); store = join(root, 'store')
   const home = join(root, 'home')
   for (const dir of [repo, store, home]) mkdirSync(dir)
@@ -23,6 +25,9 @@ beforeEach(async () => {
   vi.stubEnv('PLUR_PATH', store)
   execFileSync('git', ['init', '-q', repo])
   execFileSync('git', ['-C', repo, 'remote', 'add', 'origin', 'https://git.example.test/team/backend.git'])
+  // A repository's git origin picks a team scope only when the repo is trusted
+  // (security audit 2026-11-06).
+  writeFileSync(join(store, 'folders.yaml'), JSON.stringify({ version: 1, folders: [{ path: repo, trusted: true }] }))
   stub = new StubServer('fixture-token')
   const server = await stub.start()
   serverUrl = server.url; serverToken = server.token

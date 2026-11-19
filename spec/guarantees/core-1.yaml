@@ -692,6 +692,12 @@ anchors:
     tests:
       - packages/core/test/store-prefix-unique.test.ts::two team scopes of one org get different prefixes
       - packages/core/test/store-prefix-unique.test.ts::no collisions across a realistic set of scopes
+  packages/core/src/episodes.ts#captureEpisode:
+    kind: guarantee
+    rule: episodes.yaml is never written with a wider file mode than the store's engrams.yaml.
+    tests:
+      - packages/core/test/store-artifact-mode.test.ts::episodes.yaml and tensions.yaml
+      - "packages/core/test/store-artifact-mode.test.ts::control: derived files take the store mode when it is wider"
   packages/core/src/episodes.ts#loadEpisodesWithQuarantine:
     kind: guarantee
     rule: >-
@@ -1071,6 +1077,23 @@ anchors:
       - OFF-3
     lean:
       - PlurSpec/FolderRules.lean:malformed_never_on
+  packages/core/src/folders.ts#resolveMappedFolderPolicy:
+    kind: guarantee
+    rule: >-
+      A git origin default only fills an absent default: it never bypasses a refusal, an explicit decision or
+      remote-only, and the home directory, its ancestors and a filesystem root keep asking.
+    tests:
+      - packages/core/test/folder-policy-git.test.ts::preserves an explicit %s decision without reading git
+      - packages/core/test/folder-policy-git.test.ts::preserves explicit scope and trusted legacy scope
+      - >-
+        packages/core/test/folder-policy-git.test.ts::the home directory, its ancestors and a filesystem root keep
+        asking even when they are mapped repositories
+      - >-
+        packages/core/test/folder-policy-git.test.ts::a folder under a home that is itself a Git repository does not
+        inherit the home origin
+      - >-
+        packages/core/test/folder-git-home-boundary.test.ts::keeps home, its ancestors and filesystem root behind their
+        folder decision
   packages/core/src/folders.ts#SetFolderOptions:
     kind: guarantee
     rule: >-
@@ -1406,6 +1429,15 @@ anchors:
       - >-
         packages/core/test/folders-repair-scope-1567.test.ts::unrepairable: "fix line N by hand", and repair only as the
         re-check
+  packages/core/src/folders.ts#withRepositoryScope:
+    kind: guarantee
+    rule: >-
+      With PLUR_FOLDER_SCOPE=project a folder that is on gets a repository-named scope only when it has none; it never
+      turns a folder on, never replaces a chosen scope, and never derives a scope a url store claims.
+    tests:
+      - packages/core/test/folder-derived-scope.test.ts::keeps a scope the folder already has
+      - packages/core/test/folder-derived-scope.test.ts::does not turn on a folder that is off or undecided
+      - packages/core/test/folder-derived-scope.test.ts::derives no scope that a url store claims
   packages/core/src/fresh-tail.ts#FRESH_TAIL_DAYS:
     kind: guarantee
     rule: The fresh-memory boost is applied only at scoring time and never stored on the memory.
@@ -1463,6 +1495,12 @@ anchors:
       - >-
         packages/core/test/git-default-scope.test.ts::ssh ports are not compared (the GitLab web port is not its ssh
         port)
+  packages/core/src/history.ts#fileMode:
+    kind: guarantee
+    rule: History files are never written with a wider file mode than the store's engrams.yaml.
+    tests:
+      - packages/core/test/store-artifact-mode.test.ts::history month file
+      - packages/core/test/store-artifact-mode.test.ts::batch history append
   packages/core/src/history.ts#HistoryEvent:
     kind: guarantee
     rule: >-

@@ -14,6 +14,7 @@ import { isLocalOnlyScope } from './scope-target.js'
 import { renderFolderMapText, surgicalFolderMapText } from './folder-map-text.js'
 import { escapedPath, folderCommandOfferable, quoted } from './folder-ask.js'
 import { resolveScopeTarget } from './store-resolver.js'
+import { loadConfig } from './config.js'
 import type { StoreEntry } from './schemas/config.js'
 import { findGitRoot, gitDefaultScope, type GitScopeSource, type GitScopeOutcome, type OriginRead } from './git-origin.js'
 
@@ -786,6 +787,66 @@ export function folderOffEntries(dir: string, opts: FolderPolicyOptions): Folder
  *  4. a project MCP config → on;  5. the most specific map entry;  6. else ask (incl. `$HOME`).
  */
 export function resolveFolderPolicy(dir: string, opts: FolderPolicyOptions): FolderPolicy {
+  return withRepositoryScope(dir, opts, resolveMappedFolderPolicy(dir, opts))
+}
+
+/**
+ * With PLUR_FOLDER_SCOPE=project, a folder that is on and has no scope of its
+ * own gets one named after its repository. Without a scope, injection applies
+ * no filter, so one project's notes reach every other. Only adds a missing
+ * scope: never turns a folder on and never replaces a scope already chosen.
+ */
+function withRepositoryScope(dir: string, opts: FolderPolicyOptions, policy: FolderPolicy): FolderPolicy {
+  if (process.env.PLUR_FOLDER_SCOPE !== 'project' || policy.mode !== 'on' || policy.scope || policy.reason) return policy
+  const home = opts.home ?? homedir()
+  const base = findGitRoot(dir) ?? plainFolderBase(dir, opts.root, home)
+  if (coversHomeOrRoot(base, home)) return policy
+  const name = basename(base).replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '')
+  if (!name) return policy
+  const scope = `project:${name}`
+  // A folder's name never chooses where its writes go: a scope a url store
+  // claims would make this folder's memory a push target (review of #1870,
+  // with #1860). The folder then keeps no scope, as without the variable.
+  if (!isLocalOnlyScope(scope, configuredStores(opts.root))) return policy
+  return { ...policy, scope }
+}
+
+/**
+ * The folder a scope is named after outside a git repository: the nearest
+ * `.plur.yaml`'s folder, else the folder the most specific covering map entry
+ * turned on (for a glob entry, the folder it matched), else `dir` itself. So
+ * `notes/src` and `notes/docs` share `notes`'s scope instead of each having
+ * its own.
+ */
+function plainFolderBase(dir: string, root: string, home: string): string {
+  const configPath = findProjectConfigPath(dir)
+  if (configPath) return dirname(configPath)
+  const target = canonicalize(dir)
+  const covering = load(root, true).map.folders.map((e, i) => ({ e, i }))
+    .filter(c => c.e.plur === 'on' && entryCovers(c.e, [target], home, false))
+  const best = mostSpecific(covering, home)
+  if (!best) return dir
+  // The highest folder the entry still covers, below home: walking up uses
+  // the same matching that chose the entry, so a `~` entry under a symlinked
+  // home and a `**` in the middle of a pattern land on the folder they name.
+  let base = target
+  for (;;) {
+    const parent = dirname(base)
+    if (parent === base || coversHomeOrRoot(parent, home) || !entryCovers(best, [parent], home, false)) break
+    base = parent
+  }
+  return base
+}
+
+function configuredStores(root: string): readonly StoreEntry[] {
+  try {
+    return loadConfig(join(root, 'config.yaml')).stores ?? []
+  } catch {
+    return []
+  }
+}
+
+function resolveMappedFolderPolicy(dir: string, opts: FolderPolicyOptions): FolderPolicy {
   const policy = resolveExplicitFolderPolicy(dir, opts)
   // Only fill an absent default. Never bypass a refusal, a user's explicit
   // ask, or a remote-only choice; legacy trusted settings keep precedence.
@@ -803,6 +864,17 @@ export function resolveFolderPolicy(dir: string, opts: FolderPolicyOptions): Fol
   if (gitRoot !== null && coversHomeOrRoot(gitRoot, home)) return policy
   const git = gitDefaultScope(dir, opts.gitScopes, { read: opts.readOrigin })
   if (git.kind === 'not-git') return policy
+  // The origin is read from the folder's own .git/config: repository content,
+  // exactly like a .plur.yaml scope hint. A folder can arrive with a .git its
+  // author wrote (an archive, a shared or copied folder), so the team scope it
+  // names becomes the push destination for unscoped memories only when a
+  // trusted map entry covers the repository (security audit 2026-11-06).
+  // Otherwise an undecided folder stays an ask that names the scope (the
+  // user's yes writes it to the map), and a folder already on stays local.
+  if (git.kind === 'scope' && !isTrustedInMap(load(opts.root, true).map.folders, gitRoot ?? dir, home)) {
+    if (policy.mode === 'ask') return { ...policy, requested: { scope: git.scope } }
+    return { ...policy, mode: 'on', source: 'git', git: { kind: 'local', reason: 'untrusted-origin' } }
+  }
   return { ...policy, mode: 'on', source: 'git', git, ...(git.kind === 'scope' ? { scope: git.scope } : {}) }
 }
 

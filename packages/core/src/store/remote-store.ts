@@ -35,6 +35,8 @@ export const RemoteRowSchema = z.object({
   rationale: z.string().nullish(),
   summary: z.string().nullish(),
   domain: z.string().nullish(),
+  // security audit 2026-11-06: rendered by contraindicationLines, so a drifted type is stripped by salvage
+  contraindications: z.array(z.string()).nullish(),
 }).passthrough()
 
 // Truncate and strip control chars from server error bodies before persisting
@@ -220,6 +222,50 @@ export function tokenEnvUnsetFix(url: string, variable: string): string {
 
 /** Finds the variable named by {@link tokenEnvUnsetMessage} in recorded error text. */
 export const TOKEN_ENV_UNSET_RE = /environment variable (\S+), which is unset or empty/
+
+// security audit 2026-11-06: remote store bodies are read under a byte cap (a page, any other response).
+const MAX_REMOTE_PAGE_BYTES = 4 * 1024 * 1024
+const MAX_REMOTE_STORE_RESPONSE_BYTES = 1024 * 1024
+
+/**
+ * Read a response body as text, refusing it (null) once it passes `cap`
+ * bytes: an oversized content-length is refused before reading, and a stream
+ * is counted and cancelled at the cap, so the excess is never buffered.
+ * Shared by this store and the recall client (remote-recall.ts).
+ */
+export async function readBodyCapped(res: Response, cap: number): Promise<string | null> {
+  const len = res.headers?.get('content-length')
+  if (len && parseInt(len, 10) > cap) return null
+  const body = (res as { body?: { getReader?: () => { read(): Promise<{ done: boolean; value?: Uint8Array }>; cancel(): Promise<void> } } }).body
+  if (body && typeof body.getReader === 'function') {
+    const reader = body.getReader()
+    const chunks: Buffer[] = []
+    let total = 0
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (value) {
+        total += value.byteLength
+        if (total > cap) {
+          try { await reader.cancel() } catch { /* already dead */ }
+          return null
+        }
+        chunks.push(Buffer.from(value))
+      }
+    }
+    return Buffer.concat(chunks).toString('utf8')
+  }
+  const text = await res.text()
+  return Buffer.byteLength(text, 'utf8') > cap ? null : text
+}
+
+/** {@link readBodyCapped} parsed as JSON (undefined when unparseable); a test double without a body stream uses its json(). */
+async function readJsonCapped(res: Response, cap: number): Promise<{ json: unknown } | null> {
+  if (typeof (res as { body?: { getReader?: unknown } | null }).body?.getReader !== 'function') return { json: await res.json().catch(() => undefined) }
+  const text = await readBodyCapped(res, cap)
+  if (text === null) return null
+  try { return { json: JSON.parse(text) } } catch { return { json: undefined } }
+}
 
 /**
  * A response whose body has already been read, inside the request deadline.
@@ -410,12 +456,17 @@ export class RemoteStore {
    * body to read after the timer has been cleared. Callers branch on
    * `ok`/`status`; the payload is already here.
    */
-  private static async readBounded(res: Response): Promise<BoundedResponse> {
+  private readBounded = async (res: Response): Promise<BoundedResponse> => {
     // 2xx carries the payload; anything else carries an error body that gets
     // sanitised before it can reach a log line or an exception message.
-    return res.ok
-      ? { ok: true, status: res.status, json: await res.json().catch(() => undefined) }
-      : { ok: false, status: res.status, text: sanitiseResponseBody(await res.text().catch(() => '')) }
+    // security audit 2026-11-06: the caller's token is redacted from every error body, before truncation
+    if (!res.ok) {
+      const text = await readBodyCapped(res, MAX_REMOTE_STORE_RESPONSE_BYTES).catch(() => '')
+      return { ok: false, status: res.status, text: sanitiseResponseBody(redactToken(text ?? '(error body too large)', this.token)) }
+    }
+    const body = await readJsonCapped(res, MAX_REMOTE_STORE_RESPONSE_BYTES).catch(() => ({ json: undefined }))
+    if (body === null) throw new Error(`remote response from ${safeOrigin(res.url || 'remote')} is too large (over ${MAX_REMOTE_STORE_RESPONSE_BYTES} bytes); refused`)
+    return { ok: true, status: res.status, json: body.json }
   }
 
   /**
@@ -572,8 +623,8 @@ export class RemoteStore {
     }
     const r = await this.fetchBounded(`${this.apiBase}/write-check`, {
       method: 'POST', headers: this.headers({ 'Content-Type': 'application/json' }), body: JSON.stringify({ scopes }),
-    }, RemoteStore.readBounded, signal)
-    if (!r.ok) throw new RemoteHttpError(r.status, `Remote write-check failed: ${r.status} ${redactToken(r.text ?? '', this.token)}`)
+    }, this.readBounded, signal)
+    if (!r.ok) throw new RemoteHttpError(r.status, `Remote write-check failed: ${r.status} ${r.text}`)
     const results = (r.json as { results?: unknown } | undefined)?.results
     if (!Array.isArray(results) || results.length !== scopes.length) throw new Error('write-check returned an incomplete result list')
     return results.map((item: unknown, i): WriteCheckResult => {
@@ -595,7 +646,7 @@ export class RemoteStore {
    * message so callers' `/\b40[13]\b/` auth-expired checks still match.
    */
   async me(signal?: AbortSignal): Promise<MeResponse> {
-    const r = await this.fetchBounded(`${this.apiBase}/me`, { headers: this.headers() }, RemoteStore.readBounded, signal)
+    const r = await this.fetchBounded(`${this.apiBase}/me`, { headers: this.headers() }, this.readBounded, signal)
     if (!r.ok) {
       let code: 'scope_lookup_failed' | undefined
       try { if (r.status === 503 && JSON.parse(r.text ?? '').error === 'scope_lookup_failed') code = 'scope_lookup_failed' } catch { /* generic errors are not authentication evidence */ }
@@ -797,7 +848,13 @@ export class RemoteStore {
             // deadline is reported as a timeout, still without a mark.
             let body: unknown
             try {
-              body = await r.json()
+              const capped = await readJsonCapped(r, MAX_REMOTE_PAGE_BYTES)
+              if (capped === null) {
+                console.error(`[plur:remote-store] ${safeOrigin(this.url)} returned a page over ${MAX_REMOTE_PAGE_BYTES} bytes loading scope ${this.scope}; refused`)
+                break
+              }
+              if (capped.json === undefined) throw new Error('unparseable page')
+              body = capped.json
             } catch {
               const why = ctrl.signal.aborted
                 ? `a page body that stalled past ${LOAD_FETCH_TIMEOUT_MS}ms`
@@ -811,6 +868,11 @@ export class RemoteStore {
               break
             }
             const rows = page.rows as any[]
+            // security audit 2026-11-06: more rows than requested is refused, so maxPages * limit bounds the cache
+            if (rows.length > limit) {
+              console.error(`[plur:remote-store] ${safeOrigin(this.url)} returned a malformed page (${rows.length} rows, limit ${limit}) loading scope ${this.scope}`)
+              break
+            }
             // Server returns DB rows shaped {id, scope, status, data, created_at, updated_at}
             // — the engram contents live in row.data. Reshape + validate; drop malformed.
             for (const row of rows) {
@@ -956,7 +1018,7 @@ export class RemoteStore {
         ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}),
       }),
       body,
-    }, RemoteStore.readBounded, opts?.signal)
+    }, this.readBounded, opts?.signal)
     if (!r.ok) throw new RemoteHttpError(r.status, `Remote store append failed: ${r.status} ${r.text}`)
     const data = (r.json ?? {}) as { id?: unknown; review_required?: unknown; deduplicated?: unknown }
     // Validate the server-assigned id's SHAPE, not just truthiness. It
@@ -999,7 +1061,7 @@ export class RemoteStore {
 
   async getById(id: string): Promise<Engram | null> {
     try {
-      const r = await this.fetchBounded(`${this.apiBase}/engrams/${encodeURIComponent(id)}`, { headers: this.headers() }, RemoteStore.readBounded)
+      const r = await this.fetchBounded(`${this.apiBase}/engrams/${encodeURIComponent(id)}`, { headers: this.headers() }, this.readBounded)
       if (r.status === 404) return null
       if (!r.ok) return null
       // An unparseable 2xx body arrives as `undefined` rather than throwing.
@@ -1024,7 +1086,7 @@ export class RemoteStore {
     try {
       r = await this.fetchBounded(`${this.apiBase}/engrams/${encodeURIComponent(id)}`, {
         headers: this.headers(),
-      }, RemoteStore.readBounded, opts?.signal)
+      }, this.readBounded, opts?.signal)
     } catch (err) {
       // An abort is "cannot tell", not "absent" — the whole point of this
       // method — so it must surface as a throw like any other transport
@@ -1062,7 +1124,7 @@ export class RemoteStore {
     try {
       r = await this.fetchBounded(`${this.apiBase}/engrams/${encodeURIComponent(id)}`, {
         headers: this.headers(),
-      }, RemoteStore.readBounded, opts?.signal)
+      }, this.readBounded, opts?.signal)
     } catch {
       return 'unknown'
     }
@@ -1086,7 +1148,7 @@ export class RemoteStore {
     const r = await this.fetchBounded(`${this.apiBase}/engrams/${encodeURIComponent(id)}`, {
       method: 'DELETE',
       headers: this.headers(),
-    }, RemoteStore.readBounded)
+    }, this.readBounded)
     if (r.ok) { this.cache = null; return 'removed' }
     if (r.status === 404 || r.status === 410) return 'absent'
     throw new Error(`Remote delete failed: ${r.status} ${r.text}`)
@@ -1097,7 +1159,7 @@ export class RemoteStore {
     const r = await this.fetchBounded(`${this.apiBase}/engrams/${encodeURIComponent(id)}`, {
       method: 'DELETE',
       headers: this.headers(),
-    }, RemoteStore.readBounded)
+    }, this.readBounded)
     if (!r.ok) return false
     this.cache = null
     return true
@@ -1123,7 +1185,7 @@ export class RemoteStore {
       method: 'POST',
       headers: this.headers({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(payload),
-    }, RemoteStore.readBounded)
+    }, this.readBounded)
     if (!r.ok) throw new Error(`Remote feedback failed: ${r.status} ${r.text}`)
     this.cache = null
   }
@@ -1167,7 +1229,7 @@ export class RemoteStore {
       method: 'PATCH',
       headers: this.headers({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(updates),
-    }, RemoteStore.readBounded)
+    }, this.readBounded)
     if (r.status === 404) return null
     if (!r.ok) throw new Error(`Remote patch failed: ${r.status} ${r.text}`)
     // The server confirmed the write (2xx). Capture the pre-write row

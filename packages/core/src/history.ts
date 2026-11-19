@@ -1,8 +1,9 @@
 import * as fs from 'fs'
 import { withLock } from './file-lock.js'
+import { storeFileMode } from './sync.js'
 import * as yaml from 'js-yaml'
 import { logger } from './logger.js'
-import { join } from 'path'
+import { dirname, join } from 'path'
 import { createHash } from 'crypto'
 // session-manifest imports this module too; the cycle is safe because the
 // record hash is only called at checkpoint time, after both have loaded.
@@ -252,7 +253,7 @@ function writeChainHead(historyDir: string, rec: ChainHeadRecord): void {
     // self-validating — one lost or left behind by a crash fails its own
     // size/inode check and the lookup falls through to the authoritative
     // tail-seek, so an fsync per append would cost the hot path for nothing.
-    fs.writeFileSync(tmp, JSON.stringify(rec) + '\n', 'utf8')
+    fs.writeFileSync(tmp, JSON.stringify(rec) + '\n', { encoding: 'utf8', mode: storeFileMode(join(dirname(historyDir), 'engrams.yaml')) ?? 0o666 })
     fs.renameSync(tmp, target)
   } catch {
     // best-effort — sidecar is advisory; JSONL is authoritative
@@ -447,6 +448,8 @@ export function appendHistoryStamped(
   onPrev?: (prev: string | null) => void,
 ): boolean {
   const historyDir = join(root, 'history')
+  // security audit 2026-11-06: history files are never wider than engrams.yaml
+  const fileMode = storeFileMode(join(root, 'engrams.yaml'))
   if (!fs.existsSync(historyDir)) {
     fs.mkdirSync(historyDir, { recursive: true })
   }
@@ -491,7 +494,7 @@ export function appendHistoryStamped(
    */
   function writeEventLine(line: string, chained: boolean): boolean {
   try {
-    const fd = fs.openSync(filePath, 'a')
+    const fd = fs.openSync(filePath, 'a', fileMode ?? 0o666)
     try {
       fs.writeSync(fd, line)
       try { fs.fsyncSync(fd) } catch { /* append landed; durability is best-effort */ }
@@ -681,6 +684,7 @@ function dropTornTail(historyDir: string, filePath: string): void {
 export function appendHistoryBatch(root: string, events: readonly HistoryEvent[]): boolean {
   if (events.length === 0) return true
   const historyDir = join(root, 'history')
+  const fileMode = storeFileMode(join(root, 'engrams.yaml'))
   // The batch writes exactly the chain links the same events appended one by
   // one would. It is written in runs of consecutive events for one month file:
   // within a run each event links to the one before it; the first event of
@@ -705,7 +709,7 @@ export function appendHistoryBatch(root: string, events: readonly HistoryEvent[]
     }
     let ok = true
     try {
-      const fd = fs.openSync(filePath, 'a')
+      const fd = fs.openSync(filePath, 'a', fileMode ?? 0o666)
       try {
         fs.writeSync(fd, (endsMidLine(filePath) ? '\n' : '') + lines.join(''))
         try { fs.fsyncSync(fd) } catch { /* append landed; durability is best-effort */ }
