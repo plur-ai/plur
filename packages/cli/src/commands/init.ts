@@ -11,6 +11,9 @@ import { CLI_VERSION } from '../version.js'
 import {
   buildEnforcementHooks,
   buildInjectionHooks,
+  flatHooksShapeProblem,
+  hooksShapeExpectation,
+  hooksShapeProblem,
   mergeHookMaps,
   type HookEntry,
   type HookLaunch,
@@ -571,6 +574,8 @@ function migrateRepoHooks(flags: GlobalFlags, userPath: string): string | null {
       canonicalize(repoPath) === canonicalize(userPath)) return null
   const { settings, ok } = loadSettingsForWrite(repoPath)
   if (!ok) return `left ${repoPath} alone: it is not a JSON object`
+  const shapeProblem = hooksShapeProblem(settings.hooks)
+  if (shapeProblem) return `left ${repoPath} alone: ${shapeProblem}`
   if (!hasPlurHooks(settings)) return null
 
   const root = plurRoot(flags)
@@ -651,6 +656,15 @@ function loadSettingsForWrite(path: string): { settings: Settings; ok: boolean }
 
 function settingsRefusal(path: string): string {
   return `skipped — ${path} exists but is not a JSON object; writing would discard your other settings (permissions, hooks, servers). Fix it by hand, then re-run \`plur init\``
+}
+
+/**
+ * The refusal for a hooks section the merge helpers cannot walk (#1352,
+ * #1897): `problem` from the shared hooksShapeProblem / flatHooksShapeProblem.
+ * The hooks step is skipped and the file is never written.
+ */
+function hooksShapeRefusal(path: string, problem: string, harness: string, rerun: string, flat = false): string {
+  return `skipped — in ${path}, ${problem}; ${hooksShapeExpectation(problem, harness, flat)}. Fix it by hand, then re-run \`${rerun}\``
 }
 
 function isPlurHook(entry: HookEntry): boolean {
@@ -865,6 +879,7 @@ function installCursor(cmd: string, root: string): string {
   let hooksStatus: string
   const hooksFileExists = existsSync(hooksPath)
   let hooksFileUsable = true
+  let hooksShape: string | null = null
   if (hooksFileExists) {
     // Parse AND shape: valid-JSON-wrong-shape ([...], "text", 42) flattens to
     // an empty config and the write-back would destroy the user's file just as
@@ -872,10 +887,14 @@ function installCursor(cmd: string, root: string): string {
     try {
       const parsed: unknown = JSON.parse(readFileSync(hooksPath, 'utf8'))
       hooksFileUsable = !!parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      // A `hooks` section the merge cannot walk is refused the same way (#1897).
+      if (hooksFileUsable) hooksShape = flatHooksShapeProblem((parsed as Record<string, unknown>).hooks)
     } catch { hooksFileUsable = false }
   }
   if (hooksFileExists && !hooksFileUsable) {
     hooksStatus = `skipped — ${hooksPath} exists but is not a JSON object; fix it by hand, then re-run \`plur init --cursor\``
+  } else if (hooksShape) {
+    hooksStatus = hooksShapeRefusal(hooksPath, hooksShape, 'Cursor', 'plur init --cursor', true)
   } else {
     const hooksConfig = readCursorHooksConfig(hooksPath)
     const hadHooks = hasPlurCursorHooks(hooksConfig)
@@ -1023,14 +1042,19 @@ function installCodex(cmd: string, root: string, keepLaunch: boolean, env: NodeJ
   // destroy whatever the user had, while a parse-only guard waves it through.
   // Wrong shape gets the same refusal as wrong syntax.
   let usable = true
+  let shape: string | null = null
   if (exists) {
     try {
       const parsed: unknown = JSON.parse(readFileSync(hooksPath, 'utf8'))
       usable = typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
+      // A `hooks` section the merge cannot walk is refused the same way (#1897).
+      if (usable) shape = hooksShapeProblem((parsed as Record<string, unknown>).hooks)
     } catch { usable = false }
   }
   if (exists && !usable) {
     hooksStatus = `skipped — ${hooksPath} exists but is not a JSON object; fix it by hand, then re-run \`plur init --codex\``
+  } else if (shape) {
+    hooksStatus = hooksShapeRefusal(hooksPath, shape, 'Codex', 'plur init --codex')
   } else {
     const existing = readCodexHooksConfig(hooksPath)
     const had = hasPlurCodexHooks(existing)
@@ -1423,10 +1447,15 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   if (samePath) {
     // Single file — combined enforcement + injection hooks
     const { settings: loaded, ok } = loadSettingsForWrite(enforcementPath)
+    const shape = ok ? hooksShapeProblem(loaded.hooks) : null
     if (!ok) {
       // Never merge into the {} a broken file coerced to and write it back — that
       // destroys every non-plur setting the user owns.
       const refusal = settingsRefusal(enforcementPath)
+      injectionHooksStatus = refusal
+      enforcementHooksStatus = refusal
+    } else if (shape) {
+      const refusal = hooksShapeRefusal(enforcementPath, shape, 'Claude Code', 'plur init')
       injectionHooksStatus = refusal
       enforcementHooksStatus = refusal
     } else {
@@ -1458,8 +1487,11 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   } else {
     // Enforcement at global, injection at project (or wherever findSettingsPath chose)
     const globalRead = loadSettingsForWrite(enforcementPath)
+    const globalShape = globalRead.ok ? hooksShapeProblem(globalRead.settings.hooks) : null
     if (!globalRead.ok) {
       enforcementHooksStatus = settingsRefusal(enforcementPath)
+    } else if (globalShape) {
+      enforcementHooksStatus = hooksShapeRefusal(enforcementPath, globalShape, 'Claude Code', 'plur init')
     } else {
       let globalSettings = globalRead.settings
       const globalHadHooks = hasPlurHooks(globalSettings)
@@ -1471,8 +1503,11 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     }
 
     const projectRead = loadSettingsForWrite(injectionPath)
+    const projectShape = projectRead.ok ? hooksShapeProblem(projectRead.settings.hooks) : null
     if (!projectRead.ok) {
       injectionHooksStatus = settingsRefusal(injectionPath)
+    } else if (projectShape) {
+      injectionHooksStatus = hooksShapeRefusal(injectionPath, projectShape, 'Claude Code', 'plur init')
     } else {
       let projectSettings = projectRead.settings
       const projectHadHooks = hasPlurHooks(projectSettings)

@@ -26,6 +26,7 @@ import { hasPlurCursorHooks, readCursorHooksConfig } from '../cursor-hooks.js'
 import { isPlurHookCommand, isPlurHookSpec } from '../lib/hook-command.js'
 import { hasPlurCodexHooks, readCodexHooksConfig } from '../codex-hooks.js'
 import { hasPlurAgyHooks, readAgyHooksConfig } from '../antigravity-hooks.js'
+import { flatHooksShapeProblem, hooksShapeProblem } from '@plur-ai/gateway/harness'
 import { codexHome, missingNodeEntryPaths, readCodexPlurMcpCommand, isOwnWin32CmdShimCommand } from '../mcp-config.js'
 import { opencodeConfigDir, opencodeConfigPath, readOpencodeConfig, PLUR_OPENCODE_PLUGIN } from '../opencode-config.js'
 import { computeContentHash, detectPlurStorage, loadEngrams, resolveBackendTier, loadConfig, describeNeedsAction, describeHeld, classifyStoreDuplicates, folderMapProblem, tokenFromEnv, tokenEnvUnsetDetail, tokenEnvUnsetFix, offlineByEnv, windowsSystemRoot, npmLatest } from '@plur-ai/core'
@@ -55,6 +56,12 @@ interface ConfigFileReport {
   hasPlurMcp: boolean
   hasDatacoreMcp: boolean
   hasPlurHooks: boolean
+  /**
+   * Where the file's `hooks` section breaks the shape its harness reads, as
+   * the first offending path (#1897). Set only then; `hasPlurHooks` is false,
+   * because the hooks cannot be read, and `plur init` skips the file.
+   */
+  hooksProblem?: string
 }
 
 interface HookShimReport {
@@ -322,9 +329,11 @@ export interface OpencodePluginLookup {
 }
 
 function hasAnyPlurHook(config: Record<string, unknown>): boolean {
+  // A section that breaks the shape is reported by inspectConfigs (#1897).
+  if (hooksShapeProblem(config.hooks)) return false
   const hooks = (config.hooks ?? {}) as Record<string, Array<{ hooks?: Array<{ command?: string; args?: unknown }> }>>
   for (const entries of Object.values(hooks)) {
-    for (const entry of entries) {
+    for (const entry of entries ?? []) {
       for (const h of entry.hooks ?? []) {
         // The same matcher init uses: PLUR's launcher (shim, npx, or the
         // Windows exec form) plus any hook-*.
@@ -380,11 +389,13 @@ function windowsHookFallbackEditors(configs: ConfigFileReport[]): string[] {
 }
 
 function hasStaleNpxHooks(config: Record<string, unknown>): boolean {
-  const hooks = (config.hooks ?? {}) as Record<string, Array<{ hooks?: Array<{ command?: string }> }>>
+  // A section that breaks the shape is reported by inspectConfigs (#1897).
+  if (hooksShapeProblem(config.hooks)) return false
+  const hooks = (config.hooks ?? {}) as Record<string, Array<{ hooks?: Array<{ command?: unknown }> }>>
   for (const entries of Object.values(hooks)) {
-    for (const entry of entries) {
+    for (const entry of entries ?? []) {
       for (const h of entry.hooks ?? []) {
-        if (h.command && h.command.includes('npx') && h.command.includes('@plur-ai/cli')) return true
+        if (typeof h.command === 'string' && h.command.includes('npx') && h.command.includes('@plur-ai/cli')) return true
       }
     }
   }
@@ -614,13 +625,15 @@ function inspectConfigs(): ConfigFileReport[] {
       // Claude Code's nested { matcher, hooks: [...] } wrapper — hasAnyPlurHook
       // would silently read it as "no hooks installed" even when they are.
       const hooksConfig = readCursorHooksConfig(cf.path)
+      const hooksProblem = flatHooksShapeProblem(hooksConfig.hooks)
       return {
         label: cf.label,
         path: cf.path,
         exists: true,
         hasPlurMcp: false,
         hasDatacoreMcp: false,
-        hasPlurHooks: hasPlurCursorHooks(hooksConfig),
+        hasPlurHooks: !hooksProblem && hasPlurCursorHooks(hooksConfig),
+        ...(hooksProblem ? { hooksProblem } : {}),
       }
     }
     if (cf.kind === 'agy-hooks') {
@@ -638,13 +651,15 @@ function inspectConfigs(): ConfigFileReport[] {
     }
     if (cf.kind === 'codex-hooks') {
       const hooksConfig = readCodexHooksConfig(cf.path)
+      const hooksProblem = hooksShapeProblem(hooksConfig.hooks)
       return {
         label: cf.label,
         path: cf.path,
         exists: true,
         hasPlurMcp: false,
         hasDatacoreMcp: false,
-        hasPlurHooks: hasPlurCodexHooks(hooksConfig),
+        hasPlurHooks: !hooksProblem && hasPlurCodexHooks(hooksConfig),
+        ...(hooksProblem ? { hooksProblem } : {}),
       }
     }
     if (cf.kind === 'codex-toml') {
@@ -670,6 +685,7 @@ function inspectConfigs(): ConfigFileReport[] {
       }
     }
     const config = readConfig(cf.path)
+    const hooksProblem = hooksShapeProblem(config.hooks)
     return {
       label: cf.label,
       path: cf.path,
@@ -677,6 +693,7 @@ function inspectConfigs(): ConfigFileReport[] {
       hasPlurMcp: hasPlurMcp(config),
       hasDatacoreMcp: hasDatacoreMcp(config),
       hasPlurHooks: hasAnyPlurHook(config),
+      ...(hooksProblem ? { hooksProblem } : {}),
     }
   })
 }
@@ -1597,6 +1614,9 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
     if (c.hasDatacoreMcp) flags.push('datacore MCP')
     outputText(`  ${tick(c.hasPlurMcp || c.hasPlurHooks)} ${c.label}: ${flags.length ? flags.join(', ') : '(empty)'}`)
     outputText(`     ${c.path}`)
+    if (c.hooksProblem) {
+      outputText(`     ✗ hooks cannot be read: ${c.hooksProblem}. Fix it by hand; \`plur init\` leaves this file alone until then`)
+    }
   }
 
   outputText('')

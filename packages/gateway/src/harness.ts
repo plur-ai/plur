@@ -14,6 +14,7 @@ export {
   nextRecordedEntries,
 } from './hook-command.js'
 export { makeHttpLlm, llmFromEnv } from './llm.js'
+export { hooksShapeProblem, flatHooksShapeProblem, hooksShapeExpectation } from './hooks-shape.js'
 export {
   CLAUDE_INJECT_TIMEOUT_S,
   asHookLaunch,
