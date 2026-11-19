@@ -197,7 +197,7 @@ controls and zero-width characters become single spaces, and each is cut to
 128 characters. A name with nothing left records no runtime. A `runtime` you
 pass yourself, as below, is kept as given and not replaced by the client's.
 
-**`runtime` changed meaning after 0.23.0.** Up to that version, core
+**`runtime` changed meaning after 0.23.1.** Up to that version, core
 recorded itself there (`runtime: { name: 'plur-core' }`) as the software that
 wrote the engram. Now `runtime` is the calling app, and core is
 recorded as `tool: { name: 'plur-core' }`. Engrams written earlier keep the old

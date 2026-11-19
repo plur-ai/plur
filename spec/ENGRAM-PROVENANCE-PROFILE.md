@@ -1440,7 +1440,7 @@ not. A caller that also knows its version supplies both.
 
 Records written before this distinction may hold the writing software in
 `attribution.runtime` (in the reference implementation, `runtime: plur-core`
-up to 0.23.0). Consumers read such a record as "written by that tool, calling
+up to 0.23.1). Consumers read such a record as "written by that tool, calling
 app not recorded", and export it the same way as a record with that tool.
 
 Three rules an implementation MUST follow.

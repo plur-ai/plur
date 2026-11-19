@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+### Changes
+
+- Memories saved through the MCP server now record which app saved them:
+  `attribution.runtime` holds the name and version the client sent when it
+  connected (Claude Code, Cursor, Codex and so on), for single saves, batches,
+  session-end suggestions and promoted team copies. Core itself is now
+  recorded as `attribution.tool: plur-core`. **Migration note:** until now
+  `runtime: plur-core` meant "written by core"; engrams saved before this
+  change keep that shape. Read it as "written by core, app not recorded". The
+  provenance export treats both shapes the same, so a store with old and new
+  engrams exports core once, as a tool. The client's name and version are cut
+  to 128 characters, and line breaks, control, bidirectional and zero-width
+  characters are removed before they are stored. A `runtime` passed to
+  `plur_learn` is kept as given. See `docs/provenance.md`. (#1470)
+
 ## 0.23.1
 
 ### Security
@@ -67,19 +84,6 @@ A PLUR plugin for Claude's directory. (#1870)
   session, so you can trust it, keep memory on without its settings, or turn
   memory off. Your own `off`, `remote-only`, `ask` or scope entries still
   decide, and a folder map PLUR cannot read still means no memory. (#1879)
-
-- Memories saved through the MCP server now record which app saved them:
-  `attribution.runtime` holds the name and version the client sent when it
-  connected (Claude Code, Cursor, Codex and so on), for single saves, batches,
-  session-end suggestions and promoted team copies. Core itself is now
-  recorded as `attribution.tool: plur-core`. **Migration note:** until now
-  `runtime: plur-core` meant "written by core"; engrams saved before this
-  change keep that shape. Read it as "written by core, app not recorded". The
-  provenance export treats both shapes the same, so a store with old and new
-  engrams exports core once, as a tool. The client's name and version are cut
-  to 128 characters, and line breaks, control, bidirectional and zero-width
-  characters are removed before they are stored. A `runtime` passed to
-  `plur_learn` is kept as given. See `docs/provenance.md`. (#1470)
 
 ### Fixes
 
