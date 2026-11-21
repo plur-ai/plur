@@ -2,7 +2,7 @@ import * as fs from 'fs'
 import { Plur } from '../index.js'
 
 
-import { CONSOLIDATE_CHANGE_KIND, CONSOLIDATE_QUEUE_FILE, CONSOLIDATE_STATE_FILE, CONSOLIDATION_PLAN_KIND, ConsolidateApplyDisabledError, type ConsolidateApplyOptions, type ConsolidateApplyResult, type ConsolidatePlanOptions, ConsolidateTrialRequiredError, type ConsolidationItem, type ConsolidationPlan, PARAPHRASE_QUEUE_THRESHOLD, type PlanCluster, type StoreHealth, assertConsolidationPlan, blockKeyFor, buildConsolidationPrompt, candidatePairs, clusterProtectedReasons, completeLinkageClusters, mergeEngrams, mixedPolarity, newPlanId, nightlySeed, parseConsolidationResponse, polarityOf, referencesTo, refreshProgress, remapReferences, retireInto, seededSample, structuredBodyOf } from '../consolidate.js'
+import { CONSOLIDATE_CHANGE_KIND, CONSOLIDATE_QUEUE_FILE, CONSOLIDATE_QUEUE_KEEP_ENTRIES, CONSOLIDATE_QUEUE_MAX_BYTES, CONSOLIDATE_STATE_FILE, CONSOLIDATION_PLAN_KIND, ConsolidateApplyDisabledError, type ConsolidateApplyOptions, type ConsolidateApplyResult, type ConsolidatePlanOptions, ConsolidateTrialRequiredError, type ConsolidationItem, type ConsolidationPlan, PARAPHRASE_QUEUE_THRESHOLD, type PlanCluster, type StoreHealth, assertConsolidationPlan, blockKeyFor, buildConsolidationPrompt, candidatePairs, clusterProtectedReasons, completeLinkageClusters, mergeEngrams, mixedPolarity, newPlanId, nightlySeed, parseConsolidationResponse, polarityOf, referencesTo, refreshProgress, remapReferences, retireInto, seededSample, structuredBodyOf } from '../consolidate.js'
 import { ChangeAlreadyUndoneError, ChangeConflictError, ChangeJournalError, ChangeJournalUnsupportedError, ChangeNotFoundError, type ChangeRecord, ChangeRedactedError, type ChangeRowSnapshot, type ChangeTx, type PendingChange, UNDO_BOOKKEEPING_FIELDS, type UndoChangeOptions, canonicalRow, carryIgnoredFields, findUndoConflicts, isRedactedRow, journalBegin, journalCommit, newChangeId, readChangeJournal, redactChangeJournal } from '../change-journal.js'
 import { type Engram } from '../schemas/engram.js'
 import { type LlmFunction } from '../types.js'
@@ -13,6 +13,8 @@ import { detectSecrets } from '../secrets.js'
 import { generateEngramId, parseNamespacedId } from '../engrams.js'
 import { isRemoteOnlyQueued } from '../remote-only-rows.js'
 import { join } from 'path'
+import { atomicWrite } from '../atomic-write.js'
+import { logger } from '../logger.js'
 import { resolveConsolidateConfig, resolveLearnConfig } from '../schemas/config.js'
 export interface ConsolidationMethods {
   /**
@@ -245,8 +247,8 @@ export const consolidationMethods: ConsolidationMethods & ThisType<Plur> = {
   },
 
   _readConsolidateQueue(): string[] {
-    let text = ''
-    try { text = fs.readFileSync(join(this.paths.root, CONSOLIDATE_QUEUE_FILE), 'utf8') } catch { return [] }
+    const text = readQueueTail(join(this.paths.root, CONSOLIDATE_QUEUE_FILE))
+    if (text === null) return []
     const ids: string[] = []
     for (const line of text.split('\n')) {
       if (!line.trim()) continue
@@ -263,23 +265,30 @@ export const consolidationMethods: ConsolidationMethods & ThisType<Plur> = {
     if (plan.mode !== 'nightly' || !plan.nightly || !plan.progress.complete || this._readonly) return
     const root = this.paths.root
     try {
-      fs.writeFileSync(join(root, CONSOLIDATE_STATE_FILE), JSON.stringify({
+      atomicWrite(join(root, CONSOLIDATE_STATE_FILE), JSON.stringify({
         last_nightly_at: plan.created_at, last_seed: plan.seed, last_plan_id: plan.plan_id,
         carry_ids: plan.nightly.carried_ids ?? [],
       }, null, 2) + '\n', { mode: 0o600 })
-    } catch { return /* the next nightly run looks further back; harmless */ }
+    } catch (err) {
+      // The next nightly run looks further back and re-reads the queue, so
+      // nothing is lost, but the owner is told (H9).
+      logger.warning(`[plur] consolidate: the nightly state could not be saved (${(err as Error).message}); the next nightly run will look further back`)
+      return
+    }
     const consumed = new Set(plan.nightly.queued_ids)
     if (consumed.size === 0) return
     const path = join(root, CONSOLIDATE_QUEUE_FILE)
     try {
-      const kept = fs.readFileSync(path, 'utf8').split('\n').filter(line => {
+      const text = readQueueTail(path)
+      if (text === null) return
+      const kept = text.split('\n').filter(line => {
         if (!line.trim()) return false
         try { return !consumed.has((JSON.parse(line) as { id?: string }).id ?? '') } catch { return false }
       })
-      const tmp = `${path}.${process.pid}.tmp`
-      fs.writeFileSync(tmp, kept.length > 0 ? kept.join('\n') + '\n' : '', { mode: 0o600 })
-      fs.renameSync(tmp, path)
-    } catch { /* a stale entry is looked at again next time; harmless */ }
+      atomicWrite(path, kept.length > 0 ? kept.join('\n') + '\n' : '', { mode: 0o600 })
+    } catch (err) {
+      logger.warning(`[plur] consolidate: consumed paraphrase-queue entries could not be removed (${(err as Error).message}); they are looked at again next time`)
+    }
   },
 
   _queueParaphrases(id: string, scope: string, neighbours: ReadonlyArray<{ id: string; score: number; scope?: string }>): number {
@@ -288,8 +297,17 @@ export const consolidationMethods: ConsolidationMethods & ThisType<Plur> = {
     try {
       if (this._remoteOnly) return 0
       const at = new Date().toISOString()
-      const lines = hits.map(n => JSON.stringify({ at, id, neighbour_id: n.id, score: Number(n.score.toFixed(4)), scope })).join('\n') + '\n'
-      fs.appendFileSync(join(this.paths.root, CONSOLIDATE_QUEUE_FILE), lines, { encoding: 'utf8', mode: 0o600 })
+      const fresh = hits.map(n => JSON.stringify({ at, id, neighbour_id: n.id, score: Number(n.score.toFixed(4)), scope }))
+      const path = join(this.paths.root, CONSOLIDATE_QUEUE_FILE)
+      const add = fresh.join('\n') + '\n'
+      let size = 0
+      try { size = fs.statSync(path).size } catch { /* no queue yet */ }
+      if (size + Buffer.byteLength(add) <= CONSOLIDATE_QUEUE_MAX_BYTES) {
+        fs.appendFileSync(path, add, { encoding: 'utf8', mode: 0o600 })
+      } else {
+        // At the cap (H6): rewrite with one entry per pair, newest kept.
+        atomicWrite(path, compactParaphraseQueue([...(readQueueTail(path) ?? '').split('\n'), ...fresh]), { mode: 0o600 })
+      }
       return hits.length
     } catch { return 0 }
   },
@@ -559,7 +577,10 @@ export const consolidationMethods: ConsolidationMethods & ThisType<Plur> = {
           data: { into: mergedId, change_id: record.id, plan_id: plan.plan_id, cluster_id: cluster.id },
           reason: 'store consolidation: merged near-copies into one engram',
         })
-      } catch { /* history is an audit trail, never a gate on the write */ }
+      } catch (err) {
+        // History is an audit trail, not a gate on the write, but a gap in it is reported (H9).
+        logger.warning(`[plur] consolidate: the consolidated_into history event for ${id} could not be written (${(err as Error).message})`)
+      }
     }
     // Rows the journal could not stage (packs, team scopes, other stores)
     // keep pointing at the retired originals: say which, so the owner can
@@ -789,4 +810,45 @@ export const consolidationMethods: ConsolidationMethods & ThisType<Plur> = {
       return { id, kind, meta, at, state: 'committed' as const, rows: effective }
     })
   },
+}
+
+/**
+ * The last {@link CONSOLIDATE_QUEUE_MAX_BYTES} of the paraphrase queue, from
+ * the first whole line; null when there is no queue (H6).
+ */
+function readQueueTail(path: string): string | null {
+  let fd: number
+  try { fd = fs.openSync(path, 'r') } catch { return null }
+  try {
+    const size = fs.fstatSync(fd).size
+    const start = Math.max(0, size - CONSOLIDATE_QUEUE_MAX_BYTES)
+    const buf = Buffer.alloc(size - start)
+    let off = 0
+    while (off < buf.length) {
+      const n = fs.readSync(fd, buf, off, buf.length - off, start + off)
+      if (n <= 0) break
+      off += n
+    }
+    const text = buf.subarray(0, off).toString('utf8')
+    if (start === 0) return text
+    const nl = text.indexOf('\n')
+    return nl < 0 ? '' : text.slice(nl + 1)
+  } finally { fs.closeSync(fd) }
+}
+
+/** Queue lines deduped by pair (either order; the newest kept), oldest dropped past the keep limit (H6). */
+function compactParaphraseQueue(lines: readonly string[]): string {
+  const byPair = new Map<string, string>()
+  for (const line of lines) {
+    if (!line.trim()) continue
+    let q: { id?: unknown; neighbour_id?: unknown }
+    try { q = JSON.parse(line) } catch { continue }
+    if (typeof q.id !== 'string') continue
+    const nb = typeof q.neighbour_id === 'string' ? q.neighbour_id : ''
+    const key = q.id < nb ? `${q.id}\u0000${nb}` : `${nb}\u0000${q.id}`
+    byPair.delete(key)
+    byPair.set(key, line)
+  }
+  const kept = [...byPair.values()].slice(-CONSOLIDATE_QUEUE_KEEP_ENTRIES)
+  return kept.length > 0 ? kept.join('\n') + '\n' : ''
 }

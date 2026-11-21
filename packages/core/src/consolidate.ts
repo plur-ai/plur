@@ -40,6 +40,15 @@ import { buildPinRequest, asPinRequested, pinRequestOf } from './pin-policy.js'
 export const CONSOLIDATE_QUEUE_FILE = 'consolidate-queue.jsonl'
 /** When the last nightly plan ran, under the store root. */
 export const CONSOLIDATE_STATE_FILE = 'consolidate-state.json'
+/**
+ * Cap of the paraphrase queue file (H6). An append that would take the file
+ * past it first rewrites it: one entry per pair (either order, the newest),
+ * at most {@link CONSOLIDATE_QUEUE_KEEP_ENTRIES} of them. Readers read only
+ * the last this-many bytes.
+ */
+export const CONSOLIDATE_QUEUE_MAX_BYTES = 1024 * 1024
+/** Entries kept when the paraphrase queue is rewritten at its cap (H6). */
+export const CONSOLIDATE_QUEUE_KEEP_ENTRIES = 2000
 /** Cosine at or above which a new engram and a same-scope neighbour are queued (D8). */
 export const PARAPHRASE_QUEUE_THRESHOLD = 0.92
 /** Change-journal kind of one applied cluster. */
