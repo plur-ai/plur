@@ -894,7 +894,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   // work, so a run cut short leaves the epoch undelivered (fail open). For
   // source clear the payload already carries a new session id, so this only
   // starts that session's marker (see isEpochBumpStart, H10).
-  if (isEpochBumpStart(input)) bumpPinEpoch(input.session_id)
+  if (isEpochBumpStart(input)) bumpPinEpoch(input.session_id, { notesRoot: flags.path })
   runCeilingMs = event ? EVENT_CEILING_MS : HOOK_CEILING_MS
 
   // Watchdog: guarantee this process exits even if something in the hook run
