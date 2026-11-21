@@ -1,11 +1,10 @@
-diff --git a/packages/core/src/index.ts b/packages/core/src/index.ts
-index d018e0d6..8d8a7614 100644
---- a/packages/core/src/index.ts
-+++ b/packages/core/src/index.ts
-@@ -4506,7 +4506,7 @@ export class Plur {
-       // `supersedes` would still be recorded on the new engram and the reverse
-       // edge would simply never appear, which reads as data corruption rather
-       // than as a disabled feature.
+diff --git a/packages/core/src/plur/learn.ts b/packages/core/src/plur/learn.ts
+--- a/packages/core/src/plur/learn.ts
++++ b/packages/core/src/plur/learn.ts
+@@ -257,7 +257,7 @@
+       // supersedes is a graph edge: write the reverse superseded_by edge on targets in the local primary store
+       // (best-effort; the tension scanner skips supersedes-linked pairs). Mutated targets are persisted explicitly,
+       // since an `append` store would otherwise drop them. Under delegation targets are fetched by id, never skipped.
 -      const supersededTargets = context?.supersedes?.length
 +      const supersededTargets = false && context?.supersedes?.length
          ? this._writeSupersededByEdges(
