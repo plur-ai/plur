@@ -36,17 +36,16 @@
  */
 import type { Engram } from './schemas/engram.js'
 import type { LoadedPack } from './engrams.js'
-import { parseNamespacedId } from './engrams.js'
 import { comparePinTiebreak, isProhibition } from './pin-policy.js'
 import { searchEngramsScored } from './fts.js'
 import { fuseLegs } from './hybrid-search.js'
 import { rewriteLexicalQuery } from './intent/rewrite.js'
 import {
   type InjectionContext, type InternalInjectionResult, type ScoredEngram, type WireEngram, type ExpiryConfig, type OmittedPinned,
-  isInjectVisible, skipForApproval, skipForValidity, isReplacedByDeliverable, isPrimaryRow, hasHistoricalIntent,
+  isInjectVisible, skipForApproval, skipForValidity, isReplacedByDeliverable, primaryReplacements, diversityCaps, hasHistoricalIntent,
   isSupersededEngram, getPackMetadata, stripAssociations, stripScoring, splitWireSections, estimateTokens,
   fillTokenBudget, hardPinnedReserve, pinnedHardCap, DEFAULT_PINNED_HARD_RATIO, PINNED_TOKEN_BUDGET_RATIO,
-  DEFAULT_MAX_TOKENS, DEFAULT_GRACE_DAYS, MAX_PER_PACK, MAX_PER_DOMAIN, packKeyOf, EMBEDDING_RELEVANCE_FLOOR,
+  DEFAULT_MAX_TOKENS, DEFAULT_GRACE_DAYS, EMBEDDING_RELEVANCE_FLOOR,
 } from './inject.js'
 
 /** Signals the W8 relevance gate can be set on (`injection.min_relevance_signal`). */
@@ -153,16 +152,7 @@ export function buildUnifiedPool(
 
   const deliverableIds = new Set<string>()
   const supersededBy = new Map<string, readonly string[]>()
-  const replacedFromPrimary = new Map<string, string[]>()
-  for (const e of personalEngrams) {
-    if (!e.relations?.supersedes?.length || !isPrimaryRow(e)) continue
-    for (const t of e.relations.supersedes) {
-      if (parseNamespacedId(t) === null) continue
-      const list = replacedFromPrimary.get(t) ?? []
-      list.push(e.id)
-      replacedFromPrimary.set(t, list)
-    }
-  }
+  const replacedFromPrimary = primaryReplacements(personalEngrams)
 
   const visible: Engram[] = []
   const admit = (engram: Engram, packName?: string) => {
@@ -275,15 +265,6 @@ export function orderRecallCandidates(
   return keyed.sort((x, y) => x.key - y.key || x.tie - y.tie).map(k => k.c)
 }
 
-/** Reorder the head of a ranking by reranker scores (id → score). */
-export function applyRerankScores(ranked: RankedCandidate[], scores: ReadonlyMap<string, number>): RankedCandidate[] {
-  if (scores.size === 0) return ranked
-  const head = ranked.filter(c => scores.has(c.engram.id))
-  const tail = ranked.filter(c => !scores.has(c.engram.id))
-  head.sort((a, b) => scores.get(b.engram.id)! - scores.get(a.engram.id)!)
-  return [...head, ...tail]
-}
-
 /** The W8 signals for a ranking (and the reranker's scores, when it ran). */
 export function relevanceSignals(ranked: RankedCandidate[], rerank?: ReadonlyMap<string, number>): RelevanceSignals {
   const top = ranked[0]
@@ -349,20 +330,7 @@ export function packUnified(
   let spent = pinPass.tokens_used
 
   // Diversity caps shared across the slices, seeded by the pins (as legacy).
-  const packCounts = new Map<string, number>()
-  const domainCounts = new Map<string, number>()
-  const count = (e: Engram) => {
-    const pack = packKeyOf(e as never)
-    packCounts.set(pack, (packCounts.get(pack) ?? 0) + 1)
-    const top = (e.domain ?? '__none__').split('.')[0]
-    domainCounts.set(top, (domainCounts.get(top) ?? 0) + 1)
-  }
-  for (const e of selected) count(e)
-  const capped = (e: Engram): boolean => {
-    const pack = packKeyOf(e as never)
-    if (pack !== '__personal__' && (packCounts.get(pack) ?? 0) >= MAX_PER_PACK) return true
-    return (domainCounts.get((e.domain ?? '__none__').split('.')[0]) ?? 0) >= MAX_PER_DOMAIN
-  }
+  const caps = diversityCaps(selected)
   const taken = new Set(selected.map(e => e.id))
   /** Skip-and-continue packing (R6). Returns tokens used. */
   const pack = (list: RankedCandidate[], cap: number, maxItems: number): number => {
@@ -370,13 +338,13 @@ export function packUnified(
     let items = 0
     for (const c of list) {
       if (items >= maxItems) break
-      if (taken.has(c.engram.id) || capped(c.engram)) continue
+      if (taken.has(c.engram.id) || caps.capped(c.engram)) continue
       const scored = asScored(c.engram, c.fused)
       const cost = estimateTokens(scored)
       if (used + cost > cap || spent + used + cost > maxTokens) continue
       selected.push(scored)
       taken.add(c.engram.id)
-      count(c.engram)
+      caps.count(c.engram)
       used += cost
       items++
     }

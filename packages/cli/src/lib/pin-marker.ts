@@ -1,7 +1,7 @@
-import { openSync, writeSync, closeSync, renameSync, unlinkSync, readFileSync, statSync, constants } from 'fs'
+import { openSync, closeSync, unlinkSync, statSync, constants } from 'fs'
 import { join } from 'path'
-import { randomBytes, createHash } from 'crypto'
-import { hookSessionDir } from './session-task.js'
+import { createHash } from 'crypto'
+import { hookSessionDir, readStateFile, writeStateFile } from './session-task.js'
 import { safeSessionKey } from './session-key.js'
 import { recordHookNote } from './hook-runs.js'
 
@@ -103,10 +103,8 @@ export function readPinMarker(sessionId: unknown): PinMarker | null {
   const path = pinMarkerPath(sessionId)
   if (!path) return null
   try {
-    const fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0))
-    let raw: string
-    try { raw = readFileSync(fd, 'utf8') } finally { closeSync(fd) }
-    if (raw.length > 4096) return null
+    const raw = readStateFile(path)
+    if (raw === null || raw.length > 4096) return null
     const m = JSON.parse(raw) as Partial<PinMarker>
     if (m.session_id !== sessionId) return null
     if (typeof m.epoch !== 'number' || !Number.isSafeInteger(m.epoch) || m.epoch < 0) return null
@@ -117,27 +115,13 @@ export function readPinMarker(sessionId: unknown): PinMarker | null {
 }
 
 /**
- * Atomic 0600 write: exclusive no-follow temp file, renamed over the marker.
- * Returns whether it landed; on failure the temp file is removed and the
- * error is passed back for the caller to act on (H13).
+ * Atomic 0600 write of the marker ({@link writeStateFile}). Returns whether it
+ * landed; on failure the error is passed back for the caller to act on (H13).
  */
 function writePinMarker(m: PinMarker): { ok: true } | { ok: false; error: string } {
   const path = pinMarkerPath(m.session_id)
   if (!path) return { ok: false, error: 'no marker path' }
-  const tmp = `${path}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`
-  let fd: number | null = null
-  try {
-    fd = openSync(tmp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0), 0o600)
-    writeSync(fd, JSON.stringify(m))
-    closeSync(fd)
-    fd = null
-    renameSync(tmp, path)
-    return { ok: true }
-  } catch (err: unknown) {
-    if (fd !== null) try { closeSync(fd) } catch { /* ignore */ }
-    try { unlinkSync(tmp) } catch { /* ignore */ }
-    return { ok: false, error: (err as Error)?.message ?? String(err) }
-  }
+  return writeStateFile(path, JSON.stringify(m))
 }
 
 // H8: the marker's read-check-write runs under `<marker>.lock` (O_EXCL), so

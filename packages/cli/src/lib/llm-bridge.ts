@@ -123,6 +123,18 @@ export interface LlmBridgeOptions {
   allowEnvKeys?: boolean
 }
 
+const LLM_FLAG_OPTION = new Map<string, 'llmCmd' | 'baseUrl' | 'apiKey' | 'apiKeyEnv' | 'model'>([
+  ['--llm-cmd', 'llmCmd'], ['--llm-base-url', 'baseUrl'], ['--llm-api-key', 'apiKey'], ['--llm-api-key-env', 'apiKeyEnv'], ['--model', 'model'],
+])
+
+/** Store a model flag's value (read through `value`) into `into`; false when `flag` is not a model flag. */
+export function takeLlmFlag(flag: string, value: () => string | undefined, into: LlmBridgeOptions): boolean {
+  const key = LLM_FLAG_OPTION.get(flag)
+  if (!key) return false
+  into[key] = value()
+  return true
+}
+
 export interface ResolvedLlm {
   llm: LlmFunction
   /** Model name to record on what it produced. */

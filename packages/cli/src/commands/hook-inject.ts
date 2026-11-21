@@ -7,7 +7,7 @@ import { createPlur, type GlobalFlags } from '../plur.js'
 import { cleanupStaleSessionFiles } from '../lib/codex-hook-io.js'
 import { checkpointRoot } from './hook-learn-check.js'
 import { hookFolderPolicy, payloadDir, sessionSettings, folderAskOnce, untrustedPlurYamlAsk, createAskPlur, bindHookFolder, remoteOnlyLines } from '../lib/folder-gate.js'
-import { skippedStoreNotice, formatPinOverflowLine, formatPendingPinRequestsLine, semanticModelState } from '@plur-ai/core'
+import { skippedStoreNotice, formatPinOverflowLine, formatPendingPinRequestsLine, semanticModelState, withDeadline, DEADLINE_MISSED } from '@plur-ai/core'
 import type { FolderPolicy } from '@plur-ai/core'
 import { safeSessionKey } from '../lib/session-key.js'
 import { injectWithFallback, hybridEnabled, effectiveInjectMode, type Injectable, type InjectOutcome, type InjectFallbackHooks } from '../lib/codex-hook-io.js'
@@ -214,10 +214,6 @@ export function injectSessionKey(input: Record<string, unknown>, ppid: number | 
 function sessionStatePath(key: string, ext: string): string | null {
   const dir = sessionDir()
   return dir ? join(dir, `${key}.${ext}`) : null
-}
-
-function sessionMarkerPath(key: string): string | null {
-  return sessionStatePath(key, 'marker')
 }
 
 /**
@@ -637,12 +633,8 @@ export async function planEventRetrieval(opts: {
   const check = (opts.modelReady ?? modelOnDisk)().catch(() => false)
   // Referenced, not unref()'d: a check that hangs with no other handle would
   // otherwise let Node exit 13 (unsettled await) before the bound fires.
-  let timer: NodeJS.Timeout | undefined
-  const ready = await Promise.race([
-    check,
-    new Promise<boolean>(r => { timer = setTimeout(() => r(false), opts.modelCheckMs ?? EVENT_MODEL_CHECK_MS) }),
-  ]).finally(() => { if (timer) clearTimeout(timer) })
-  if (!ready) {
+  const ready = await withDeadline(check, opts.modelCheckMs ?? EVENT_MODEL_CHECK_MS)
+  if (ready === DEADLINE_MISSED || !ready) {
     releaseInjectLock(lock.hold)
     return { mode: 'keyword', reason: 'model-missing' }
   }
@@ -732,11 +724,7 @@ export const ABANDONED_HYBRID_WAIT_MS = 5_000
 
 /** Resolve true when `p` settles, or false after `ms`, whichever comes first. */
 export function settleWithin(p: Promise<unknown>, ms: number): Promise<boolean> {
-  let timer: NodeJS.Timeout | undefined
-  return Promise.race([
-    p.then(() => true, () => true),
-    new Promise<boolean>(r => { timer = setTimeout(() => r(false), Math.max(0, ms)) }),
-  ]).finally(() => { if (timer) clearTimeout(timer) })
+  return withDeadline(p.then(() => true, () => true), Math.max(0, ms)).then(r => r === true)
 }
 
 /**
@@ -1006,10 +994,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     // Remote-only folders still read the team server: surface its outcome.
     const degradation = remoteOnly ? surfaceRemoteOutcomes(plur) : []
     if (result.count > 0 || degradation.length > 0) {
-      const parts: string[] = []
-      if (result.directives) parts.push(result.directives)
-      if (result.constraints) parts.push(result.constraints)
-      if (result.consider) parts.push(result.consider)
+      const parts = [result.directives, result.constraints, result.consider].filter((t): t is string => !!t)
       const body = [...degradation, ...parts].join('\n')
       const delivered = await emitContextConfirmed(
         claudeHookEventName(input, { rehydrate: false, event }),
@@ -1288,11 +1273,7 @@ async function injectSession(
   abandonedHybrid = mode === 'bm25' && hybridEnabled() ? hybrid : pending
   storeRoot = plur.storageRoot
   if (result.count > 0) {
-    const parts: string[] = []
-    if (result.directives) parts.push(result.directives)
-    if (result.constraints) parts.push(result.constraints)
-    if (result.consider) parts.push(result.consider)
-    context = parts.join('\n')
+    context = [result.directives, result.constraints, result.consider].filter(t => !!t).join('\n')
     count = result.count
   }
 

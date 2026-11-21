@@ -450,6 +450,14 @@ anchors:
   packages/cli/src/lib/session-task.ts#removeSessionTask:
     kind: note
     why: States how unlink behaves (it does not follow a symlink); a fact about the platform call.
+  packages/cli/src/lib/session-task.ts#writeStateFile:
+    kind: guarantee
+    rule: >-
+      A hook state file is written atomically and 0600 through an exclusive no-follow temp file renamed over the path,
+      so a symlink planted at the path is replaced, never followed.
+    tests:
+      - packages/cli/test/pin-marker.test.ts
+      - packages/cli/test/pin-marker-context.test.ts
   packages/cli/src/lib/session-task.ts#writeSessionTask:
     kind: guarantee
     rule: >-
@@ -482,6 +490,12 @@ anchors:
     rule: never throws.
     tests:
       - packages/cli/test/hook-query.test.ts
+  packages/cli/src/lib/hook-query.ts#readRegularSlice:
+    kind: guarantee
+    rule: Null on any failure; never throws.
+    tests:
+      - packages/cli/test/hook-query.test.ts
+      - packages/cli/test/hook-query-fifo.test.ts
   packages/cli/src/lib/hook-query.ts#STOPWORDS:
     kind: guarantee
     rule: "* Every read here is bounded and swallows its own failure: a hook must never break the prompt for want of context."
@@ -493,6 +507,7 @@ anchors:
     tests:
       - packages/cli/test/plan-file-safety-s6.test.ts
       - packages/cli/test/rescope-enrich-plan.test.ts
+      - packages/cli/test/consolidate-cli.test.ts
   packages/cli/src/lib/journal-cli.ts#undoCommand:
     kind: guarantee
     rule: refuses other kinds.

@@ -9,9 +9,9 @@ import {
 } from '@plur-ai/core'
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { shouldOutputJson, outputJson, outputText, outputInfo, exit } from '../output.js'
-import { resolveLlmOrExit, missingLlmMessage } from '../lib/llm-bridge.js'
+import { resolveLlmOrExit, missingLlmMessage, takeLlmFlag, type LlmBridgeOptions } from '../lib/llm-bridge.js'
 import { requirePinPolicyConfirmation, confirmUndoPins } from '../lib/pin-confirm.js'
-import { writePrivateFile } from '../lib/private-file.js'
+import { emitPlan } from '../lib/journal-cli.js'
 
 export const FLAGS = [
   '--plan', '--out', '--nightly', '--fresh', '--no-model', '--batch-size', '--sample',
@@ -64,11 +64,6 @@ function readPlan(path: string): ConsolidationPlan {
   return raw as ConsolidationPlan
 }
 
-function savePlan(path: string, plan: ConsolidationPlan): void {
-  // S6: owner-only also over an existing wider file, never through a symlink.
-  try { writePrivateFile(path, JSON.stringify(plan, null, 2) + '\n') } catch (err) { exit(1, `Cannot write ${path}: ${(err as Error).message}`) }
-}
-
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   let plan = false
   let out: string | undefined
@@ -81,7 +76,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   let limit: number | undefined
   let yes = false
   let undo: string | undefined
-  const llmFlags: { llmCmd?: string; llmBaseUrl?: string; llmApiKey?: string; llmApiKeyEnv?: string; model?: string } = {}
+  const llm: LlmBridgeOptions = {}
   const num = (name: string, v: string | undefined): number => {
     const n = Number(v)
     if (!v || !Number.isInteger(n) || n < 1) exit(1, `${name} needs a whole number of at least 1.\n${USAGE}`)
@@ -100,12 +95,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     else if (a === '--limit') limit = num('--limit', args[++i])
     else if (a === '--yes') yes = true
     else if (a === '--undo') undo = args[++i]
-    else if (a === '--llm-cmd') llmFlags.llmCmd = args[++i]
-    else if (a === '--llm-base-url') llmFlags.llmBaseUrl = args[++i]
-    else if (a === '--llm-api-key') llmFlags.llmApiKey = args[++i]
-    else if (a === '--llm-api-key-env') llmFlags.llmApiKeyEnv = args[++i]
-    else if (a === '--model') llmFlags.model = args[++i]
-    else exit(1, `Unknown argument: ${a}\n${USAGE}`)
+    else if (!takeLlmFlag(a, () => args[++i], llm)) exit(1, `Unknown argument: ${a}\n${USAGE}`)
   }
   const modes = [plan || nightly, applyFile !== undefined, undo !== undefined].filter(Boolean).length
   if (modes !== 1) exit(1, USAGE)
@@ -163,7 +153,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
 
   // --plan / --nightly
   const outPath = resolve(out ?? join(plur.getStorageRoot(), 'consolidate-plan.json'))
-  const model = noModel ? undefined : resolveLlmOrExit({ llmCmd: llmFlags.llmCmd, baseUrl: llmFlags.llmBaseUrl, apiKey: llmFlags.llmApiKey, apiKeyEnv: llmFlags.llmApiKeyEnv, model: llmFlags.model })
+  const model = noModel ? undefined : resolveLlmOrExit(llm)
   if (!model && !noModel) {
     exit(1, missingLlmMessage('plur consolidate --plan', { extra: '  or --no-model to plan without one (every cluster stays pending and nothing can be applied until it is decided).' }))
   }
@@ -178,9 +168,9 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     sampleSize: sample,
     batchSize,
     resumeFrom,
-    onProgress: p => savePlan(outPath, p),
+    onProgress: p => emitPlan(p, outPath),
   })
-  savePlan(outPath, result)
+  emitPlan(result, outPath)
   const merge = result.clusters.filter(c => c.decision === 'merge')
   const summary = {
     plan_file: outPath,

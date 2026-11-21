@@ -20,14 +20,14 @@
  */
 import { existsSync, readFileSync } from 'fs'
 import { join } from 'path'
-import { writePrivateFile } from '../lib/private-file.js'
+import { emitPlan } from '../lib/journal-cli.js'
 import {
   formatPinOverflowLine, formatPendingPinRequestsLine, validatePinAuditProposal, PinDeniedError,
   pinRequestOf, type PinFitReport, type PendingPinRequest,
 } from '@plur-ai/core'
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { remoteOnlyCommandRefusal } from '../lib/folder-gate.js'
-import { resolveLlmOrExit, missingLlmMessage, UNSPECIFIED_MODEL } from '../lib/llm-bridge.js'
+import { resolveLlmOrExit, missingLlmMessage, takeLlmFlag, UNSPECIFIED_MODEL, type LlmBridgeOptions } from '../lib/llm-bridge.js'
 import { requirePinPolicyConfirmation, confirmUndoPins } from '../lib/pin-confirm.js'
 import { shouldOutputJson, outputJson, outputText, outputInfo, exit } from '../output.js'
 
@@ -44,10 +44,10 @@ const USAGE = [
   '       plur pins undo <change-id>',
 ].join('\n')
 
-interface Parsed { positional: string[]; budget?: number; out?: string; llmCmd?: string; llmBaseUrl?: string; llmApiKey?: string; llmApiKeyEnv?: string; model?: string; limit?: number; yes: boolean; scope?: string }
+interface Parsed { positional: string[]; budget?: number; out?: string; llm: LlmBridgeOptions; limit?: number; yes: boolean; scope?: string }
 
 function parse(args: string[]): Parsed {
-  const p: Parsed = { positional: [], yes: false }
+  const p: Parsed = { positional: [], llm: {}, yes: false }
   for (let i = 0; i < args.length; i++) {
     const a = args[i]
     const value = () => {
@@ -59,18 +59,13 @@ function parse(args: string[]): Parsed {
       if (!Number.isInteger(n) || n <= 0) exit(1, '--budget must be a positive whole number of tokens')
       p.budget = n
     } else if (a === '--out') p.out = value()
-    else if (a === '--llm-cmd') p.llmCmd = value()
-    else if (a === '--llm-base-url') p.llmBaseUrl = value()
-    else if (a === '--llm-api-key') p.llmApiKey = value()
-    else if (a === '--llm-api-key-env') p.llmApiKeyEnv = value()
-    else if (a === '--model') p.model = value()
     else if (a === '--limit') {
       const n = Number(value())
       if (!Number.isInteger(n) || n < 1) exit(1, '--limit must be a whole number of at least 1')
       p.limit = n
     } else if (a === '--scope') p.scope = value()
     else if (a === '--yes') p.yes = true
-    else p.positional.push(a)
+    else if (!takeLlmFlag(a, value, p.llm)) p.positional.push(a)
   }
   return p
 }
@@ -196,7 +191,7 @@ async function printOverflowIfAny(plur: ReturnType<typeof createPlur>, flags: Gl
 async function audit(p: Parsed, flags: GlobalFlags): Promise<void> {
   const refused = remoteOnlyCommandRefusal(flags, 'A pin audit sends memories to a model, which is not the team server')
   if (refused) exit(1, refused)
-  const bridge = resolveLlmOrExit({ llmCmd: p.llmCmd, baseUrl: p.llmBaseUrl, apiKey: p.llmApiKey, apiKeyEnv: p.llmApiKeyEnv, model: p.model })
+  const bridge = resolveLlmOrExit(p.llm)
   if (!bridge) exit(1, missingLlmMessage('plur pins audit'))
   // Read-only engine: the audit changes nothing in the store.
   const plur = createPlur(flags, { readonly: true })
@@ -213,7 +208,7 @@ async function audit(p: Parsed, flags: GlobalFlags): Promise<void> {
   } catch (err) {
     exit(1, `Pin audit failed: ${(err as Error).message}`)
   }
-  try { writePrivateFile(out, JSON.stringify(proposal, null, 2) + '\n') } catch (err) { exit(1, `Cannot write ${out}: ${(err as Error).message}`) }
+  emitPlan(proposal, out)
   const count = (a: string) => proposal.items.filter(i => i.action === a).length
   const needApproval = proposal.items.filter(i => i.action === 'shorten' && i.prohibition).length
   if (shouldOutputJson(flags)) { outputJson({ out, ...proposal }); return }

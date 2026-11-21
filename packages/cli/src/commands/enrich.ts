@@ -2,7 +2,7 @@ import { createPlur, type GlobalFlags } from '../plur.js'
 import { remoteOnlyCommandRefusal } from '../lib/folder-gate.js'
 import { shouldOutputJson, outputJson, outputText, exit } from '../output.js'
 import { emitPlan, readPlan, parseLimit, undoCommand } from '../lib/journal-cli.js'
-import { resolveLlmOrExit, missingLlmMessage } from '../lib/llm-bridge.js'
+import { resolveLlmOrExit, missingLlmMessage, takeLlmFlag, type LlmBridgeOptions } from '../lib/llm-bridge.js'
 import { requirePinPolicyConfirmation } from '../lib/pin-confirm.js'
 import type { EnrichPlan } from '@plur-ai/core'
 
@@ -32,11 +32,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   let limit: number | undefined
   let batchSize: number | undefined
   let yes = false
-  let llmCmd: string | undefined
-  let model: string | undefined
-  let baseUrl: string | undefined
-  let apiKey: string | undefined
-  let apiKeyEnv: string | undefined
+  const llm: LlmBridgeOptions = {}
   for (let i = 0; i < args.length; i++) {
     const a = args[i]
     if (a === '--plan') plan = true
@@ -46,12 +42,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     else if (a === '--limit') limit = parseLimit(args[++i])
     else if (a === '--batch-size') batchSize = parseLimit(args[++i])
     else if (a === '--yes') yes = true
-    else if (a === '--llm-cmd') llmCmd = args[++i]
-    else if (a === '--model') model = args[++i]
-    else if (a === '--llm-base-url') baseUrl = args[++i]
-    else if (a === '--llm-api-key') apiKey = args[++i]
-    else if (a === '--llm-api-key-env') apiKeyEnv = args[++i]
-    else exit(1, `Unknown argument: ${a}\n${USAGE}`)
+    else if (!takeLlmFlag(a, () => args[++i], llm)) exit(1, `Unknown argument: ${a}\n${USAGE}`)
   }
   const modes = [plan, applyFile !== undefined, undoId !== undefined].filter(Boolean).length
   if (modes !== 1) exit(1, USAGE)
@@ -95,7 +86,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   // --plan: memory text goes to a model.
   const refused = remoteOnlyCommandRefusal(flags, 'Enrichment sends memories to a model, which is not the team server')
   if (refused) exit(1, refused)
-  const bridge = resolveLlmOrExit({ llmCmd, model, baseUrl, apiKey, apiKeyEnv })
+  const bridge = resolveLlmOrExit(llm)
   if (!bridge) exit(1, missingLlmMessage('plur enrich --plan'))
   process.stderr.write(`Labelling with ${bridge.model} via ${bridge.via}...\n`)
   try {

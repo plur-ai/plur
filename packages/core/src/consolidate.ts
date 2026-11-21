@@ -35,6 +35,7 @@ import { DEDUP_DECISION_GUIDE } from './dedup.js'
 import { computeContentHash } from './content-hash.js'
 import type { LlmFunction } from './types.js'
 import { buildPinRequest, asPinRequested, pinRequestOf } from './pin-policy.js'
+import { cosineSimilarity } from './embeddings.js'
 
 /** Near-paraphrases written by `learn` are queued here for the next plan (D8). */
 export const CONSOLIDATE_QUEUE_FILE = 'consolidate-queue.jsonl'
@@ -71,7 +72,12 @@ export function hashSeed(seed: string): number {
 
 /** A deterministic generator of floats in [0, 1) (mulberry32). */
 export function seededRandom(seed: string): () => number {
-  let a = hashSeed(seed)
+  return mulberry32(hashSeed(seed))
+}
+
+/** mulberry32 from a numeric seed: floats in [0, 1). */
+export function mulberry32(seed: number): () => number {
+  let a = seed >>> 0
   return () => {
     a = (a + 0x6D2B79F5) >>> 0
     let t = a
@@ -208,6 +214,18 @@ export interface CandidateOptions {
   focus?: ReadonlySet<string>
 }
 
+/** Items grouped by key, in first-seen order. */
+export function groupBy<T>(xs: Iterable<T>, key: (x: T) => string): Map<string, T[]> {
+  const out = new Map<string, T[]>()
+  for (const x of xs) {
+    const k = key(x)
+    const list = out.get(k)
+    if (list) list.push(x)
+    else out.set(k, [x])
+  }
+  return out
+}
+
 /**
  * Top-k neighbour pairs at or above the threshold, within blocks.
  *
@@ -222,12 +240,7 @@ export function candidatePairs(items: readonly ConsolidationItem[], opts: Candid
   const threshold = opts.threshold
   const k = Math.max(1, opts.k ?? 8)
   const exactMax = opts.exactBlockMax ?? 6000
-  const blocks = new Map<string, ConsolidationItem[]>()
-  for (const it of items) {
-    const list = blocks.get(it.block)
-    if (list) list.push(it)
-    else blocks.set(it.block, [it])
-  }
+  const blocks = groupBy(items, it => it.block)
   const out: NeighbourPair[] = []
   for (const [blockKey, list] of [...blocks.entries()].sort((x, y) => (x[0] < y[0] ? -1 : x[0] > y[0] ? 1 : 0))) {
     if (list.length < 2) continue
@@ -354,12 +367,6 @@ export interface Cluster {
   seed_pair: NeighbourPair
 }
 
-function cosine(a: Float32Array, b: Float32Array): number {
-  let s = 0
-  for (let i = 0; i < a.length; i++) s += a[i] * b[i]
-  return s
-}
-
 /**
  * Complete-linkage clusters from candidate pairs.
  *
@@ -400,7 +407,7 @@ export function completeLinkageClusters(
         let worst = Infinity
         for (const m of members) {
           const vm = vectors.get(m)
-          const s = vm ? cosine(vc, vm) : -Infinity
+          const s = vm ? cosineSimilarity(vc, vm) : -Infinity
           if (s < worst) worst = s
           if (worst < opts.threshold) break
         }
@@ -681,17 +688,7 @@ export function mergeEngrams(
   rel.supersedes = uniq([...rel.supersedes, ...members.map(e => e.id)])
   out.relations = rel as Engram['relations']
 
-  const assoc = new Map<string, Engram['associations'][number]>()
-  for (const e of members) {
-    for (const a of e.associations ?? []) {
-      const target = a.target_type === 'engram' ? map(a.target) : a.target
-      if (a.target_type === 'engram' && target === m.id) continue
-      const key = `${a.target_type}|${target}|${a.type}`
-      const prev = assoc.get(key)
-      if (!prev || a.strength > prev.strength) assoc.set(key, { ...a, target })
-    }
-  }
-  out.associations = [...assoc.values()]
+  out.associations = mergeAssociations(members.flatMap(e => e.associations ?? []), map, m.id)
 
   out.tags = uniq(members.flatMap(e => e.tags ?? []))
   const anchors = new Map<string, Engram['knowledge_anchors'][number]>()
@@ -799,17 +796,22 @@ export function remapReferences(row: Engram, from: ReadonlySet<string>, to: stri
   }
   if (out.associations?.some(a => a.target_type === 'engram' && from.has(a.target))) {
     changed = true
-    const merged = new Map<string, Engram['associations'][number]>()
-    for (const a of out.associations) {
-      const target = a.target_type === 'engram' && from.has(a.target) ? to : a.target
-      if (a.target_type === 'engram' && target === out.id) continue
-      const key = `${a.target_type}|${target}|${a.type}`
-      const prev = merged.get(key)
-      if (!prev || a.strength > prev.strength) merged.set(key, { ...a, target })
-    }
-    out.associations = [...merged.values()]
+    out.associations = mergeAssociations(out.associations, t => (from.has(t) ? to : t), out.id)
   }
   return changed ? out : null
+}
+
+/** Engram targets mapped, edges to `selfId` dropped, the strongest per (target type, target, type) kept. */
+function mergeAssociations(list: readonly Engram['associations'][number][], mapTarget: (t: string) => string, selfId: string): Engram['associations'] {
+  const merged = new Map<string, Engram['associations'][number]>()
+  for (const a of list) {
+    const target = a.target_type === 'engram' ? mapTarget(a.target) : a.target
+    if (a.target_type === 'engram' && target === selfId) continue
+    const key = `${a.target_type}|${target}|${a.type}`
+    const prev = merged.get(key)
+    if (!prev || a.strength > prev.strength) merged.set(key, { ...a, target })
+  }
+  return [...merged.values()]
 }
 
 /** The ids in `from` that a row names in its relations or engram associations (sorted). */

@@ -2,7 +2,7 @@ import * as fs from 'fs'
 import { Plur } from '../index.js'
 
 
-import { CONSOLIDATE_CHANGE_KIND, CONSOLIDATE_QUEUE_FILE, CONSOLIDATE_QUEUE_KEEP_ENTRIES, CONSOLIDATE_QUEUE_MAX_BYTES, CONSOLIDATE_STATE_FILE, CONSOLIDATION_PLAN_KIND, ConsolidateApplyDisabledError, type ConsolidateApplyOptions, type ConsolidateApplyResult, type ConsolidatePlanOptions, ConsolidateTrialRequiredError, type ConsolidationItem, type ConsolidationPlan, PARAPHRASE_QUEUE_THRESHOLD, type PlanCluster, type StoreHealth, assertConsolidationPlan, blockKeyFor, buildConsolidationPrompt, candidatePairs, clusterProtectedReasons, completeLinkageClusters, mergeEngrams, mixedPolarity, newPlanId, nightlySeed, parseConsolidationResponse, polarityOf, referencesTo, refreshProgress, remapReferences, retireInto, seededSample, structuredBodyOf } from '../consolidate.js'
+import { CONSOLIDATE_CHANGE_KIND, CONSOLIDATE_QUEUE_FILE, CONSOLIDATE_QUEUE_KEEP_ENTRIES, CONSOLIDATE_QUEUE_MAX_BYTES, CONSOLIDATE_STATE_FILE, CONSOLIDATION_PLAN_KIND, ConsolidateApplyDisabledError, type ConsolidateApplyOptions, type ConsolidateApplyResult, type ConsolidatePlanOptions, ConsolidateTrialRequiredError, type ConsolidationItem, type ConsolidationPlan, PARAPHRASE_QUEUE_THRESHOLD, type PlanCluster, type StoreHealth, assertConsolidationPlan, blockKeyFor, buildConsolidationPrompt, candidatePairs, clusterProtectedReasons, completeLinkageClusters, groupBy, mergeEngrams, mixedPolarity, newPlanId, nightlySeed, parseConsolidationResponse, polarityOf, referencesTo, refreshProgress, remapReferences, retireInto, seededSample, structuredBodyOf } from '../consolidate.js'
 import { ChangeAlreadyUndoneError, ChangeConflictError, ChangeJournalError, ChangeJournalUnsupportedError, ChangeNotFoundError, type ChangeRecord, ChangeRedactedError, type ChangeRowSnapshot, type ChangeTx, type PendingChange, UNDO_BOOKKEEPING_FIELDS, type UndoChangeOptions, canonicalRow, carryIgnoredFields, findUndoConflicts, isRedactedRow, journalBegin, journalCommit, newChangeId, readChangeJournal, redactChangeJournal } from '../change-journal.js'
 import { type Engram } from '../schemas/engram.js'
 import { type LlmFunction } from '../types.js'
@@ -603,7 +603,7 @@ export const consolidationMethods: ConsolidationMethods & ThisType<Plur> = {
     const eligible = corpus.filter(e => !this._consolidationExclusion(e))
     const seed = options.seed ?? nightlySeed(options.now ?? new Date())
     let near_copy: StoreHealth['near_copy']
-    const { engramVectors } = await import('../embeddings.js')
+    const { engramVectors, cosineSimilarity } = await import('../embeddings.js')
     const { vectors, embedder } = await engramVectors(eligible, this.paths.root, { embedMissing: false })
     if (!embedder) {
       near_copy = { available: false, reason: 'embeddings are off or the embedder is unavailable' }
@@ -611,13 +611,7 @@ export const consolidationMethods: ConsolidationMethods & ThisType<Plur> = {
       near_copy = { available: false, reason: 'the embedding cache holds no vectors for this store yet (run a recall or `plur consolidate --plan` first)' }
     } else {
       const withVector = eligible.filter(e => vectors.has(e.id))
-      const byBlock = new Map<string, Engram[]>()
-      for (const e of withVector) {
-        const k = blockKeyFor(e)
-        const list = byBlock.get(k)
-        if (list) list.push(e)
-        else byBlock.set(k, [e])
-      }
+      const byBlock = groupBy(withVector, blockKeyFor)
       const sample = seededSample(withVector.map(e => e.id).sort(), seed, options.sampleSize ?? 100)
       const byId = new Map(withVector.map(e => [e.id, e]))
       let at90 = 0
@@ -628,9 +622,7 @@ export const consolidationMethods: ConsolidationMethods & ThisType<Plur> = {
         let best = -1
         for (const o of byBlock.get(blockKeyFor(e)) ?? []) {
           if (o.id === id) continue
-          const w = vectors.get(o.id)!
-          let s = 0
-          for (let d = 0; d < v.length; d++) s += v[d] * w[d]
+          const s = cosineSimilarity(v, vectors.get(o.id)!)
           if (s > best) best = s
         }
         if (best >= 0.9) at90++

@@ -1,5 +1,5 @@
 import { isatty } from 'tty'
-import { Plur, isDirectoryTrusted, folderMapProblem, type ProjectConfig } from '@plur-ai/core'
+import { Plur, folderMapProblem, type ProjectConfig } from '@plur-ai/core'
 import { join, resolve } from 'path'
 import { homedir } from 'os'
 import type { OutputOptions } from './output.js'
@@ -193,16 +193,6 @@ export function createPlur(flags: GlobalFlags, options?: { readonly?: boolean; a
 
 
 /**
- * The one question the scope gate asks — `Plur` answers it (`plur trust`).
- * `storageRoot` (a `Plur` has it) is the store whose `trust.yaml` answers, so
- * the notice can name a command that writes to THAT store.
- */
-export interface ScopeTrustCheck {
-  isDirectoryTrusted(dir: string): boolean
-  readonly storageRoot?: string
-}
-
-/**
  * One argument of a command printed for the user or the agent to run, or null
  * when it cannot be quoted safely. POSIX: single quotes. Windows: double quotes, which
  * PowerShell and cmd still expand for $, backtick, %, ! and the curly double
@@ -235,14 +225,4 @@ export function trustCommand(dir: string | null, storageRoot?: string, platform:
   if (!storageRoot || resolve(storageRoot) === resolve(join(homedir(), '.plur'))) return `plur trust ${target}`
   const store = shellWord(resolve(storageRoot), platform)
   return store === null ? null : `plur --path ${store} trust ${target}`
-}
-
-/**
- * A trust check against the store `flags` select, without constructing a Plur
- * (the hook reminder path runs on every prompt and builds none). Same answer
- * as `Plur.isDirectoryTrusted`: the trust file lives in the store root.
- */
-export function storeTrustCheck(flags: GlobalFlags): ScopeTrustCheck {
-  const root = flags.path || process.env.PLUR_PATH || join(homedir(), '.plur')
-  return { isDirectoryTrusted: (dir: string) => isDirectoryTrusted(dir, root), storageRoot: root }
 }
