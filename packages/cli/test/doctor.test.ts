@@ -606,6 +606,69 @@ describe('plur doctor', () => {
     expect(unchecked.status).toBe(1)
   }, 90000)
 
+  // #1911: a configured launcher (`npx -y @plur-ai/mcp@latest`, `/bin/sh -lc
+  // 'exec npx …'`) is not the server — the server is its child. Killing only
+  // the process doctor spawned left the server running, writing into ~/.plur
+  // after doctor had reported. The fake launcher here starts the fake server
+  // as its child and stays up, the way npx does; the server answers the
+  // handshake, records its pid, and would otherwise outlive stdin closing.
+  // Process groups are POSIX; on Windows doctor still stops only the launcher.
+  it.skipIf(process.platform === 'win32')('stops the whole server tree it started, not just the launcher (#1911)', async () => {
+    const pidFile = join(home, 'server.pid.txt')
+    const server = join(home, 'tree-server.mjs')
+    writeFileSync(server, [
+      "import { createInterface } from 'node:readline'",
+      "import { writeFileSync } from 'node:fs'",
+      `writeFileSync(${JSON.stringify(pidFile)}, String(process.pid))`,
+      // Stays alive after stdin closes, like a real server holding its store.
+      // Self-exit after 60 s so a failing run does not leak it forever.
+      "setInterval(() => {}, 1000)",
+      "setTimeout(() => process.exit(0), 60000)",
+      "const send = (m) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...m }) + '\\n')",
+      "createInterface({ input: process.stdin }).on('line', (line) => {",
+      "  const msg = JSON.parse(line)",
+      "  if (msg.method === 'initialize') send({ id: msg.id, result: { protocolVersion: '2024-11-05', capabilities: {}, serverInfo: { name: 'plur', version: '0.0.0-test' } } })",
+      "  if (msg.method === 'tools/list') send({ id: msg.id, result: { tools: [{ name: 'plur_recall' }] } })",
+      "})",
+    ].join('\n'))
+    const launcher = join(home, 'tree-launcher.mjs')
+    writeFileSync(launcher, [
+      "import { spawn } from 'node:child_process'",
+      `const child = spawn(process.execPath, [${JSON.stringify(server)}], { stdio: 'inherit' })`,
+      "child.on('exit', (code) => process.exit(code ?? 0))",
+    ].join('\n'))
+
+    writeGlobalSettings({
+      hooks: { UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'npx @plur-ai/cli hook-inject' }] }] },
+      mcpServers: { plur: { command: process.execPath, args: [launcher] } },
+    })
+
+    const alive = (pid: number) => { try { process.kill(pid, 0); return true } catch { return false } }
+    let serverPid = 0
+    try {
+      let stdout = ''
+      try {
+        stdout = execSync(`node ${CLI} doctor --json`, {
+          encoding: 'utf-8', timeout: 30000, cwd: home, stdio: ['ignore', 'pipe', 'ignore'],
+          env: { ...isolatedHomeEnv(home), PLUR_DISABLE_EMBEDDINGS: '1' },
+        })
+      } catch (err: any) {
+        stdout = err.stdout?.toString() ?? ''
+      }
+      const report = JSON.parse(stdout)
+      // The handshake went through the launcher to the server.
+      expect(report.handshake.ok, JSON.stringify(report.handshake)).toBe(true)
+      serverPid = Number(readFileSync(pidFile, 'utf-8'))
+      expect(serverPid).toBeGreaterThan(0)
+      // Bounded wait: termination is asynchronous, but well under 3 s.
+      const deadline = Date.now() + 3000
+      while (alive(serverPid) && Date.now() < deadline) await new Promise(r => setTimeout(r, 50))
+      expect(alive(serverPid), `server pid ${serverPid} outlived doctor`).toBe(false)
+    } finally {
+      if (serverPid && alive(serverPid)) { try { process.kill(serverPid, 'SIGKILL') } catch { /* gone */ } }
+    }
+  }, 40000)
+
   // ── Stale npx hook detection (#178) ─────────────────────────────────────
 
   it('detects stale npx hooks and recommends migration (#178)', () => {
