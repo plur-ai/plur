@@ -21,7 +21,15 @@ describe('plur doctor', () => {
   })
 
   afterEach(() => {
-    rmSync(home, { recursive: true, force: true })
+    // execSync waits for doctor, not for what doctor's handshake started. With
+    // no approved entry the probe falls back to `/bin/sh -lc 'exec npx -y
+    // @plur-ai/mcp@<ver>'`; doctor's kill() reaches npx, while the server npx
+    // launched can live on for a moment and keep writing into this HOME (seen:
+    // `node .../plur-mcp` with HOME=<temp home> and a fresh .plur/server.pid
+    // after the test body returned). A plain recursive rm then races it and
+    // fails with ENOTEMPTY (#1905). Node retries ENOTEMPTY/EBUSY/EPERM here,
+    // waiting retryDelay * attempt between tries (about 5.5 s at most).
+    rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
   })
 
   function runDoctor(): { stdout: string; status: number } {
