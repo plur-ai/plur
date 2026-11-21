@@ -1,4 +1,3 @@
-// packages/core/src/meta/formulation.ts
 import type { AlignmentResult } from './alignment.js'
 import type { LlmFunction } from '../types.js'
 import type { Engram } from '../schemas/engram.js'
@@ -94,8 +93,7 @@ Return ONLY valid JSON, no markdown fencing.`
   // Deduplicate against existing meta-engrams
   const duplicate = isDuplicate(common_structure.template, existingMetas)
   if (duplicate) {
-    // Merge evidence: update existing rather than create new
-    // Return null to signal "no new engram needed"
+    // null signals "no new engram needed"
     return null
   }
 
@@ -105,11 +103,9 @@ Return ONLY valid JSON, no markdown fencing.`
   const validationRatio = 0 // No validation yet at formulation stage
   const composite = computeMetaConfidence(evidenceCount, domainCount, structural_depth, validationRatio)
 
-  // Generate ID
   const slug = slugifyTemplate(common_structure.template)
   const id = `META-${slug}`
 
-  // Build evidence entries
   const evidence: EvidenceEntry[] = member_alignments.map(ma => ({
     engram_id: ma.engram_id,
     domain: 'unknown', // Will be enriched by pipeline orchestrator

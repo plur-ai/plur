@@ -1,22 +1,8 @@
-// Telemetry wiring for the MCP server.
-//
-// @plur-ai/mcp is the widest install surface, but historically emitted no
-// engagement counters — only @plur-ai/claw did. This module wires the SAME
-// opt-in, content-free counters into the MCP server by reusing the
-// implementation exported from @plur-ai/core (recordEvent / flushIfNeeded /
-// registerFlushOnExit). No vendored copy lives here — one implementation,
-// imported.
-//
-// Privacy guarantees are inherited unchanged from core:
-//   - Default-off. recordEvent self-gates on isTelemetryEnabled(); an opted-out
-//     install writes zero telemetry files and makes zero network calls.
-//   - Content-free. Only daily per-event counts + an opaque install UUID +
-//     version/platform/date are ever transmitted. No engram text, no query
-//     text. Opt out with PLUR_TELEMETRY=off.
-//
-// Call sites live in tools.ts (recordEvent at learn/recall) and server.ts
-// (registerFlushOnExit at startup). recordEvent returns true on a UTC-day
-// rollover; maybeFlushAfter ships yesterday's pending snapshot then.
+// Telemetry wiring for the MCP server, reusing core's recordEvent / flushIfNeeded / registerFlushOnExit (no
+// vendored copy). Privacy is inherited from core: default-off (zero files, zero network when opted out) and
+// content-free (daily per-event counts, opaque install UUID, version/platform/date; opt out with
+// PLUR_TELEMETRY=off). Call sites: tools.ts (recordEvent) and server.ts (registerFlushOnExit); on a UTC-day
+// rollover recordEvent returns true and maybeFlushAfter ships yesterday's snapshot.
 
 import { recordEvent, flushIfNeeded, registerFlushOnExit } from '@plur-ai/core'
 import type { CounterEvent } from '@plur-ai/core'

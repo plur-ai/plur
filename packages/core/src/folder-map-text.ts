@@ -2,21 +2,12 @@ import { isMap, isScalar, isSeq, parseDocument, type Pair, type YAMLMap } from '
 import jsyaml from 'js-yaml'
 
 /**
- * The text of `<PLUR home>/folders.yaml`, written so that a person's edits
- * survive the CLI's (owner decision 2026-10-01).
- *
- * A new file starts from {@link FOLDER_MAP_TEMPLATE}: a commented example of
- * every setting, each with one line saying what it does, placed where removing
- * the `# ` makes it a real entry. Every later write edits the file IN PLACE:
- * the `yaml` package's Document API locates each entry and value in the source
- * text, and only the bytes of the entry that changed are rewritten. Comments,
- * blank lines, key order and quoting everywhere else are kept byte for byte.
- *
- * The edit is checked: the result is parsed again and must hold exactly the
- * entries asked for. A file whose shape the surgical edit does not handle (a
- * flow-style list, an entry that is not a mapping, a nested value) falls back
- * to the Document API's own rewrite, which keeps comments but may reformat;
- * only if that also fails to round-trip is the file written plain.
+ * The text of `<PLUR home>/folders.yaml`, written so a person's edits survive the CLI's.
+ * A new file starts from {@link FOLDER_MAP_TEMPLATE} (a commented example of every
+ * setting). Later writes edit IN PLACE via the `yaml` Document API, rewriting only the
+ * changed entry; comments, order and quoting elsewhere are kept byte for byte.
+ * The result is re-parsed and must hold exactly the requested entries; unsupported
+ * shapes fall back to the Document API rewrite, and only then to a plain write.
  */
 
 /** Keep this the only place the template lives: tests read it back. */
@@ -65,8 +56,8 @@ function lineEndIncl(src: string, pos: number): number {
   return i === -1 ? src.length : i + 1
 }
 
-// Every value is WRITTEN with js-yaml, the reader PLUR loads the file with
-// (review of #1521): the `yaml` package (YAML 1.2 core) writes `2026-10-02`
+// Every value is WRITTEN with js-yaml, the reader PLUR loads the file with:
+// the `yaml` package (YAML 1.2 core) writes `2026-10-02`
 // or `0b101` unquoted, which js-yaml then reads back as a date or a number.
 // The `yaml` package only locates entries and values in the source text.
 function renderScalar(v: unknown): string {

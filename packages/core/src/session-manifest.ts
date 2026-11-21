@@ -1,28 +1,12 @@
 /**
- * Session memory manifest (#1657): which engrams an agent had in its context
- * during one session, as one canonical object that can be checked later.
- *
- * Three roles, each read from a record PLUR already keeps:
- *  - injected — `co_injection` history events carrying the session id;
- *  - recalled — `recall_returned` history events carrying the session id;
- *  - written  — engrams whose `sources[].session_id` is the session.
- *
- * Each listed engram carries `record_hash`, a SHA-256 over the canonical form
- * of its content fields, so `verifySessionManifest` can tell an edited
- * rationale from an untouched engram. There is deliberately no hash of the
- * bare statement (`content_hash`): it is unsalted, so a published one would
- * let anyone confirm a guessed memory text (0.23 audit, finding 3). The record
- * hash is unsalted too, but covers rationale, tags, provenance and attribution
- * (with their timestamps), which a guesser does not have.
- *
- * What a manifest says: these engrams were in the agent's context when it
- * acted. It never says they caused the action.
- *
- * What it never contains: engram text, scope names, tags or domains. Scope
- * names can carry customer names, and a manifest is made to be published.
- *
- * No network here. Uploading a manifest to write-once storage is done outside
- * core (the `WormStore` interface below), because core makes no external calls.
+ * Session memory manifest: which engrams an agent had in context during one
+ * session (injected: `co_injection` events; recalled: `recall_returned` events;
+ * written: `sources[].session_id`), as one canonical, checkable object.
+ * - Each engram carries `record_hash` over its content fields; deliberately no
+ *   bare-statement `content_hash`, which would let anyone confirm a guessed text.
+ * - It says the engrams were in context, never that they caused the action.
+ * - It never contains engram text, scope names, tags or domains (made to publish).
+ * - No network: write-once upload happens outside core (`WormStore` below).
  */
 import { createHash } from 'crypto'
 import { readHistory, listHistoryMonths, sortKeysDeep, type HistoryEvent } from './history.js'
@@ -67,7 +51,7 @@ export interface SessionManifest {
   /** The configured identity (`provenance.identity`), or the unidentified marker. */
   actor: string
   window: { from: string | null; to: string | null }
-  /** The newest checkpoint written in this session, when there is one (#1052): anchoring the manifest anchors it too. */
+  /** The newest checkpoint written in this session, when there is one: anchoring the manifest anchors it too. */
   checkpoint?: { event_hash: string; store_hash?: string; signer?: string; signature?: string }
   engrams: ManifestEntry[]
   created_at: string
@@ -177,7 +161,7 @@ export interface ManifestVerification {
   /**
    * True when nothing CHANGED and, if any engram is listed, at least one
    * matched. NOT AVAILABLE entries are counted; a check in which every listed
-   * engram is NOT AVAILABLE checked nothing, so it is not ok (audit finding 12).
+   * engram is NOT AVAILABLE checked nothing, so it is not ok.
    */
   ok: boolean
 }
@@ -205,9 +189,9 @@ export function verifySessionManifest(manifest: SessionManifest, engrams: readon
 }
 
 /**
- * Write-once storage for manifests (#1657, decision of 2026-10-17). Swarm is
- * the first and only implementation, outside core. The interface exists so a
- * second store can be added without touching callers; there is no registry.
+ * Write-once storage for manifests. Implementations (e.g. Swarm) live outside
+ * core. The interface lets a store be added without touching callers; there is
+ * no registry.
  */
 export interface WormPutResult {
   reference: string

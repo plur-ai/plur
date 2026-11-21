@@ -1,17 +1,9 @@
 /**
- * Apply an intent routing profile to a ranked candidate list.
- *
- * Strategy: stable re-rank by composite intent score. Each engram in the
- * input list keeps its position-derived base score (so the original RRF /
- * BM25 / embedding ranking is the primary signal). We then add a small
- * multiplier-derived boost from the routing profile.
- *
- * Result: when the classifier is RIGHT, the boost surfaces the right
- * engrams. When the classifier is WRONG, the underlying ranking still
- * dominates and the wrong-intent boost only adds a small perturbation.
- *
- * This is the graceful-degradation guarantee. Multipliers are <= 1.5,
- * applied as additive contributions in [0, 1] to a base in [0, 1].
+ * Apply an intent routing profile to a ranked candidate list: a stable re-rank
+ * where each engram keeps its position-derived base score (the primary signal)
+ * plus a small profile boost. Graceful degradation: multipliers are <= 1.5,
+ * added as contributions in [0, 1] to a base in [0, 1], so a wrong intent only
+ * perturbs the underlying ranking.
  */
 
 import type { Engram } from '../schemas/engram.js'

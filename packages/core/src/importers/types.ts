@@ -1,5 +1,5 @@
 /**
- * Migration importers (issue #441) — shared types.
+ * Migration importers: shared types.
  *
  * Every importer parses a competitor export into normalized `ImportRecord`s;
  * the engine (`runImport`) then routes each record through `plur.learn()` so

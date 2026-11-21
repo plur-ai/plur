@@ -22,7 +22,7 @@ function learning(plur: unknown, timeoutMs: number, queue = createWriteQueue({ h
   const listeners: Function[] = []
   const counters = createCounters()
   registerLearning({ on: (_e: string, fn: Function) => { listeners.push(fn); return () => {} } } as never, {
-    config: cfg({ timeoutMs }), counters, plur: plur as never, queue,
+    config: cfg({ timeoutMs }), counters, memoryFor: async () => ({ off: false as const, plur: plur as never }), queue,
     resolveScope: async () => 'project:dsh',
   })
   const say = (text: string) => Promise.all(listeners.map(fn => fn({ id: 's1' }, {
@@ -67,7 +67,7 @@ describe('dsh write queue: soft timeout does not release the slot (S3)', () => {
     const learn = vi.fn(async () => { order.push('tool-start'); await sleep(150); order.push('tool-end'); return { id: 'ENG-1' } })
     const queue = createWriteQueue({ hardCapMs: 5_000 })
     registerTools(ctx as any, {
-      config: cfg({ timeoutMs: 20 }), counters: createCounters(), plur: { learn, ready: async () => true } as never,
+      config: cfg({ timeoutMs: 20 }), counters: createCounters(), memoryFor: async () => ({ off: false as const, plur: { learn, ready: async () => true } as never }),
       queue, resolveScope: async () => 'project:dsh',
     })
     const t = out.find(x => x.name === 'plur_learn')

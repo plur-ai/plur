@@ -1,0 +1,118 @@
+slug: plur-guarantees-2026-11-01
+title: "PLUR guarantee verification — owner decisions"
+eyebrow: plur-ai/plur · guarantee inventory + formal verification · 2026-11-01
+lede: >-
+  Places where a promise, a comment and the code disagree on policy. Every row was replayed against
+  the real code or proved in Lean; the clear bugs are already fixed on branch formal/guarantee-inventory.
+  Nothing is applied until you save and say "apply the decisions".
+sources: [spec/formal/findings/, spec/guarantees/]
+sections:
+  - key: promises
+    prefix: P
+    label: Promise wording
+    hint: The promise text and the code say different things; one of them changes.
+    rows:
+      - area: "Setup doctor"
+        title: "How should the doctor report a memory connection it could not verify?"
+        context: "The setup promise says such a connection is reported as a failure; the doctor reports it as 'unverified' (neither ok nor failed), and a test pins that."
+        ref: findings (cli-commands inventory), packages/cli/src/commands/doctor.ts
+        suggested: "reword"
+        options:
+          - {value: "reword", label: "Reword the promise", consequence: "Promise says an unverified connection is never reported as healthy; code unchanged."}
+          - {value: "fail", label: "Report it as a failure", consequence: "Doctor exits unhealthy whenever it cannot verify; the pinning test changes."}
+      - area: "Home folder"
+        title: "With no project folder open, should memory run in the home folder or filesystem root?"
+        context: "The undecided-folder promise says nothing is read or written until you decide. Started in home or root with no client folders, memory runs today; a test pins this on purpose."
+        ref: findings/folder-rules.md
+        suggested: "keep"
+        options:
+          - {value: "keep", label: "Keep, narrow the promise", consequence: "Promise excludes home and root; behaviour as today."}
+          - {value: "off", label: "Answer 'open a project folder'", consequence: "Memory stays off there until a project folder is opened; the pinning test changes."}
+  - key: safety
+    prefix: S
+    label: Privacy and concurrency
+    hint: Narrow windows the proofs found; each was replayed.
+    rows:
+      - area: "Folder answers"
+        title: "Should a one-use folder answer still apply after the folder stopped being undecided?"
+        context: "If a parent folder becomes remote-only after the question was shown, redeeming 'yes with scope X' as 'yes with scope X and memory on' switches the folder to local memory, which the offered command would not have done."
+        ref: findings/folder-rules.md
+        suggested: "refuse"
+        options:
+          - {value: "keep", label: "Keep", consequence: "The user did say yes to memory; the switch stands."}
+          - {value: "bind", label: "Bind each answer to its exact flags", consequence: "Only the offered command works with that answer."}
+          - {value: "refuse", label: "Refuse once the folder is decided", consequence: "A stale answer is refused and the question is shown again."}
+      - area: "Remote-only queue"
+        title: "Should the queue guard look up memories it has not seen before accepting a write?"
+        context: "After one whole-store read, the guard trusts that read. A memory queued by another writer afterwards could lose its queued marker through a later write and stay local. Needs two writers racing; no shipping code path strips a marker today."
+        ref: findings/backend-scopes.md
+        suggested: "lookup"
+        options:
+          - {value: "keep", label: "Accept the window", consequence: "Relies on callers locking and re-reading."}
+          - {value: "lookup", label: "Always look up unseen ids", consequence: "Closes it; one extra read per write that names a new id."}
+          - {value: "track", label: "Also track other reads", consequence: "Narrows the window, does not close it."}
+      - area: "Auto-rating lock"
+        title: "How should the automatic-rating worker take over a stale lock?"
+        context: "Its rule 'a live worker is never displaced' is false: with a stale lock and two contenders, a third process can take the lock in a narrow window, giving two workers for one session (a rating or capture applied twice). Replayed against the code."
+        ref: findings/hook-counters.md
+        suggested: "core"
+        options:
+          - {value: "core", label: "Reuse core's takeover", consequence: "Export core's guarded takeover with a pluggable liveness check; one implementation."}
+          - {value: "copy", label: "Copy its safeguards", consequence: "About 40 lines duplicated from core."}
+          - {value: "accept", label: "Accept and reword", consequence: "Rule and comment state the window."}
+      - area: "Antigravity counter"
+        title: "Should the Antigravity hook counter stop losing increments?"
+        context: "Same read-then-write problem as the Codex counter (fixed): parallel tool calls can all read 1, so every guard denies. A test pins the counter file's format."
+        ref: findings/hook-counters.md
+        suggested: "switch"
+        options:
+          - {value: "switch", label: "Switch to the safe counter", consequence: "Same as Codex, Claude Code and Cursor; the format test changes."}
+          - {value: "guard", label: "Only the guard path", consequence: "Turn count keeps its format; the guard uses the safe counter."}
+          - {value: "keep", label: "Keep", consequence: "Parallel tool calls can each be denied."}
+      - area: "Session ids"
+        title: "Outside the MCP server, should an unknown session id on inject count as no session?"
+        context: "Writes now treat an id this process never registered as no session. plur_inject called through the exported handlers (not the server) still passes it to core, which then uses the last-started session's scope. Harmless through the server."
+        ref: findings/mcp-tools.md
+        suggested: "nosession"
+        options:
+          - {value: "nosession", label: "Treat as no session", consequence: "Same rule for reads and writes."}
+          - {value: "keep", label: "Keep", consequence: "Library callers keep today's behaviour."}
+      - area: "Session expiry"
+        title: "Should an expired session id stop resolving at exactly 8 hours?"
+        context: "An explicit id past its 8-hour limit still resolves until the next sweep runs."
+        ref: findings/mcp-tools.md
+        suggested: "sweep"
+        options:
+          - {value: "sweep", label: "Sweep before resolving", consequence: "Expiry is exact."}
+          - {value: "keep", label: "Keep", consequence: "Expiry bounded by the next sweep."}
+  - key: reporting
+    prefix: R
+    label: Reporting
+    hint: What gets counted or shown; no data at risk.
+    rows:
+      - area: "Contradiction scan"
+        title: "Should the contradiction scan count the pairs it skips because of the snapshot setting?"
+        context: "Only measured-under skips are counted; snapshot skips (only with time-bound topics configured) leave no trace. The comment now says exactly what is counted."
+        ref: findings/inject-budget.md
+        suggested: "gates"
+        options:
+          - {value: "keep", label: "Keep", consequence: "Comment states the limit."}
+          - {value: "snapshot", label: "Add a snapshot count", consequence: "New field in the scan result."}
+          - {value: "gates", label: "Count every configured filter", consequence: "Snapshot and measured-under counted; structural skips not."}
+      - area: "dsh memory block"
+        title: "When the budget is too small even for the 'withheld' notice, what should the DeepSeek harness show?"
+        context: "Below about 60 tokens the memory block is empty, so constraints disappear without a notice."
+        ref: findings/secrets-install.md
+        suggested: "notice"
+        options:
+          - {value: "accept", label: "Accept", consequence: "An empty block reads as no memory."}
+          - {value: "notice", label: "Always show the notice", consequence: "The notice can exceed a tiny budget."}
+          - {value: "minimum", label: "Set a minimum budget", consequence: "The caller never asks for less than the notice needs."}
+      - area: "Team server errors"
+        title: "Should a 4xx error other than 401/403/404/422/429 count toward marking a team server down?"
+        context: "Today a 400, 409 or 413 counts like a server error on both the recall and the write path."
+        ref: findings/remote-health.md
+        suggested: "keep"
+        options:
+          - {value: "keep", label: "Keep", consequence: "A misbehaving server is backed off."}
+          - {value: "refusal", label: "Treat as a refusal", consequence: "Neither counts nor resets; the outbox changes too."}

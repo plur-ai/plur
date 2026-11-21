@@ -1,0 +1,18 @@
+anchors:
+  packages/core/src/rerankers/index.ts#(module):
+    kind: guarantee
+    rule: A reranker failure falls back to the fused order, so recall always answers, and the failure is recorded for status.
+    tests:
+    - packages/core/test/hybrid-rerank.test.ts::falls back to original order if the reranker throws
+    - packages/core/test/reranker.test.ts::starts clean and records failures with classification
+  packages/core/src/rerankers/transformers-cross-encoder.ts#weights:
+    kind: guarantee
+    rule: With downloads off, a reranker model missing from disk is refused before the library is asked.
+    tests:
+    - 'packages/core/test/offline-inferred-model-download-siblings.test.ts::ms-marco reranker: an uncached model makes no
+      transport attempt after the failed check'
+    promises:
+    - TEAM-5
+  packages/core/src/rerankers/types.ts#RerankerAdapter:
+    kind: note
+    why: Describes the adapter contract for implementers; "cannot be pre-computed" is a fact about cross-encoders.

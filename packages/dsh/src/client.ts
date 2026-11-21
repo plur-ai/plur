@@ -17,8 +17,8 @@ import type { InjectionLike } from './memory-section.js'
  *
  * BOTH fields, always. `scope` is core's VISIBILITY filter and passes the
  * entire personal family through; `scopes` is the AUTHORIZATION allow-list,
- * exact membership with no hierarchy expansion. Sending only `scope` is what
- * let one project's engrams into another project's system prompt.
+ * exact membership with no hierarchy expansion. Sending only `scope` lets one
+ * project's engrams into another project's system prompt.
  */
 export interface ReadScope {
   scope?: string
@@ -35,8 +35,8 @@ export interface EngramLike {
  * Context core accepts on `capture()` — a subset of core's `CaptureContext`.
  *
  * Note what is NOT here: `scope`. Core writes every episode to one timeline per
- * store; episodes are not scoped. Passing `{ scope }` was silently discarded,
- * so the scope an episode came from was simply lost. It travels in `tags` now.
+ * store; episodes are not scoped, and a `scope` field is silently discarded.
+ * Carry the originating scope in `tags` instead.
  */
 export interface CaptureContextLike {
   agent?: string
@@ -51,6 +51,13 @@ export interface LearnContextLike {
   domain?: string
   source?: string
 }
+
+/** The folder map's answer for the calling session (security audit 2026-11-06): its client, or `off` with the words to relay. */
+export type MemoryFor = (caller?: {
+  id?: string
+  session?: { header?: { cwd?: string } }
+  header?: { cwd?: string }
+}) => Promise<{ off: false; plur?: PlurClient } | { off: true; message: string }>
 
 /** The rating vocabulary core accepts. Note: NOT a number. */
 export type FeedbackSignal = 'positive' | 'negative' | 'neutral'

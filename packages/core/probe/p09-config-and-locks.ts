@@ -11,7 +11,7 @@
  * C. history JSONL appendHistory(): concurrent appends from many processes.
  */
 import { setSchemaVersion, getSchemaVersion } from '../src/migrations/runner.js'
-import { withLock } from '../src/sync.js'
+import { withLock } from '../src/file-lock.js'
 import { withAsyncLock } from '../src/store/async-lock.js'
 import { appendHistory, readHistory } from '../src/history.js'
 import { fork } from 'child_process'

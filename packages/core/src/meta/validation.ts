@@ -1,4 +1,3 @@
-// packages/core/src/meta/validation.ts
 import type { Engram } from '../schemas/engram.js'
 import type { MetaField } from '../schemas/meta-engram.js'
 import type { LlmFunction } from '../types.js'
@@ -107,7 +106,6 @@ Return ONLY valid JSON, no markdown fencing.`
       }
     }
 
-    // Recompute confidence
     const passes = metaField.domain_coverage.validated.length
     const total = passes + metaField.domain_coverage.failed.length
     const validationRatio = total > 0 ? passes / total : 0

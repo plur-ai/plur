@@ -1,40 +1,11 @@
 /**
- * One place that decides whether a project's `.plur.yaml` may route this
- * session's prompt text to the host it names (#1198, carrying #1196's gate;
- * hoisted here from the CLI by #1207).
- *
- * Two bugs met here, and the fix for one is the trap for the other.
- *
- * #1196: `hook-inject` adopted `.plur.yaml`'s `remote_url`/`remote_token`
- * unchecked. Both come from the file, so a cloned repository supplied the
- * destination AND the credential, and every prompt was POSTed to a host the
- * repo chose. That is now gated on an explicit `plur trust <dir>`.
- *
- * #1198: every OTHER integration — the two codex hooks, cursor, antigravity,
- * and by extension hermes through `plur inject` — read `.plur.yaml` for `scope`
- * and dropped the remote fields, so PLUR Enterprise team memory silently never
- * arrived. `hook-inject` was the only consumer of `remote_project` in the whole
- * codebase.
- *
- * Closing #1198 by copying hook-inject's old block into six more adapters would
- * have reproduced #1196 in six more places. So the gate travels WITH the
- * capability: an adapter calls this and either gets a remote config it may use,
- * or a refusal it must surface — it cannot get the first without the second
- * having been considered.
- *
- * #1207 is why this lives in core rather than in the CLI. `@plur-ai/opencode`
- * is an adapter that cannot import from `@plur-ai/cli`, and the only two ways
- * to give an out-of-package adapter this capability are to move the gate to
- * the layer both depend on, or to copy the block — which is the mistake above.
- * The CLI keeps its `lib/project-remote.ts` module path as a re-export, so no
- * call site moved.
- *
- * `scope` and `domain` are deliberately NOT gated here. They are local
- * visibility filters that send nothing anywhere, so a project using
- * `.plur.yaml` purely for scoping is unaffected by any of this. (An adapter
- * may still gate them for its own reasons — the opencode plugin does, D2 of
- * its 2026-09 audit, because a scope can name a store that is already
- * registered remotely.)
+ * The one place that decides whether a project's `.plur.yaml` may route prompt text to the
+ * host it names. `remote_url` and `remote_token` both come from the file, so an untrusted
+ * repo could choose destination AND credential; remote settings are adopted only from a
+ * directory approved with `plur trust <dir>`.
+ * Every integration must use this helper rather than reading the fields itself (the CLI
+ * re-exports it from `lib/project-remote.ts`). `scope` / `domain` are NOT gated here:
+ * they are local filters that send nothing.
  */
 import { dirname } from 'path'
 import { findProjectConfigPath, readProjectConfigFromPath, type ProjectConfig } from './project-config.js'
@@ -64,17 +35,10 @@ export interface ProjectRemote {
 }
 
 /**
- * Decide whether an ALREADY-READ project config's remote settings may be used.
- *
- * For callers that resolved the `.plur.yaml` path themselves and read from
- * that resolved path — the opencode plugin does, because it adopts
- * `scope`/`domain` from the same read and a second walk would be a TOCTOU
- * between the file trust is checked against and the file whose fields are
- * adopted. Callers with no path in hand want `resolveProjectRemote` below.
- *
- * Fails CLOSED: any error checking trust drops the remote leg rather than
- * dialing. The trust check runs only when the remote fields are actually
- * present, so a project without them pays nothing.
+ * Decide whether an ALREADY-READ project config's remote settings may be used, for callers
+ * that read the resolved path themselves (a second walk would be a TOCTOU). Callers with no
+ * path use `resolveProjectRemote`. Fails CLOSED: any trust-check error drops the remote leg.
+ * The check runs only when remote fields are present.
  */
 export function resolveProjectRemoteFromConfig(
   plur: TrustChecker,

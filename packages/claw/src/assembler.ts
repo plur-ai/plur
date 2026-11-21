@@ -35,7 +35,7 @@ export function assembleContext(params: {
   ]
 
   // Append update notice if a newer version is cached (zero-cost read; it
-  // starts no refresh once the process is offline, TEAM-5)
+  // starts no refresh once the process is offline)
   const updateCheck = getCachedUpdateCheck('@plur-ai/claw')
   if (updateCheck?.updateAvailable) {
     sections.push(`\n[PLUR update available: ${updateCheck.current} → ${updateCheck.latest}. Ask your user to run: npm update @plur-ai/claw]`)

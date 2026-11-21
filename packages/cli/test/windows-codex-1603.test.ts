@@ -11,7 +11,7 @@
  * (scripts/windows-codex-probe.mjs).
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs'
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, symlinkSync } from 'fs'
 import { join, delimiter } from 'path'
 import { tmpdir } from 'os'
 import { pathToFileURL } from 'url'
@@ -178,14 +178,39 @@ describe('resolveCodexBinary (#1603)', () => {
   })
 })
 
+/**
+ * A stand-in for the host's /usr/bin + /bin with every `codex*` entry left out
+ * (#1902): a symlink to each other entry, so the stub scripts and the CLI still
+ * find sh, chmod, git and the rest, but a Codex CLI installed on the host is
+ * never found through PATH. Without it, `runCodex` on a POSIX host falls back
+ * to the bare name and runs the host's real /usr/bin/codex. HOME and
+ * CODEX_HOME are already pinned inside the temp home by isolatedHomeEnv.
+ */
+function hostBinWithoutCodex(into: string): string {
+  mkdirSync(into)
+  const seen = new Set<string>()
+  for (const dir of ['/usr/bin', '/bin']) {
+    let names: string[]
+    try { names = readdirSync(dir) } catch { continue }
+    for (const name of names) {
+      if (/^codex(\.|$)/i.test(name) || seen.has(name)) continue
+      seen.add(name)
+      symlinkSync(join(dir, name), join(into, name))
+    }
+  }
+  return into
+}
+
 describe('plur init --codex with an npm codex.cmd on PATH (#1603, win32 preload)', { timeout: 90000 }, () => {
   let home: string
   let bin: string
+  let sysBin: string
   let log: string
   beforeEach(() => {
     home = mkdtempSync(join(tmpdir(), 'Test User-1603-'))
     bin = join(home, 'fakebin')
     mkdirSync(bin)
+    sysBin = hostBinWithoutCodex(join(home, 'sysbin'))
     log = join(home, 'cmd.log')
   })
   afterEach(() => { rmSync(home, { recursive: true, force: true }) })
@@ -205,7 +230,7 @@ describe('plur init --codex with an npm codex.cmd on PATH (#1603, win32 preload)
     writeFileSync(join(bin, 'codex'), '#!/bin/sh\necho "sh shim must not run" >&2\nexit 7\n', { mode: 0o755 })
     // Stand-in cmd.exe: records the /c command line (its last argument); answers nothing.
     writeFileSync(join(bin, 'cmd.exe'), `#!/bin/sh\nfor a; do last="$a"; done\nprintf '%s\\n' "$last" >> "${log}"\nexit 0\n`, { mode: 0o755 })
-    const out = run([bin, '/usr/bin', '/bin'])
+    const out = run([bin, sysBin])
     expect(out).toContain('MCP server: registered via `codex mcp add`')
     expect(out).toContain(`(${join(bin, 'codex.cmd')})`)
     const lines = existsSync(log) ? readFileSync(log, 'utf-8').split('\n') : []
@@ -223,7 +248,7 @@ describe('plur init --codex with an npm codex.cmd on PATH (#1603, win32 preload)
     mkdirSync(appBin, { recursive: true })
     const appLog = join(home, 'app.log')
     writeFileSync(join(appBin, 'codex.exe'), `#!/bin/sh\necho "$*" >> "${appLog}"\nexit 0\n`, { mode: 0o755 })
-    const out = run([bin, '/usr/bin', '/bin'])
+    const out = run([bin, sysBin])
     expect(out).toContain('MCP server: registered via `codex mcp add`')
     expect(out).toContain(join(appBin, 'codex.exe'))
     const calls = existsSync(appLog) ? readFileSync(appLog, 'utf-8') : ''
@@ -232,7 +257,7 @@ describe('plur init --codex with an npm codex.cmd on PATH (#1603, win32 preload)
   })
 
   it('still says Codex is absent, and prints the TOML to add by hand', () => {
-    const out = run([bin, '/usr/bin', '/bin'])
+    const out = run([bin, sysBin])
     expect(out).toContain('no `codex` on PATH and no Codex app binary')
     expect(out).toContain('[mcp_servers.plur]')
     expect(out).toContain(`command = '${process.execPath}'`)

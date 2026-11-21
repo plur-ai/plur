@@ -253,6 +253,9 @@ describe('a spawned event hook does not dial the team server (H3)', () => {
         discovery: { status: 'ok', scopes_status: 'ok', discovered_at: new Date().toISOString(),
           gitlab_host: 'gitlab.example.com', project_paths: { [SCOPE]: 'team/backend' } } }],
     }))
+    // An undecided folder loads no memory and asks first, and a git remote's
+    // scope is used only once the user chose it: the user said yes, with it.
+    writeFileSync(join(root, 'folders.yaml'), `version: 1\nfolders:\n  - path: ${JSON.stringify(repo)}\n    plur: on\n    scope: ${SCOPE}\n`)
   })
   afterAll(async () => { await stub.stop(); rmSync(home, { recursive: true, force: true }) })
 

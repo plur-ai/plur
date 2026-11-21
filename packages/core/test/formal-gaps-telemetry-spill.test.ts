@@ -12,7 +12,7 @@ import { mkdtempSync, rmSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { recordEvent } from '../src/telemetry-counters.js'
-import { withLock } from '../src/sync.js'
+import { withLock } from '../src/file-lock.js'
 
 let dir: string
 let base: Record<string, any>

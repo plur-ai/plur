@@ -1,14 +1,11 @@
 /**
  * In-process async mutexes.
  *
- * `AsyncMutex` was written for the PGLite adapter (#271) and lived in
- * `storage-pglite.ts`. Convergence Phase 2 needs the same primitive in the
- * locking layer, and `store/async-lock.ts` importing the PGLite adapter to get
- * it would drag the adapter's module graph into every lock acquisition. So the
- * class moves here — a leaf module with no imports — and `storage-pglite.ts`
- * re-exports it unchanged.
+ * A leaf module with no imports, so the locking layer can use these without
+ * pulling in a storage adapter's module graph. `storage-pglite.ts` re-exports
+ * `AsyncMutex`.
  *
- * `KeyedAsyncMutex` is the addition: one mutex per key, created on demand and
+ * `KeyedAsyncMutex` keeps one mutex per key, created on demand and
  * dropped when its queue drains, so a long-lived process that locks thousands
  * of distinct paths does not accumulate a mutex per path forever.
  */
@@ -16,7 +13,7 @@
 /**
  * Minimal async mutex — serializes async work.
  *
- * Exported for direct testing (#271); also the in-process half of
+ * Exported for direct testing; also the in-process half of
  * {@link KeyedAsyncMutex}.
  */
 export class AsyncMutex {
@@ -32,7 +29,7 @@ export class AsyncMutex {
   async run<T>(fn: () => Promise<T>): Promise<T> {
     let release: () => void
     const wait = new Promise<void>((res) => { release = res })
-    // Chain, don't replace (#271, F-DIJK-002): the next caller queues after
+    // Chain, don't replace: the next caller queues after
     // both `prev` AND this run. `wait` only resolves when release() fires in
     // the finally below, so `prev.then(() => wait)` reads in execution order.
     // (The read-then-write of `this.queue` is safe from interleaving — this
@@ -51,23 +48,9 @@ export class AsyncMutex {
 }
 
 /**
- * A pool of {@link AsyncMutex}, one per key.
- *
- * Why this exists: a file lock alone does NOT serialize callers inside one
- * process well. `O_EXCL` makes the second caller fail with `EEXIST`, and the
- * only recovery is retry-with-backoff — which under real in-process contention
- * means every writer but one sleeps through an exponential backoff and, past
- * `maxRetries`, throws `Failed to acquire lock`. That is fine as a
- * *cross-process* guard (contention is rare, processes are independent) and
- * wrong as an *in-process* one, where contention is the normal case for a
- * deployment that serves several sessions from one instance.
- *
- * So: queue in-process on a mutex first (FIFO, no polling, no spurious
- * failure), and only then contend for the file lock — by which point this
- * process has exactly one candidate in flight per key.
- *
- * Entries are evicted once idle so the map tracks *live* contention rather
- * than every key ever locked.
+ * A pool of {@link AsyncMutex}, one per key. In-process callers queue here (FIFO, no polling)
+ * before contending for the file lock, whose `O_EXCL` retry-with-backoff is fine across
+ * processes but fails under normal in-process contention. Idle entries are evicted.
  */
 export class KeyedAsyncMutex {
   private mutexes = new Map<string, AsyncMutex>()

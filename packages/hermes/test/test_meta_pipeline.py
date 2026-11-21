@@ -176,6 +176,7 @@ class TestMetaPipeline:
         assert result["saved"] == 1
         assert result["failed"] == 0
         assert result["state"] == "cleaned"
+        assert self.bridge.learn.call_args.kwargs["claim_class"] == "inferred"
         state_path = os.path.join(self.tmpdir, "meta-pipeline-sess-ok.json")
         assert not os.path.exists(state_path), "Successful pipeline must clean up state"
 

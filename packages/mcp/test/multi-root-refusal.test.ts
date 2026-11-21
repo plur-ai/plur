@@ -28,7 +28,7 @@ beforeEach(async () => {
   const [ct, st] = InMemoryTransport.createLinkedPair(); await mcp.connect(st); await client.connect(ct)
 })
 afterEach(async () => { await client.close(); await mcp.close(); plur.close(); for (const s of servers) await s.stop(); rmSync(root, { recursive: true, force: true }) })
-function map(first?: string, second?: string) { writeFileSync(join(root, 'folders.yaml'), JSON.stringify({ version: 1, folders: [{ path: a, plur: 'on', scope: first }, { path: b, plur: 'on', scope: second }] })) }
+function map(first?: string, second?: string, trusted?: boolean) { writeFileSync(join(root, 'folders.yaml'), JSON.stringify({ version: 1, folders: [{ path: a, plur: 'on', scope: first, ...(trusted ? { trusted: true } : {}) }, { path: b, plur: 'on', scope: second, ...(trusted ? { trusted: true } : {}) }] })) }
 const call = async (name: string, args: Record<string, unknown>) => JSON.parse(((await client.callTool({ name, arguments: args })).content as any)[0].text)
 const localText = () => existsSync(join(root, 'engrams.yaml')) ? readFileSync(join(root, 'engrams.yaml'), 'utf8') : ''
 it('refuses an unscoped save and names server and local choices without writing', async () => {
@@ -88,7 +88,9 @@ it.each(['keyword', 'hybrid'])('real Git roots preserve their organization conte
   config.stores = config.stores.map((entry: any, i: number) => i > 1 ? entry : ({ ...entry, scopes: [scopes[i]], enterprise: {},
     discovery: { status: 'ok', discovered_at: new Date().toISOString(), gitlab_host: `git${i}.example.test`, project_paths: { [scopes[i]]: 'team/app' } },
   }))
-  writeFileSync(path, JSON.stringify(config)); map()
+  // A repository's git origin picks a team scope only when the repo is trusted
+  // (security audit 2026-11-06), so both roots are trusted here.
+  writeFileSync(path, JSON.stringify(config)); map(undefined, undefined, true)
   await call('plur_recall', { query: 'release checks', mode })
   expect(servers.map(s => s.recallCalls)).toEqual([1, 1, 0])
 })

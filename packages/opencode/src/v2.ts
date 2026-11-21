@@ -3,7 +3,7 @@ import { resolve } from 'node:path'
 import {
   Plur, allowBackgroundModelLoad, renderMemoryBlock, folderAskOnce,
   findProjectConfigPath, readProjectConfigFromPath, resolveProjectRemoteFromConfig,
-  sessionSettings, skippedStoreNotice, loadConfig,
+  sessionSettings, skippedStoreNotice, loadConfig, withDeadline, DEADLINE_MISSED,
 } from '@plur-ai/core'
 import { folderPolicy, resolveTrustedScope, projectRemoteRefusalNotice } from './scope.js'
 import { learnFromTurn, learnFromUserText } from './learn.js'
@@ -119,19 +119,16 @@ export const setupV2: Plugin.Plugin['setup'] = async ctx => {
     }).catch(debug)
   }
   const recall = async (s: State, query: string, p: ReturnType<typeof policy>) => {
-    let timer: ReturnType<typeof setTimeout> | undefined
     const pending = s.plur.injectHybrid(query, { scope: p.settings.scope,
       ...(p.remote?.remoteProject ? { remote_project: p.remote.remoteProject } : {}) })
     pendingRecall.add(pending)
     void pending.finally(() => pendingRecall.delete(pending)).catch(debug)
-    try {
-      const result = await Promise.race([pending,
-        new Promise<undefined>(r => { timer = setTimeout(() => r(undefined), INJECT_TIMEOUT_MS) })])
-      const hint = skippedStoreNotice(s.plur, s.id, s.folder)
-      if (!result) { warn(`recall exceeded ${INJECT_TIMEOUT_MS} ms; continuing without memory`); return hint ?? '' }
-      const block = renderMemoryBlock({ injection: result })
-      return [hint, block].filter(Boolean).join('\n\n')
-    } finally { if (timer) clearTimeout(timer) }
+    const raced = await withDeadline(pending, INJECT_TIMEOUT_MS)
+    const result = raced === DEADLINE_MISSED ? undefined : raced
+    const hint = skippedStoreNotice(s.plur, s.id, s.folder)
+    if (!result) { warn(`recall exceeded ${INJECT_TIMEOUT_MS} ms; continuing without memory`); return hint ?? '' }
+    const block = renderMemoryBlock({ injection: result })
+    return [hint, block].filter(Boolean).join('\n\n')
   }
   const render = async (request: { sessionID: ID; system: Array<{ type: 'text'; text: string } | unknown> }, compaction: boolean) => {
     if (closing) return
@@ -189,6 +186,14 @@ export const setupV2: Plugin.Plugin['setup'] = async ctx => {
           }
         } else {
           s.block = await recall(s, query, p)
+          // An untrusted .plur.yaml: memories load without its settings, and
+          // the trust question comes with them once per session (owner, 2026-11-14).
+          if (p.decision.reason === 'untrusted-plur-yaml' && !s.asked && plurOnPath()) {
+            const question = folderAskOnce({ dir:s.folder,policy:p.decision,sessionId:s.id,root:s.plur.storageRoot,
+              plur:s.plur,prompt:query,claim:()=>{if(s.asked)return false;s.asked=true;return true},
+              bindSession:true,commandSession:true,host:{pid:process.pid,startedAt:Date.now()-process.uptime()*1000} })
+            if (question) s.block = s.block ? `${question}\n\n${s.block}` : question
+          }
         }
       }
       if (batch.length) queueLearning(s, batch.map(m=>m.id), batch.map(m=>m.text), 'user', p)

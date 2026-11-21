@@ -1,0 +1,275 @@
+promises:
+  REC-1:
+    lean: []
+  REC-2:
+    lean: []
+  REC-3:
+    lean:
+      - PlurSpec/R2Retrieval.lean:hybrid_label_truthful
+  REC-4:
+    lean: []
+  REC-5:
+    lean:
+      - PlurSpec/R2Retrieval.lean:expanded_capped
+  REC-6:
+    lean: []
+  REC-7:
+    lean: []
+  LRN-1:
+    lean: []
+  LRN-2:
+    lean: []
+  LRN-4:
+    lean: []
+  LRN-5:
+    lean: []
+  LRN-6:
+    lean:
+      - PlurSpec/Persistence.lean:fixed_never_writes_locked
+  LRN-7:
+    lean: []
+  LRN-8:
+    lean: []
+  LRN-9:
+    lean:
+      - PlurSpec/Persistence.lean:fixed_never_writes_locked
+  COR-1:
+    lean: []
+  COR-2:
+    lean: []
+  COR-3:
+    lean: []
+  COR-4:
+    lean: []
+  COR-5:
+    lean: []
+  FGT-1:
+    lean: []
+  FGT-2:
+    lean: []
+  FGT-3:
+    lean: []
+  INJ-1:
+    lean: []
+  INJ-2:
+    lean:
+      - PlurSpec/ScopeInject.lean:tokens_used_bound
+      - PlurSpec/ScopeInject.lean:total_le_budget
+      - PlurSpec/ScopeInject.lean:total_le_budget_fill
+      - PlurSpec/ScopeInject.lean:memBlockNew_le
+      - PlurSpec/ScopeInject.lean:estimate_covers_render
+      - PlurSpec/ScopeInject.lean:sections_le_budget
+      - PlurSpec/ScopeInject.lean:pools_le_budget
+  INJ-4:
+    lean: []
+  INJ-5:
+    lean: []
+  INJ-6:
+    lean:
+      - PlurSpec/ScopeInject.lean:pinned_within_share
+      - PlurSpec/ScopeInject.lean:pinned_priority
+  INJ-7:
+    lean: []
+  FDB-1:
+    lean: []
+  FDB-2:
+    lean: []
+  FDB-3:
+    lean:
+      - PlurSpec/ScopeInject.lean:decay_above_floor_bounded
+      - PlurSpec/ScopeInject.lean:conf_floor
+  FDB-4:
+    lean: []
+  FDB-5:
+    lean: []
+  PRV-1:
+    lean:
+      - PlurSpec/WritePath.lean:explicit_private_stays_local
+      - PlurSpec/WritePath.lean:ro_private_refuses
+  PRV-2:
+    lean: []
+  PRV-3:
+    lean:
+      - PlurSpec/ScopeInject.lean:selected_visible
+  PRV-4:
+    lean:
+      - PlurSpec/WritePath.lean:final_shared_needs_human
+      - PlurSpec/ScopeInject.lean:autoRoute_leaving_is_own
+  PRV-6:
+    lean: []
+  PRV-7:
+    lean: []
+  OFF-1:
+    lean: []
+  OFF-2:
+    lean: []
+  OFF-3:
+    lean: []
+  OFF-4:
+    lean: []
+  TEAM-1:
+    lean: []
+  TEAM-2:
+    lean: []
+  TEAM-3:
+    lean:
+      - PlurSpec/WritePath.lean:claimed_at_most_once_across_processes
+      - PlurSpec/WritePath.lean:guarded_at_most_once
+      - PlurSpec/Outbox.lean:dequeued_only_when_stored
+      - PlurSpec/Outbox.lean:honour_at_most_once
+      - PlurSpec/Outbox.lean:retry_same_key
+  TEAM-4:
+    lean: []
+  TEAM-5:
+    lean: []
+  SYN-1:
+    lean:
+      - PlurSpec/Persistence.lean:r2_no_leak
+      - PlurSpec/Persistence.lean:r2_rekey_no_leak
+      - PlurSpec/WritePath.lean:explicit_private_stays_local
+  SYN-2:
+    lean: []
+  SYN-3:
+    lean: []
+  SYN-4:
+    lean:
+      - PlurSpec/Persistence.lean:r2_no_leak
+      - PlurSpec/WritePath.lean:explicit_private_stays_local
+  SYN-5:
+    lean:
+      - PlurSpec/Persistence.lean:r2_no_loss
+      - PlurSpec/Persistence.lean:r2_rekey_no_loss
+      - PlurSpec/R2Persist.lean:restore_both_reachable
+  SYN-6:
+    lean: []
+  PCK-1:
+    lean: []
+  PCK-2:
+    lean:
+      - PlurSpec/PacksV2.lean:frame_injective
+      - PlurSpec/PacksV2.lean:v2_boundary_distinct
+      - PlurSpec/PacksV2.lean:v2_missing_ne_empty
+      - PlurSpec/PacksV2.lean:v2_covers_manifest
+  PCK-3:
+    lean:
+      - PlurSpec/PacksV2.lean:uninstall_preserves_others
+      - PlurSpec/PacksV2.lean:shared_name_separate
+  PCK-4:
+    lean:
+      - PlurSpec/R2CoreB.lean:pack_loaded_never_store
+  DUR-1:
+    lean: []
+  DUR-2:
+    lean: []
+  DUR-3:
+    lean:
+      - PlurSpec/R2Persist.lean:fixed_fail_closed
+      - PlurSpec/R2Persist.lean:reattach_no_loss
+  DUR-4:
+    lean:
+      - PlurSpec/R2Persist.lean:fixed_fail_closed
+      - PlurSpec/R2Persist.lean:base_bounds
+  DUR-5:
+    lean:
+      - PlurSpec/Persistence.lean:fixed_failed_run_keeps_live
+      - PlurSpec/Persistence.lean:fixed_keeps_backup
+      - PlurSpec/R2Persist.lean:fixed_consistent
+  DUR-6:
+    lean: []
+  HIS-1:
+    lean: []
+  HIS-2:
+    lean: []
+  PROOF-1:
+    lean:
+      - PlurSpec/Provenance.lean:tamper_detected
+  PROOF-2:
+    lean: []
+  PROOF-3:
+    lean:
+      - PlurSpec/Provenance.lean:covered_edit_changed
+      - PlurSpec/Provenance.lean:field_edit_changed
+      - PlurSpec/Provenance.lean:unchanged_matches
+  PROOF-4:
+    lean: []
+  PROOF-5:
+    lean:
+      - PlurSpec/Provenance.lean:exit_zero_untrusted_signer
+      - PlurSpec/Provenance.lean:bad_integrity_not_zero
+      - PlurSpec/Provenance.lean:signature_must_cover_data
+  TOOL-1:
+    lean: []
+  TOOL-3:
+    lean: []
+  TOOL-4:
+    lean:
+      - PlurSpec/R2Integrations.lean:admin_never_removes
+      - PlurSpec/R2Integrations.lean:fixed_removal_gated
+      - PlurSpec/R2Integrations.lean:fixed_admin_never_removes
+      - PlurSpec/R2Integrations.lean:rescope_move_dispatched
+  HK-1:
+    lean: []
+  HK-2:
+    lean: []
+  HK-3:
+    lean: []
+  INS-1:
+    lean:
+      - PlurSpec/Adapters.lean:merge_idempotent
+      - PlurSpec/Adapters.lean:cursor_idempotent
+  INS-2:
+    lean:
+      - PlurSpec/Adapters.lean:merge_preserves_user
+      - PlurSpec/Adapters.lean:cursor_keeps_extra
+  BEH-1:
+    lean: []
+  BEH-2:
+    lean: []
+  BEH-3:
+    lean: []
+  CLI-1:
+    lean: []
+  EPI-1:
+    lean: []
+  EPI-2:
+    lean: []
+  EFI-1:
+    lean:
+      - PlurSpec/WorkspaceChoice.lean:unmatched_stays_local
+  EFI-2:
+    lean:
+      - PlurSpec/SaveDestination.lean:queued_never_confirmed
+      - PlurSpec/SaveDestination.lean:every_success_reported
+  EFI-3:
+    lean: []
+  EFI-4:
+    lean: []
+  EFI-5:
+    lean:
+      - PlurSpec/Outbox.lean:replacement_remote_delivers
+      - PlurSpec/Outbox.lean:changed_key_retries
+      - PlurSpec/Outbox.lean:non_auth_refusal_keeps_hold
+  EFI-6:
+    lean:
+      - PlurSpec/ServerDiagnostics.lean:healthy_requires_writes
+      - PlurSpec/ServerDiagnostics.lean:unknown_queue_not_healthy
+  EFI-7:
+    lean:
+      - PlurSpec/ServerDiagnostics.lean:missing_server_evidence_fails
+  EFI-8:
+    lean:
+      - PlurSpec/WorkspaceChoice.lean:ambiguous_write_refused
+      - PlurSpec/WorkspaceChoice.lean:partial_batch_refused
+  EFI-9:
+    lean:
+      - PlurSpec/LegacyProjectCleanup.lean:tracked_or_unknown_no_edit
+      - PlurSpec/LegacyProjectCleanup.lean:no_backup_no_edit
+  EFI-10:
+    lean:
+      - PlurSpec/UploadLocal.lean:unselected_never_sent
+      - PlurSpec/UploadLocal.lean:secrets_never_sent
+      - PlurSpec/UploadCommand.lean:unselected_stays
+  EFI-11:
+    lean:
+      - PlurSpec/UploadLocal.lean:dry_run_no_mutation
+      - PlurSpec/UploadCommand.lean:preview_never_sends

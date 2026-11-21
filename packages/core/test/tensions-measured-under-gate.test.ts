@@ -129,7 +129,7 @@ describe('a skip is never silent', () => {
   it('getCandidatePairsDetailed counts and names the skipped pair', () => {
     const r = getCandidatePairsDetailed([a, b])
     expect(r.pairs).toHaveLength(0)
-    expect(r.skipped).toEqual({ measured_under: 1, measured_under_pairs: ['A:B'] })
+    expect(r.skipped).toEqual({ measured_under: 1, measured_under_pairs: ['A:B'], snapshot: 0, snapshot_pairs: [] })
   })
 
   it("'skip' mode: the judge is never called and the result reports the skip", async () => {
@@ -138,7 +138,7 @@ describe('a skip is never silent', () => {
     const result = await scanForTensions([a, b], llm, { min_confidence: 0.5 })
     expect(calls).toBe(0)
     expect(result.pairs_checked).toBe(0)
-    expect(result.skipped).toEqual({ measured_under: 1, measured_under_pairs: ['A:B'] })
+    expect(result.skipped).toEqual({ measured_under: 1, measured_under_pairs: ['A:B'], snapshot: 0, snapshot_pairs: [] })
   })
 
   it("'floor' mode: the judge sees the pair and the verdict is capped", async () => {

@@ -1,53 +1,17 @@
 /**
  * Statement sanitisation shared by every write path.
- *
- * ## The attack
- *
- * `dsh`'s `flatten()` renders engrams into one block and splits entries on a
- * line terminator followed by an opening bracket. A statement that contains
- * that sequence therefore mints a SECOND entry when rendered — and the renderer
- * emits that block at system-prompt authority, so the forged entry is read as
- * an instruction rather than as data. #940 and #952 are the same defect reached
- * through two different doors.
- *
- * ## Why this lives in core, in its own module
- *
- * The first fix put the collapse inside `Plur.learn()`, on the reasoning that
- * every write path funnels through it. That is not true. `learnRouted()` calls
- * `learn()` ONLY on its local route: when a remote store resolves for the
- * scope, it builds the engram shape and posts it without entering `learn()` at
- * all, and the outbox fallback writes the same raw shape locally. The CLI and
- * the Python SDK both go through `learnRouted`, and a comment in the source
- * calls it the primary production write path.
- *
- * So the highest-impact variant survived that fix: `plur learn` with a forged
- * boundary, against a scope backed by a remote store, still stored and
- * propagated it — and a forged entry on a SHARED store reaches other people's
- * system prompts.
- *
- * A helper called by both routes is the only shape that makes the claim
- * "no write path can bypass this" true rather than aspirational.
- *
- * ## The character class
- *
- * Deliberately matches the renderer's own class byte for byte rather than
- * narrowing to the one character that provably forges a boundary today. A
- * sanitiser that is exactly as strict as the renderer it defends stays correct
- * when either side is edited; one that is narrower is correct only until
- * someone widens the splitter, and nothing would fail loudly when they did.
+ * - Attack: `dsh`'s `flatten()` splits entries on a line terminator followed by `[`,
+ *   so such a statement forges a second entry at system-prompt authority.
+ * - Lives in core because not every route enters `Plur.learn()` (`learnRouted`'s remote
+ *   post and outbox fallback do not); every route must call it.
+ * - The character class matches the renderer's byte for byte, never narrower, so it
+ *   stays correct when either side changes.
  */
 
 /**
- * A line-terminator run, plus any spaces or tabs hugging it on either side.
- *
- * The class is CR, LF, LINE SEPARATOR, PARAGRAPH SEPARATOR, NEXT LINE, vertical
- * tab, form feed and the four information separators — the same set the
- * MCP-side sanitiser uses, so the two cannot drift into disagreeing about what
- * a line break is.
- *
- * Absorbing the adjacent spaces here, rather than collapsing every multi-space
- * run afterwards, keeps the rewrite confined to the neighbourhood of the thing
- * being defused.
+ * A line-terminator run plus hugging spaces/tabs. The class (CR, LF, LS, PS, NEL, VT,
+ * FF, the four information separators) is the same set the MCP-side sanitiser uses,
+ * so they cannot drift. Absorbing adjacent spaces confines the rewrite locally.
  */
 const SPACES_AROUND_TERMINATORS =
   /[ \t]*[\r\n\u2028\u2029\u0085\u000b\u000c\u001c-\u001f]+[ \t]*/g
@@ -62,11 +26,8 @@ const SPACES_AROUND_TERMINATORS =
  * local route) is not a bug.
  */
 export function collapseLineTerminators(statement: string): string {
-  // Consume spaces and tabs ADJACENT to a terminator run, not every run of
-  // spaces in the statement. The earlier form appended a blanket / {2,}/
-  // collapse, which also rewrote legitimate multi-space content that had
-  // nothing to do with the forgery — a behaviour change beyond the fix's remit,
-  // and one a caller storing aligned or code-like text would notice.
+  // Consume only spaces and tabs adjacent to a terminator run, so legitimate
+  // multi-space content (aligned or code-like text) is left unchanged.
   return statement
     .replace(SPACES_AROUND_TERMINATORS, ' ')
     .trimEnd()

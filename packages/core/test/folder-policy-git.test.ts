@@ -23,7 +23,10 @@ const map = (entry: Omit<FolderEntry, 'path'>) => saveFolderMap(root, { version:
 const policy = (readOrigin = origin) => resolveFolderPolicy(repo, { root, home, gitScopes: [source], readOrigin })
 
 describe('git-origin folder defaults', () => {
-  it('selects an authorized project without a folder entry', () => {
+  // A git-derived team scope needs a trusted repository (security audit
+  // 2026-11-06); test/git-origin-trust.test.ts covers the untrusted case.
+  it('selects an authorized project in a trusted repository without a mode entry', () => {
+    map({ trusted: true })
     expect(policy()).toMatchObject({ mode: 'on', scope, source: 'git', git: { kind: 'scope', scope } })
   })
   it.each(['off', 'remote-only', 'ask'] as const)('preserves an explicit %s decision without reading git', plur => {
@@ -41,7 +44,7 @@ describe('git-origin folder defaults', () => {
     expect(policy()).toMatchObject({ scope: 'project:legacy', source: 'plur-yaml' })
   })
   it('fills an on decision that has no scope', () => {
-    map({ plur: 'on' })
+    map({ plur: 'on', trusted: true })
     expect(policy()).toMatchObject({ mode: 'on', scope, source: 'git' })
   })
   it('a malformed map never consults git', () => {
@@ -50,10 +53,13 @@ describe('git-origin folder defaults', () => {
     expect(policy(read)).toMatchObject({ mode: 'ask', reason: 'malformed-map' })
     expect(read).not.toHaveBeenCalled()
   })
+  // D1, revised (owner, 2026-11-14): on without its settings, and still no
+  // git-origin scope (no `scope` key at all) and no git read.
   it('keeps an untrusted legacy request behind its trust decision', () => {
     mkdirSync(join(repo, '.git')); writeFileSync(join(repo, '.plur.yaml'), 'scope: project:legacy\n')
     const read = vi.fn(origin)
-    expect(policy(read)).toMatchObject({ mode: 'ask', reason: 'untrusted-plur-yaml' })
+    expect(policy(read)).toMatchObject({ mode: 'on', reason: 'untrusted-plur-yaml' })
+    expect(policy(read).scope).toBeUndefined()
     expect(read).not.toHaveBeenCalled()
   })
   it('unmatched origins stay on and local with a reason', () => {
@@ -74,6 +80,7 @@ describe('git-origin folder defaults', () => {
       expect(decided.scope, dir).toBeUndefined()
     }
     expect(read).not.toHaveBeenCalled()
+    map({ trusted: true })
     expect(policy()).toMatchObject({ mode: 'on', source: 'git', scope })
   })
   it('a folder under a home that is itself a Git repository does not inherit the home origin', () => {
@@ -87,6 +94,7 @@ describe('git-origin folder defaults', () => {
     expect(read).not.toHaveBeenCalled()
     // A repository of its own under that home still gets its default.
     execFileSync('git', ['init', '-q', repo])
+    map({ trusted: true })
     expect(policy()).toMatchObject({ mode: 'on', source: 'git', scope })
   })
   it('non-repositories and installations without server entries still ask', () => {
@@ -100,6 +108,7 @@ describe('git-origin folder defaults', () => {
     execFileSync('git', ['-C', repo, 'remote', 'add', 'origin', 'https://gitlab.example.com/team/backend.git'])
     writeFileSync(join(root, 'config.yaml'), yaml.dump({ stores: [{ url: source.server, token: 'fixture-token',
       scope: 'user:acme:alice', scopes: [scope], enterprise: {}, discovery: source }] }))
+    map({ trusted: true })
     const plur = new Plur({ path: root, autoDiscover: false })
     const now = Date.now(); const clock = vi.spyOn(Date, 'now').mockReturnValue(now)
     expect(plur.folderDefaultScope(repo)).toMatchObject({ mode: 'on', scope, git: { kind: 'scope' } })

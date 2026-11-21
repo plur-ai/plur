@@ -1,5 +1,3 @@
-// src/polarity.ts
-
 /**
  * Detect dont-patterns in engram statements.
  * Returns 'dont' if the statement contains prohibition language.

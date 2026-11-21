@@ -8,19 +8,13 @@ import { isServerStoreEntry, expandServerEntry, serverEntryIdentities, EXPANDED_
 /**
  * Load config with per-entry tolerance for the `stores` array.
  *
- * Why per-entry: previously this was a single PlurConfigSchema.parse() that
- * threw on any single invalid `stores` entry — and the catch returned an
- * empty config, silently dropping every other valid entry too. In the wild
- * that meant a pre-0.9.5 MCP process running against a 0.9.6+ config (which
- * has `url`-based remote stores its schema doesn't know about) would: load
- * → throw → fall back to empty → save back over the file → permanently lose
- * the user's remote store registration.
- *
- * New behavior: parse the top-level config with a permissive `stores`
- * placeholder, then validate each store entry individually with safeParse.
- * Invalid entries are dropped with a loud warning naming the entry; valid
- * entries survive. The end result: forward/backward schema drift loses at
- * most the malformed entries, never the whole file.
+ * The top-level config is parsed with a permissive `stores` placeholder and
+ * each store entry is validated individually with safeParse. Invalid entries
+ * are dropped with a warning naming the entry; valid entries survive. A single
+ * whole-file parse would turn one bad entry (e.g. a newer entry shape an older
+ * process does not know) into an empty config, which a later save would write
+ * back over the file and lose every store registration. Schema drift therefore
+ * loses at most the malformed entries, never the whole file.
  */
 export function loadConfig(configPath: string): PlurConfig {
   if (!existsSync(configPath)) return PlurConfigSchema.parse({})
@@ -34,7 +28,7 @@ export function loadConfig(configPath: string): PlurConfig {
   // Validate each store entry independently before the top-level parse so
   // a single bad entry can't take the whole file down.
   // Server entries (url + scopes) are expanded into one in-memory entry per
-  // scope before the per-entry StoreEntrySchema check (#1631).
+  // scope before the per-entry StoreEntrySchema check.
   if (Array.isArray(raw.stores)) {
     const validStores: unknown[] = []
     // Computed on the raw entries, exactly as persistStores does under the lock.
@@ -44,7 +38,7 @@ export function loadConfig(configPath: string): PlurConfig {
       if (isServerStoreEntry(entry)) {
         const serverParsed = ServerStoreEntrySchema.safeParse(entry)
         if (!serverParsed.success) {
-          // Paths and codes only: a Zod message can embed the received value (#408).
+          // Paths and codes only: a Zod message can embed the received value.
           const url = (entry as { url?: unknown })?.url
           const label = typeof url === 'string' ? safeOrigin(url) : `index ${i}`
           logger.warning(`[plur:config] dropping invalid server entry stores[${i}] (${label}) from ${configPath}: ${serverParsed.error.issues.map(it => `${it.path.join('.') || '(root)'}: ${it.code}`).join('; ')}`)
@@ -75,10 +69,10 @@ export function loadConfig(configPath: string): PlurConfig {
     logger.warning(`[plur:config] top-level config invalid at ${configPath}: ${(err as Error).message} — falling back to defaults`)
     return PlurConfigSchema.parse({})
   }
-  // PR-3 (#353) scope-naming pass. ScopeSensitivitySchema.forbid now preprocesses
-  // unknown categories away (non-fatal), but the field-level preprocess can't
-  // name the SCOPE it belongs to. Diff the raw `forbid` against the parsed one
-  // per entry and emit a scope-named warning so an operator can find the entry.
+  // ScopeSensitivitySchema.forbid preprocesses unknown categories away
+  // (non-fatal), but the field-level preprocess can't name the SCOPE it
+  // belongs to. Diff the raw `forbid` against the parsed one per entry and
+  // emit a scope-named warning so an operator can find the entry.
   if (Array.isArray(raw.stores) && parsed.stores) {
     for (let i = 0; i < parsed.stores.length; i++) {
       const rawEntry = (raw.stores as unknown[])[i] as { sensitivity?: { forbid?: unknown } } | undefined
@@ -94,8 +88,8 @@ export function loadConfig(configPath: string): PlurConfig {
 }
 
 /**
- * The token a `token_env` reference names (#1561): the variable's value,
- * trimmed, or undefined when it is unset or blank.
+ * The token a `token_env` reference names: the variable's value, trimmed,
+ * or undefined when it is unset or blank.
  */
 export function tokenFromEnv(name: string | undefined, env: NodeJS.ProcessEnv = process.env): string | undefined {
   if (!name) return undefined
@@ -105,7 +99,7 @@ export function tokenFromEnv(name: string | undefined, env: NodeJS.ProcessEnv = 
 
 /**
  * Fill each remote store's `token` from its `token_env` variable, when the
- * file names one and carries no token of its own (#1561). In memory only:
+ * file names one and carries no token of its own. In memory only:
  * {@link storeEntryForDisk} keeps the resolved value out of every write-back.
  */
 const warnedUnsetTokenEnv = new Set<string>()
@@ -118,7 +112,7 @@ function resolveStoreTokens(config: PlurConfig): PlurConfig {
       if (!s.token_env || s.token) return s
       const token = tokenFromEnv(s.token_env)
       if (!token) {
-        // Once per process and store: every config reload used to repeat it.
+        // Warn once per process and store, not on every config reload.
         const once = `${s.scope}\0${s.token_env}`
         if (warnedUnsetTokenEnv.has(once)) return s
         warnedUnsetTokenEnv.add(once)
@@ -131,7 +125,7 @@ function resolveStoreTokens(config: PlurConfig): PlurConfig {
 }
 
 /**
- * A store entry as it is written to config.yaml (#1561). An entry that names
+ * A store entry as it is written to config.yaml. An entry that names
  * `token_env` keeps the reference and drops a `token` equal to the variable's
  * value — the value it was resolved to at load — so no write-back of the
  * stores list stores the secret. A token that differs from the variable (one

@@ -30,7 +30,7 @@ vi.mock('os', async (importOriginal) => {
 
 import * as asyncLock from '../src/store/async-lock.js'
 import { withAsyncLock } from '../src/store/async-lock.js'
-import { withLock } from '../src/sync.js'
+import { withLock } from '../src/file-lock.js'
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 const spin = (ms: number) => { const end = Date.now() + ms; while (Date.now() < end) { /* block */ } }

@@ -3,9 +3,7 @@
  *
  * 384-dim, ~22M params, ~90MB on disk. Apache 2.0.
  *
- * Historical default referenced in the PLUR design docs; kept as a baseline
- * for the bake-off so we can measure how much BGE/EmbeddingGemma actually
- * buy us on LongMemEval.
+ * Kept as a baseline so the gain from BGE/EmbeddingGemma can be measured.
  */
 import { makeTransformersAdapter } from './transformers-base.js'
 import type { EmbedderAdapter } from './types.js'

@@ -6,4 +6,4 @@
  * constant. `test/version-parity.test.ts` fails the suite if this and
  * package.json ever disagree. Bumped by `scripts/release.sh --claw`.
  */
-export const CLAW_VERSION = '0.20.0'
+export const CLAW_VERSION = '0.20.1'

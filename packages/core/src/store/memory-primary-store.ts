@@ -1,16 +1,13 @@
 /**
  * MemoryPrimaryStore — an in-process `PrimaryStore` with no filesystem backing.
  *
- * Its job is to make "the `Plur` class is source-of-truth agnostic" a claim that
- * can be *tested* rather than asserted: inject one, run the full learn/recall/
- * update/forget surface, and observe that no `engrams.yaml` is ever created.
- * It is also a legitimate production choice for ephemeral or sandboxed sessions
- * where nothing should be persisted to disk.
+ * Lets tests verify that the `Plur` class does not depend on a particular source
+ * of truth (no `engrams.yaml` is ever created), and serves ephemeral or sandboxed
+ * sessions where nothing should be persisted to disk.
  *
  * Engrams are cloned on the way in and out so callers cannot mutate stored state
- * by holding a reference — the YAML store gets that property for free from
- * serialisation, and a memory store that skipped it would be a subtly different
- * source of truth, which is exactly what this class exists to rule out.
+ * by holding a reference, matching the YAML store, which gets that property from
+ * serialisation.
  */
 import type { Engram } from '../schemas/engram.js'
 import type { AsyncPrimaryStore, PrimaryStoreKind } from './primary-store.js'
@@ -37,9 +34,8 @@ export class MemoryPrimaryStore implements AsyncPrimaryStore {
   }
 
   /**
-   * O(1) insert of one new engram. Duplicate ids are a caller bug — surface
-   * them (see `PrimaryStore.append`: an upsert here would silently overwrite
-   * an unrelated row, which is exactly what `append` exists to rule out).
+   * O(1) insert of one new engram. Duplicate ids are a caller bug and throw:
+   * an upsert here would silently overwrite an unrelated row.
    */
   async append(engram: Engram): Promise<void> {
     if (this.engrams.some(e => e.id === engram.id)) {

@@ -1,0 +1,39 @@
+anchors:
+  packages/core/src/importers/engine.ts#(module):
+    kind: guarantee
+    rule: 'Imports never write to the store directly: every record goes through learn(), and re-running an import changes
+      nothing.'
+    lean:
+    - PlurSpec/R2CoreA.lean:rerun_changes_nothing
+    tests:
+    - packages/core/test/importers.test.ts::re-importing the same file is idempotent (all skipped)
+  packages/core/src/importers/engine.ts#hashToId:
+    kind: guarantee
+    rule: The dry run predicts deduplication exactly as learn() does, never absorbing a shared-scope record into another scope's
+      engram.
+    lean:
+    - PlurSpec/R2CoreA.lean:dry_predicts_real_store
+    - PlurSpec/R2CoreA.lean:infile_parity
+    tests:
+    - 'packages/core/test/import-shared-scope.test.ts::dry run predicts the same: imported, not skipped'
+  packages/core/src/importers/engine.ts#runImport:
+    kind: guarantee
+    rule: Re-importing an existing record leaves that engram untouched, and a record learn() would refuse is reported as an
+      error.
+    lean:
+    - PlurSpec/R2CoreA.lean:rerun_changes_nothing
+    - PlurSpec/R2Retrieval.lean:dry_predicts_real
+    tests:
+    - packages/core/test/importers.test.ts::re-importing the same file is idempotent (all skipped)
+    - packages/core/test/importers.test.ts::counts records that fail the learn gates as errors
+  packages/core/src/importers/engine.ts#secretPattern:
+    kind: guarantee
+    rule: A record with a secret in any content field is predicted as an error in the dry run, never as a skip.
+    lean:
+    - PlurSpec/R2Retrieval.lean:dry_predicts_real
+  packages/core/src/importers/types.ts#(module):
+    kind: guarantee
+    rule: Importers never append to the store directly; every record passes learn()'s dedup and secret gates.
+    tests:
+    - packages/core/test/importers.test.ts::routes duplicates through the content-hash dedup gate
+    - packages/core/test/importers.test.ts::counts records that fail the learn gates as errors

@@ -1,14 +1,7 @@
 /**
- * Extracted from `@plur-ai/claw`'s `packages/claw/src/learner.ts` so
- * `@plur-ai/opencode` can share the exact same learning-extraction
- * heuristics instead of vendoring a second copy. Behaviour must stay
- * identical to claw's pre-extraction implementation — claw is a shipped
- * package.
- *
- * `isCorrection` moved here too (2026-09, opencode plugin task — A3 parity
- * fix), so `@plur-ai/opencode`'s user-text learning path can be gated by the
- * same real-time correction matcher claw's `ingest()` uses. See its
- * docstring below for the rest of that history.
+ * Learning-extraction heuristics shared by `@plur-ai/claw` and
+ * `@plur-ai/opencode`, so both use exactly the same matching. Claw is a
+ * shipped package: changes here change its behaviour.
  */
 
 /**
@@ -51,11 +44,8 @@ export interface LearnCandidate {
 /**
  * Extract text from message content — handles string and array-of-blocks
  * formats. Deliberately distinct from `extractText` above: that one strips
- * OpenClaw's metadata-wrapper prefixes for the correction-pattern path. This
- * one is the verbatim `extractMessageText` helper that
- * `extractSelfReportedLearnings` used in `@plur-ai/claw`'s
- * `context-engine.ts`, unchanged, so self-report extraction behaviour stays
- * identical post-extraction — claw is a shipped package.
+ * OpenClaw's metadata-wrapper prefixes for the correction-pattern path; this
+ * one returns the text verbatim for self-report extraction.
  */
 function extractMessageText(message: LearnableMessage): string {
   const content = message.content
@@ -70,46 +60,26 @@ function extractMessageText(message: LearnableMessage): string {
 }
 
 /**
- * A bullet that is WHOLLY a bracketed placeholder (`[...]`, nothing else on
- * the line) is never a genuine learning — it is template scaffolding. The
- * injected instruction block (`memory-block.ts`'s `PLUR_MEMORY_INSTRUCTIONS`)
- * contains exactly this shape as literal example text:
- *
- *   - [concise statement of what you learned]
- *   - [another if applicable]
- *
- * Both placeholders are well over the 10-character floor below, so without
- * this filter, any turn that echoes or quotes that block (the model repeats
- * it, a user pastes it, a test fixture reuses it) gets its instructional
- * placeholders harvested by `learnFromTurn` as permanent engrams. Audit
- * finding A2.
+ * A bullet that is WHOLLY a bracketed placeholder is template scaffolding, never a learning:
+ * `PLUR_MEMORY_INSTRUCTIONS` (memory-block.ts) contains such example bullets, and without
+ * this filter any turn echoing that block would harvest them as engrams.
  */
 const PLACEHOLDER_BULLET_RE = /^\[.+\]$/
 
 /**
- * The per-reply memory line PLUR's instructions ask for
- * (`Memory — recalled N · used: ENG-… · written: ENG-…`, or `Memory — none`),
- * in the forms an agent may write it: plain, in backticks, bold or italics, as
- * a bullet, numbered item or quote, after a 🧠, inside HTML tags, with an em
- * dash, en dash, hyphen or colon. It reports on the turn; it is never a
- * learning (#1520 audit S3, re-audits R2, L2, N3).
- *
- * The WHOLE line must have the footer's shape: parts separated by `·`, each
- * `recalled N` (a count, any script's digits), `recalled/used/written: ENG-…`
- * (ids, comma-separated) or `… none`, or `none` / `none recalled` alone. So
- * "Memory: recalled 3 times faster…" or "Memory: used: ENG-123 is obsolete…"
- * stay learnings. Mirrored exactly by `_MEMORY_LINE_RE` in
- * packages/hermes/plur_hermes/learner.py; both are tested on the cases in
- * packages/core/test/fixtures/memory-line-cases.json. Whitespace is written as
- * `[ \t]` (not `\s`) and a leading BOM is stripped before matching, because
- * JavaScript's and Python's `\s` differ on it.
+ * The per-reply memory line (`Memory — recalled N · used: ENG-… · written: ENG-…`, or
+ * `Memory — none`) in any common markup; it reports on the turn and is never a learning.
+ * The WHOLE line must have the footer's shape, so "Memory: recalled 3 times faster…" stays a
+ * learning. Mirrored exactly by `_MEMORY_LINE_RE` in packages/hermes/plur_hermes/learner.py;
+ * both are tested on packages/core/test/fixtures/memory-line-cases.json. Whitespace is
+ * `[ \t]` and a leading BOM is stripped, because JS and Python `\s` differ.
  */
 const ML_MARK = '[*_`]*'
 /**
  * Case-insensitive for ASCII letters only, written out (`[Mm][Ee]…`) rather
  * than with a flag: JavaScript's `i` and Python's IGNORECASE fold different
  * letters (Turkish İ and ı fold to I/i in Python only), so neither side uses a
- * flag and both stay identical (#1557 review L4).
+ * flag and both stay identical.
  */
 const ci = (word: string) => [...word].map(ch => /[a-z]/i.test(ch) ? `[${ch.toUpperCase()}${ch.toLowerCase()}]` : ch).join('')
 const ML_ID = 'ENG-[A-Za-z0-9…-]*'
@@ -135,19 +105,15 @@ export function isMemoryLine(line: string): boolean {
  * Extract self-reported learnings from a message.
  * Looks for the 🧠 I learned: section and parses bullet points.
  *
- * Extracted from `@plur-ai/claw`'s `context-engine.ts` (2026-09, opencode
- * plugin task 6b) so `@plur-ai/opencode` can harvest the assistant's own
- * self-report block instead of vendoring a second copy. The caller decides
- * which message to pass (claw passes only the last assistant message) —
- * this function does not filter by role. Behaviour must stay identical to
- * claw's pre-extraction implementation — claw is a shipped package.
+ * The caller decides which message to pass (claw passes only the last
+ * assistant message) — this function does not filter by role.
  */
 export function extractSelfReportedLearnings(message: LearnableMessage): string[] {
   const content = extractMessageText(message)
   // Match the learning section: ---\n🧠 I learned:\n- item\n- item
   // The per-reply memory line may follow the last bullet with no blank line,
   // so it can land inside the block; it is filtered out below, line by line,
-  // so a real learning after it is never lost (#1520 audit S3, re-audits R2, L2).
+  // so a real learning after it is never lost.
   const match = content.match(/---\s*\n🧠 I learned:\s*\n([\s\S]*?)(?:\n---|\n\n[^-]|$)/)
   if (!match) return []
 
@@ -168,30 +134,13 @@ const DECISION_PATTERNS = [
 
 const PREFERENCE_PATTERNS = [
   { re: /(?:i prefer|i like)\s+(.+?)(?:\s+(?:for|over|instead|rather)\s+.+)?$/i, type: 'behavioral' as const, confidence: 0.6 },
-  // A1 fix: the capturing group used to start AFTER the directive word
-  // (`(?:always|never)\s+(.+)`), so only the tail was stored — "never
-  // commit the API key" became the standing instruction "commit the API
-  // key". `always`/`never` and `don't`/`do not` are polarity-bearing:
-  // dropping the word doesn't just lose color, it inverts (or for the
-  // positive words, defangs) the instruction. Wrapping the whole match in
-  // the capturing group keeps the directive word attached to its tail, so
-  // the stored statement is a complete, correctly-signed instruction when
-  // rendered under memory-block.ts's "should apply" header.
-  //
-  // Formal run 2026-09-23 (spec/formal/PlurSpec/ScopeInject.lean §4): the
-  // same inversion survived A1 from the LEFT. The pattern was unanchored, so
-  // (a) a negation directly before the directive word was cut off — "Don't
-  // always rerun the full suite" was stored as "always rerun the full suite" —
-  // and (b) the directive word matched inside another word — "Whenever you
-  // deploy, run the smoke tests" was stored as "never you deploy, run the
-  // smoke tests". The directive word now needs word boundaries, and a
-  // directly preceding negation is captured with it.
-  //
-  // Audit of #1228 (finding 3): "negation" is every contracted form
-  // (`\w+n't` — doesn't, can't, won't, shouldn't, isn't, mustn't …), the
-  // same forms typed without the apostrophe, and `cannot` — not only
-  // don't / do not / not, or "cannot always trust the cache" was stored as
-  // "always trust the cache". A word merely ending in -nt ("want") is not one.
+  // The whole match is captured, directive word included: `always`/`never`
+  // are polarity-bearing, and storing only the tail ("never commit the API
+  // key" -> "commit the API key") inverts the instruction. The directive word
+  // needs word boundaries ("Whenever" is not "never"), and a directly
+  // preceding negation is captured with it ("Don't always rerun…"). Negation
+  // covers every contracted form (`\w+n't`), the same forms typed without the
+  // apostrophe, and `cannot`; a word merely ending in -nt ("want") is not one.
   { re: /((?:\b(?:\w+n['\u2019]t|(?:do|does|did|ca|wo|sha|should|could|would|must|need|is|are|was|were|has|have|had|ai)nt|cannot|do not|not)\s+)?\b(?:always|never)\b\s+.+)/i, type: 'behavioral' as const, confidence: 0.7 },
   { re: /((?:you should|you must|don't|do not)\s+.+)/i, type: 'behavioral' as const, confidence: 0.6 },
   { re: /(?:your purpose is|you are)\s+(.{15,})/i, type: 'behavioral' as const, confidence: 0.6 },
@@ -201,43 +150,14 @@ const PREFERENCE_PATTERNS = [
 
 const CORRECTION_PATTERNS = [
   { re: /(?:no[,.]|actually[,.])\s+(.+)/i, type: 'behavioral' as const, confidence: 0.7 },
-  // E1 fix (a third inverting pattern, found after the A1 fix to
-  // PREFERENCE_PATTERNS above): this used to be `/(.+?),?\s+not\s+(.+)/i`
-  // with an OPTIONAL comma, and — worse — the code below only ever reads
-  // `match[1]`, the text BEFORE "not". That combination matched any sentence
-  // containing the bare word " not " anywhere, not just a deliberate "X, not
-  // Y" contrast, and then stored only the half before "not":
-  // "Deploying straight to production is not allowed here" became the
-  // standing instruction "Deploying straight to production is" — the exact
-  // inversion class the A1 fix was raised to kill, at a HIGHER confidence
-  // (0.8) than the patterns A1 fixed, and positioned to run BEFORE them in
-  // ALL_PATTERN_GROUPS — so a prohibition shaped like "you should not …" or
-  // "… is not …" never reached A1's negation-safe patterns at all; this one
-  // claimed the sentence first.
-  //
-  // This pattern's legitimate job is the corrective "X, not Y" shape — the
-  // user naming the right thing against the wrong one ("use pnpm, not
-  // npm"). That shape reliably has a comma directly before "not"; a plain
-  // prohibition ("is not allowed", "should not commit", "is not a safe
-  // place") does not. Requiring the comma is the discriminator: it keeps
-  // "The port is 5433, not 5432" and "use pnpm, not npm" (both intentional
-  // contrasts) while refusing every prohibition sentence in the audit's
-  // table, none of which contain a comma before "not". `isCorrection` below
-  // reaches the same "X, not Y" shape via anchored keywords ("use …, not
-  // …" / "it's …, not …") with an OPTIONAL comma — that gate only has to
-  // decide yes/no, so it can afford to also catch the no-comma phrasing;
-  // this pattern also has to decide WHAT TEXT TO STORE, and a bare "not"
-  // with no comma gives no reliable place to cut the sentence without
-  // risking the same truncation this fix exists to close. Refusing to match
-  // is always safe here — extractLearnings simply returns no candidate for
-  // that sentence, which beats storing an inverted one.
-  //
-  // The whole match is captured (one group spanning the full sentence, the
-  // same shape as A1's fix to PREFERENCE_PATTERNS), not just the text before
-  // "not" — storing "use pnpm" alone drops the very half of the sentence
-  // that says npm was wrong. Preserving the full contrast is the safer
-  // choice across this whole bug class: a fragment can read as an
-  // instruction it was never meant to be, where the full sentence cannot.
+  // Matches only the corrective "X, not Y" shape ("use pnpm, not npm"), which
+  // reliably has a comma directly before "not"; plain prohibitions ("is not
+  // allowed", "should not commit") do not, and storing a fragment of one
+  // would invert it. Refusing to match is always safe — the sentence simply
+  // yields no candidate. `isCorrection` accepts the no-comma phrasing too,
+  // because it only decides yes/no; this pattern also decides what text to
+  // store. The whole sentence is captured so the stored statement keeps both
+  // halves of the contrast.
   { re: /(.+,\s+not\s+.+)/i, type: 'behavioral' as const, confidence: 0.8 },
 ]
 
@@ -249,17 +169,12 @@ const IDENTITY_PATTERNS = [
 
 // All pattern groups in priority order (most specific first).
 //
-// E1 fix: PREFERENCE_PATTERNS now runs before CORRECTION_PATTERNS. Every
-// polarity-bearing pattern in both groups captures its FULL match (never
-// just the tail after a directive word), so which of the two matches first
-// no longer changes what gets stored — but PREFERENCE_PATTERNS' keyword
-// anchors (`never`, `always`, `you should`, `you must`, `don't`, `do not`)
-// are the narrower, more deliberately-reasoned-about shapes, and
-// CORRECTION_PATTERNS' comma-based "X, not Y" is the broader net. Trying the
-// narrower group first is the structural fix for what let a broad,
-// high-confidence pattern preempt a careful one twice: a future pattern
-// added to either group inherits "narrow before broad" instead of having to
-// remember it.
+// PREFERENCE_PATTERNS runs before CORRECTION_PATTERNS: its keyword anchors
+// (`never`, `always`, `you should`, `don't`, …) are the narrower shapes, and
+// the comma-based "X, not Y" is the broader net. Every polarity-bearing
+// pattern captures its full match, so order does not change what is stored,
+// but narrow-before-broad keeps a broad high-confidence pattern from claiming
+// a sentence a careful one should handle.
 const ALL_PATTERN_GROUPS = [IDENTITY_PATTERNS, DECISION_PATTERNS, PREFERENCE_PATTERNS, CORRECTION_PATTERNS]
 
 /**
@@ -275,18 +190,14 @@ function splitSentences(text: string): string[] {
 
 /**
  * Check if a single message contains a correction. Used for real-time
- * gating before extraction runs — claw's `ingest()` and (A3 audit fix)
+ * gating before extraction runs — claw's `ingest()` and
  * `@plur-ai/opencode`'s `learnFromUserText` both call this before running
  * `extractLearnings`, so a plain preference or decision doesn't get treated
  * as an urgent real-time write. Much tighter than the pattern groups below:
  * it requires an explicit correction shape ("no,", "actually,", "wrong", or
  * an "X, not Y" construction), not just any learning-shaped sentence.
  *
- * Moved from `@plur-ai/claw`'s `learner.ts` (2026-09, opencode plugin task —
- * A3 parity fix) so `@plur-ai/opencode` can share the exact same real-time
- * correction gate instead of running its user-text learning path ungated.
- * `packages/claw/src/learner.ts` re-exports this — behaviour is unchanged,
- * claw is a shipped package.
+ * `packages/claw/src/learner.ts` re-exports this.
  */
 export function isCorrection(message: LearnableMessage): boolean {
   if (message.role !== 'user') return false

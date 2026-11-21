@@ -1,5 +1,3 @@
-// packages/core/src/meta/similarity.ts
-
 /** Token-based similarity between two template strings. Used for clustering, dedup, and hierarchy. */
 export function tokenSimilarity(a: string, b: string): number {
   const wordsA = new Set(a.toLowerCase().split(/[\s\[\]→+\-]+/).filter(w => w.length > 2))

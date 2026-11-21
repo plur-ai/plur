@@ -3,18 +3,11 @@ import { createPlur, type GlobalFlags } from '../plur.js'
 import { outputText, outputInfo, outputJson, shouldOutputJson, exit } from '../output.js'
 
 /**
- * plur rerank-eval — per-store reranker self-eval gate (#451, final task).
- *
- * Samples this store's own engrams, synthesizes probe queries from their
- * statements, and compares the cross-encoder's ordering against RRF-only.
- * Cross-encoders can be net-negative out-of-domain; this is the quick
- * self-check to run before enabling PLUR_RERANKER on a store.
- *
- * The verdict is cached in `<store>/.reranker-eval.json` (staleness bound:
- * 7 days or >20% store-size drift) and surfaced by plur_doctor plus a
- * loud-once advisory on the reranker-enable path. ADVISORY only — a harmful
- * verdict never auto-disables reranking; it exits 1 so scripts can gate on it.
- *
+ * plur rerank-eval — per-store reranker self-eval gate: probes synthesized from this
+ * store's engrams compare the cross-encoder against RRF-only (cross-encoders can hurt
+ * out of domain). The verdict is cached in `<store>/.reranker-eval.json` (stale after
+ * 7 days or >20% size drift) and surfaced by plur_doctor. ADVISORY: a harmful verdict
+ * never disables reranking; it exits 1 so scripts can gate on it.
  * Usage:
  *   plur rerank-eval [--reranker <name>] [--sample N] [--seed N] [--force]
  */
@@ -59,8 +52,8 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     outputJson({ ...result, cached })
   } else {
     const sign = result.delta_mrr >= 0 ? '+' : ''
-    // Banner → suppressed by --quiet; the eval report below is primary (#730).
-    outputInfo(`plur rerank-eval — per-store reranker self-eval (#451)${cached ? ' [cached]' : ''}`, flags)
+    // Banner → suppressed by --quiet; the eval report below is primary.
+    outputInfo(`plur rerank-eval — per-store reranker self-eval${cached ? ' [cached]' : ''}`, flags)
     outputInfo('', flags)
     outputText(`  Reranker:   ${result.reranker} (${result.model_id})`)
     outputText(`  Evaluated:  ${result.evaluated_at}`)

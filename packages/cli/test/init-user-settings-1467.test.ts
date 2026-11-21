@@ -244,15 +244,17 @@ describe('re-running plur init in a repo that holds PLUR prompt hooks (#1467 mig
     expect(raw(mapFile())).not.toContain(repo)
   })
 
+  // D1, revised (owner, 2026-11-14): such a folder is on without the file's
+  // settings (no scope); the trust question still offers them.
   it('an untrusted .plur.yaml that asks for a scope: hooks move, no map entry, the folder question still offers the scope (#1469 review)', () => {
     olderInstall('scope: project:repo-hint\n')
     const plurYaml = raw(join(repo, '.plur.yaml'))
-    expect(policy()).toMatchObject({ mode: 'ask', reason: 'untrusted-plur-yaml', requested: { scope: 'project:repo-hint' } })
+    expect(policy()).toMatchObject({ mode: 'on', reason: 'untrusted-plur-yaml', requested: { scope: 'project:repo-hint' } })
     const out = init()
     expect(plurCommands(read(repoFile()))).toEqual([])
     expect(hasPrompt(read(userFile()))).toBe(true)
     expect(mapEntries()).toEqual([])
-    expect(policy()).toMatchObject({ mode: 'ask', reason: 'untrusted-plur-yaml', requested: { scope: 'project:repo-hint' } })
+    expect(policy()).toMatchObject({ mode: 'on', reason: 'untrusted-plur-yaml', requested: { scope: 'project:repo-hint' } })
     expect(raw(join(repo, '.plur.yaml'))).toBe(plurYaml)
     expect(out).toMatch(/not recorded in the folder map: its \.plur\.yaml asks for scope project:repo-hint/)
   })
@@ -307,6 +309,8 @@ describe('re-running plur init in a repo that holds PLUR prompt hooks (#1467 mig
     describe(`plur init with a new --scope in a repo an older init set up (${plat}, #1469 review)`, () => {
       beforeEach(() => { nodeArgs = plat === 'win32 stub' ? ['--import', WIN32_PRELOAD] : [] })
 
+      // D1, revised (owner, 2026-11-14): "asked about" now means on without
+      // its settings, with the trust question.
       it('no .plur.yaml before: the new untrusted .plur.yaml is asked about, as in a fresh repo; hooks move', () => {
         olderInstall()
         expect(existsSync(join(repo, '.plur.yaml'))).toBe(false)
@@ -315,7 +319,7 @@ describe('re-running plur init in a repo that holds PLUR prompt hooks (#1467 mig
         expect(plurCommands(read(repoFile()))).toEqual([])
         expect(hasPrompt(read(userFile()))).toBe(true)
         expect(mapEntries()).toEqual([])
-        expect(policy()).toMatchObject({ mode: 'ask', reason: 'untrusted-plur-yaml', requested: { scope: 'project:newscope' } })
+        expect(policy()).toMatchObject({ mode: 'on', reason: 'untrusted-plur-yaml', requested: { scope: 'project:newscope' } })
         expect(out).toMatch(/not recorded in the folder map: its \.plur\.yaml asks for scope project:newscope/)
 
         // the same command in a fresh repo gives the same policy
@@ -326,7 +330,7 @@ describe('re-running plur init in a repo that holds PLUR prompt hooks (#1467 mig
         })
         expect(r.status, `${r.stdout}\n${r.stderr}`).toBe(0)
         expect(resolveFolderPolicy(fresh, { root: join(home, '.plur'), home }))
-          .toMatchObject({ mode: 'ask', reason: 'untrusted-plur-yaml', requested: { scope: 'project:newscope' } })
+          .toMatchObject({ mode: 'on', reason: 'untrusted-plur-yaml', requested: { scope: 'project:newscope' } })
       })
 
       it('a trusted .plur.yaml and a new --scope: trust is per folder, so the new scope applies, as in a fresh trusted repo', () => {

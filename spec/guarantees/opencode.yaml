@@ -1,0 +1,104 @@
+anchors:
+  packages/opencode/src/block.ts#BlockCache:
+    kind: guarantee
+    rule: "Each turn's memory block replaces the previous one for that session; blocks never accumulate."
+    tests: ["packages/opencode/test/block.test.ts::overwrites on a later turn rather than appending"]
+  packages/opencode/src/capability.ts#RenderPath.markRendered:
+    kind: guarantee
+    rule: "A session whose system prompt is never rendered stays on the fallback path until rendering resumes."
+    tests: ["packages/opencode/test/capability.test.ts::stays latched across turns that never render", "packages/opencode/test/capability.test.ts::recovers from fallback once rendering resumes"]
+  packages/opencode/src/index.ts#(module):
+    kind: note
+    why: "A build constraint for maintainers: the host type import must stay type-only."
+  packages/opencode/src/index.ts#fallbackInjected:
+    kind: guarantee
+    rule: "When the fallback already put this turn's memory block into the request, the system prompt does not add it a second time."
+    lean: ["PlurSpec/R2Integrations.lean:exactly_one_copy"]
+    tests: ["packages/opencode/test/formal-r2-integrations-opencode.test.ts::fallback turn: when system.transform comes back, the block is not pushed twice"]
+  packages/opencode/src/index.ts#PlurPlugin:
+    kind: guarantee
+    rule: "Once the folder question has been shown and reminded, its nonces are ended, so a later unrelated yes cannot be taken as consent."
+    tests: ["packages/opencode/test/folder-map.test.ts::R4: after the question and one reminder the session carries nothing and the nonces are ended"]
+  packages/opencode/src/index.ts#PlurPlugin.'chat.message':
+    kind: guarantee
+    rule: "A slow or hung store never stalls the user's turn; recall is bounded and learning runs in the background."
+    lean: ["PlurSpec/R2Integrations.lean:wait_bounded"]
+    tests: ["packages/opencode/test/formal-r2-integrations-opencode.test.ts::a hung injectHybrid does not block chat.message past the bound"]
+  packages/opencode/src/index.ts#PlurPlugin.'experimental.chat.system.transform':
+    kind: guarantee
+    rule: "Rendering the system prompt only reads the cached block and never runs a recall."
+    tests: ["packages/opencode/test/hooks.test.ts::renders the same cached block on repeated requests without re-running recall"]
+  packages/opencode/src/index.ts#PlurPlugin.'experimental.session.compacting':
+    kind: guarantee
+    rule: "Compaction adds memory to the context but never replaces the host's compaction prompt."
+    tests: ["packages/opencode/test/compaction.test.ts::pushes the memory block into compaction context"]
+  packages/opencode/src/index.ts#PlurPlugin.'shell.env':
+    kind: guarantee
+    rule: "The folder-question nonces are accepted only from the session that showed them."
+    tests: ["packages/opencode/test/folder-map.test.ts::F5: the question nonces work only from the session that showed them"]
+  packages/opencode/src/index.ts#PlurPlugin.event:
+    kind: guarantee
+    rule: "Learning at the end of a turn runs in the background and happens once per turn, even when the idle event fires twice."
+    tests: ["packages/opencode/test/event.test.ts::does not double-learn when session.idle fires twice for one turn"]
+  packages/opencode/src/index.ts#PlurPlugin.folderState:
+    kind: guarantee
+    rule: "The project remote is logged by host only, never with its token."
+    tests: ["packages/opencode/test/remote.test.ts::never logs the token"]
+  packages/opencode/src/index.ts#question.host:
+    kind: guarantee
+    rule: "The folder question is matched to this process by id and start time, so a reused process id never passes for it."
+    none: "no opencode test reuses a process id"
+  packages/opencode/src/index.ts#safe:
+    kind: guarantee
+    rule: "A memory failure inside a hook never breaks the agent's turn."
+    tests: ["packages/opencode/test/hooks.test.ts::a recall failure degrades to no memory rather than throwing"]
+  packages/opencode/src/index.ts#state:
+    kind: guarantee
+    rule: "In a folder that is not on, compaction carries no memory block, so the folder question does not outlive its turn."
+    none: "no compaction test runs in an ask or off folder"
+  packages/opencode/src/index.ts#warn:
+    kind: note
+    why: "Explains why refusal warnings print without the debug flag."
+  packages/opencode/src/learn.ts#learnFromTurn:
+    kind: guarantee
+    rule: "Memories learned from the assistant's own text are marked inferred, never presented as taught by the user."
+    tests: ["packages/opencode/test/learn.test.ts::marks every self-reported statement claim_class: inferred"]
+  packages/opencode/src/learn.ts#learnFromUserText.claim_class:
+    kind: guarantee
+    rule: "Corrections extracted from user text are marked inferred, never presented as explicitly taught."
+    tests: ["packages/opencode/test/learn.test.ts::marks every extracted correction claim_class: inferred"]
+  packages/opencode/src/scope.ts#folderPolicy:
+    kind: guarantee
+    rule: "A folder-map resolver failure never breaks the turn and fails safe: no memory, with a notice."
+    tests: ["packages/opencode/test/folder-map.test.ts::F4: a resolver that throws means no memory, never the marker fallback to on"]
+  packages/opencode/src/scope.ts#resolveTrustedScope:
+    kind: guarantee
+    rule: "A project scope with no file to attribute it to is ignored, not adopted."
+    tests: ["packages/opencode/test/scope.test.ts::returns {} and warns when configPath is trusted but null"]
+  packages/opencode/src/scope.ts#shellWord:
+    kind: guarantee
+    rule: "A printed command is never offered for a path holding characters the shell would expand, or a line-break, bidi or zero-width character."
+    none: "no test exercises this copy of the quoting rule"
+  packages/opencode/src/scope.ts#trustCommand:
+    kind: guarantee
+    rule: "The offered trust command names a non-default store with --path, so the grant lands in the store this plugin reads."
+    tests: ["packages/opencode/test/formal-audit-1228c.test.ts::a real engine on a custom store: the warning carries --path"]
+  packages/opencode/src/timeout.ts#INJECT_TIMEOUT_MS:
+    kind: note
+    why: "States a fact about the host: opencode refuses a non-function export, so this constant is not exported from the entry."
+  packages/opencode/src/v2.ts#boundary:
+    kind: guarantee
+    rule: "On first observation only the current batch of user messages is learned; earlier history is never bulk-imported."
+    tests: ["packages/opencode/test/v2-lifecycle.test.ts::does not harvest old history, but captures every newly admitted user in a batch"]
+  packages/opencode/src/v2.ts#queueLearning:
+    kind: guarantee
+    rule: "Learning writes are queued apart from the context hook, so a slow remote write never delays rendering."
+    tests: ["packages/opencode/test/v2-lifecycle.test.ts::lets another session render while a learning write is pending"]
+  packages/opencode/src/v2.ts#render:
+    kind: guarantee
+    rule: "Messages seen while a folder is off or undecided are never learned later when it is turned on; a block recalled under an earlier policy is never rendered."
+    tests: ["packages/opencode/test/v2-lifecycle.test.ts::marks off-folder messages without learning them later when enabled", "packages/opencode/test/v2-lifecycle.test.ts::drops cached recall when policy changes during the request"]
+  packages/opencode/src/v2.ts#saved:
+    kind: guarantee
+    rule: "Host storage holds message identifiers only, never conversation text."
+    none: "no test inspects what is written to host storage"

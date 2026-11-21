@@ -83,11 +83,12 @@ describe('cli#12 Antigravity turn identity', () => {
     // A mid-turn invocation of the SAME turn must not re-recall…
     hook({ conversationId: 'a1', invocationNum: 1, transcriptPath: t })
     const turncount = join(root, 'tmp', 'plur-agy-sessions', 'a1.turncount')
-    expect(readFileSync(turncount, 'utf8').trim()).toBe('1')
+    // One ticket line per counted turn.
+    expect(readFileSync(turncount, 'utf8').trim().split('\n')).toHaveLength(1)
     // …but the user saying "yes" again is a new turn.
     appendFileSync(t, '{"type":"PLANNER_RESPONSE","content":"ok"}\n{"type":"USER_INPUT","content":"<USER_REQUEST>yes</USER_REQUEST>"}\n')
     hook({ conversationId: 'a1', invocationNum: 0, transcriptPath: t })
-    expect(readFileSync(turncount, 'utf8').trim()).toBe('2')
+    expect(readFileSync(turncount, 'utf8').trim().split('\n')).toHaveLength(2)
   }, 60_000)
 
   posixOnly('an unusable cache dir does not make every turn the session start', () => {

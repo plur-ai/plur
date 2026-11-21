@@ -1,31 +1,11 @@
 /**
- * Per-store reranker eval gate — #451 (final task).
- *
- * Cross-encoder rerankers are trained on web/QA corpora; on an out-of-domain
- * engram store they can be net-negative (one 2026 study measured bge-reranker
- * degrading dense retrieval 34%). The #451 measurements show the lift lives
- * in hard categories on the fixture corpus — but nothing guarantees that
- * transfers to YOUR store. So before anyone flips reranking on by default,
- * each store gets a quick self-check:
- *
- *   1. Sample the store's own engrams (deterministic, seeded).
- *   2. Synthesize a probe query from each sampled engram's statement —
- *      the source engram is the known-relevant document for that query.
- *   3. Retrieve the RRF top-K for the probe (reranker OFF), note where the
- *      source ranks.
- *   4. Re-order the same pool with the cross-encoder, note the new rank.
- *   5. Aggregate MRR / Hit@1 both ways. If the reranker systematically
- *      demotes known-relevant sources, it is HARMFUL on this store.
- *
- * The probe queries are keyword extracts of the source statements, so BM25
- * usually ranks the source highly already — by construction this gate has
- * limited power to prove *benefit* (the benchmark harness does that); its
- * job is to prove a reranker is NOT ACTIVELY HARMFUL on this store's
- * domain, which is exactly what an enable-gate needs.
- *
- * The verdict is ADVISORY: cached per store (`.reranker-eval.json`), read by
- * plur_doctor and logged loud-once on the reranker-enable path. It never
- * silently disables reranking — the shipping-default decision stays human.
+ * Per-store reranker eval gate: cross-encoders can hurt an out-of-domain store.
+ *   1. Sample the store's engrams (seeded) and build a probe query from each.
+ *   2. Rank the source in the RRF top-K without and with the cross-encoder.
+ *   3. Compare MRR / Hit@1; systematic demotion means HARMFUL here.
+ * Proves "not actively harmful", not benefit (keyword probes favour BM25).
+ * ADVISORY: cached in `.reranker-eval.json`, read by plur_doctor, logged once on
+ * enable; it never silently disables reranking.
  */
 import { existsSync, readFileSync } from 'fs'
 import { join } from 'path'
@@ -33,7 +13,7 @@ import type { Engram } from './schemas/engram.js'
 import { hybridSearch } from './hybrid-search.js'
 import { isRerankerOff } from './rerankers/index.js'
 import type { RerankerAdapter } from './rerankers/types.js'
-import { atomicWrite } from './sync.js'
+import { atomicWrite } from './atomic-write.js'
 import { logger } from './logger.js'
 
 // ─── Tunables ────────────────────────────────────────────────────────
@@ -57,7 +37,7 @@ const DEFAULT_SAMPLE = 20
 /** Candidate pool per probe — mirrors the shipping hybrid top-10 window. */
 const DEFAULT_TOP_K = 10
 
-/** Default PRNG seed — same as the benchmark harness for familiarity. */
+/** Default PRNG seed — same as the benchmark harness. */
 const DEFAULT_SEED = 1337
 
 /** Probe queries draw up to this many content words from the statement. */
@@ -362,7 +342,7 @@ export function isRerankerEvalStale(
  * Build the advisory message for a store+reranker pair, or null when there
  * is nothing to warn about (no cached eval, or verdict is not harmful).
  *
- * ADVISORY by design (#451): the reranker stays enabled; this only makes the
+ * ADVISORY by design: the reranker stays enabled; this only makes the
  * measured harm visible so a human can decide to unset PLUR_RERANKER.
  */
 export function rerankerEvalAdvisory(

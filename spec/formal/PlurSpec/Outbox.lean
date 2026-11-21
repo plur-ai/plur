@@ -10,7 +10,7 @@ owner decision C3 (2026-09-29): `flushOutbox` / `_flushOutboxClaimed`,
 learn()'s immediate push, the per-entry claims (`_claimOutboxEntry`,
 `_releaseOutboxClaim`, `_outboxClaimUntil`), the refusal classification
 (`outbox-health.ts`) and the per-host breaker as the write and recall legs feed
-it (`remote-recall.ts`). Code: `packages/core/src/index.ts`.
+it (`remote-recall.ts`). Code: `packages/core/src/plur/outbox.ts`.
 Findings: `spec/formal/findings/outbox.md`.
 
 There are no row leases (C3) and no "maybe delivered" state (C4): a queued
@@ -142,9 +142,38 @@ def persistKey (onRow : Option Nat) (fresh : Nat) (saved : Bool) : Option Nat :=
 
 theorem row_key_stable (k fresh : Nat) (saved : Bool) : persistKey (some k) fresh saved = some k := rfl
 
-/-- A write is never posted without a persisted key. -/
-theorem no_keyless_post (fresh : Nat) :
-    keyForPost (persistKey none fresh false) = none := rfl
+/-- `_persistMissingOutboxKeys` for one row, branch for branch: `mem` is the
+flush's snapshot key, `disk` the row's key read under the store lock. A keyed
+snapshot is left alone; a keyless one adopts the disk key, or a fresh one,
+on both sides when the write succeeds (`saved`), and stays keyless when it
+fails (the snapshot's key is deleted again, the disk is unchanged). -/
+def persistRow (disk mem : Option Nat) (fresh : Nat) (saved : Bool) : Option Nat × Option Nat :=
+  match mem with
+  | some k => (disk, some k)
+  | none => if saved then (some (disk.getD fresh), some (disk.getD fresh)) else (disk, none)
+
+/-- The flush loop: a keyless snapshot is skipped; a keyed one is posted only
+when `_outboxRowStillQueued` reads the same key on the disk row. -/
+def postKeyOf (disk mem : Option Nat) : Option Nat :=
+  match mem, disk with
+  | some k, some d => if d == k then some k else none
+  | _, _ => none
+
+/-- A write is never posted without a persisted key: for every disk state,
+snapshot, fresh key and save outcome, the key a POST sends is the key on the
+disk row. -/
+theorem no_keyless_post (disk mem : Option Nat) (fresh : Nat) (saved : Bool) (k : Nat)
+    (h : postKeyOf (persistRow disk mem fresh saved).1 (persistRow disk mem fresh saved).2 = some k) :
+    (persistRow disk mem fresh saved).1 = some k := by
+  cases mem <;> cases disk <;> cases saved <;>
+    simp [persistRow, postKeyOf] at h ⊢ <;> (try split at h) <;> simp_all
+
+/-- Non-vacuity: a keyless row whose key is saved is posted with it, and a
+keyed row is posted with its own key. -/
+theorem keyed_row_posts (k fresh : Nat) (saved : Bool) :
+    postKeyOf (persistRow none none fresh true).1 (persistRow none none fresh true).2 = some fresh ∧
+    postKeyOf (persistRow (some k) (some k) fresh saved).1 (persistRow (some k) (some k) fresh saved).2 = some k := by
+  simp [persistRow, postKeyOf]
 
 /-- Two flushes of one write, even if the first threw after its POST: the key
 is on the row, so the second sends the same key. -/
@@ -444,9 +473,73 @@ def flushEntryC {β : Type} (bump : β → β) (force needsAction inWindow confl
   if conflict then .kept e
   else flushEntry bump (skipOf force needsAction inWindow) offends delivered e
 
-/-- A conflicted entry is untouched and never handed off, forced flush or not. -/
-theorem conflict_untouched {β} (bump : β → β) (f n w o d : Bool) (e : Entry β) :
-    flushEntryC bump f n w true o d e = .kept e := rfl
+/-- The configured stores as `resolveScopeTarget` reads them: a server url
+(normalised), the scope it serves, readonly. Personal (`user:`) scopes take
+`personalStoreEntry` instead and are not modelled here. -/
+structure StoreE where
+  url      : Nat
+  scope    : Nat
+  readonly : Bool
+
+/-- `urlGroupsForScope`, as the urls in listing order. -/
+def claimUrls (stores : List StoreE) (t : Nat) : List Nat :=
+  (stores.filter (fun s => s.scope == t)).map (·.url)
+
+/-- `groups.length >= 2`: some url claiming the scope differs from the first. -/
+def conflictB (stores : List StoreE) (t : Nat) : Bool :=
+  match claimUrls stores t with
+  | [] => false
+  | u :: rest => rest.any (· != u)
+
+theorem conflict_of_two (stores : List StoreE) (t : Nat) (a b : StoreE)
+    (ha : a ∈ stores) (hb : b ∈ stores) (hat : a.scope = t) (hbt : b.scope = t) (hne : a.url ≠ b.url) :
+    conflictB stores t = true := by
+  have ma : a.url ∈ claimUrls stores t := List.mem_map.mpr ⟨a, List.mem_filter.mpr ⟨ha, by simp [hat]⟩, rfl⟩
+  have mb : b.url ∈ claimUrls stores t := List.mem_map.mpr ⟨b, List.mem_filter.mpr ⟨hb, by simp [hbt]⟩, rfl⟩
+  unfold conflictB
+  revert ma mb
+  cases claimUrls stores t with
+  | nil => simp
+  | cons u rest =>
+    intro ma mb
+    simp only [List.mem_cons] at ma mb
+    simp only [List.any_eq_true, bne_iff_ne, ne_eq]
+    by_cases hau : a.url = u
+    · rcases mb with h | h
+      · exact absurd (hau.trans h.symm) hne
+      · exact ⟨b.url, h, fun e => hne (hau.trans e.symm)⟩
+    · rcases ma with h | h
+      · exact absurd h hau
+      · exact ⟨a.url, h, hau⟩
+
+/-- `routeFor`: a row whose scope left its target is held; a conflict is held;
+else the first writable entry of the scope (none → held). -/
+def routeTo (stores : List StoreE) (rowScope t : Nat) : Option Nat :=
+  if rowScope != t then none
+  else if conflictB stores t then none
+  else (stores.find? (fun s => s.scope == t && !s.readonly)).map (·.url)
+
+/-- The route without the conflict check: the first writable listed entry. -/
+def routeFirst (stores : List StoreE) (t : Nat) : Option Nat :=
+  (stores.find? (fun s => s.scope == t && !s.readonly)).map (·.url)
+
+/-- Whenever two different servers in the config claim the target scope, in
+any listing order and whatever else is listed: there is no route, and the
+entry is kept unchanged on every flush, forced or not. -/
+theorem conflict_untouched {β} (bump : β → β) (stores : List StoreE) (t : Nat) (a b : StoreE)
+    (ha : a ∈ stores) (hb : b ∈ stores) (hat : a.scope = t) (hbt : b.scope = t) (hne : a.url ≠ b.url)
+    (f n w o d : Bool) (e : Entry β) :
+    routeTo stores t t = none ∧ flushEntryC bump f n w (conflictB stores t) o d e = .kept e := by
+  have hc := conflict_of_two stores t a b ha hb hat hbt hne
+  simp [routeTo, flushEntryC, hc]
+
+/-- Counterexample on the route without the check: the first listed server wins. -/
+theorem first_listed_takes_conflict :
+    routeFirst [⟨1, 5, false⟩, ⟨2, 5, false⟩] 5 = some 1 ∧
+    routeTo [⟨1, 5, false⟩, ⟨2, 5, false⟩] 5 5 = none := by decide
+
+/-- Non-vacuity: one server (listed twice) is no conflict and is the route. -/
+theorem single_server_routes : routeTo [⟨1, 5, true⟩, ⟨1, 5, false⟩] 5 5 = some 1 := by decide
 
 theorem conflict_never_delivered {β} (bump : β → β) (f n w o d : Bool) (e : Entry β) :
     ∀ e', flushEntryC bump f n w true o d e ≠ .handedOff ∧ flushEntryC bump f n w true o d e ≠ .demoted e' := by
@@ -493,7 +586,14 @@ def skipWithCredential (force needsAction inWindow authRefusal : Bool) (previous
   skipOf force needsAction inWindow && !(authRefusal && credentialChanged previous current)
 
 theorem old_row_keeps_hold : skipWithCredential false true true true none (some 2) = true := rfl
-theorem changed_key_retries : skipWithCredential false true true true (some 1) (some 2) = false := rfl
+/-- Exactly when a back-off hold is lifted, over every input: the entry was not
+held anyway, or its refusal was an authentication refusal and both
+credential fingerprints are known and differ. -/
+theorem changed_key_retries (f n w a : Bool) (p c : Option Nat) :
+    skipWithCredential f n w a p c = false ↔
+      (skipOf f n w = false ∨ (a = true ∧ ∃ x y, p = some x ∧ c = some y ∧ x ≠ y)) := by
+  cases hs : skipOf f n w <;> cases a <;> cases p <;> cases c <;>
+    simp [skipWithCredential, credentialChanged, hs]
 theorem same_key_keeps_hold (key : Nat) : skipWithCredential false true true true (some key) (some key) = true := by
   simp [skipWithCredential, skipOf, credentialChanged]
 

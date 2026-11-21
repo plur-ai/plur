@@ -1,22 +1,11 @@
 /**
- * `plur checkpoint` — emit a checkpoint history event (#1052).
- *
- * A checkpoint commits to the current state of the store: it records the
- * SHA-256 of engrams.yaml bytes, the active engram count, and chains onto
- * the last event in the hash-chain history log. Once a checkpoint is
- * externally anchored (e.g. published to a ledger), every prior history event
- * becomes tamper-evident — modifying any event breaks every later chain link.
- *
- * This is the CLI surface for Integrity Strength L2 checkpointing per #1047.
- *
+ * `plur checkpoint` — emit a checkpoint history event (Integrity Strength L2):
+ * store hash and active count, chained onto the last event, so prior history is
+ * tamper-evident once anchored. Exits 1 if the line could not be written.
  * Usage:
  *   plur checkpoint                 Emit a checkpoint and print its hash
- *   plur checkpoint --session <id>  Record the session it belongs to, so
- *                                   `plur manifest --session <id>` includes it
+ *   plur checkpoint --session <id>  Record its session (for `plur manifest --session <id>`)
  *   plur checkpoint --json          Emit and print full payload as JSON
- *
- * Exits 1 when the checkpoint line could not be written: a hash that no log
- * contains must never be offered for anchoring (0.23 code review, finding 3).
  */
 import { join } from 'path'
 import { existsSync } from 'fs'
@@ -28,7 +17,7 @@ export async function run(args: string[], flags: GlobalFlags & { signatures?: bo
   const si = args.indexOf('--session')
   const sessionId = si >= 0 && args[si + 1] && !args[si + 1].startsWith('--') ? args[si + 1] : undefined
   // `--session` with no value is a mistake, not a request for a session-less
-  // checkpoint (code review of 0.23, R11).
+  // checkpoint.
   if (si >= 0 && !sessionId) exit(1, 'plur checkpoint: --session needs a session id (plur checkpoint --session <id>).')
   // Write engine needed: emitCheckpoint calls appendHistory (a write).
   const plur = createPlur(flags)
@@ -37,10 +26,9 @@ export async function run(args: string[], flags: GlobalFlags & { signatures?: bo
   const plurRoot = plur.storageRoot
   const engramsPath = join(plurRoot, 'engrams.yaml')
 
-  // A fresh install that has never learned anything has no engrams.yaml, and
-  // emitCheckpoint used to die with a raw unhandled ENOENT out of the built
-  // CLI. Refuse with an explanation instead: there is genuinely nothing to
-  // checkpoint, and that is not an error condition to stack-trace over.
+  // A fresh install that has never learned anything has no engrams.yaml.
+  // Refuse with an explanation rather than a raw ENOENT: there is nothing to
+  // checkpoint.
   if (!existsSync(engramsPath)) {
     outputText('Nothing to checkpoint: this store has no engrams.yaml yet.')
     outputText(`  looked in: ${engramsPath}`)
@@ -49,7 +37,7 @@ export async function run(args: string[], flags: GlobalFlags & { signatures?: bo
     return
   }
 
-  // Resolve signing options if the acting identity has a key configured (#1056).
+  // Resolve signing options if the acting identity has a key configured.
   // Signing is best-effort: if the key is absent or the identity is unidentified,
   // the checkpoint is still written (unsigned is a valid L2 object).
   const identity = status.provenance_identity
@@ -62,10 +50,8 @@ export async function run(args: string[], flags: GlobalFlags & { signatures?: bo
   // emitCheckpoint — not passed in. An attested count that is not bound to the
   // hash beside it is not attested at all.
   // attestStore refuses rather than attesting a count of 0 beside a hash of the
-  // real file, so an unparseable or non-store engrams.yaml now reaches here as
-  // a throw. The command already explains the missing-file case; an unreadable
-  // one deserves the same treatment rather than a raw js-yaml stack trace out
-  // of the built CLI.
+  // real file, so an unparseable or non-store engrams.yaml reaches here as a
+  // throw; explain it instead of printing a raw js-yaml stack trace.
   let data
   try {
     data = emitCheckpoint(plurRoot, engramsPath, 'cli', undefined, signingOptions, sessionId)

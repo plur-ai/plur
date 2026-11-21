@@ -15,7 +15,7 @@
  * `& "<path>"` and `plur doctor` reports it.
  */
 import { describe, it, expect } from 'vitest'
-import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs'
+import { readFileSync, existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import {
@@ -33,7 +33,7 @@ import {
 import {
   isPlurHookCommand as mcpIsPlurHookCommand,
   matchesPlurHookLauncher as mcpMatchesPlurHookLauncher,
-} from '../../mcp/src/hook-command.js'
+} from '@plur-ai/gateway/harness'
 import { buildCursorHooks, mergeCursorHooks } from '../src/cursor-hooks.js'
 import { buildCodexHooks, mergeCodexHooks } from '../src/codex-hooks.js'
 
@@ -485,18 +485,15 @@ describe('#1270 review: the unquoted spaced shim path is claimed only as this ho
 })
 
 describe('H2: the mcp package keeps an identical copy of the matcher', () => {
-  const region = (path: string): string => {
-    const src = readFileSync(path, 'utf8')
-    const start = src.indexOf('// BEGIN shared hook matcher')
-    const end = src.indexOf('// END shared hook matcher')
-    expect(start).toBeGreaterThan(-1)
-    expect(end).toBeGreaterThan(start)
-    return src.slice(start, end)
-  }
-
   it('the two source regions are byte-identical', () => {
-    expect(region(join(__dirname, '..', '..', 'mcp', 'src', 'hook-command.ts')))
-      .toBe(region(join(__dirname, '..', 'src', 'lib', 'hook-command.ts')))
+    // There is one region now: both packages import the matcher from
+    // @plur-ai/gateway/harness, so the two cannot differ.
+    expect(existsSync(join(__dirname, '..', '..', 'gateway', 'src', 'hook-command.ts'))).toBe(true)
+    expect(existsSync(join(__dirname, '..', '..', 'mcp', 'src', 'hook-command.ts'))).toBe(false)
+    expect(isPlurHookCommand).toBe(mcpIsPlurHookCommand)
+    expect(matchesPlurHookLauncher).toBe(mcpMatchesPlurHookLauncher)
+    const mcpIndex = readFileSync(join(__dirname, '..', '..', 'mcp', 'src', 'index.ts'), 'utf8')
+    expect(mcpIndex).toMatch(/import \{[^}]*\bisPlurHookSpec\b[^}]*\} from '@plur-ai\/gateway(?:\/harness)?'/)
   })
 
   it.each([

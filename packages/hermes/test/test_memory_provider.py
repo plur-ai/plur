@@ -12,14 +12,25 @@ Coverage:
 - Entry point factory: create_memory_provider()
 - Session keying: interleaved sessions do not cross-contaminate
 - Feedback-disabled drain: pending list drained even when feedback off
+- Hermes base-class contract: every MemoryProvider method is defined with the
+  base signature (pinned list); optional hooks are quiet no-ops; MemoryManager
+  picks the base-class call shapes
+- recall_status: reports the last prefetch's engram count for Hermes's recall
+  line; None when nothing was injected, after a new turn, or for a late
+  prefetch; interleaved sessions do not report each other's counts
 """
 
+import dataclasses
+import inspect
 import json
 import os
+import sys
 import threading
+import types
 import pytest
 from unittest.mock import MagicMock, patch, call
 
+import plur_hermes.memory_provider as memory_provider_module
 from plur_hermes.memory_provider import (
     PlurMemoryProvider,
     create_memory_provider,
@@ -74,6 +85,15 @@ class TestAbcContract:
     def test_name(self):
         p, _ = _provider()
         assert p.name == "plur"
+
+    def test_shutdown_is_a_quiet_no_op(self):
+        # Hermes's MemoryManager.shutdown_all() calls provider.shutdown() on
+        # every provider when it closes an idle session. Without the method it
+        # logs "Memory provider 'plur' shutdown failed" each time. There is
+        # nothing to flush: every bridge call is its own CLI subprocess.
+        p, bridge = _provider()
+        assert p.shutdown() is None
+        assert bridge.method_calls == []
 
     def test_is_available_true(self):
         bridge = _mock_bridge()
@@ -426,6 +446,7 @@ class TestSyncTurn:
         # trigger strategy-2 marker
         p.sync_turn("msg", "I learned:\n- use black for formatting")
         assert p._learn_by_session.get("", 0) >= 1
+        assert bridge.learn.call_args.kwargs["claim_class"] == "inferred"
 
     def test_noop_when_standalone_hooks_active(self):
         bridge = _mock_bridge()
@@ -458,6 +479,25 @@ class TestSyncTurn:
         # sess-A's list was drained; sess-B's is untouched
         assert _get_pending(p, "sess-A") == []
         assert len(_get_pending(p, "sess-B")) == 1
+
+    @patch.dict(os.environ, {"PLUR_INJECTION_FEEDBACK": "true"})
+    def test_turn_author_accepted_and_ignored(self):
+        # The Hermes base class's sync_turn takes turn_author; MemoryManager
+        # sends it to signatures that accept it. It must not change behaviour.
+        response = "I'll always use pnpm not npm.\nI learned:\n- use black for formatting\n"
+        engrams = [{"id": "E1", "statement": "always use pnpm not npm"}]
+
+        runs = []
+        for extra in ({}, {"turn_author": {"id": "u1", "name": "Ana", "is_bot": False}}):
+            bridge = _mock_bridge()
+            p = PlurMemoryProvider(bridge=bridge)
+            p._agent_context = "primary"
+            _set_pending(p, engrams, "s1")
+            p.sync_turn("which package manager?", response, session_id="s1", **extra)
+            runs.append(bridge.method_calls)
+
+        assert runs[0], "sync_turn made no bridge calls; the comparison proves nothing"
+        assert runs[0] == runs[1]
 
 
 # ---------------------------------------------------------------------------
@@ -692,3 +732,428 @@ class TestThreadSafety:
             t.join()
 
         assert errors == [], f"Thread-safety errors: {errors}"
+
+
+# ---------------------------------------------------------------------------
+# Hermes MemoryProvider base-class contract
+# ---------------------------------------------------------------------------
+
+_P = inspect.Parameter
+_E = inspect.Parameter.empty
+_POS = _P.POSITIONAL_OR_KEYWORD
+_KW = _P.KEYWORD_ONLY
+_VKW = _P.VAR_KEYWORD
+
+# Every method of Hermes's MemoryProvider base class, pinned from upstream
+# agent/memory_provider.py (main, 2026-11-06). plur-hermes has no runtime
+# dependency on Hermes, so the list is copied here. When Hermes adds or
+# changes a method, update this list and PlurMemoryProvider together.
+# Value: "property", or the parameters after ``self`` as (name, kind, default).
+HERMES_MEMORY_PROVIDER_METHODS = {
+    "name": "property",
+    "is_available": (),
+    "initialize": (("session_id", _POS, _E), ("kwargs", _VKW, _E)),
+    "unavailable_reason": (),
+    "system_prompt_block": (),
+    "prefetch": (("query", _POS, _E), ("session_id", _KW, "")),
+    "queue_prefetch": (("query", _POS, _E), ("session_id", _KW, "")),
+    "recall_status": (),
+    "sync_turn": (
+        ("user_content", _POS, _E),
+        ("assistant_content", _POS, _E),
+        ("session_id", _KW, ""),
+        ("messages", _KW, None),
+        ("turn_author", _KW, None),
+    ),
+    "get_tool_schemas": (),
+    "handle_tool_call": (("tool_name", _POS, _E), ("args", _POS, _E), ("kwargs", _VKW, _E)),
+    "shutdown": (),
+    "on_turn_start": (("turn_number", _POS, _E), ("message", _POS, _E), ("kwargs", _VKW, _E)),
+    "identity_signature": (),
+    "on_session_end": (("messages", _POS, _E),),
+    "on_session_switch": (
+        ("new_session_id", _POS, _E),
+        ("parent_session_id", _KW, ""),
+        ("reset", _KW, False),
+        ("rewound", _KW, False),
+        ("kwargs", _VKW, _E),
+    ),
+    "on_pre_compress": (("messages", _POS, _E),),
+    "on_delegation": (
+        ("task", _POS, _E),
+        ("result", _POS, _E),
+        ("child_session_id", _KW, ""),
+        ("kwargs", _VKW, _E),
+    ),
+    "get_config_schema": (),
+    "save_config": (("values", _POS, _E), ("hermes_home", _POS, _E)),
+    "on_memory_write": (
+        ("action", _POS, _E),
+        ("target", _POS, _E),
+        ("content", _POS, _E),
+        ("metadata", _POS, None),
+    ),
+    "backup_paths": (),
+    "on_profile_created": (("profile_name", _POS, _E), ("hermes_home", _POS, _E)),
+    "on_profile_renamed": (
+        ("old_name", _POS, _E),
+        ("new_name", _POS, _E),
+        ("hermes_home", _POS, _E),
+    ),
+    "read_config_fields": (("hermes_home", _POS, _E),),
+    "write_config_fields": (("values", _POS, _E), ("hermes_home", _POS, _E)),
+}
+
+
+def _shape_of(cls, method_name):
+    """The pinned-format shape of ``cls.method_name``, or None when it is missing."""
+    try:
+        attr = inspect.getattr_static(cls, method_name)
+    except AttributeError:
+        return None
+    if isinstance(attr, property):
+        return "property"
+    params = list(inspect.signature(getattr(cls, method_name)).parameters.values())[1:]
+    return tuple((prm.name, prm.kind, prm.default) for prm in params)
+
+
+# Minimal copies of Hermes MemoryManager's call-shape selection, from upstream
+# agent/memory_manager.py (main, 2026-11-06): _provider_memory_write_metadata_mode,
+# _accepts_require_checkpoint, _provider_sync_accepts, and the getattr default
+# behind _checkpoint_api_version.
+def _has_var_kwargs(params):
+    return any(prm.kind is _VKW for prm in params.values())
+
+
+def _memory_write_metadata_mode(provider):
+    params = inspect.signature(provider.on_memory_write).parameters
+    if _has_var_kwargs(params) or "metadata" in params:
+        return "keyword"
+    accepted = sum(prm.kind is not _P.VAR_POSITIONAL for prm in params.values())
+    return "positional" if accepted >= 4 else "legacy"
+
+
+def _accepts_require_checkpoint(fn):
+    params = inspect.signature(fn).parameters
+    kind = getattr(params.get("require_checkpoint"), "kind", None)
+    return _has_var_kwargs(params) or kind in (_KW, _POS)
+
+
+def _sync_accepts(provider, keyword):
+    params = inspect.signature(provider.sync_turn).parameters
+    return _has_var_kwargs(params) or keyword in params
+
+
+class TestHermesBaseClassContract:
+    def test_pinned_list_is_complete(self):
+        # 26 methods in the upstream base class on 2026-11-06.
+        assert len(HERMES_MEMORY_PROVIDER_METHODS) == 26
+
+    @pytest.mark.parametrize("method_name", sorted(HERMES_MEMORY_PROVIDER_METHODS))
+    def test_defines_base_method_with_base_signature(self, method_name):
+        expected = HERMES_MEMORY_PROVIDER_METHODS[method_name]
+        actual = _shape_of(PlurMemoryProvider, method_name)
+        assert actual is not None, f"PlurMemoryProvider lacks Hermes method {method_name}"
+        assert actual == expected
+
+    def test_shape_check_detects_a_missing_method(self):
+        class Partial:
+            def shutdown(self):
+                pass
+
+        assert _shape_of(Partial, "on_turn_start") is None
+        assert _shape_of(Partial, "shutdown") == ()
+
+
+_NO_OP_CALLS = {
+    "unavailable_reason": ((), {}, ""),
+    "queue_prefetch": (("query",), {"session_id": "s1"}, None),
+    "recall_status": ((), {}, None),
+    "on_turn_start": ((3, "hello"), {"remaining_tokens": 100, "model": "m", "author_id": None}, None),
+    "identity_signature": ((), {}, {}),
+    "on_session_switch": (
+        ("new-sid",),
+        {"parent_session_id": "old-sid", "reset": True, "rewound": False, "reason": "new"},
+        None,
+    ),
+    "on_pre_compress": (([{"role": "user", "content": "x"}],), {}, ""),
+    "on_delegation": (("task", "result"), {"child_session_id": "c1", "extra": 1}, None),
+    "on_memory_write": (("add", "memory", "content"), {"metadata": {"write_origin": "tool"}}, None),
+    "backup_paths": ((), {}, []),
+    "on_profile_created": (("work", "/tmp/hermes-work"), {}, None),
+    "on_profile_renamed": (("work", "job", "/tmp/hermes-job"), {}, None),
+    "read_config_fields": (("/tmp/hermes",), {}, {"values": {}, "placeholders": {}}),
+}
+
+
+class TestOptionalHermesHooks:
+    @pytest.mark.parametrize("standalone", [False, True])
+    @pytest.mark.parametrize("method_name", sorted(_NO_OP_CALLS))
+    def test_hook_is_quiet_no_op(self, method_name, standalone):
+        args, kwargs, expected = _NO_OP_CALLS[method_name]
+        bridge = _mock_bridge()
+        p = PlurMemoryProvider(bridge=bridge, standalone_hooks_active=standalone)
+        assert getattr(p, method_name)(*args, **kwargs) == expected
+        assert bridge.method_calls == []
+
+    def test_write_config_fields_raises_like_base(self):
+        p, bridge = _provider()
+        with pytest.raises(NotImplementedError):
+            p.write_config_fields({"plur_path": "/x"}, "/tmp/hermes")
+        assert bridge.method_calls == []
+
+    def test_memory_manager_passes_memory_write_metadata_by_keyword(self):
+        p, _ = _provider()
+        assert _memory_write_metadata_mode(p) == "keyword"
+
+    def test_no_pre_compress_checkpoint_claimed(self):
+        p, _ = _provider()
+        # MemoryManager reads the version with getattr(..., 1); 1 is legacy.
+        assert not hasattr(PlurMemoryProvider, "pre_compress_checkpoint_api_version")
+        assert int(getattr(p, "pre_compress_checkpoint_api_version", 1)) == 1
+        assert _accepts_require_checkpoint(p.on_pre_compress) is False
+
+    def test_memory_manager_sends_turn_author_and_messages(self):
+        p, _ = _provider()
+        assert _sync_accepts(p, "turn_author")
+        assert _sync_accepts(p, "messages")
+
+
+# ---------------------------------------------------------------------------
+# recall_status — Hermes's recall indicator line (plur-ai/plur#1853)
+# ---------------------------------------------------------------------------
+
+def _inject_result(count, *, directives="D"):
+    ids = [f"E{i}" for i in range(count)]
+    return {
+        "count": count,
+        "results": [{"id": i, "statement": f"statement {i}"} for i in ids],
+        "injected_ids": ids,
+        "directives": directives,
+    }
+
+
+def _describe_recall(status):
+    """Copy of the formatting in Hermes's MemoryManager.describe_recall()."""
+    if status is None:
+        return ""
+    detail = ("recalled 1 memory" if status.count == 1 else f"recalled {status.count} memories"
+              if status.count > 1 else "recalled relevant memory")
+    return f"{status.glyph} {status.provider_label} — {detail}"
+
+
+@pytest.fixture
+def no_hermes_recall_status(monkeypatch):
+    """Make Hermes's RecallStatus unimportable and reset the cached class."""
+    monkeypatch.setattr(memory_provider_module, "_recall_status_cls", None)
+    monkeypatch.setitem(sys.modules, "agent", None)
+    monkeypatch.setitem(sys.modules, "agent.memory_provider", None)
+
+
+@pytest.mark.usefixtures("no_hermes_recall_status")
+class TestRecallStatus:
+    def test_reports_count_after_injection(self):
+        bridge = _mock_bridge(inject_result=_inject_result(3))
+        p, _ = _provider(bridge)
+        assert p.prefetch("query", session_id="A")
+        status = p.recall_status()
+        assert status is not None
+        assert status.count == 3
+        assert status.provider_label == "PLUR"
+        assert status.glyph == "\U0001f9e0"
+        assert _describe_recall(status) == "\U0001f9e0 PLUR — recalled 3 memories"
+
+    def test_single_engram_reads_singular(self):
+        p, _ = _provider(_mock_bridge(inject_result=_inject_result(1)))
+        p.prefetch("query", session_id="A")
+        assert _describe_recall(p.recall_status()) == "\U0001f9e0 PLUR — recalled 1 memory"
+
+    def test_none_before_any_prefetch(self):
+        p, bridge = _provider()
+        assert p.recall_status() is None
+        assert bridge.method_calls == []
+
+    def test_none_when_nothing_injected(self):
+        p, _ = _provider(_mock_bridge(inject_result={"count": 0, "results": [], "injected_ids": []}))
+        assert p.prefetch("query", session_id="A") == ""
+        assert p.recall_status() is None
+
+    def test_none_when_block_is_empty(self):
+        result = _inject_result(2, directives="")
+        p, _ = _provider(_mock_bridge(inject_result=result))
+        assert p.prefetch("query", session_id="A") == ""
+        assert p.recall_status() is None
+
+    def test_none_when_bridge_fails(self):
+        bridge = _mock_bridge()
+        bridge.inject.side_effect = PlurBridgeError("inject fail")
+        p, _ = _provider(bridge)
+        assert p.prefetch("query", session_id="A") == ""
+        assert p.recall_status() is None
+
+    def test_none_for_empty_query(self):
+        p, bridge = _provider(_mock_bridge(inject_result=_inject_result(3)))
+        assert p.prefetch("", session_id="A") == ""
+        assert p.recall_status() is None
+        bridge.inject.assert_not_called()
+
+    def test_none_when_standalone_hooks_active(self):
+        bridge = _mock_bridge(inject_result=_inject_result(3))
+        p = PlurMemoryProvider(bridge=bridge, standalone_hooks_active=True)
+        assert p.prefetch("query", session_id="A") == ""
+        assert p.recall_status() is None
+        bridge.inject.assert_not_called()
+
+    def test_empty_prefetch_clears_previous_count(self):
+        bridge = _mock_bridge(inject_result=_inject_result(3))
+        p, _ = _provider(bridge)
+        p.prefetch("first", session_id="A")
+        assert p.recall_status().count == 3
+        bridge.inject.return_value = {"count": 0, "results": [], "injected_ids": []}
+        p.prefetch("second", session_id="A")
+        assert p.recall_status() is None
+
+    def test_failed_prefetch_clears_previous_count(self):
+        bridge = _mock_bridge(inject_result=_inject_result(3))
+        p, _ = _provider(bridge)
+        p.prefetch("first", session_id="A")
+        assert p.recall_status().count == 3
+        bridge.inject.side_effect = PlurBridgeError("inject fail")
+        p.prefetch("second", session_id="A")
+        assert p.recall_status() is None
+
+    def test_turn_start_clears_previous_count(self):
+        # A turn whose prefetch Hermes skips (trivial prompt, stuck-call gate)
+        # shows no count from the turn before.
+        p, _ = _provider(_mock_bridge(inject_result=_inject_result(3)))
+        p.prefetch("first", session_id="A")
+        assert p.recall_status().count == 3
+        p.on_turn_start(2, "ok")
+        assert p.recall_status() is None
+
+    def test_late_prefetch_after_new_turn_is_discarded(self):
+        # Hermes joins an external prefetch with a timeout; the thread keeps
+        # running and can finish during the next turn.
+        release = threading.Event()
+        started = threading.Event()
+        bridge = _mock_bridge()
+
+        def slow_inject(*args, **kwargs):
+            started.set()
+            release.wait(5)
+            return _inject_result(4)
+
+        bridge.inject.side_effect = slow_inject
+        p, _ = _provider(bridge)
+        worker = threading.Thread(target=p.prefetch, args=("slow",), kwargs={"session_id": "A"})
+        worker.start()
+        assert started.wait(5)
+        p.on_turn_start(2, "next turn")
+        release.set()
+        worker.join(5)
+        assert not worker.is_alive()
+        assert p.recall_status() is None
+
+    def test_interleaved_session_without_injection_does_not_report_other_count(self):
+        bridge = _mock_bridge(inject_result=_inject_result(3))
+        p, _ = _provider(bridge)
+        p.prefetch("for A", session_id="A")
+        assert p.recall_status().count == 3
+        bridge.inject.return_value = {"count": 0, "results": [], "injected_ids": []}
+        p.prefetch("for B", session_id="B")
+        assert p.recall_status() is None
+
+    def test_interleaved_session_reports_its_own_count(self):
+        bridge = _mock_bridge(inject_result=_inject_result(3))
+        p, _ = _provider(bridge)
+        p.prefetch("for A", session_id="A")
+        bridge.inject.return_value = _inject_result(5)
+        p.prefetch("for B", session_id="B")
+        assert p.recall_status().count == 5
+
+    def test_other_session_lifecycle_leaves_status_alone(self):
+        p, _ = _provider(_mock_bridge(inject_result=_inject_result(3)))
+        p.initialize("B")
+        p.initialize("A")
+        p.prefetch("for A", session_id="A")
+        p.sync_turn("u", "a", session_id="B")
+        assert p.recall_status().count == 3
+        p._session_id = "B"
+        p.on_session_end([])
+        assert p.recall_status().count == 3
+
+    def test_own_sync_turn_clears_status(self):
+        p, _ = _provider(_mock_bridge(inject_result=_inject_result(3)))
+        p.prefetch("for A", session_id="A")
+        assert p.recall_status().count == 3
+        p.sync_turn("u", "a", session_id="A")
+        assert p.recall_status() is None
+
+    def test_own_session_end_clears_status(self):
+        p, _ = _provider(_mock_bridge(inject_result=_inject_result(3)))
+        p.initialize("A")
+        p.prefetch("for A", session_id="A")
+        assert p.recall_status().count == 3
+        p.on_session_end([])
+        assert p.recall_status() is None
+
+    def test_fallback_class_when_hermes_unavailable(self):
+        p, _ = _provider(_mock_bridge(inject_result=_inject_result(2)))
+        p.prefetch("query", session_id="A")
+        status = p.recall_status()
+        assert type(status) is memory_provider_module._RecallStatus
+        assert dataclasses.is_dataclass(status)
+        assert {f.name for f in dataclasses.fields(status)} == {"provider_label", "count", "glyph"}
+
+    def test_uses_hermes_class_when_importable(self, monkeypatch):
+        @dataclasses.dataclass
+        class RecallStatus:
+            provider_label: str
+            count: int
+            glyph: str = "G"
+
+        fake_pkg = types.ModuleType("agent")
+        fake_mod = types.ModuleType("agent.memory_provider")
+        fake_mod.RecallStatus = RecallStatus
+        fake_pkg.memory_provider = fake_mod
+        monkeypatch.setitem(sys.modules, "agent", fake_pkg)
+        monkeypatch.setitem(sys.modules, "agent.memory_provider", fake_mod)
+
+        p, _ = _provider(_mock_bridge(inject_result=_inject_result(2)))
+        p.prefetch("query", session_id="A")
+        status = p.recall_status()
+        assert type(status) is RecallStatus
+        assert (status.provider_label, status.count, status.glyph) == ("PLUR", 2, "G")
+
+    def test_unrelated_agent_package_selects_fallback(self, monkeypatch):
+        class RecallStatus:  # not a dataclass with the expected fields
+            pass
+
+        fake_pkg = types.ModuleType("agent")
+        fake_mod = types.ModuleType("agent.memory_provider")
+        fake_mod.RecallStatus = RecallStatus
+        fake_pkg.memory_provider = fake_mod
+        monkeypatch.setitem(sys.modules, "agent", fake_pkg)
+        monkeypatch.setitem(sys.modules, "agent.memory_provider", fake_mod)
+
+        p, _ = _provider(_mock_bridge(inject_result=_inject_result(2)))
+        p.prefetch("query", session_id="A")
+        assert type(p.recall_status()) is memory_provider_module._RecallStatus
+
+    def test_class_is_resolved_once(self, monkeypatch):
+        p, _ = _provider(_mock_bridge(inject_result=_inject_result(2)))
+        p.prefetch("query", session_id="A")
+        p.recall_status()
+        assert memory_provider_module._recall_status_cls is memory_provider_module._RecallStatus
+
+        @dataclasses.dataclass
+        class RecallStatus:
+            provider_label: str
+            count: int
+            glyph: str = "G"
+
+        fake_mod = types.ModuleType("agent.memory_provider")
+        fake_mod.RecallStatus = RecallStatus
+        monkeypatch.setitem(sys.modules, "agent.memory_provider", fake_mod)
+        # The cached class is reused; the module is not imported again.
+        assert type(p.recall_status()) is memory_provider_module._RecallStatus

@@ -12,6 +12,14 @@ Requires Node.js 22 or newer. Install MCP alongside the CLI for editor integrati
 npm install -g @plur-ai/cli@latest @plur-ai/mcp@latest
 ```
 
+To upgrade, install the latest version globally and run `plur init` again. Tool configs record the exact version, and `plur init` moves them to the new one:
+
+```bash
+npm install -g @plur-ai/cli@latest @plur-ai/mcp@latest
+plur init
+plur doctor
+```
+
 Or use without installing:
 
 ```bash

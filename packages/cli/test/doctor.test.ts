@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, chmodSync, readFileSync } from 'fs'
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, chmodSync, readFileSync, existsSync, realpathSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { execSync } from 'child_process'
@@ -21,7 +21,15 @@ describe('plur doctor', () => {
   })
 
   afterEach(() => {
-    rmSync(home, { recursive: true, force: true })
+    // execSync waits for doctor, not for what doctor's handshake started. With
+    // no approved entry the probe falls back to `/bin/sh -lc 'exec npx -y
+    // @plur-ai/mcp@<ver>'`; doctor's kill() reaches npx, while the server npx
+    // launched can live on for a moment and keep writing into this HOME (seen:
+    // `node .../plur-mcp` with HOME=<temp home> and a fresh .plur/server.pid
+    // after the test body returned). A plain recursive rm then races it and
+    // fails with ENOTEMPTY (#1905). Node retries ENOTEMPTY/EBUSY/EPERM here,
+    // waiting retryDelay * attempt between tries (about 5.5 s at most).
+    rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
   })
 
   function runDoctor(): { stdout: string; status: number } {
@@ -393,6 +401,103 @@ describe('plur doctor', () => {
     expect(report.handshake.probed, 'the report must name the source').toBeTruthy()
   }, 40000)
 
+  it('never runs an unapproved project .mcp.json command (security audit 2026-11-06)', () => {
+    // A cloned repository's .mcp.json is written by the repo author. Claude Code
+    // does not launch it before the user approves it, and neither may doctor.
+    const user = join(home, 'user-server.sh')
+    writeFileSync(user, '#!/bin/sh\nsleep 0.5\nexit 0\n', { mode: 0o755 })
+    chmodSync(user, 0o755)
+    writeGlobalSettings({ mcpServers: { plur: { command: user, args: [] } } })
+
+    const marker = join(home, 'REPO_COMMAND_RAN')
+    const evil = { mcpServers: { plur: { command: '/bin/sh', args: ['-c', `touch ${marker}`] } } }
+    const repo = join(home, 'cloned-repo')
+    mkdirSync(join(repo, '.git'), { recursive: true })
+    writeFileSync(join(repo, '.mcp.json'), JSON.stringify(evil))
+    const cursorRepo = join(home, 'cursor-repo')
+    mkdirSync(join(cursorRepo, '.cursor'), { recursive: true })
+    writeFileSync(join(cursorRepo, '.cursor', 'mcp.json'), JSON.stringify(evil))
+
+    for (const cwd of [repo, cursorRepo]) {
+      let stdout = ''
+      try {
+        stdout = execSync(`node ${CLI} doctor --json`, {
+          encoding: 'utf-8', timeout: 30000, cwd,
+          env: { ...isolatedHomeEnv(home), PLUR_DISABLE_EMBEDDINGS: '1' },
+        })
+      } catch (err: any) { stdout = err.stdout?.toString() ?? '' }
+      const report = JSON.parse(stdout)
+      expect(existsSync(marker), `doctor in ${cwd} must not run the repo's command`).toBe(false)
+      expect(report.handshake.command).toContain(user)
+    }
+  }, 80000)
+
+  function doctorJsonIn(cwd: string): any {
+    let stdout = ''
+    try {
+      stdout = execSync(`node ${CLI} doctor --json`, {
+        encoding: 'utf-8', timeout: 30000, cwd,
+        env: { ...isolatedHomeEnv(home), PLUR_DISABLE_EMBEDDINGS: '1' },
+      })
+    } catch (err: any) { stdout = err.stdout?.toString() ?? '' }
+    return JSON.parse(stdout)
+  }
+
+  it('run from the home folder, still probes the global ~/.cursor/mcp.json and ~/.claude/settings.json', () => {
+    // From $HOME the "project" .cursor/mcp.json and .claude/settings.json are the
+    // global files; the project-file exclusion must not drop them.
+    const cursorServer = join(home, 'cursor-server.sh')
+    writeFileSync(cursorServer, '#!/bin/sh\nsleep 0.5\nexit 0\n', { mode: 0o755 })
+    mkdirSync(join(home, '.cursor'), { recursive: true })
+    writeFileSync(join(home, '.cursor', 'mcp.json'), JSON.stringify({ mcpServers: { plur: { command: cursorServer, args: [] } } }))
+    expect(doctorJsonIn(home).handshake.command).toContain(cursorServer)
+
+    rmSync(join(home, '.cursor'), { recursive: true, force: true })
+    const settingsServer = join(home, 'settings-server.sh')
+    writeFileSync(settingsServer, '#!/bin/sh\nsleep 0.5\nexit 0\n', { mode: 0o755 })
+    mkdirSync(join(home, '.claude'), { recursive: true })
+    writeFileSync(join(home, '.claude', 'settings.json'), JSON.stringify({ mcpServers: { plur: { command: settingsServer, args: [] } } }))
+    expect(doctorJsonIn(home).handshake.command).toContain(settingsServer)
+  }, 80000)
+
+  it('runs a project .mcp.json approved with enableAllProjectMcpServers, but not one disabled by name', () => {
+    const repoServer = join(home, 'repo-server.sh')
+    writeFileSync(repoServer, '#!/bin/sh\nsleep 0.5\nexit 0\n', { mode: 0o755 })
+    const repo = join(home, 'approved-repo')
+    mkdirSync(join(repo, '.git'), { recursive: true })
+    writeFileSync(join(repo, '.mcp.json'), JSON.stringify({ mcpServers: { plur: { command: repoServer, args: [] } } }))
+    // Claude Code keys projects by the folder it ran in; doctor sees cwd canonicalised.
+    const key = realpathSync(repo)
+    writeFileSync(join(home, '.claude.json'), JSON.stringify({ projects: { [key]: { enableAllProjectMcpServers: true } } }))
+    expect(doctorJsonIn(repo).handshake.command).toContain(repoServer)
+
+    writeFileSync(join(home, '.claude.json'), JSON.stringify({ projects: { [key]: { enableAllProjectMcpServers: true, disabledMcpjsonServers: ['plur'] } } }))
+    expect(doctorJsonIn(repo).handshake.command).not.toContain(repoServer)
+  }, 80000)
+
+  it('honours approval in the project .claude/settings.local.json only while git does not track it', () => {
+    const repoServer = join(home, 'local-approved-server.sh')
+    writeFileSync(repoServer, '#!/bin/sh\nsleep 0.5\nexit 0\n', { mode: 0o755 })
+    const repo = join(home, 'local-approved-repo')
+    mkdirSync(join(repo, '.claude'), { recursive: true })
+    execSync('git init -q', { cwd: repo, env: isolatedHomeEnv(home) })
+    writeFileSync(join(repo, '.mcp.json'), JSON.stringify({ mcpServers: { plur: { command: repoServer, args: [] } } }))
+    const local = join(repo, '.claude', 'settings.local.json')
+
+    // (a) untracked approval, nothing in ~/.claude.json → the project entry is probed
+    writeFileSync(local, JSON.stringify({ enabledMcpjsonServers: ['plur'] }))
+    expect(doctorJsonIn(repo).handshake.command).toContain(repoServer)
+
+    // (c) plur disabled by name in the same file → not approved, even with enable-all
+    writeFileSync(local, JSON.stringify({ enableAllProjectMcpServers: true, disabledMcpjsonServers: ['plur'] }))
+    expect(doctorJsonIn(repo).handshake.command).not.toContain(repoServer)
+
+    // (b) the same approval committed to the repository → repository content, not approval
+    writeFileSync(local, JSON.stringify({ enableAllProjectMcpServers: true }))
+    execSync('git add .claude/settings.local.json', { cwd: repo, env: isolatedHomeEnv(home) })
+    expect(doctorJsonIn(repo).handshake.command).not.toContain(repoServer)
+  }, 120000)
+
   it('fails overall when the live handshake is enabled and the server never completes initialize', () => {
     // doctor probes the entry the CONFIG declares (#764), so pointing
     // mcpServers.plur at this fake script is what makes the handshake spawn it.
@@ -500,6 +605,69 @@ describe('plur doctor', () => {
     expect(unchecked.report.overall).toBe('unverified')
     expect(unchecked.status).toBe(1)
   }, 90000)
+
+  // #1911: a configured launcher (`npx -y @plur-ai/mcp@latest`, `/bin/sh -lc
+  // 'exec npx …'`) is not the server — the server is its child. Killing only
+  // the process doctor spawned left the server running, writing into ~/.plur
+  // after doctor had reported. The fake launcher here starts the fake server
+  // as its child and stays up, the way npx does; the server answers the
+  // handshake, records its pid, and would otherwise outlive stdin closing.
+  // Process groups are POSIX; on Windows doctor still stops only the launcher.
+  it.skipIf(process.platform === 'win32')('stops the whole server tree it started, not just the launcher (#1911)', async () => {
+    const pidFile = join(home, 'server.pid.txt')
+    const server = join(home, 'tree-server.mjs')
+    writeFileSync(server, [
+      "import { createInterface } from 'node:readline'",
+      "import { writeFileSync } from 'node:fs'",
+      `writeFileSync(${JSON.stringify(pidFile)}, String(process.pid))`,
+      // Stays alive after stdin closes, like a real server holding its store.
+      // Self-exit after 60 s so a failing run does not leak it forever.
+      "setInterval(() => {}, 1000)",
+      "setTimeout(() => process.exit(0), 60000)",
+      "const send = (m) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...m }) + '\\n')",
+      "createInterface({ input: process.stdin }).on('line', (line) => {",
+      "  const msg = JSON.parse(line)",
+      "  if (msg.method === 'initialize') send({ id: msg.id, result: { protocolVersion: '2024-11-05', capabilities: {}, serverInfo: { name: 'plur', version: '0.0.0-test' } } })",
+      "  if (msg.method === 'tools/list') send({ id: msg.id, result: { tools: [{ name: 'plur_recall' }] } })",
+      "})",
+    ].join('\n'))
+    const launcher = join(home, 'tree-launcher.mjs')
+    writeFileSync(launcher, [
+      "import { spawn } from 'node:child_process'",
+      `const child = spawn(process.execPath, [${JSON.stringify(server)}], { stdio: 'inherit' })`,
+      "child.on('exit', (code) => process.exit(code ?? 0))",
+    ].join('\n'))
+
+    writeGlobalSettings({
+      hooks: { UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'npx @plur-ai/cli hook-inject' }] }] },
+      mcpServers: { plur: { command: process.execPath, args: [launcher] } },
+    })
+
+    const alive = (pid: number) => { try { process.kill(pid, 0); return true } catch { return false } }
+    let serverPid = 0
+    try {
+      let stdout = ''
+      try {
+        stdout = execSync(`node ${CLI} doctor --json`, {
+          encoding: 'utf-8', timeout: 30000, cwd: home, stdio: ['ignore', 'pipe', 'ignore'],
+          env: { ...isolatedHomeEnv(home), PLUR_DISABLE_EMBEDDINGS: '1' },
+        })
+      } catch (err: any) {
+        stdout = err.stdout?.toString() ?? ''
+      }
+      const report = JSON.parse(stdout)
+      // The handshake went through the launcher to the server.
+      expect(report.handshake.ok, JSON.stringify(report.handshake)).toBe(true)
+      serverPid = Number(readFileSync(pidFile, 'utf-8'))
+      expect(serverPid).toBeGreaterThan(0)
+      // Bounded wait: termination is asynchronous, but well under 3 s.
+      const deadline = Date.now() + 3000
+      while (alive(serverPid) && Date.now() < deadline) await new Promise(r => setTimeout(r, 50))
+      expect(alive(serverPid), `server pid ${serverPid} outlived doctor`).toBe(false)
+    } finally {
+      if (serverPid && alive(serverPid)) { try { process.kill(serverPid, 'SIGKILL') } catch { /* gone */ } }
+    }
+  }, 40000)
 
   // ── Stale npx hook detection (#178) ─────────────────────────────────────
 

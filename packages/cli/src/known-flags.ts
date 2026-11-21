@@ -1,21 +1,8 @@
 /**
- * Refuse a flag the command does not understand (#986).
- *
- * Every command's parser ends in `else { i++ }`, so an argument it did not
- * recognise was skipped in silence and the command succeeded. Four testers were
- * misled by this. The worst case: `plur packs install <dir> --dry-run` — that
- * command has no `--dry-run`, so the flag was swallowed and the pack was
- * installed by somebody who believed they were previewing it.
- *
- * For a feature whose whole purpose is recording where something came from, a
- * dropped `--license` or `--asserted-by` produces a clean-looking success with
- * the fields that mattered missing. As a tester put it: worse than not having
- * the feature.
- *
- * **Opt-in by command.** A command declares what it accepts by exporting
- * `FLAGS`; the dispatcher checks against it. A command that exports nothing
- * behaves exactly as before, so this can be adopted one command at a time
- * without a flag day, and without this file needing to know about all forty.
+ * Refuse a flag the command does not understand: silently skipping one can turn
+ * e.g. `--dry-run` into a real install, or drop provenance flags. **Opt-in by
+ * command:** a command exporting `FLAGS` is checked by the dispatcher; one that
+ * exports nothing is not.
  */
 
 /** Global flags every command accepts, stripped before a command ever sees them. */
@@ -37,8 +24,7 @@ function distance(a: string, b: string): number {
 
 /**
  * The known flag closest to what was typed, when one is close enough to be
- * worth suggesting. `--licence` for `--license` is the case worth catching:
- * it is a spelling most of the world uses and it currently fails in silence.
+ * worth suggesting (e.g. `--licence` for `--license`).
  */
 function nearest(flag: string, known: string[]): string | undefined {
   let best: string | undefined
@@ -69,15 +55,14 @@ export function unknownFlagMessage(
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]
     if (arg === '--') break
-    // Short flags count too: `-x` bypassed this entirely. A negative number
-    // is a value, not a flag, so a digit after the dash is left alone.
+    // Short flags count too. A negative number is a value, not a flag, so a
+    // digit after the dash is left alone.
     if (!/^-{1,2}[A-Za-z]/.test(arg)) continue
     if (!known.includes(arg)) { offenders.push(arg); continue }
 
-    // A flag that needs a value must have one. `learn "x" --scope --type
-    // behavioral` stored the literal string "--type" as the scope, and
-    // `--type` at the end of the line was dropped in silence — both writing
-    // an engram, both exit 0. Whatever the operator meant, it was not that.
+    // A flag that needs a value must have one: otherwise `--scope --type x`
+    // would store the literal "--type" as the scope, and a trailing `--type`
+    // would be dropped in silence.
     if (takesValue.includes(arg)) {
       const next = args[i + 1]
       if (next === undefined || /^-{1,2}[A-Za-z]/.test(next)) {

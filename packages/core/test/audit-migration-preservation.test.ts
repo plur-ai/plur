@@ -21,8 +21,8 @@ let config: string
 // left on disk is exactly a crash's state: replaced corpus, journal, old
 // config. `restart()` brings the process back.
 const fault = vi.hoisted(() => ({ path: '', dead: false }))
-vi.mock('../src/sync.js', async importOriginal => {
-  const original = await importOriginal<typeof import('../src/sync.js')>()
+vi.mock('../src/atomic-write.js', async importOriginal => {
+  const original = await importOriginal<typeof import('../src/atomic-write.js')>()
   return { ...original, atomicWrite: (...args: Parameters<typeof original.atomicWrite>) => {
     if (fault.dead) throw new Error('process is dead: write never reached disk')
     if (args[0] === fault.path) {

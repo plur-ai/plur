@@ -1,13 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { existsSync } from 'fs'
 import { fileURLToPath } from 'url'
-import { isPlurHookCommand, PLUR_SETTINGS_SUBCOMMANDS } from '../src/hook-command.js'
+import { isPlurHookCommand, PLUR_SETTINGS_SUBCOMMANDS } from '@plur-ai/gateway/harness'
 
 /**
- * `isPlurHookCommand` is a copy of @plur-ai/cli's `src/lib/hook-command.ts`
- * (#1270), because this package cannot import the cli. The same cases run
- * against the cli's copy whenever that file exists in the workspace, so the
- * two cannot drift once both are on one branch.
+ * `isPlurHookCommand` is the shared matcher in @plur-ai/gateway, used by both
+ * `plur init` and `plur-mcp init`.
  */
 
 const OURS: Array<[string, boolean]> = [
@@ -85,6 +83,8 @@ const cliPath = fileURLToPath(new URL('../../cli/src/lib/hook-command.ts', impor
 describe.skipIf(!existsSync(cliPath))('isPlurHookCommand parity with @plur-ai/cli', () => {
   it('agrees with the cli copy on every case', async () => {
     const cli = (await import(/* @vite-ignore */ cliPath)) as { isPlurHookCommand: (c: string) => boolean }
+    // The cli re-exports the shared matcher, so this is the same function.
+    expect(cli.isPlurHookCommand).toBe(isPlurHookCommand)
     for (const [command] of CASES) {
       expect(cli.isPlurHookCommand(command), command).toBe(isPlurHookCommand(command))
     }

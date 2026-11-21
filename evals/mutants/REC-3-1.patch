@@ -1,8 +1,7 @@
 diff --git a/packages/core/src/embeddings.ts b/packages/core/src/embeddings.ts
-index 8a6db17a..b5cb8d3b 100644
 --- a/packages/core/src/embeddings.ts
 +++ b/packages/core/src/embeddings.ts
-@@ -282,10 +282,7 @@ export async function embed(text: string, role?: EmbedRole): Promise<Float32Arra
+@@ -264,10 +264,7 @@
      let vector: Float32Array | null
      try {
        vector = await embedder.embed(text, role)
@@ -13,4 +12,4 @@ index 8a6db17a..b5cb8d3b 100644
 +    } catch {
        return null
      }
-     // Dimension-drift check (#290 generalized to the active embedder, #335):
+     // Dimension-drift check: the adapter declares its dim; if the live model

@@ -5,8 +5,7 @@ import type { InjectionResult } from './types.js'
  * Teaches the model how its memory works and how to signal new learnings.
  * This is what every PLUR user gets automatically, no configuration needed.
  *
- * Copied verbatim from packages/claw/src/assembler.ts (do not reword — the
- * wording is product surface end users read).
+ * Do not reword: end users read this text.
  */
 export const PLUR_MEMORY_INSTRUCTIONS = `[PLUR Memory System]
 
@@ -43,27 +42,13 @@ Guidelines for the learning section:
 - **Do not start from scratch** — check your memories before answering. The answer may already be there.`
 
 /**
- * Render the shared memory system-prompt section: the PLUR memory
- * instructions, plus a "## Your Memories" block with the injected sections
- * (directives, constraints, consider) that fit the token budget.
- *
- * Budget (owner decision I2, formal run 2026-09-26): with a `tokenBudget`, the
- * room left after `usedTokens` and the fixed instructions is `remaining`. Each
- * section is appended WHOLE only if the block with it still fits `remaining`
- * (tokens = ceil(chars / 4), the same estimate as the rest of this function);
- * a section that does not fit is dropped whole, and a later, smaller one may
- * still be appended. The heading is emitted only if it fits too. So the
- * returned text never exceeds `tokenBudget - usedTokens` tokens whenever the
- * instructions alone fit; the instructions are always rendered. Previously a
- * section was appended whenever SOME budget remained, whatever its size
- * (replayed: budget 499 → 5469 tokens rendered). The existing slack gates
- * (constraints and consider need > 100 tokens left before them) still apply.
- * Without a `tokenBudget`, every present section is rendered, as before.
- *
- * Extracted from `@plur-ai/claw`'s `assembleContext` so `@plur-ai/opencode`
- * can render byte-identical output instead of vendoring a second copy of
- * this logic. claw and opencode both call this function, so they share the
- * budget rule by construction.
+ * Render the shared memory system-prompt section: the PLUR memory instructions
+ * (always rendered) plus a "## Your Memories" block of the injected sections.
+ * With a `tokenBudget`, each section is appended WHOLE only if it still fits
+ * the remaining budget (tokens = ceil(chars / 4)), else dropped whole; the
+ * heading must fit too, and constraints/consider need > 100 tokens left. So
+ * output never exceeds `tokenBudget - usedTokens` when the instructions fit.
+ * Shared by `@plur-ai/claw` and `@plur-ai/opencode` for byte-identical output.
  */
 export function renderMemoryBlock(params: {
   injection: InjectionResult | null

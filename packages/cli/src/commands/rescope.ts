@@ -9,7 +9,7 @@ const USAGE =
   '       plur rescope --plan [--out <file>]\n' +
   '       plur rescope --apply <file> [--limit N] --yes\n' +
   '       plur rescope --undo <change-id>\n' +
-  '  Moves engram(s) to another scope (#676). Remote target scopes (configured\n' +
+  '  Moves engram(s) to another scope. Remote target scopes (configured\n' +
   '  writable stores) receive a pushed copy (server assigns the id) and the local\n' +
   '  original is retired with a superseded_by link; local targets (local, global,\n' +
   '  project:*) are rewritten in place, preserving id and activation.\n' +

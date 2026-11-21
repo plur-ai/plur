@@ -1,19 +1,10 @@
 /**
- * Explicit-expiry extraction for the write path (#347).
- *
- * The deterministic expiry machinery (inject/recall skip engrams whose
- * `temporal.valid_until` is in the past) existed long before anything
- * populated the field — time-bound facts were stored with the date only in
- * free text and kept injecting at full strength after going stale.
- *
- * This module lifts EXPLICIT expiry phrases ("valid until 31 May 2026",
- * "expires 2026-12-01") out of the statement into the structured field.
- * It is conservative by design — NEVER silently guess:
- *   - only fires when an expiry keyword is immediately followed by a date
- *   - only fully-specified, unambiguous dates parse (a missing year, or a
- *     numeric slash date like 05/31/2026 with its US/EU ambiguity, is a miss)
- *   - the parsed ISO date is echoed back to the caller for confirmation
- *     (see the `_expiry_extracted` marker and the plur_learn `expiry_note`)
+ * Explicit-expiry extraction for the write path: lifts EXPLICIT expiry phrases
+ * ("valid until 31 May 2026", "expires 2026-12-01") from the statement into
+ * `temporal.valid_until`, which inject/recall honour. NEVER silently guess:
+ *   - fires only when an expiry keyword is immediately followed by a date;
+ *   - only fully specified, unambiguous dates parse (no missing year, no 05/31/2026);
+ *   - the parsed date is echoed back (`_expiry_extracted`, plur_learn `expiry_note`).
  */
 
 const MONTHS: Record<string, number> = {
@@ -76,7 +67,7 @@ export function normalizeIsoDate(input: string): string | null {
   return `${y}-${mo}-${d}`
 }
 
-/** Resolved validity window for a learn() write (#347). */
+/** Resolved validity window for a learn() write. */
 export interface ResolvedValidity {
   valid_from?: string
   valid_until?: string

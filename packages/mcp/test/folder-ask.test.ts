@@ -367,17 +367,21 @@ describe('MCP memory tools in an undecided (`ask`) folder', () => {
     expectAsk(await call(other, 'plur_learn', { statement: 'zebra-c' }), s.workspace)
   })
 
-  it('a repo .plur.yaml asking for settings not yet trusted: the question offers trust, and trust turns memory on', async () => {
+  // D1, revised (owner, 2026-11-14: "load memories but ignore untrusted
+  // settings"): such a folder is on without the file's settings, so the
+  // memory tools work at once and an unscoped write never takes its scope.
+  // The trust question is offered by the editor hooks, next to the memories.
+  it('a repo .plur.yaml asking for settings not yet trusted: memory works without its settings', async () => {
     const s = await setup()
     writeFileSync(join(s.workspace, '.plur.yaml'), `scope: ${SCOPE}\n`)
     vi.spyOn(process, 'cwd').mockReturnValue(s.workspace)
     const client = await connect(s.plur)
-    const q = await call(client, 'plur_learn', { statement: 'zebra-a' })
-    expectAsk(q, s.workspace)
-    expect(q.json.question).toContain('.plur.yaml is not trusted')
-    const trust = answer(q.json, /^Yes, and trust/)
-    expect(parse(trust).flags).toEqual(['--trusted'])
-    run(s.plur, trust)
+    const q = await call(client, 'plur_learn', { statement: 'zebra-untrusted unscoped learning' })
+    expect(q.json?.plur, q.text).toBeUndefined()
+    expect(q.json?.question).toBeUndefined()
+    const stored = readFileSync(join(s.home, 'engrams.yaml'), 'utf8')
+    expect(stored).toContain('zebra-untrusted unscoped learning')
+    expect(stored).not.toContain(`scope: ${SCOPE}`)
     const r = await call(client, 'plur_recall', { query: 'zebra deploy target', scope: 'global' })
     expect(r.json?.plur, r.text).toBeUndefined()
   })

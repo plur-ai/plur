@@ -15,14 +15,9 @@ export interface RefreshPolicy {
 }
 
 /**
- * Refresh at turn boundaries only.
- *
- * Step 1 of a turn is the moment new human input has arrived, which is the only
- * time the recall query can have changed. Recalling on later steps would spend a
- * retrieval per tool-loop iteration and re-fire on every request-recovery retry
- * for no new information. `refreshIntervalMs` adds a wall-clock floor on top,
- * which bounds a retry storm that keeps re-entering step 1.
- *
+ * Refresh at turn boundaries only: step 1 is the only time new human input can
+ * change the query, so later steps and recovery retries would waste retrievals.
+ * `refreshIntervalMs` adds a wall-clock floor against retry storms.
  * @param opts - the interval floor, and an injectable clock for tests.
  * @returns the policy.
  */

@@ -22,6 +22,7 @@
  */
 import { spawn } from 'child_process'
 import type { LlmFunction } from '@plur-ai/core'
+import { makeHttpLlm } from '@plur-ai/gateway/harness'
 
 /** Environment variable naming the model command. */
 export const LLM_CMD_ENV = 'PLUR_LLM_CMD'
@@ -40,28 +41,8 @@ export function llmTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
   return Number.isFinite(n) && n > 0 ? n : DEFAULT_LLM_TIMEOUT_MS
 }
 
-/** An OpenAI-compatible chat-completions endpoint. */
-export function makeHttpLlm(baseUrl: string, apiKey: string, model = 'gpt-4o-mini'): LlmFunction {
-  return async (prompt: string): Promise<string> => {
-    const response = await fetch(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model,
-        messages: [{ role: 'user', content: prompt }],
-        temperature: 0.1,
-      }),
-    })
-    if (!response.ok) {
-      throw new Error(`LLM API error: ${response.status} ${response.statusText}`)
-    }
-    const data = (await response.json()) as any
-    return data.choices?.[0]?.message?.content ?? ''
-  }
-}
+/** An OpenAI-compatible chat-completions endpoint: the one client cli and mcp share. */
+export { makeHttpLlm }
 
 /**
  * A host model command: run `command` through the shell once per prompt,

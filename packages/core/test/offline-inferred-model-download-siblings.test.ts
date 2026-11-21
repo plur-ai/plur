@@ -12,11 +12,13 @@
  */
 import dns from 'node:dns'
 import net from 'node:net'
+import { createHash } from 'node:crypto'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { getEmbedder } from '../src/embedders/index.js'
+import { _setModelPinsForTesting } from '../src/embedders/model-pins.js'
 import { _resetEmbeddingGemmaCache, EMBEDDING_GEMMA_MODEL_ID } from '../src/embedders/embedding-gemma.js'
 import {
   _resetTransformersPipelineCache, _setDefaultModelCacheDir, envOf, importTransformers, modelPresence,
@@ -25,6 +27,7 @@ import {
   _resetCrossEncoderCaches, makeBgeRerankerV2M3Adapter, makeMsMarcoMiniLmL6Adapter, MS_MARCO_MINILM_L6_MODEL_ID,
 } from '../src/rerankers/transformers-cross-encoder.js'
 import { checkForUpdate, clearVersionCache, settleVersionChecks, updateCheckOffline } from '../src/version-check.js'
+import { npmSandbox, refusedPort } from './npm-mirror.js'
 
 const VARS = ['PLUR_OFFLINE', 'HF_HUB_OFFLINE', 'TRANSFORMERS_OFFLINE', 'PLUR_NO_UPDATE_CHECK', 'NO_UPDATE_NOTIFIER', 'PLUR_MODEL_DOWNLOAD', 'PLUR_MODEL_CACHE_DIR', 'HF_HOME'] as const
 
@@ -88,6 +91,7 @@ describe('after a failed update check, no automatic Gemma or reranker download',
     _resetCrossEncoderCaches()
     _resetTransformersPipelineCache()
     _setDefaultModelCacheDir(undefined)
+    _setModelPinsForTesting(undefined)
     for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true })
   })
 
@@ -109,15 +113,37 @@ describe('after a failed update check, no automatic Gemma or reranker download',
     writeFileSync(join(root, 'tokenizer.json'), '{}')
     writeFileSync(join(root, 'tokenizer_config.json'), '{}')
     writeFileSync(join(root, 'onnx', weights), 'not a real model')
+    // Models are pinned and their files checked (security audit 2026-11-06,
+    // H-x03-1): pin these dummy files, so the model counts as on disk. They
+    // sit in the old, unpinned layout, which the load adopts when they match.
+    const sha = (b: string) => createHash('sha256').update(b).digest('hex')
+    _setModelPinsForTesting({
+      [modelId]: {
+        revision: 'c0ffee0000000000000000000000000000000001',
+        files: {
+          'config.json': sha(JSON.stringify({ model_type: 'bert' })),
+          'tokenizer.json': sha('{}'),
+          'tokenizer_config.json': sha('{}'),
+          [`onnx/${weights}`]: sha('not a real model'),
+        },
+      },
+    })
     process.env.PLUR_MODEL_CACHE_DIR = cache
     _setDefaultModelCacheDir(tmp('plur-offline-sib-default-'))
     tEnv.cacheDir = cache
   }
 
   async function failedRegistryCheck(): Promise<number> {
-    await checkForUpdate('@plur-ai/example', '1.0.0')
+    // The check asks npm in a child process (the in-process traps cannot see
+    // it), pointed at a port nothing listens on: it cannot connect.
+    const box = npmSandbox(`registry=http://127.0.0.1:${await refusedPort()}/
+`)
+    const restore = box.apply()
+    try {
+      const r = await checkForUpdate('@plur-ai/example', '1.0.0')
+      expect(r.failure?.reason).toBe('connection refused')
+    } finally { restore(); box.cleanup() }
     expect(updateCheckOffline(), 'the failed check should mark the process offline').toBe(true)
-    expect(attempts.length).toBeGreaterThan(0)
     return attempts.length
   }
 

@@ -1,8 +1,8 @@
 /**
- * Minimal, dependency-free JWT inspection — we only ever READ the `exp`
- * claim to warn about token expiry. We do NOT verify the signature (the
- * server does that); this is purely for client-side "your token expires
- * in N days" / "your token has expired" observability (#295).
+ * Minimal, dependency-free JWT inspection — only READS the `exp` claim to
+ * warn about token expiry. The signature is NOT verified (the server does
+ * that); this is purely for client-side "your token expires in N days" /
+ * "your token has expired" messages.
  *
  * Enterprise tokens are HS256 JWTs (`iss: plur-enterprise`) with a 30-day
  * TTL and no refresh, so silent expiry is a recurring failure mode. Opaque
@@ -33,7 +33,7 @@ function base64UrlDecode(segment: string): string | null {
 
 /**
  * Decode a JWT's payload WITHOUT verifying the signature — display-only
- * identity hints (`sub`, `orgId`, …) for status readouts (#587). Returns null
+ * identity hints (`sub`, `orgId`, …) for status readouts. Returns null
  * for anything that is not a three-part JWT with a JSON object payload (e.g.
  * opaque `plur_sk_…` API keys). Never trust these claims for authorization;
  * the server verifies — this is purely "whose token does this LOOK like".

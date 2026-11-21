@@ -1,24 +1,10 @@
 /**
- * Scope discovery for company servers, in the background (#1631).
- *
- * A server entry (a store entry with a `scopes` list and an `enterprise`
- * block) learns its scopes from `GET /api/v1/me` through
- * `Plur.refreshServerScopes`. Editors give an MCP server a short startup
- * window, so nothing here is ever awaited on the way to a tool answer:
- *
- *   - createServer starts one refresh and does not wait for it;
- *   - plur_session_start starts another only when none is in flight;
- *   - meanwhile every tool works from the cached scopes in config.yaml, and a
- *     settled refresh is seen by the next tool call (refreshServerScopes
- *     reloads the in-memory config after it writes).
- *
- * A refresh never rejects to its caller and never throws out of here: an
- * outcome that is not `ok`, or a refresh that failed outright, is one stderr
- * line naming the server by its safe origin (scheme, host and port — never
- * userinfo, path, the key or the server's answer).
- *
- * State is per Plur instance (a WeakMap), so the many servers the test suite
- * creates do not share it.
+ * Background scope discovery for company servers (`GET /api/v1/me` via
+ * `Plur.refreshServerScopes`). Never awaited on the way to a tool answer: createServer
+ * starts one refresh, plur_session_start another only if none is in flight, and tools use
+ * cached scopes until a refresh settles. Never rejects or throws: failures are one stderr
+ * line naming the server by safe origin only (never userinfo, path, key or response).
+ * State is per Plur instance (WeakMap).
  */
 import { normalizeEndpointUrl, enterpriseRecoveryHint, type Plur, type DiscoveryStatus, type ServerDiscoveryOutcome } from '@plur-ai/core'
 
@@ -208,8 +194,8 @@ export function discoverySummary(plur: Plur): DiscoveryRow[] {
 }
 
 /**
- * Guide warnings for server endpoints whose last known check failed (#295:
- * a refused key or an unreachable server is said out loud). Nothing for `ok`,
+ * Guide warnings for server endpoints whose last known check failed, so a
+ * refused key or an unreachable server is said out loud. Nothing for `ok`,
  * `not_synced` or `degraded`, nor before any check has finished.
  */
 export function discoveryWarnings(rows: DiscoveryRow[]): string[] {

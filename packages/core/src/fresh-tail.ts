@@ -1,13 +1,9 @@
 /**
- * Fresh tail boost (Idea 13)
+ * Fresh tail boost: engrams created in the last 7 days get a retrieval_strength
+ * boost that decays linearly from +0.2 on day 0 to +0.0 on day 7.
  *
- * Engrams created in last 7 days get a retrieval_strength boost.
- * Day 0: +0.2, Day 7: +0.0 (linear decay)
- *
- * ONLY applies to commitment='exploring' or 'leaning' (F14).
- * Decided/locked engrams don't need the boost (already high priority).
- *
- * Applied at scoring time, NOT stored on the engram.
+ * Applies only to commitment 'exploring' or 'leaning'; decided/locked engrams
+ * already rank high. Applied at scoring time, never stored on the engram.
  */
 
 const FRESH_TAIL_DAYS = 7

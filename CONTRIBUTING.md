@@ -39,8 +39,42 @@ pnpm --filter @plur-ai/core build
    or skip the issue if it is already claimed by another party, before it
    starts implementing.
 
-3. **Branch.** Use a descriptive name, e.g. `fix-sync-conflict` or
-   `feat-remote-store-retry`.
+3. **Branch from `development`.** `development` is the integration branch,
+   where all feature and fix work lands; `main` is the release branch. Cut
+   your branch from an up-to-date `origin/development`, with a descriptive
+   name, e.g. `fix-sync-conflict` or `feat-remote-store-retry`:
+
+   ```bash
+   git fetch origin
+   git checkout -b fix-sync-conflict origin/development
+   ```
+
+   A fresh clone may check out `main`. Do not branch from it: `main` is
+   behind `development` between releases, so work cut from `main` starts
+   from an older tree and may conflict with changes that have landed on
+   `development` since.
+
+   **Stacked work.** A pull request that depends on another one still in
+   review may branch from, and target, that pull request's branch.
+   `integration/**` branches are the branches the overnight agent stacks its
+   work on. Pull requests into them skip the GitHub test matrix (`ci.yml`);
+   the full CI runs once, when the integration branch comes into
+   `development` through its own pull request. Instead,
+   `.github/workflows/stacked-local-proof.yml` checks each one:
+
+   - The description has a line `Promises: ID, ID` naming the promises the
+     change makes green. None of them may already be green in the base's
+     `evals/baseline.json`, and each must be green when the workflow runs it
+     again.
+   - Only product source and product tests change (`packages/*/src`, and
+     `packages/*/test` outside `test/helpers`). A manifest, the lockfile, a
+     build or vitest config, a workflow, a script, a shared helper, an eval
+     or docs are refused.
+   - Pull requests from forks are not run.
+
+   [evals/README.md](evals/README.md) also asks such a pull request to paste
+   the output of `scripts/evals-local.sh gate <its base>` into its
+   description; the workflow does not rely on it.
 
 4. **Write tests.** Every change to behavior needs a test. Add unit tests in
    the affected package's `test/` directory (named `*.test.ts`). For changes to
@@ -52,7 +86,15 @@ pnpm --filter @plur-ai/core build
    search runs locally at zero cost. Don't introduce a runtime network
    dependency into `@plur-ai/core`.
 
-6. **Open a PR with the linked issue.** Keep commits to one logical change each.
+6. **Open a PR into `development` with the linked issue.** Keep commits to
+   one logical change each.
+
+   Set the base branch explicitly. The GitHub UI and `gh pr create` may
+   propose `main`:
+
+   ```bash
+   gh pr create --base development
+   ```
 
    Link the issue with a closing keyword **repeated for every issue**:
 
@@ -66,10 +108,21 @@ pnpm --filter @plur-ai/core build
    afterwards and one was missed entirely, staying open for days after it had
    shipped.
 
+   **Closing keywords do not fire on `development` yet.** GitHub closes a
+   linked issue only when the pull request merges into the default branch,
+   which is still `main`. A pull request into `development` gets no linked
+   issues: `Closes #1514` in #1773 and `Closes #1761` in #1765 left both
+   issues open after the merge. Until `development` becomes the default
+   branch, keep the closing keywords (repeated for every issue, as above) for
+   traceability, and close each linked issue by hand once the pull request
+   has merged. For work that only partly fixes an issue, write `Part of #N`
+   instead.
+
 7. **Green before merge.** `pnpm test` and `pnpm build` must pass.
 
-8. **Record the outcome on the issue.** Closing keywords cover the ordinary
-   case. When they don't — a partial fix, a change of approach, or work with
+8. **Record the outcome on the issue.** Closing keywords, or closing by hand
+   while they do not fire on `development` (step 6), cover the ordinary case.
+   When they don't — a partial fix, a change of approach, or work with
    no diff to point at — say so on the issue itself.
 
    This matters most for **configuration and process changes**, which leave no
@@ -118,7 +171,44 @@ it, or assign it.
 ## Reviewing and merging
 
 Every change lands through a reviewed pull request — no direct pushes to
-`main`.
+`main` or `development`. The one exception is the release commit: when there
+is a version bump to commit, `scripts/release.sh` commits it
+(`chore: release vX.Y.Z`) and pushes it straight to `main` with its tag.
+When the versions were already bumped (0.22.0), it only tags the commit it
+verified. Branch protection on `development` requires only the CI checks,
+not a pull request or a review, and does not bind admins: the whole rule —
+through a pull request, with a review — is policy there, not enforced.
+
+Which branch a pull request targets:
+
+1. **Feature and fix pull requests target `development`.** This is the
+   normal case; see "Making a change" above.
+
+2. **`main` receives release promotions from `development`, plus the
+   exceptions below.** A promotion is a pull request from `development` into
+   `main`, titled like "Release X.Y.Z: promote development to main" (#1775,
+   #1799, #1804).
+   See "Releases" below.
+
+3. **Release-time fixes may target `main`.** These are fixes the release
+   itself needs before it can finish, such as a changelog correction the
+   manifest gate asks for (#1777, #1805) or a fix to the release script
+   (#1778).
+
+4. **Whatever lands on `main` goes back to `development`.** After a fix
+   merges into `main`, open a pull request from `main` into `development`
+   ("Merge main into development after the X.Y.Z release", #1779), so the
+   next promotion neither conflicts nor drops the fix.
+
+5. **A fix for a published version (a hotfix): ask the maintainers first.**
+   There is no fixed rule yet. Since work moved to `development` (#1656,
+   merged 2026-10-18), one fix for a published version went straight into
+   `main`: #1781, shipped as 0.22.1, came back to `development` through
+   #1779. #1652 and #1206 also merged into `main`, on 2026-10-21, but were
+   opened before #1656; they came back through #1766. Do not open a pull
+   request against `main` for a hotfix without a maintainer's agreement.
+
+Review rules:
 
 - **A `CHANGES_REQUESTED` review is a block, not a suggestion.** The
   **reviewer** clears it — by re-reviewing and approving, or by dismissing
@@ -142,9 +232,23 @@ Every change lands through a reviewed pull request — no direct pushes to
 
 ## Releases
 
-Release commits and tags follow [RELEASING.md](RELEASING.md). The release is
-guarded by a manifest gate that aborts on undeclared PRs before publish (see
-plur-ai/plur#544) — don't work around it; declare the PRs.
+A release reaches `main` in three steps:
+
+1. **Promote.** A pull request from `development` into `main` carries the
+   release (#1775, #1799, #1804). A release can take more than one
+   promotion, when fixes land on `development` after the first one.
+
+2. **Release from `main`.** After the promotion merges, the release runs from
+   `main`: `scripts/release.sh <version>` refuses to release unless the checkout
+   is `main` and equals `origin/main`. Release commits and tags follow
+   [RELEASING.md](RELEASING.md).
+
+3. **Merge back.** If the release left commits on `main` that `development`
+   lacks (release-time fixes, the release commit), bring them back with a
+   pull request from `main` into `development` (#1779).
+
+The release is guarded by a manifest gate that aborts on undeclared PRs before
+publish (see plur-ai/plur#544) — don't work around it; declare the PRs.
 
 ## Conventions
 

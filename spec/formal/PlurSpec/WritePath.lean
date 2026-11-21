@@ -1,5 +1,5 @@
 /-!
-# WritePath — the Plur write path (packages/core/src/index.ts)
+# WritePath — the Plur write path (packages/core/src/index.ts and packages/core/src/plur/)
 
 Checked against #1631 (config.yaml owner-only, 2026-10-18): still holds. index.ts's only
 change swaps four `atomicWrite(this.paths.config, …)` calls for `writeConfigFile` (same
@@ -1375,8 +1375,8 @@ theorem old_router_sends_conflicted :
 /-! ### 3d. Remote-only folders: the bound instance's write gate (#1521; merged onto development 2026-10-18)
 
 A Plur instance bound to a `remote-only` folder (`bindFolderPolicy`) runs
-index.ts `_remoteOnlyContext` before every write (`_guardSensitiveScope`,
-`learnAsync`, `learnBatch`):
+index.ts `_remoteOnlyContext` before every write (plur/scope-guards.ts `_guardSensitiveScope`,
+plur/learn.ts `learnAsync`, `learnBatch`):
   - blocked (the folder map could not be read, or the folder not resolved) → refuse;
   - `visibility: private` → refuse;
   - target := the explicit scope, else the folder's scope; none → refuse;

@@ -56,10 +56,11 @@ describe('plur folders (#1347)', () => {
 
   it('set / list / rm round-trip (non-interactive, so each write carries a nonce)', () => {
     expect(run(['folders', 'list']).out).toEqual({ folders: [], count: 0 })
-    const s = run(['folders', 'set', target, '--off', '--nonce', nonceFor(target, { mode: 'off' })])
+    // --ask keeps the folder undecided, so the rm nonce still answers an open question.
+    const s = run(['folders', 'set', target, '--ask', '--nonce', nonceFor(target, { mode: 'ask' })])
     expect(s.status).toBe(0)
-    expect(s.out.entry).toEqual({ path: target, plur: 'off' })
-    expect(run(['folders', 'list']).out.folders).toEqual([{ path: target, plur: 'off' }])
+    expect(s.out.entry).toEqual({ path: target, plur: 'ask' })
+    expect(run(['folders', 'list']).out.folders).toEqual([{ path: target, plur: 'ask' }])
     expect(run(['folders', 'rm', target, '--nonce', nonceFor(target, { remove: true })]).out).toEqual({ success: true, removed: true })
     expect(run(['folders', 'list']).out.count).toBe(0)
   }, 60_000)

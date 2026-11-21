@@ -17,7 +17,7 @@ import { join } from 'path'
 import { tmpdir } from 'os'
 import yaml from 'js-yaml'
 import { Plur } from '../src/index.js'
-import { atomicWrite, CONFIG_FILE_MODE } from '../src/sync.js'
+import { atomicWrite, CONFIG_FILE_MODE } from '../src/atomic-write.js'
 
 const isPosix = process.platform !== 'win32'
 

@@ -20,7 +20,7 @@ function tools(plur: unknown) {
   const ctx = { tools: { register: (d: any) => { out.push(d); return () => {} } } }
   const counters = createCounters()
   registerTools(ctx as any, {
-    config: cfg({}), counters, plur: plur as never, queue: createWriteQueue(),
+    config: cfg({}), counters, memoryFor: async () => ({ off: false as const, plur: plur as never }), queue: createWriteQueue(),
     resolveScope: async () => 'project:dsh',
   })
   const run = async (name: string, args: unknown) => {
@@ -55,7 +55,7 @@ describe('dsh writes report what happened (formal Adapters #6)', () => {
     const listeners: Function[] = []
     const counters = createCounters()
     registerLearning({ on: (_e: string, fn: Function) => { listeners.push(fn); return () => {} } } as never, {
-      config: cfg({}), counters, plur: createEngine(cfg({}), missing, () => {}) as never,
+      config: cfg({}), counters, memoryFor: async () => ({ off: false as const, plur: createEngine(cfg({}), missing, () => {}) as never }),
       queue: createWriteQueue(), resolveScope: async () => 'project:dsh',
     })
     await Promise.all(listeners.map(fn => fn({ id: 's1' }, {

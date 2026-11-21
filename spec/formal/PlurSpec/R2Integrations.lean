@@ -679,7 +679,74 @@ def pluginsAfter (v : Option JVal) : Option JVal :=
   | _ => some .obj
 def pluginsAfterOrig (_v : Option JVal) : Option JVal := some .obj
 
-theorem user_value_never_discarded (t : Nat) : pluginsAfter (some (.other t)) = some (.other t) := rfl
+/-- The five config values setup and repair may write into, as read
+(`none` = absent or null). A nested value exists only under an object. -/
+structure ClawCfg where
+  plugins : Option JVal
+  entries : Option JVal
+  slots   : Option JVal
+  mcp     : Option JVal
+  servers : Option JVal
+
+inductive CfgPath | plugins | entries | slots | mcp | servers
+  deriving DecidableEq
+
+def ClawCfg.at (c : ClawCfg) : CfgPath → Option JVal
+  | .plugins => c.plugins
+  | .entries => if c.plugins = some .obj then c.entries else none
+  | .slots   => if c.plugins = some .obj then c.slots else none
+  | .mcp     => c.mcp
+  | .servers => if c.mcp = some .obj then c.servers else none
+
+def badV : Option JVal → Bool
+  | some (.other _) => true
+  | _ => false
+
+/-- `configShapeProblem`, branch for branch: the first key holding a value that
+is not an object, nested keys checked only under an object. -/
+def shapeProblem (c : ClawCfg) : Option CfgPath :=
+  if badV c.plugins then some .plugins
+  else if c.plugins = some .obj ∧ badV c.entries then some .entries
+  else if c.plugins = some .obj ∧ badV c.slots then some .slots
+  else if badV c.mcp then some .mcp
+  else if c.mcp = some .obj ∧ badV c.servers then some .servers
+  else none
+
+/-- What the merge writes, at its most destructive: every value becomes an
+object (`mergeEnable` and repair fall back to `{}` for a value that is not one). -/
+def mergeAll (_c : ClawCfg) : ClawCfg := ⟨some .obj, some .obj, some .obj, some .obj, some .obj⟩
+
+/-- Setup and repair: a shape problem leaves the file as it was. -/
+def clawRun (c : ClawCfg) : ClawCfg := if (shapeProblem c).isSome then c else mergeAll c
+
+/-- For every config: a value at any of the five keys that is not an object
+reads back unchanged after setup or repair, and when the run refuses, the key
+it names holds such a value. -/
+theorem user_value_never_discarded (c : ClawCfg) :
+    (∀ p t, c.at p = some (.other t) → (clawRun c).at p = some (.other t)) ∧
+    (∀ p, shapeProblem c = some p → badV (c.at p) = true) := by
+  obtain ⟨pl, en, sl, mc, sv⟩ := c
+  constructor
+  · intro p t h
+    cases pl <;> (try rename_i x; cases x) <;> cases en <;> (try rename_i x; cases x) <;>
+      cases sl <;> (try rename_i x; cases x) <;> cases mc <;> (try rename_i x; cases x) <;>
+      cases sv <;> (try rename_i x; cases x) <;> cases p <;>
+      simp_all [clawRun, shapeProblem, mergeAll, ClawCfg.at, badV]
+  · intro p h
+    cases pl <;> (try rename_i x; cases x) <;> cases en <;> (try rename_i x; cases x) <;>
+      cases sl <;> (try rename_i x; cases x) <;> cases mc <;> (try rename_i x; cases x) <;>
+      cases sv <;> (try rename_i x; cases x) <;> cases p <;>
+      simp_all [shapeProblem, ClawCfg.at, badV]
+
+/-- Non-vacuity: a config of absent keys and objects is merged. -/
+theorem clean_cfg_merged :
+    clawRun ⟨none, none, none, some .obj, none⟩ = mergeAll ⟨none, none, none, some .obj, none⟩ := by
+  simp [clawRun, shapeProblem, badV]
+
+/-- Counterexample on the merge without the shape check. -/
+theorem merge_discards_servers :
+    (mergeAll ⟨none, none, none, some .obj, some (.other 3)⟩).at .servers = some .obj := by
+  simp [mergeAll, ClawCfg.at]
 theorem orig_discards_user_value : pluginsAfterOrig (some (.other 7)) ≠ some (.other 7) := by decide
 
 /-- `_learnIfNew`: `seen` after one occurrence whose write `ok`s or fails, and
@@ -791,7 +858,50 @@ def allowedOrig (_present : Bool) (name : String) : Bool := builtin name || name
 
 /-- Fixed: a present Host is allowed only for a built-in (or allowlisted) name. -/
 theorem present_empty_refused : allowedFixed true "" = false := by decide
-theorem absent_allowed (n : String) : allowedFixed false n = true := rfl
+/-- `hostIsAllowed` over the raw header: `blank` is `trim() === ''`, `norm` is
+`normaliseHostName` (abstract), `allow` the names the server was started under.
+`none` is an absent header (`String(undefined ?? '')`). -/
+def hostAllowed (blank : String → Bool) (norm : String → String) (allow : List String) :
+    Option String → Bool
+  | none => true
+  | some raw => blank raw || builtin (norm raw) || allow.any (fun a => norm a == norm raw)
+
+/-- The name a request is judged by; an absent header has none. -/
+def hostName (norm : String → String) : Option String → String
+  | none => ""
+  | some raw => norm raw
+
+/-- The one shape the code lets through: `name == ""` for any header. -/
+def hostAllowedOrig (blank : String → Bool) (norm : String → String) (allow : List String) :
+    Option String → Bool
+  | none => true
+  | some raw => blank raw || builtin (norm raw) || norm raw == "" || allow.any (fun a => norm a == norm raw)
+
+/-- For every normaliser that maps a blank header to "" and every allowlist
+with no entry normalising to "": a request with an empty name is allowed
+exactly when it carries no Host (absent or blank). A present Host that
+normalises to "" (`:80`) is refused. -/
+theorem absent_allowed (blank : String → Bool) (norm : String → String) (allow : List String)
+    (hb : ∀ s, blank s = true → norm s = "") (ha : ∀ a ∈ allow, norm a ≠ "") (raw : Option String) :
+    (hostAllowed blank norm allow raw = true ∧ hostName norm raw = "") ↔
+      (raw = none ∨ ∃ s, raw = some s ∧ blank s = true) := by
+  cases raw with
+  | none => simp [hostAllowed, hostName]
+  | some s =>
+    cases hbl : blank s
+    · simp only [hostAllowed, hostName, hbl, Bool.false_or, reduceCtorEq, false_or]
+      constructor
+      · rintro ⟨h, hn⟩
+        rw [hn] at h
+        have hnb : builtin "" = false := by decide
+        rw [hnb, Bool.false_or, List.any_eq_true] at h
+        obtain ⟨a, ham, hae⟩ := h
+        exact absurd (by simpa [hn] using hae) (ha a ham)
+      · rintro ⟨_, h, h'⟩; cases h; simp_all
+    · simp [hostAllowed, hostName, hbl, hb s hbl]
+
+theorem old_port_only_host_allowed :
+    hostAllowedOrig (fun _ => false) (fun _ => "") [] (some ":80") = true := by decide
 theorem orig_colon_port_allowed : allowedOrig true "" = true := by decide
 
 end PlurSpec.R2Integrations

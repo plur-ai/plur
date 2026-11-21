@@ -8,20 +8,15 @@ import { parseTrustArgs } from './trust.js'
  * does not need to walk anything, because a subdirectory was never its own
  * entry (trust checks are hierarchical, grants are not).
  *
- * E3 (2026-09 audit): when `removed` is false, that used to always print
- * "was not trusted" — true of the literal string match, but false of the
- * question a user actually asked a revocation command: "is this directory
- * still trusted after this?" If a covering ancestor grant still trusts it
- * (trust ${dir}/sub after trust ${dir} was granted), the honest answer is
- * "yes, still trusted, via that ancestor" — so this now checks
- * `coveringTrustedAncestor` and names it, plus the command that actually
- * revokes it, instead of silently doing nothing while claiming success.
+ * When there was no exact grant to remove, the directory may still be trusted
+ * through a covering ancestor grant. That ancestor is reported, with the
+ * command that actually revokes it, rather than claiming "was not trusted".
  */
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const parsed = parseTrustArgs(args)
   if (!parsed) return exit(1, 'Usage: plur untrust [dir]')
   const dir = parsed.dir || process.cwd()
-  // No terminal-or-nonce gate (#1477 review): a revocation only removes
+  // No terminal-or-nonce gate: a revocation only removes
   // trust, and scripts and runbooks that revoke must keep working. Only the
   // grant (`plur trust`) is gated. A `--nonce` is accepted and ignored — it
   // is neither checked nor consumed — so a caller that passes one still works.

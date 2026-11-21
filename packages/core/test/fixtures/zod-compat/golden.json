@@ -1504,7 +1504,7 @@
       "description"
     ],
     "messages": [
-      "must not contain control characters or newlines (directive-surface hardening, #345)"
+      "must not contain control characters or newlines (directive-surface hardening)"
     ]
   },
   {
