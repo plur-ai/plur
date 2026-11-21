@@ -954,6 +954,12 @@ export const forgetRescopeMethods: ForgetRescopeMethods & ThisType<Plur> = {
     const local: RescopePlanItem[] = []
     const routes = new Map<string, string | null>()
     for (const item of plan.items) {
+      // The planner proposes global rows only; the plan is an editable file,
+      // so an item naming another source scope is refused, not trusted (H4).
+      if (item.from_scope !== 'global') {
+        refused.push({ id: item.id, to_scope: item.to_scope, reason: `from_scope "${String(item.from_scope)}" is not global: a rescope plan only moves global engrams (use plur rescope ${item.id} --to ${item.to_scope} to move this one explicitly)` })
+        continue
+      }
       if (!routes.has(item.to_scope)) {
         try {
           routes.set(item.to_scope, this._rescopeRoute(item.to_scope).route === 'remote'
