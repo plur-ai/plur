@@ -7,7 +7,7 @@ import { discoveryMethods, type DiscoveryMethods } from './plur/discovery.js'
 import { feedbackPinMethods, type FeedbackPinMethods } from './plur/feedback-pin.js'
 import { foldersPolicyMethods, type FoldersPolicyMethods } from './plur/folders-policy.js'
 import { forgetRescopeMethods, type ForgetRescopeMethods } from './plur/forget-rescope.js'
-import { isPlainObject, REMOTE_PROBE_TIMEOUT_MS } from './plur/helpers.js'
+import { isPlainObject, REMOTE_PROBE_TIMEOUT_MS, sanitizeClientRuntime, type ClientRuntime } from './plur/helpers.js'
 import { injectionMethods, type InjectionMethods } from './plur/injection.js'
 import { learnDedupMethods, type LearnDedupMethods } from './plur/learn-dedup.js'
 import { learnMethods, type LearnMethods } from './plur/learn.js'
@@ -475,6 +475,36 @@ export class Plur {
   /** @internal */ _llmDisabledUntil: number | null = null
   /** Per-session default write scopes; see `session-scopes.ts`. */
   /** @internal */ _sessionScopes = new SessionScopeRegistry()
+  /**
+   * The calling client for the current request, per instance (#1470). Entered
+   * only through the static `Plur.withRuntime`, never a prototype method: every
+   * public prototype method captures the folder binding when it is called, and
+   * the MCP server opens this scope BEFORE its handler refreshes workspace
+   * roots, so a prototype method here would pin the stale binding for every
+   * write the handler makes.
+   */
+  /** @internal */ static _clientRuntime = new AsyncLocalStorage<{ plur: Plur; runtime: ClientRuntime } | undefined>()
+
+  /**
+   * Run `fn` with `runtime` recorded as `attribution.runtime` on every engram
+   * `plur` writes inside it, including nested and async writes (batches,
+   * session-end suggestions, promoted team copies). The name and version are
+   * client-controlled, so they are bounded and stripped of control, bidi and
+   * zero-width characters first; a value with nothing left records no runtime.
+   * An explicit `attribution.runtime` passed to a write is kept as given.
+   * Captures nothing else: in particular not the folder binding.
+   */
+  static withRuntime<T>(plur: Plur, runtime: { name?: unknown; version?: unknown } | undefined | null, fn: () => T): T {
+    const clean = sanitizeClientRuntime(runtime)
+    return Plur._clientRuntime.run(clean ? { plur, runtime: clean } : undefined, fn)
+  }
+
+  /** The context with the request's client runtime filled in, unless the caller named one. */
+  /** @internal */ _withRuntimeAttribution(context?: LearnContext): LearnContext | undefined {
+    const ctx = Plur._clientRuntime.getStore()
+    if (!ctx || ctx.plur !== this || context?.attribution?.runtime) return context
+    return { ...context, attribution: { ...context?.attribution, runtime: { ...ctx.runtime } } }
+  }
   /** @internal */ _gitOrigins = new Map<string, { at: number; origin: OriginRead }>()
   /**
    * Set when bound to a `remote-only` folder: writes go only to its team scope

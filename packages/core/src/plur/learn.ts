@@ -118,6 +118,7 @@ export interface LearnMethods {
 export const learnMethods: LearnMethods & ThisType<Plur> = {
   async learn(statement: string, context?: LearnContext): Promise<Engram> {
     this._assertWritable()
+    context = this._withRuntimeAttribution(context)
     statement = this._validateLearnInput('learn', statement, context)
     const guarded = await this._guardSensitiveScope(statement, context)
     this._refuseScopeConflict(guarded.scope)
@@ -583,6 +584,7 @@ export const learnMethods: LearnMethods & ThisType<Plur> = {
       throw new TypeError('plur.learnRouted: remoteTimeoutMs must be a positive number of milliseconds')
     }
     this._assertWritable()
+    context = this._withRuntimeAttribution(context)
     statement = this._validateLearnInput('learnRouted', statement, context)
     const guarded = await this._guardSensitiveScope(statement, context)
     const scope = guarded.scope
@@ -982,7 +984,10 @@ export const learnMethods: LearnMethods & ThisType<Plur> = {
       // Who is answerable and what kind of claim this is.
       // Both absent when the caller supplied nothing: a missing agent is
       // honest, a guessed one is not.
-      attribution: buildAttribution(context, this._configuredIdentity()),
+      // The request's calling client (#1470) applies here as well as at the
+      // entry of learn()/learnRouted(), so every engram built during a request
+      // records it — a promoted team copy included.
+      attribution: buildAttribution(this._withRuntimeAttribution(context), this._configuredIdentity()),
       claim_class: context?.claim_class,
       provenance: buildProvenanceBlock(context, ancestorsOf),
       dual_coding: context?.dual_coding,

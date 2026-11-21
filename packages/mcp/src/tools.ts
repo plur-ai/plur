@@ -1500,7 +1500,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
               asserted_by: { type: 'string', description: 'Who or what asserted it. Any address: a local name, a Decentralized Identifier, or "unidentified".' },
               runtime: {
                 type: 'object',
-                description: 'The software writing this. Usually known, so usually worth setting.',
+                description: 'The calling app, with its version. Leave it out: it is filled from the MCP initialize clientInfo. A value given here is kept as given instead.',
                 properties: { name: { type: 'string' }, version: { type: 'string' } },
               },
               model: {
@@ -1515,7 +1515,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
               },
               tool: {
                 type: 'object',
-                description: 'An extractor or importer, with its version.',
+                description: 'The writing tool. Defaults to plur-core.',
                 properties: { name: { type: 'string' }, version: { type: 'string' } },
               },
               on_behalf_of: { type: 'string', description: 'The party the runtime acted for.' },

@@ -28,6 +28,17 @@ anchors:
   packages/core/src/index.ts#Plur._basePrimaryStore:
     kind: note
     why: Tells maintainers to reach primary engram state through the store rather than the raw file helpers.
+  packages/core/src/index.ts#Plur._clientRuntime:
+    kind: guarantee
+    rule: >-
+      The calling-client scope is entered only through the static Plur.withRuntime, never a prototype method, so
+      entering it does not capture the folder binding and a rebind inside the scope still decides where a write goes.
+    tests:
+      - packages/core/test/client-runtime-binding.test.ts::is not a method of a Plur instance
+      - packages/core/test/client-runtime-binding.test.ts::a personal write after a rebind to an ordinary folder stays local
+      - >-
+        packages/core/test/client-runtime-binding.test.ts::a write after a rebind to a remote-only folder goes to the
+        team store only
   packages/core/src/index.ts#Plur._heldBy:
     kind: note
     why: Explains why the holding server is tracked beside the row instead of on it.
@@ -938,6 +949,16 @@ anchors:
     rule: A provenance record never invents an agent; when the actor is unknown the relationship is left out.
     tests:
       - packages/core/test/provenance.test.ts::names nobody when the engram names nobody
+  packages/core/src/provenance.ts#a:
+    kind: guarantee
+    rule: >-
+      Core is never read as a calling client: a record whose runtime is plur-core (written before #1470) exports
+      plur-core as the tool, exactly as a current record with tool plur-core does.
+    tests:
+      - "packages/core/test/client-runtime-attribution.test.ts::exports an old `runtime: plur-core` exactly as a new `tool: plur-core`"
+      - >-
+        packages/core/test/client-runtime-attribution.test.ts::an old record with a tool and the core runtime exports
+        like a new one with that tool
   packages/core/src/provenance.ts#ACTIVITY_OF:
     kind: note
     why: Describes which history events map to activities; the "never" refers to events the code does not emit.
