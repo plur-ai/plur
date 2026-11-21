@@ -293,6 +293,27 @@ describe('PGLiteAdapter — substrate', () => {
       await adapter.close()
     }, PGLITE_TIMEOUT)
 
+    it('applies the domain prefix inside the k-NN query, so nearer rows of another domain do not use up the limit', async () => {
+      seedYaml(yamlPath, [
+        mkEngram('ENG-2026-0530-001', 'near one', { domain: 'ops.notes' }),
+        mkEngram('ENG-2026-0530-002', 'near two', { domain: 'ops.notes' }),
+        mkEngram('ENG-2026-0530-003', 'far', { domain: 'eng.db' }),
+      ])
+      const adapter = new PGLiteAdapter(yamlPath, dbPath, { vectorDim: 8 })
+      await adapter.reindex()
+      const q = new Float32Array(8)
+      q[0] = 1
+      const far = new Float32Array(8)
+      far[0] = 0.3
+      far[1] = 0.95
+      await adapter.upsertEmbedding('ENG-2026-0530-001', q)
+      await adapter.upsertEmbedding('ENG-2026-0530-002', q)
+      await adapter.upsertEmbedding('ENG-2026-0530-003', far)
+      const hits = await adapter.searchVector(q, 1, { domain: 'eng' })
+      expect(hits.map(h => h.engram.id)).toEqual(['ENG-2026-0530-003'])
+      await adapter.close()
+    }, PGLITE_TIMEOUT)
+
     it('returns empty array when no embeddings have been stored', async () => {
       seedYaml(yamlPath, [mkEngram('ENG-2026-0530-001', 'no embeds')])
       const adapter = new PGLiteAdapter(yamlPath, dbPath)

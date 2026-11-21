@@ -60,6 +60,35 @@ export interface RecallMethods {
   /** @internal */
   _primaryQueryAdapter(): StorageAdapter | null
 
+  /** The primary query adapter when it also offers `searchVector`, so hybrid recall can take both legs from it. */
+  /** @internal */
+  _primaryHybridAdapter(): StorageAdapter | null
+
+  /**
+   * Keyword search pushed into a primary query store (`searchBM25`), with
+   * scope, scopes, domain and visibility grants in the query, residual filters
+   * applied here, and secondary-store and pack engrams ranked together with
+   * the store's rows. `preloadedOutsiders` skips re-reading those engrams.
+   */
+  /** @internal */
+  _primaryKeywordLeg(adapter: StorageAdapter, query: string, limit: number, options?: Omit<RecallOptions, 'mode' | 'llm'>, preloadedOutsiders?: Engram[]): Promise<Engram[]>
+
+  /**
+   * Hybrid recall answered by a primary query store's own searches (#1787):
+   * the meaning leg from `searchVector`, the keyword leg from `searchBM25`,
+   * fused in core with RRF, then the optional rerank. No read of every memory.
+   * Returns `{ fallback }` when the in-memory path must answer instead: no
+   * query vector, a store search failed, the meaning search found nothing on a
+   * store that cannot report missing vectors, or the store has not
+   * embedded every memory yet (`store_embeddings_incomplete`, which the caller
+   * reports in `degraded_reason`).
+   * `onKeyword` receives the keyword leg's ranking as soon as it is in, so a
+   * meaning search that misses the recall deadline still leaves the keyword
+   * match to answer with (REC-7).
+   */
+  /** @internal */
+  _primaryHybridRecall(adapter: StorageAdapter, query: string, limit: number, rerank?: RerankOptions, options?: Omit<RecallOptions, 'mode' | 'llm'>, onFused?: (r: HybridSearchResult) => void, onKeyword?: (engrams: Engram[]) => void): Promise<{ result: HybridSearchResult } | { fallback: DegradedReason | null }>
+
   /** Search engrams using LLM-assisted semantic filtering. Async, requires llm function. */
   recallAsync(query: string, options: RecallOptions & { llm: LlmFunction }): Promise<Engram[]>
 
@@ -334,69 +363,7 @@ export const recallMethods: RecallMethods & ThisType<Plur> = {
       // remote-only: the primary store is never queried, so no pushdown.
       const adapter = this._remoteOnly ? null : this._primaryQueryAdapter()
       if (adapter) {
-        const pushdownFilter = {
-          status: 'active' as const,
-          scope: options?.scope,
-          scopes: options?.scopes,
-          // Mounted-scope visibility grants go INTO the pushdown so
-          // `limit` counts granted team rows too. Visibility-only — widens the
-          // `scope` clause, never the `scopes` authorization clause.
-          visibilityGrants: this._grantedScopes(),
-          domain: options?.domain,
-        }
-        // Widen and retry rather than trust a fixed multiplier: residual filters
-        // drop rows after the LIMIT, so if filtering consumed the page AND the
-        // adapter returned a full (truncated) page, widen and ask again.
-        // Bounded, because each round is a real query.
-        let narrowed: Engram[] = []
-        let surviving: Engram[] = []
-        let fetch = Math.max(limit * PUSHDOWN_OVERFETCH, limit)
-        for (let round = 0; round < PUSHDOWN_MAX_ROUNDS; round++) {
-          // Prefer the exhaustion-aware call when the adapter offers one.
-          //
-          // `narrowed.length < fetch` is the only exhaustion signal core can
-          // derive, and it is wrong for an adapter whose prefilter cannot rank:
-          // PostgresAdapter computes and scores the FULL candidate set and slices
-          // to `limit`, so a full page means "your slice was full", not "there is
-          // more" — the loop would re-run an identical query to take a longer
-          // slice of an answer already computed.
-          let exhausted = false
-          if (adapter.searchBM25Exhaustive) {
-            const res = await adapter.searchBM25Exhaustive(query, { ...pushdownFilter, limit: fetch })
-            narrowed = res.rows
-            exhausted = res.exhausted
-          } else {
-            narrowed = await adapter.searchBM25(query, { ...pushdownFilter, limit: fetch })
-          }
-          surviving = this._applyResidualFilters(narrowed, options)
-          // Enough survivors, the adapter says there is no more, or the page came
-          // back short (the inferred signal, kept for adapters without the hook).
-          if (surviving.length >= limit || exhausted || narrowed.length < fetch) break
-          fetch *= PUSHDOWN_OVERFETCH
-        }
-
-        const outsiders = await this._engramsOutsidePrimaryStore(options)
-        const extra = this._applyResidualFilters(outsiders, options)
-        let results: Engram[]
-        if (extra.length > 0) {
-          // Rank the union TOGETHER: appended, the best team engram would never
-          // appear whenever the primary store holds `limit` matches.
-          // Score with the UNION's statistics (`extendCorpusStats` folds the
-          // outsiders in); primary-only stats would price a term absent from the
-          // primary corpus as maximally rare. Fold the PRE-residual outsiders, to
-          // match the primary side's stats (post-scope, pre-residual).
-          const queryTokens = ftsTokenize(query)
-          const primaryStats = adapter.corpusStats
-            ? await adapter.corpusStats(queryTokens, pushdownFilter)
-            : undefined
-          const stats = primaryStats
-            ? extendCorpusStats(primaryStats, queryTokens, outsiders)
-            : undefined
-          results = searchEngrams([...surviving, ...extra], query, limit, stats)
-        } else {
-          results = surviving.slice(0, limit)
-        }
-        return results
+        return await this._primaryKeywordLeg(adapter, query, limit, options)
       }
 
       const filtered = await this._filterEngrams(options)
@@ -420,10 +387,81 @@ export const recallMethods: RecallMethods & ThisType<Plur> = {
     }
   },
 
+  async _primaryKeywordLeg(adapter: StorageAdapter, query: string, limit: number, options?: Omit<RecallOptions, 'mode' | 'llm'>, preloadedOutsiders?: Engram[]): Promise<Engram[]> {
+    const pushdownFilter = {
+      status: 'active' as const,
+      scope: options?.scope,
+      scopes: options?.scopes,
+      // Mounted-scope visibility grants go INTO the pushdown so
+      // `limit` counts granted team rows too. Visibility-only — widens the
+      // `scope` clause, never the `scopes` authorization clause.
+      visibilityGrants: this._grantedScopes(),
+      domain: options?.domain,
+    }
+    // Widen and retry rather than trust a fixed multiplier: residual filters
+    // drop rows after the LIMIT, so if filtering consumed the page AND the
+    // adapter returned a full (truncated) page, widen and ask again.
+    // Bounded, because each round is a real query.
+    let narrowed: Engram[] = []
+    let surviving: Engram[] = []
+    let fetch = Math.max(limit * PUSHDOWN_OVERFETCH, limit)
+    for (let round = 0; round < PUSHDOWN_MAX_ROUNDS; round++) {
+      // Prefer the exhaustion-aware call when the adapter offers one.
+      //
+      // `narrowed.length < fetch` is the only exhaustion signal core can
+      // derive, and it is wrong for an adapter whose prefilter cannot rank:
+      // PostgresAdapter computes and scores the FULL candidate set and slices
+      // to `limit`, so a full page means "your slice was full", not "there is
+      // more" — the loop would re-run an identical query to take a longer
+      // slice of an answer already computed.
+      let exhausted = false
+      if (adapter.searchBM25Exhaustive) {
+        const res = await adapter.searchBM25Exhaustive(query, { ...pushdownFilter, limit: fetch })
+        narrowed = res.rows
+        exhausted = res.exhausted
+      } else {
+        narrowed = await adapter.searchBM25(query, { ...pushdownFilter, limit: fetch })
+      }
+      surviving = this._applyResidualFilters(narrowed, options)
+      // Enough survivors, the adapter says there is no more, or the page came
+      // back short (the inferred signal, kept for adapters without the hook).
+      if (surviving.length >= limit || exhausted || narrowed.length < fetch) break
+      fetch *= PUSHDOWN_OVERFETCH
+    }
+
+    const outsiders = preloadedOutsiders ?? await this._engramsOutsidePrimaryStore(options)
+    const extra = this._applyResidualFilters(outsiders, options)
+    let results: Engram[]
+    if (extra.length > 0) {
+      // Rank the union TOGETHER: appended, the best team engram would never
+      // appear whenever the primary store holds `limit` matches.
+      // Score with the UNION's statistics (`extendCorpusStats` folds the
+      // outsiders in); primary-only stats would price a term absent from the
+      // primary corpus as maximally rare. Fold the PRE-residual outsiders, to
+      // match the primary side's stats (post-scope, pre-residual).
+      const queryTokens = ftsTokenize(query)
+      const primaryStats = adapter.corpusStats
+        ? await adapter.corpusStats(queryTokens, pushdownFilter)
+        : undefined
+      const stats = primaryStats
+        ? extendCorpusStats(primaryStats, queryTokens, outsiders)
+        : undefined
+      results = searchEngrams([...surviving, ...extra], query, limit, stats)
+    } else {
+      results = surviving.slice(0, limit)
+    }
+    return results
+  },
+
   _primaryQueryAdapter(): StorageAdapter | null {
     const s = this._primaryStore as unknown as Partial<StorageAdapter>
     if (s?.role === 'primary' && typeof s.searchBM25 === 'function') return s as StorageAdapter
     return null
+  },
+
+  _primaryHybridAdapter(): StorageAdapter | null {
+    const adapter = this._primaryQueryAdapter()
+    return adapter && typeof (adapter as Partial<StorageAdapter>).searchVector === 'function' ? adapter : null
   },
 
   async recallAsync(query: string, options: RecallOptions & { llm: LlmFunction }): Promise<Engram[]> {
@@ -502,6 +540,8 @@ export const recallMethods: RecallMethods & ThisType<Plur> = {
     // embedding leg is done (only the reranker can still be late then).
     let candidates: Engram[] | undefined
     let fused: HybridSearchResult | undefined
+    /** The store path's keyword ranking, once in: the deadline fallback when no candidates were loaded (REC-7). */
+    let storeKeyword: Engram[] | undefined
     /** Why the semantic leg was skipped this call, when it was. */
     let semanticSkipped: string | null = null
     const searchOpts = { signal: localAbort.signal, deadlineAt, onFused: (r: HybridSearchResult) => { fused = r } }
@@ -514,33 +554,51 @@ export const recallMethods: RecallMethods & ThisType<Plur> = {
       reranked: 0,
     })
     const localLeg = async (): Promise<HybridSearchResult> => {
+      // A primary store that searches by meaning and keyword itself answers
+      // both legs (#1787): no read of every memory. remote-only never queries it.
+      const storeLegs = this._remoteOnly ? null : this._primaryHybridAdapter()
       // Narrowed by the store when provably equivalent, else the full read.
-      const filtered = await this._hybridCandidates(query, options)
-      candidates = filtered
+      // Read only when an in-memory ranking needs it.
+      const loadCandidates = async (): Promise<Engram[]> => {
+        candidates ??= await this._hybridCandidates(query, options)
+        return candidates
+      }
+      if (!storeLegs) await loadCandidates()
       // remote-only: keyword ranking only, no embedder (see recallSemantic).
       if (this._remoteOnly) {
-        return { engrams: searchEngrams(filtered, isQueryRewriteDisabled() ? query : rewriteLexicalQuery(query), limit), mode: 'bm25-only', embedderError: null, topScore: null, reranked: 0 }
+        return { engrams: searchEngrams(await loadCandidates(), isQueryRewriteDisabled() ? query : rewriteLexicalQuery(query), limit), mode: 'bm25-only', embedderError: null, topScore: null, reranked: 0 }
       }
       // A recall never downloads the model: when it is not
       // on disk, answer by keyword and say how to get it (`plur doctor`).
       if (await semanticModelState() === 'missing') {
         semanticSkipped = 'embedding_model_missing'
-        return keywordOnly(filtered, 'embedding_model_missing')
+        return keywordOnly(await loadCandidates(), 'embedding_model_missing')
       }
       const rerank = await this._resolveRerankOptions(options?.rerank)
       const intent = this._resolveIntentProfile(query, options?.intentOverride)
       // When intent routing is on we over-fetch from the hybrid call WITHOUT the
       // reranker, apply intent routing, then run the reranker on the routed set.
       // When intent is off the hybrid call handles reranking inline so the
-      // PGLite and JSON paths stay symmetric.
+      // store, PGLite and JSON paths stay symmetric.
       const intentLimit = intent ? Math.max(limit * 2, limit + 10) : limit
       // remote-only: the PGLite index mirrors the personal store; rank in memory.
       const pglite = this._remoteOnly ? null : this.pgliteAdapter
+      /** Why the store's own searches could not answer, when the reply should say so. */
+      let storeFallback: DegradedReason | null = null
+      const hybrid = async (n: number, rr?: RerankOptions): Promise<HybridSearchResult> => {
+        if (storeLegs) {
+          const answered = await this._primaryHybridRecall(storeLegs, query, n, rr, options, searchOpts.onFused, kw => { storeKeyword = kw })
+          if ('result' in answered) return answered.result
+          storeFallback = answered.fallback
+        }
+        const filtered = await loadCandidates()
+        return pglite
+          ? await this._pgliteHybridRecall(query, n, filtered, rr, options)
+          : await hybridSearchWithMeta(filtered, query, n, this.paths.root, rr, searchOpts)
+      }
       let result: HybridSearchResult
       if (intent) {
-        result = pglite
-          ? await this._pgliteHybridRecall(query, intentLimit, filtered, undefined, options)
-          : await hybridSearchWithMeta(filtered, query, intentLimit, this.paths.root, undefined, searchOpts)
+        result = await hybrid(intentLimit, undefined)
         let routed = applyIntentRouting(result.engrams, intent.profile)
         let rerankedCount = result.reranked
         if (rerank) {
@@ -549,10 +607,12 @@ export const recallMethods: RecallMethods & ThisType<Plur> = {
           rerankedCount = reranked.count
         }
         result = { ...result, engrams: routed.slice(0, limit), reranked: rerankedCount }
-      } else if (pglite) {
-        result = await this._pgliteHybridRecall(query, limit, filtered, rerank, options)
       } else {
-        result = await hybridSearchWithMeta(filtered, query, limit, this.paths.root, rerank, searchOpts)
+        result = await hybrid(limit, rerank)
+      }
+      if (storeFallback !== null) {
+        const reason: DegradedReason = storeFallback
+        result = { ...result, degraded_reason: result.degraded_reason ?? reason, embedderError: result.embedderError ?? Plur.DEGRADED_MESSAGES[reason] }
       }
       return result
     }
@@ -569,6 +629,16 @@ export const recallMethods: RecallMethods & ThisType<Plur> = {
       localAbort.abort()
       if (fused) lateFallback = { ...fused, embedderError: fused.embedderError ?? Plur.DEGRADED_MESSAGES.reranker_deadline, degraded_reason: 'reranker_deadline' }
       else if (candidates) lateFallback = keywordOnly(candidates, 'semantic_deadline')
+      // Store path: no candidates are loaded, but the store's keyword leg ran
+      // alongside the query embedding — answer with it, as the in-memory path does.
+      else if (storeKeyword) lateFallback = {
+        engrams: storeKeyword.slice(0, limit),
+        mode: 'hybrid-degraded',
+        embedderError: Plur.DEGRADED_MESSAGES.semantic_deadline,
+        degraded_reason: 'semantic_deadline',
+        topScore: null,
+        reranked: 0,
+      }
     }
     if (local.done && local.error !== undefined) throw local.error
     if (!local.done || semanticSkipped !== null) this._maybeFillEmbeddingCache()
@@ -834,6 +904,89 @@ export const recallMethods: RecallMethods & ThisType<Plur> = {
         `[plur] primary-store searchVector failed: ${(err as Error).message}. Falling back to in-memory semantic recall.`,
       )
       return fallback()
+    }
+  },
+
+  async _primaryHybridRecall(adapter: StorageAdapter, query: string, limit: number, rerank?: RerankOptions, options?: Omit<RecallOptions, 'mode' | 'llm'>, onFused?: (r: HybridSearchResult) => void, onKeyword?: (engrams: Engram[]) => void): Promise<{ result: HybridSearchResult } | { fallback: DegradedReason | null }> {
+    const wantReranker = rerank?.reranker && !isRerankerOff(rerank.reranker)
+    const embLimit = wantReranker ? Math.max(limit * 3, 50) : limit * 2
+    const bm25Limit = wantReranker ? Math.max(limit * 3, 50) : limit * 3
+    // The lexical leg gets the deterministic rewrite; the vector leg and the
+    // reranker keep the original query (as hybridSearchWithMeta does).
+    const lexicalQuery = isQueryRewriteDisabled() ? query : rewriteLexicalQuery(query)
+    // The keyword leg starts BEFORE the query embedding (REC-7): a cold or slow
+    // model can miss the recall deadline, and the deadline fallback answers with
+    // this ranking (handed over through `onKeyword`) rather than with nothing.
+    // Secondary-store and pack engrams are not in the store: read once, ranked
+    // in memory on both legs. If the in-memory path answers after all, this
+    // search was spent for nothing — the price of a keyword answer on time.
+    const keywordEarly = (async () => {
+      const outsiders = await this._engramsOutsidePrimaryStore(options)
+      const keyword = await this._primaryKeywordLeg(adapter, lexicalQuery, bm25Limit, options, outsiders)
+      onKeyword?.(keyword)
+      return { outsiders, keyword }
+    })()
+    // Settled even when nothing awaits it (an early fallback, or the meaning search throws first).
+    keywordEarly.catch(() => {})
+    const { embed } = await import('../embeddings.js')
+    const queryVec = await embed(query, 'query')
+    // Embedder disabled or failed: the in-memory path reports that (mode
+    // 'bm25-only' / 'hybrid-degraded') exactly as before.
+    if (!queryVec) return { fallback: null }
+    try {
+      // Completeness gate, as in _primarySemanticRecall: a memory without a
+      // stored vector is invisible to the store's meaning search, so rank in
+      // memory until the backfill has caught up — and say so.
+      if (typeof adapter.listEngramsMissingEmbeddings === 'function') {
+        const gap = await adapter.listEngramsMissingEmbeddings(1)
+        if (gap.length > 0) {
+          this._afterStoreCommit(() => this._kickPrimaryAutoEmbed(adapter))
+          return { fallback: 'store_embeddings_incomplete' }
+        }
+      }
+      // A store that cannot report missing vectors may have none yet, which an
+      // empty meaning answer reveals (see below).
+      const gated = typeof adapter.listEngramsMissingEmbeddings === 'function'
+      // The scope restriction goes INTO the k-NN query, not onto its results.
+      const hits = await adapter.searchVector(queryVec, embLimit, {
+        scopes: options?.scopes,
+        scope: options?.scope,
+        visibilityGrants: this._grantedScopes(),
+        // In the k-NN query, so `embLimit` is not spent on other domains (#1899).
+        domain: options?.domain,
+      })
+      // Re-applied here with _filterEngrams' rule, for a store that ignores `domain`.
+      const domain = options?.domain
+      const surviving = new Set(this._applyResidualFilters(hits.map(h => h.engram), options)
+        .filter(e => !domain || e.domain?.startsWith(domain))
+        .map(e => e.id))
+      const primaryScored: SimilarityResult[] = hits
+        .filter(h => surviving.has(h.engram.id))
+        .map(h => ({ engram: h.engram, score: Math.max(0, Math.min(1, h.score)) }))
+      // No hit from a store that cannot say its vectors are complete may mean
+      // it has none yet: rank in memory as before. With the gate passed, no
+      // hit means no visible memory is near the query, and the keyword leg stands.
+      if (primaryScored.length === 0 && !gated) return { fallback: null }
+      const { outsiders, keyword } = await keywordEarly
+      const extra = this._applyResidualFilters(outsiders, options)
+      const outsiderScored = extra.length > 0
+        ? await embeddingSearchWithScores(extra, query, embLimit, this.paths.root)
+        : []
+      // One meaning list on the same clamped cosine metric, as _primarySemanticRecall merges it.
+      const meaning = [...primaryScored, ...outsiderScored]
+        .sort((a, b) => b.score - a.score)
+        .slice(0, embLimit)
+        .map(s => s.engram)
+      const merged = pgliteRrfMerge([keyword, meaning])
+      const topScore = merged.length > 0 ? rrfScoreOf(merged[0].id, [keyword, meaning]) : null
+      onFused?.({ engrams: merged.slice(0, limit), mode: 'hybrid', embedderError: null, topScore, reranked: 0 })
+      const reranked = await applyReranker(merged, query, rerank)
+      return { result: { engrams: reranked.engrams.slice(0, limit), mode: 'hybrid', embedderError: null, topScore, reranked: reranked.count } }
+    } catch (err) {
+      logger.warning(
+        `[plur] primary-store search failed in hybrid recall: ${(err as Error).message}. Falling back to in-memory hybrid recall.`,
+      )
+      return { fallback: null }
     }
   },
 
