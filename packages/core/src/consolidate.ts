@@ -454,9 +454,20 @@ export type ClusterDecision =
   | { decision: 'split'; reason: string }
   | { decision: 'pending' }
 
-/** Parse the model's answer. Anything unclear is `pending` — never a merge. */
+/**
+ * Longest model reply the parser reads; anything after it is ignored, so its
+ * clusters stay `pending`. A batch of 8 clusters fits in a few KB.
+ */
+export const MAX_CONSOLIDATION_REPLY_CHARS = 200_000
+
+/**
+ * Parse the model's answer. Anything unclear is `pending` — never a merge.
+ * The marker patterns use `[ \t]`, not `\s`, so a run of blank lines cannot
+ * make the multiline split backtrack quadratically (H3).
+ */
 export function parseConsolidationResponse(response: string, count: number): ClusterDecision[] {
-  const parts = response.split(/^\s*\**\s*CLUSTER_(\d+)\s*\**\s*:/mi)
+  if (response.length > MAX_CONSOLIDATION_REPLY_CHARS) response = response.slice(0, MAX_CONSOLIDATION_REPLY_CHARS)
+  const parts = response.split(/^[ \t]*\**[ \t]*CLUSTER_(\d+)[ \t]*\**[ \t]*:/mi)
   const byNumber = new Map<number, string>()
   for (let i = 1; i + 1 < parts.length; i += 2) {
     const n = Number(parts[i])
@@ -466,7 +477,7 @@ export function parseConsolidationResponse(response: string, count: number): Clu
   for (let i = 1; i <= count; i++) {
     const block = byNumber.get(i)
     if (!block) { out.push({ decision: 'pending' }); continue }
-    const decision = /DECISION:\s*\**\s*(MERGE|SPLIT)/i.exec(block)?.[1]?.toUpperCase()
+    const decision = /DECISION:[ \t]*\**[ \t]*(MERGE|SPLIT)/i.exec(block)?.[1]?.toUpperCase()
     const reason = (/REASON:\s*([^\n]*)/i.exec(block)?.[1] ?? '').trim()
     if (decision === 'SPLIT') { out.push({ decision: 'split', reason }); continue }
     if (decision === 'MERGE') {
