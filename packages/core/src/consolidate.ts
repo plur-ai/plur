@@ -71,7 +71,12 @@ export function hashSeed(seed: string): number {
 
 /** A deterministic generator of floats in [0, 1) (mulberry32). */
 export function seededRandom(seed: string): () => number {
-  let a = hashSeed(seed)
+  return mulberry32(hashSeed(seed))
+}
+
+/** mulberry32 from a numeric seed: floats in [0, 1). */
+export function mulberry32(seed: number): () => number {
+  let a = seed >>> 0
   return () => {
     a = (a + 0x6D2B79F5) >>> 0
     let t = a
