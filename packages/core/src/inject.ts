@@ -1415,20 +1415,3 @@ export function formatWithLayer(engrams: WireEngram[], layer: InjectionLayer): s
     case 3: return engrams.map(formatLayer3).join('\n')
   }
 }
-
-// --- Public wrapper functions for Plur class ---
-
-export interface PublicScoredEngram { engram: Engram; score: number }
-
-export function scoreEngramsPublic(
-  engrams: Engram[],
-  task: string,
-  options?: { scope?: string; grantedScopes?: readonly string[] },
-): PublicScoredEngram[] {
-  const promptLower = task.toLowerCase()
-  const promptWords = new Set(promptLower.split(/\W+/).filter(w => w.length > 2))
-  return engrams.map(e => ({
-    engram: e,
-    score: scoreEngram(e, promptLower, promptWords, [], options?.scope, false, options?.grantedScopes),
-  })).sort((a, b) => b.score - a.score)
-}

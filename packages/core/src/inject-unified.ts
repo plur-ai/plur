@@ -275,15 +275,6 @@ export function orderRecallCandidates(
   return keyed.sort((x, y) => x.key - y.key || x.tie - y.tie).map(k => k.c)
 }
 
-/** Reorder the head of a ranking by reranker scores (id → score). */
-export function applyRerankScores(ranked: RankedCandidate[], scores: ReadonlyMap<string, number>): RankedCandidate[] {
-  if (scores.size === 0) return ranked
-  const head = ranked.filter(c => scores.has(c.engram.id))
-  const tail = ranked.filter(c => !scores.has(c.engram.id))
-  head.sort((a, b) => scores.get(b.engram.id)! - scores.get(a.engram.id)!)
-  return [...head, ...tail]
-}
-
 /** The W8 signals for a ranking (and the reranker's scores, when it ran). */
 export function relevanceSignals(ranked: RankedCandidate[], rerank?: ReadonlyMap<string, number>): RelevanceSignals {
   const top = ranked[0]

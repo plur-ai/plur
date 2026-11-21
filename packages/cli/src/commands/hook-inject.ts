@@ -216,10 +216,6 @@ function sessionStatePath(key: string, ext: string): string | null {
   return dir ? join(dir, `${key}.${ext}`) : null
 }
 
-function sessionMarkerPath(key: string): string | null {
-  return sessionStatePath(key, 'marker')
-}
-
 /**
  * Keys an older hook-inject wrote this session's marker under. With a payload session_id,
  * only forms derived from it (`sid-` key and uncapped `safeSessionKey(payload)`) — never
