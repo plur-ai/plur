@@ -1269,12 +1269,6 @@ anchors:
     kind: guarantee
     rule: plur verify can never write to the store it examines.
     none: no test runs plur verify and checks the store is unchanged
-  packages/cli/src/commands/consolidate.ts#savePlan:
-    kind: guarantee
-    rule: "S6: owner-only also over an existing wider file, never through a symlink."
-    tests:
-      - packages/cli/test/plan-file-safety-s6.test.ts
-      - packages/cli/test/consolidate-cli.test.ts
   packages/cli/src/commands/hook-inject.ts#eventInjectOptions:
     kind: guarantee
     rule: >-

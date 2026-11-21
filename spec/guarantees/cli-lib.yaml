@@ -499,6 +499,7 @@ anchors:
     tests:
       - packages/cli/test/plan-file-safety-s6.test.ts
       - packages/cli/test/rescope-enrich-plan.test.ts
+      - packages/cli/test/consolidate-cli.test.ts
   packages/cli/src/lib/journal-cli.ts#undoCommand:
     kind: guarantee
     rule: refuses other kinds.
