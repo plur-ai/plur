@@ -1348,6 +1348,8 @@ export interface CoInjectionData {
   source?: InjectionSource
   scope?: string
   session_id?: string
+  /** True when the injection counter was skipped for lack of time before the bookkeeping deadline (H7). */
+  counter_skipped?: boolean
 }
 
 export interface CoInjectionEvent {
@@ -1405,6 +1407,7 @@ export function readCoInjections(root: string, months?: string[]): CoInjectionRe
       }
       if (typeof raw.scope === 'string') data.scope = raw.scope
       if (typeof raw.session_id === 'string') data.session_id = raw.session_id
+      if (raw.counter_skipped === true) data.counter_skipped = true
 
       events.push({ injection_id: event.engram_id, timestamp: event.timestamp, data })
     }

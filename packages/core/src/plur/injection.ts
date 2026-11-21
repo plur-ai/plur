@@ -484,6 +484,16 @@ export const injectionMethods: InjectionMethods & ThisType<Plur> = {
       // NO_SESSION selects "no session default" for the dial
       // context; it is not a session id and is never recorded as one.
       const recordedSessionId = options?.session_id === NO_SESSION ? undefined : options?.session_id
+      // The caller's bookkeeping deadline (a racing hook) bounds the counter
+      // too, whichever is sooner. Decided BEFORE the event is written: a
+      // counter the deadline will skip is marked on the event, so the counter
+      // and the history log do not silently disagree (H7).
+      const bk = options?.bookkeeping_deadline_at
+      const counterDeadline = typeof bk === 'number' && Number.isFinite(bk)
+        ? Math.min(bk, deadlineAt ?? Number.POSITIVE_INFINITY)
+        : deadlineAt
+      const counterLeft = counterDeadline !== undefined && Number.isFinite(counterDeadline) ? counterDeadline - Date.now() : Number.POSITIVE_INFINITY
+      const counterSkipped = !this._remoteOnly && (!(counterLeft > 0) || counterLeft < BOOKKEEPING_RESERVE_MS)
       const writeCoInjection = (): void => {
         if (dedupApplies
           && isRecentDuplicateInjection(this.paths.root, queryHash, injected_ids, 5_000, options?.source, recordedSessionId)) return
@@ -509,6 +519,7 @@ export const injectionMethods: InjectionMethods & ThisType<Plur> = {
               source: options?.source ?? 'inject',
               ...(options?.scope ? { scope: options.scope } : {}),
               ...(recordedSessionId ? { session_id: recordedSessionId } : {}),
+              ...(counterSkipped ? { counter_skipped: true } : {}),
             },
           })
           // In-memory provenance is set regardless: the engrams WERE injected,
@@ -550,12 +561,6 @@ export const injectionMethods: InjectionMethods & ThisType<Plur> = {
       // `updateMany`) the pair falls back to a corpus write of the corpus
       // loaded under this lock.
       try {
-        // The caller's bookkeeping deadline (a racing hook) bounds the counter
-        // too, whichever is sooner.
-        const bk = options?.bookkeeping_deadline_at
-        const counterDeadline = typeof bk === 'number' && Number.isFinite(bk)
-          ? Math.min(bk, deadlineAt ?? Number.POSITIVE_INFINITY)
-          : deadlineAt
         await this._bookkeepingWithinDeadline(counterDeadline, async (tooLate) => {
           const primaryEngrams = await this._loadTargeted(injected_ids)
           const injectedSet = new Set(injected_ids)
