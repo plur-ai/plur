@@ -105,6 +105,27 @@ export function packKeyOf(e: { pack?: string | null; _pack?: unknown }): string 
   return (typeof e._pack === 'string' && e._pack) || e.pack || '__personal__'
 }
 export const MAX_PER_DOMAIN = 10
+/**
+ * Per-pack (not for personal rows) and per-top-level-domain counters behind
+ * MAX_PER_PACK and MAX_PER_DOMAIN, with `seed` already counted.
+ */
+export function diversityCaps(seed: Iterable<Engram> = []) {
+  const packs = new Map<string, number>()
+  const domains = new Map<string, number>()
+  const top = (e: Engram) => (e.domain ?? '__none__').split('.')[0]
+  const count = (e: Engram) => {
+    const pack = packKeyOf(e as never)
+    packs.set(pack, (packs.get(pack) ?? 0) + 1)
+    domains.set(top(e), (domains.get(top(e)) ?? 0) + 1)
+  }
+  const capped = (e: Engram): boolean => {
+    const pack = packKeyOf(e as never)
+    if (pack !== '__personal__' && (packs.get(pack) ?? 0) >= MAX_PER_PACK) return true
+    return (domains.get(top(e)) ?? 0) >= MAX_PER_DOMAIN
+  }
+  for (const e of seed) count(e)
+  return { count, capped }
+}
 // Default share of the injection budget that may be PINNED. Configurable as
 // `injection.pinned_ratio`. The same share is the pin-time quota
 // (`pinnedQuota()`) and the ceiling on pins at injection: pins are given
@@ -445,6 +466,21 @@ export function isPrimaryRow(e: Engram): boolean {
     && parseNamespacedId(e.id) === null
 }
 
+/** Forward edges from primary rows to other stores' rows (see isPrimaryRow): target id → primary ids. */
+export function primaryReplacements(personal: readonly Engram[]): Map<string, string[]> {
+  const out = new Map<string, string[]>()
+  for (const e of personal) {
+    if (!e.relations?.supersedes?.length || !isPrimaryRow(e)) continue
+    for (const t of e.relations.supersedes) {
+      if (parseNamespacedId(t) === null) continue
+      const list = out.get(t) ?? []
+      list.push(e.id)
+      out.set(t, list)
+    }
+  }
+  return out
+}
+
 /** Does following superseded_by edges from `start` reach `target`? A self-edge reaches at once. */
 function leadsBackTo(
   start: string,
@@ -685,14 +721,7 @@ export function fillTokenBudget(
 ): { selected: ScoredEngram[]; tokens_used: number; omitted_pinned: OmittedPinned[] } {
   const result: ScoredEngram[] = []
   const omittedPinned: OmittedPinned[] = []
-  const packCounts = new Map<string, number>()
-  const domainCounts = new Map<string, number>()
-  for (const e of seed) {
-    const pack = packKeyOf(e as never)
-    packCounts.set(pack, (packCounts.get(pack) ?? 0) + 1)
-    const topDomain = (e.domain ?? '__none__').split('.')[0]
-    domainCounts.set(topDomain, (domainCounts.get(topDomain) ?? 0) + 1)
-  }
+  const caps = diversityCaps(seed)
   let tokensUsed = 0
 
   // Two-pass selection: pinned engrams first, then the rest. Pins ignore
@@ -768,29 +797,16 @@ export function fillTokenBudget(
     tokensUsed += cost
     pinnedLedger.spent += cost
     if (hard) pinnedLedger.hardSpent += cost
-    const pack = packKeyOf(engram as never)
-    packCounts.set(pack, (packCounts.get(pack) ?? 0) + 1)
-    const topDomain = (engram.domain ?? '__none__').split('.')[0]
-    domainCounts.set(topDomain, (domainCounts.get(topDomain) ?? 0) + 1)
+    caps.count(engram)
   }
 
   for (const engram of unpinned) {
     const cost = estimateTokens(engram)
     if (tokensUsed + cost > maxTokens) continue
-
-    const pack = packKeyOf(engram as never)
-    const packCount = packCounts.get(pack) ?? 0
-    if (packCount >= MAX_PER_PACK && pack !== '__personal__') continue
-
-    const domain = engram.domain ?? '__none__'
-    const topDomain = domain.split('.')[0]
-    const domainCount = domainCounts.get(topDomain) ?? 0
-    if (domainCount >= MAX_PER_DOMAIN) continue
-
+    if (caps.capped(engram)) continue
     result.push(engram)
     tokensUsed += cost
-    packCounts.set(pack, packCount + 1)
-    domainCounts.set(topDomain, domainCount + 1)
+    caps.count(engram)
   }
   return { selected: result, tokens_used: tokensUsed, omitted_pinned: omittedPinned }
 }
@@ -882,16 +898,7 @@ export function selectAndSpread(
   // superseded_by edges of every engram the loops see, for loop detection.
   const supersededBy = new Map<string, readonly string[]>()
   // Forward edges from primary rows to other stores' rows (see isPrimaryRow).
-  const replacedFromPrimary = new Map<string, string[]>()
-  for (const e of personalEngrams) {
-    if (!e.relations?.supersedes?.length || !isPrimaryRow(e)) continue
-    for (const t of e.relations.supersedes) {
-      if (parseNamespacedId(t) === null) continue
-      const list = replacedFromPrimary.get(t) ?? []
-      list.push(e.id)
-      replacedFromPrimary.set(t, list)
-    }
-  }
+  const replacedFromPrimary = primaryReplacements(personalEngrams)
   const historical = hasHistoricalIntent(ctx.prompt)
 
   // Step 1-2: Score all active engrams
