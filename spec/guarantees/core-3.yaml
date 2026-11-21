@@ -1570,15 +1570,34 @@ anchors:
     kind: guarantee
     rule: >-
       `deny` — the write is refused with {@link PinDeniedError}. * The caller is an {@link PinActor}: `owner` (the CLI, a
-      person at a terminal) is never restricted; Only a TRANSITION to pinned is policed: re-writing an engram that is
-      already pinned, and unpinning, are never restricted.
+      person at a terminal) is never restricted; Only a TRANSITION to pinned, and a stronger pin on a row already
+      pinned (higher priority or the hard tier), are policed: re-writing a pinned engram without strengthening its pin,
+      and unpinning, are not restricted.
     tests:
       - packages/core/test/pin-policy.test.ts
+      - packages/core/test/harden-pin-escalation.test.ts
+  packages/core/src/pin-policy.ts#isPinEscalation:
+    kind: guarantee
+    rule: >-
+      Raising the priority of a pin, or moving it to the hard tier, by an agent or an absent actor is refused under
+      pinning.agents request or deny; lowering a pin and the owner's changes are not.
+    tests:
+      - "packages/core/test/harden-pin-escalation.test.ts::an agent cannot raise a pin's priority"
+      - "packages/core/test/harden-pin-escalation.test.ts::an agent update cannot move a pin to the hard tier"
+      - "packages/core/test/harden-pin-escalation.test.ts::a journalled change by an agent cannot raise a pin's priority"
+      - "packages/core/test/harden-pin-escalation.test.ts::an agent may lower a pin's priority; the owner may raise it"
   packages/core/src/pin-policy.ts#pinDecision:
     kind: guarantee
     rule: "`owner` is always allowed"
     tests:
       - packages/core/test/pin-policy.test.ts
+  packages/core/src/pin-policy.ts#pinEscalationDenied:
+    kind: guarantee
+    rule: >-
+      A pin escalation under pinning.agents request is refused like deny, since a pin request cannot be recorded on a
+      row that is already pinned; the refusal names the owner's command.
+    tests:
+      - "packages/core/test/harden-pin-escalation.test.ts::an agent cannot raise a pin's priority"
   packages/core/src/storage-postgres.ts#updated:
     kind: note
     why: Explains why the vector is rebuilt on update ('would never be rebuilt' otherwise); states no rule of its own.

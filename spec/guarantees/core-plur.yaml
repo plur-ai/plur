@@ -472,6 +472,15 @@ anchors:
         stays local
     promises:
       - FGT-3
+  packages/core/src/plur/forget-rescope.ts#forgetRescopeMethods.applyRescopePlan:
+    kind: guarantee
+    rule: >-
+      Applying a rescope plan refuses any item whose from_scope is not global, so an edited plan cannot move a project
+      or private row into another scope.
+    tests:
+      - >-
+        packages/core/test/harden-rescope-plan-from-scope.test.ts::a tampered item with from_scope project:private is
+        refused and the row stays put
   packages/core/src/plur/forget-rescope.ts#forgetRescopeMethods.rescope:
     kind: guarantee
     rule: >-
