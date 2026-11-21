@@ -359,6 +359,22 @@ export interface InjectOutcome<R> {
   mode: 'hybrid' | 'bm25'
 }
 
+/**
+ * H14: the mode the turn really got. `InjectOutcome.mode` names the leg that
+ * won the race; a hybrid leg can still come back degraded (core's result
+ * `mode: 'hybrid-degraded'`, keyword matching only), which this reports.
+ */
+export function effectiveInjectMode(outcome: { mode: 'hybrid' | 'bm25'; result: unknown }): string {
+  const resultMode = (outcome.result as { mode?: unknown } | null)?.mode
+  if (outcome.mode === 'hybrid' && typeof resultMode === 'string' && resultMode !== 'hybrid') return resultMode
+  return outcome.mode
+}
+
+/** H14: told when the hybrid leg fails — at once (`failed`) or after losing the race to the fallback (`late`). */
+export interface InjectFallbackHooks {
+  onHybridError?: (message: string, phase: 'failed' | 'late') => void
+}
+
 /** The two inject entry points this helper races, structurally typed so `Plur` satisfies it. */
 export interface Injectable<O, R> {
   inject: (task: string, opts: O) => Promise<R>
@@ -380,6 +396,7 @@ export async function injectWithFallback<O, R>(
   task: string,
   opts: O,
   deadlineMs: number = HYBRID_DEADLINE_MS,
+  hooks: InjectFallbackHooks = {},
 ): Promise<InjectOutcome<R>> {
   if (!hybridEnabled()) return { result: await plur.inject(task, opts), mode: 'bm25' }
 
@@ -403,10 +420,14 @@ export async function injectWithFallback<O, R>(
     const hybridSearch = plur.injectHybrid(task, coreOpts)
     const raced = await withDeadline(hybridSearch, deadlineMs)
     if (raced !== DEADLINE_MISSED) return { result: raced, mode: 'hybrid' }
-    // A late failure must not win the race: it yields to the fallback.
+    // A late failure must not win the race: it yields to the fallback. Its
+    // message still goes to the caller (H14), so it is not lost.
     late = hybridSearch.then(
       (result): InjectOutcome<R> => ({ result, mode: 'hybrid' }),
-      () => new Promise<never>(() => { /* yield to BM25 */ }),
+      (err: unknown) => {
+        try { hooks.onHybridError?.((err as Error)?.message ?? String(err), 'late') } catch { /* diagnostics only */ }
+        return new Promise<never>(() => { /* yield to BM25 */ })
+      },
     )
     process.stderr.write(
       `[plur] hybrid injection exceeded ${deadlineMs}ms — falling back to BM25 for this turn. ` +
@@ -416,6 +437,7 @@ export async function injectWithFallback<O, R>(
   } catch (err: unknown) {
     // A hybrid-specific failure (embedder unavailable, index mid-rebuild) must
     // not cost the turn its memory — BM25 needs neither.
+    try { hooks.onHybridError?.((err as Error)?.message ?? String(err), 'failed') } catch { /* diagnostics only */ }
     process.stderr.write(
       `[plur] hybrid injection failed (${(err as Error)?.message ?? 'unknown'}) — using BM25.\n`,
     )

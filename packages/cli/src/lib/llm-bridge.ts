@@ -23,6 +23,7 @@
 import { spawn } from 'child_process'
 import type { LlmFunction } from '@plur-ai/core'
 import { makeHttpLlm } from '@plur-ai/gateway/harness'
+import { stopProcessTree, stopTreeOnSignal } from './process-tree.js'
 
 /** Environment variable naming the model command. */
 export const LLM_CMD_ENV = 'PLUR_LLM_CMD'
@@ -44,27 +45,57 @@ export function llmTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
 /** An OpenAI-compatible chat-completions endpoint: the one client cli and mcp share. */
 export { makeHttpLlm }
 
+/** Most a command bridge may print (stdout or stderr) before it is stopped: no model reply comes near it. */
+export const MAX_LLM_OUTPUT_BYTES = 4 * 1024 * 1024
+
 /**
  * A host model command: run `command` through the shell once per prompt,
  * write the prompt to its stdin, return its stdout. A non-zero exit, a
- * signal, the timeout or an empty answer is an error (with the command's
- * stderr, trimmed), never an empty reply.
+ * signal, the timeout, output past `maxOutputBytes` (default 4 MB) or an
+ * empty answer is an error (with the command's stderr, trimmed), never an
+ * empty reply. H16: on POSIX the shell is spawned detached, so a timeout or
+ * the output cap stops everything the command started (the process group),
+ * not only the shell; on Windows only the spawned process is stopped.
  */
-export function makeCommandLlm(command: string, opts: { timeoutMs?: number } = {}): LlmFunction {
+export function makeCommandLlm(command: string, opts: { timeoutMs?: number; maxOutputBytes?: number } = {}): LlmFunction {
   const timeoutMs = opts.timeoutMs ?? llmTimeoutMs()
+  const maxBytes = opts.maxOutputBytes ?? MAX_LLM_OUTPUT_BYTES
   return (prompt: string) => new Promise<string>((resolve, reject) => {
-    const child = spawn(command, { shell: true, stdio: ['pipe', 'pipe', 'pipe'] })
+    const child = spawn(command, { shell: true, stdio: ['pipe', 'pipe', 'pipe'], detached: process.platform !== 'win32' })
+    const removeSignalHandlers = stopTreeOnSignal(child)
     let out = ''
     let err = ''
-    const timer = setTimeout(() => {
-      child.kill('SIGTERM')
-      reject(new Error(`The model command did not answer within ${Math.round(timeoutMs / 1000)}s (${LLM_CMD_ENV} / --llm-cmd; limit: ${LLM_TIMEOUT_ENV}).`))
-    }, timeoutMs)
-    child.stdout.setEncoding('utf8').on('data', d => { out += d })
-    child.stderr.setEncoding('utf8').on('data', d => { err += d })
-    child.once('error', e => { clearTimeout(timer); reject(new Error(`The model command could not start: ${e.message}`)) })
-    child.once('close', (code, signal) => {
+    let outBytes = 0
+    let errBytes = 0
+    let settled = false
+    const fail = (e: Error) => {
+      if (settled) return
+      settled = true
       clearTimeout(timer)
+      removeSignalHandlers()
+      stopProcessTree(child)
+      reject(e)
+    }
+    const timer = setTimeout(() => {
+      fail(new Error(`The model command did not answer within ${Math.round(timeoutMs / 1000)}s (${LLM_CMD_ENV} / --llm-cmd; limit: ${LLM_TIMEOUT_ENV}).`))
+    }, timeoutMs)
+    const tooMuch = (stream: string) => fail(new Error(`The model command printed more than ${maxBytes} bytes on ${stream}; it was stopped.`))
+    child.stdout.setEncoding('utf8').on('data', (d: string) => {
+      outBytes += Buffer.byteLength(d)
+      if (outBytes > maxBytes) return tooMuch('stdout')
+      out += d
+    })
+    child.stderr.setEncoding('utf8').on('data', (d: string) => {
+      errBytes += Buffer.byteLength(d)
+      if (errBytes > maxBytes) return tooMuch('stderr')
+      err += d
+    })
+    child.once('error', e => fail(new Error(`The model command could not start: ${e.message}`)))
+    child.once('close', (code, signal) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      removeSignalHandlers()
       if (code !== 0) return reject(new Error(`The model command failed (${signal ?? `exit ${code}`}): ${err.trim().slice(0, 500) || 'no error output'}`))
       if (!out.trim()) return reject(new Error('The model command printed nothing.'))
       resolve(out)

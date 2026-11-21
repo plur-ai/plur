@@ -7,7 +7,7 @@
  * `plur tensions` keeps that, for its existing users.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs'
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { spawnSync } from 'child_process'
@@ -61,6 +61,35 @@ describe('makeCommandLlm', () => {
     await expect(makeCommandLlm('true')('x')).rejects.toThrow(/printed nothing/)
     await expect(makeCommandLlm('sleep 5', { timeoutMs: 200 })('x')).rejects.toThrow(/did not answer/)
   })
+
+  // H16: a command that floods stdout is stopped at the cap, not buffered without bound.
+  it('output past the cap is an error, raised as soon as the cap is passed', async () => {
+    const flood = `"${process.execPath}" -e "process.stdout.write('x'.repeat(300000)); setTimeout(() => {}, 20000)"`
+    const t0 = Date.now()
+    await expect(makeCommandLlm(flood, { timeoutMs: 15_000, maxOutputBytes: 100_000 })('x')).rejects.toThrow(/more than 100000 bytes/)
+    expect(Date.now() - t0).toBeLessThan(10_000)
+  }, 30_000)
+
+  // H16: on timeout the whole process group goes, not just the shell.
+  it.skipIf(process.platform === 'win32')('the timeout stops what the command started, not only the shell', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'plur-llm-tree-'))
+    const pidFile = join(dir, 'child.pid')
+    let pid = 0
+    try {
+      await expect(makeCommandLlm(`sleep 30 & echo $! > "${pidFile}"; wait`, { timeoutMs: 500 })('x')).rejects.toThrow(/did not answer/)
+      pid = Number(readFileSync(pidFile, 'utf8').trim())
+      expect(pid).toBeGreaterThan(0)
+      const deadline = Date.now() + 3_000
+      let alive = true
+      while (alive && Date.now() < deadline) {
+        try { process.kill(pid, 0); await new Promise(r => setTimeout(r, 50)) } catch { alive = false }
+      }
+      expect(alive).toBe(false)
+    } finally {
+      if (pid) try { process.kill(pid, 'SIGKILL') } catch { /* gone */ }
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }, 20_000)
 })
 
 describe('consolidate, enrich and pins audit refuse with only an environment API key', { timeout: 60_000 }, () => {

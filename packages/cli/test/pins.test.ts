@@ -213,7 +213,8 @@ process.stdin.on('end', () => {
     expect((short.structured_data as any).original_statement).toBe(every.statement)
 
     expect((await cli(['pins', 'undo', r.change_id])).status).toBe(0)
-    expect((await cli(['pins', 'undo', t.change_id])).status).toBe(0)
+    // Undoing the trial pins sit again: a pin grant, confirmed at the terminal (H12).
+    expect((await ttyCli(['pins', 'undo', t.change_id])).status).toBe(0)
     expect(readFileSync(join(root, 'engrams.yaml'), 'utf8')).toBe(original)
   }, 90_000)
 })

@@ -8,6 +8,7 @@ import { writePrivateFile } from './private-file.js'
 import type { Plur, ChangeRecord } from '@plur-ai/core'
 import { shouldOutputJson, outputJson, outputText, exit } from '../output.js'
 import type { GlobalFlags } from '../plur.js'
+import { confirmUndoPins } from './pin-confirm.js'
 
 /** Write a plan to `out` (atomic, 0600, never through a symlink — it quotes memory text, S6), or to stdout as JSON. */
 export function emitPlan(plan: unknown, out: string | undefined): void {
@@ -42,6 +43,8 @@ export async function undoCommand(plur: Plur, changeId: string, kind: string, fl
   const record: ChangeRecord | null = plur.getChange(changeId)
   if (!record) exit(1, `No change ${changeId} in the change journal.`)
   if (record.kind !== kind) exit(1, `Change ${changeId} is a "${record.kind}" change, not "${kind}"; refusing to undo it from here.`)
+  // H12: an undo that puts a pin back is a pin grant (S1).
+  await confirmUndoPins(plur, record)
   try {
     const undo = await plur.undoChange(changeId)
     if (shouldOutputJson(flags)) outputJson({ undone: changeId, undo_change: undo.id, rows: undo.rows.length })

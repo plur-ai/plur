@@ -10,11 +10,11 @@ import { hookFolderPolicy, payloadDir, sessionSettings, folderAskOnce, untrusted
 import { skippedStoreNotice, formatPinOverflowLine, formatPendingPinRequestsLine, semanticModelState } from '@plur-ai/core'
 import type { FolderPolicy } from '@plur-ai/core'
 import { safeSessionKey } from '../lib/session-key.js'
-import { injectWithFallback, hybridEnabled, type Injectable, type InjectOutcome } from '../lib/codex-hook-io.js'
+import { injectWithFallback, hybridEnabled, effectiveInjectMode, type Injectable, type InjectOutcome, type InjectFallbackHooks } from '../lib/codex-hook-io.js'
 import { waitForOwnStoreLock, exitWhenStoreIdle, EXIT_LOCK_WAIT_MS } from '../lib/store-lock-exit.js'
 import { correctionReminder } from './hook-correction-detect.js'
 import { recordInjected } from '../lib/auto-rate.js'
-import { recordHookRun } from '../lib/hook-runs.js'
+import { recordHookRun, recordHookNote, type HookNote } from '../lib/hook-runs.js'
 import { cachedServerLines } from '../lib/server-session.js'
 import { cleanupLegacyProjectAtSessionStart } from '../lib/legacy-plur-yaml.js'
 import { hookSessionDir, readSessionTask, writeSessionTask } from '../lib/session-task.js'
@@ -692,6 +692,7 @@ export async function injectForHook<O, R>(
   task: string,
   opts: O,
   deadlineMs?: number,
+  hooks?: InjectFallbackHooks,
 ): Promise<InjectOutcome<R> & { hybrid: Promise<unknown> | null; pending: Promise<unknown> | null }> {
   // Keep hold of the hybrid search: when it misses the deadline it is still
   // running, and the exit must wait for it to finish its store write.
@@ -712,7 +713,7 @@ export async function injectForHook<O, R>(
       return p
     },
   }
-  const outcome = await injectWithFallback(tracked, task, opts, deadlineMs)
+  const outcome = await injectWithFallback(tracked, task, opts, deadlineMs, hooks)
   // What may still be running when the hook wants to exit.
   const pending = outcome.mode === 'bm25' ? hybrid : fallback
   return { ...outcome, hybrid, pending }
@@ -894,7 +895,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   // work, so a run cut short leaves the epoch undelivered (fail open). For
   // source clear the payload already carries a new session id, so this only
   // starts that session's marker (see isEpochBumpStart, H10).
-  if (isEpochBumpStart(input)) bumpPinEpoch(input.session_id)
+  if (isEpochBumpStart(input)) bumpPinEpoch(input.session_id, { notesRoot: flags.path })
   runCeilingMs = event ? EVENT_CEILING_MS : HOOK_CEILING_MS
 
   // Watchdog: guarantee this process exits even if something in the hook run
@@ -974,10 +975,18 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       storeRoot: plur.storageRoot,
     })
     heldInjectLock = plan.hold ?? null
+    // H14: why this leg, and what came back, in hook-runs.json — the only
+    // trace of a keyword fallback or a degraded result (nothing is printed).
+    const eventNote: HookNote = { event, reason: plan.reason, leg: plan.mode }
+    const onHybridError: InjectFallbackHooks['onHybridError'] = (message, phase) => {
+      eventNote[phase === 'late' ? 'late_hybrid_error' : 'hybrid_error'] = message
+      // After the main record (a late failure lands while the exit waits for it).
+      if (eventNote.mode !== undefined) recordHookNote('claude', 'event', eventNote, flags.path)
+    }
     let outcome: Awaited<ReturnType<typeof injectForHook<typeof eventOpts, Awaited<ReturnType<Plur['inject']>>>>>
     try {
       outcome = plan.mode === 'hybrid'
-        ? await injectForHook(plur, task, eventOpts, EVENT_HYBRID_DEADLINE_MS)
+        ? await injectForHook(plur, task, eventOpts, EVENT_HYBRID_DEADLINE_MS, { onHybridError })
         : { result: await plur.inject(task, eventOpts), mode: 'bm25', hybrid: null, pending: null }
     } finally {
       // Kept while an abandoned hybrid search may still be running: released
@@ -989,6 +998,10 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     }
     const { result, mode, hybrid, pending } = outcome
     abandonedHybrid = (mode === 'bm25' && hybrid) ? hybrid : pending
+    eventNote.mode = effectiveInjectMode(outcome)
+    eventNote.degraded_reason = result.degraded_reason
+    eventNote.embedder_error = result.embedder_error
+    recordHookNote('claude', 'event', eventNote, flags.path)
     recordInjected('claude', input.session_id, result.injected_ids) // auto-rate
     // Remote-only folders still read the team server: surface its outcome.
     const degradation = remoteOnly ? surfaceRemoteOutcomes(plur) : []

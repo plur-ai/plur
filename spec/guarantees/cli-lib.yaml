@@ -522,8 +522,8 @@ anchors:
   packages/cli/src/lib/llm-bridge.ts#makeCommandLlm:
     kind: guarantee
     rule: >-
-      A non-zero exit, a signal, the timeout or an empty answer is an error (with the command's stderr, trimmed), never an
-      empty reply.
+      A non-zero exit, a signal, the timeout, output past the cap (4 MB) or an empty answer is an error (with the
+      command's stderr, trimmed), never an empty reply.
     tests:
       - packages/cli/test/llm-bridge.test.ts
       - packages/cli/test/llm-bridge-key-s13.test.ts
@@ -590,6 +590,7 @@ anchors:
     tests:
       - packages/cli/test/pin-marker.test.ts
       - packages/cli/test/pin-marker-context.test.ts
+      - packages/cli/test/pin-marker-write-failure-h13.test.ts
   packages/cli/src/lib/private-file.ts#writePrivateFile:
     kind: guarantee
     rule: >-
@@ -598,3 +599,12 @@ anchors:
       symlink — a link planted at the path is refused rather than…
     tests:
       - packages/cli/test/plan-file-safety-s6.test.ts
+  packages/cli/src/lib/process-tree.ts#stopProcessTree:
+    kind: guarantee
+    rule: >-
+      On Linux and macOS, stopping a process the CLI started stops everything it started too (the process group): when
+      doctor finishes its connection check no server keeps running after doctor has reported (#1911), and a model
+      command that times out or passes the output cap leaves nothing running (H16).
+    tests:
+      - "packages/cli/test/doctor.test.ts::stops the whole server tree it started, not just the launcher (#1911)"
+      - packages/cli/test/llm-bridge.test.ts::the timeout stops what the command started, not only the shell

@@ -8,13 +8,16 @@
  *    apply`, `consolidate --apply`, `enrich --apply` and `rescope --apply`
  *    additionally need a confirmation typed at an interactive terminal, even
  *    with PLUR_ACTOR=owner (an agent can set that variable too).
+ *  - H11: `plur import` of pinned records needs that confirmation too; without
+ *    it the records are imported unpinned (as pin requests under request).
+ *  - H12: an undo that puts a pin back needs it as well.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { spawn } from 'child_process'
-import { Plur } from '@plur-ai/core'
+import { Plur, pinRequestOf, PIN_AUDIT_PROPOSAL_KIND, PIN_AUDIT_PROPOSAL_VERSION } from '@plur-ai/core'
 import { builtCliPath } from './helpers/built-cli.js'
 import { isolatedHomeEnv } from './helpers/isolated-env.js'
 import { runInPty, ptyAvailable } from './helpers/pty.js'
@@ -137,5 +140,58 @@ describe('pinning.agents: request — no shell bypass (S1)', () => {
     expect(r.status, r.output).toBe(0)
     expect((await store().getById(e.id))!.pinned).toBeUndefined()
     expect(r.output).toMatch(/NOT pinned/)
+  }, 60_000)
+
+  it('H11: plur import of a pinned record from a non-terminal imports it unpinned, as a pin request, and says so', async () => {
+    const file = join(home, 'in.json')
+    writeFileSync(file, JSON.stringify([
+      { statement: 'Always run the linter before committing', pinned: true },
+      { statement: 'Prefer short functions over long ones' },
+    ]))
+    const r = await cli(['import', '--from', 'generic', '--path', file, '--store', root], baseEnv({ PLUR_ACTOR: 'owner' }))
+    expect(r.status, r.stderr + r.stdout).toBe(0)
+    const rows = await store().list({})
+    const pinnedRow = rows.find(e => e.statement.startsWith('Always run the linter'))!
+    expect(pinnedRow, JSON.stringify(rows)).toBeDefined()
+    expect(pinnedRow.pinned).toBeUndefined()
+    expect(pinRequestOf(pinnedRow)).not.toBeNull()
+    expect(rows.find(e => e.statement.startsWith('Prefer short functions'))).toBeDefined()
+    expect(r.stdout + r.stderr).toMatch(/not pinned/i)
+  }, 60_000)
+
+  it('H11: under deny, the pinned record is still imported, unpinned, with no error', async () => {
+    writeFileSync(join(root, 'config.yaml'), 'embeddings:\n  enabled: false\nindex: false\npinning:\n  agents: deny\n')
+    const file = join(home, 'in.json')
+    writeFileSync(file, JSON.stringify([{ statement: 'Always run the linter before committing', pinned: true }]))
+    const r = await cli(['import', '--from', 'generic', '--path', file, '--store', root, '--json'], baseEnv({ PLUR_ACTOR: 'owner' }))
+    expect(r.status, r.stderr + r.stdout).toBe(0)
+    const report = JSON.parse(r.stdout)
+    expect(report.errors).toBe(0)
+    expect(report.imported).toBe(1)
+    expect(report.pins_not_confirmed).toBe(1)
+    const row = (await store().list({})).find(e => e.statement.startsWith('Always run the linter'))!
+    expect(row.pinned).toBeUndefined()
+  }, 60_000)
+
+  it.skipIf(!ptyAvailable)('H11: at a terminal the owner confirms with yes and the imported record is pinned', async () => {
+    const file = join(home, 'in.json')
+    writeFileSync(file, JSON.stringify([{ statement: 'Always run the linter before committing', pinned: true }]))
+    const yes = await runInPty([process.execPath, CLI, 'import', '--from', 'generic', '--path', file, '--store', root], { env: baseEnv(), cwd: home, answer: 'yes' })
+    expect(yes.status, yes.output).toBe(0)
+    const row = (await store().list({})).find(e => e.statement.startsWith('Always run the linter'))!
+    expect(row.pinned).toBe(true)
+  }, 60_000)
+
+  it('H12: plur pins undo that would re-pin an engram is refused from a non-terminal, even with PLUR_ACTOR=owner', async () => {
+    const e = await store().learn('When deploying the docs site, run the link checker first', { pinned: true })
+    const applied = await store().applyPinAudit(
+      { kind: PIN_AUDIT_PROPOSAL_KIND, version: PIN_AUDIT_PROPOSAL_VERSION, items: [{ id: e.id, statement: e.statement, action: 'unpin' }] } as any,
+      { actor: 'owner' },
+    )
+    expect((await store().getById(e.id))!.pinned).toBeUndefined()
+    const r = await cli(['pins', 'undo', applied.change!.id], baseEnv({ PLUR_ACTOR: 'owner' }))
+    expect(r.status).not.toBe(0)
+    expect(r.stderr + r.stdout).toMatch(/interactive terminal/)
+    expect((await store().getById(e.id))!.pinned).toBeUndefined()
   }, 60_000)
 })

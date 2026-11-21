@@ -10,7 +10,7 @@ import { bumpPinEpoch } from '../lib/pin-marker.js'
  * not re-ask. Prints nothing; clearing a missing record is a no-op.
  * Input: JSON on stdin — { session_id, cwd, hook_event_name, source }
  */
-export async function run(_args: string[], _flags: GlobalFlags): Promise<void> {
+export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   const payload = parsePayload(readStdinRaw())
   if (!isResumeStart(payload)) return
   const sessionId = typeof payload.session_id === 'string' ? payload.session_id : ''
@@ -18,5 +18,5 @@ export async function run(_args: string[], _flags: GlobalFlags): Promise<void> {
   // A resumed context may not hold the pins an earlier injection gave it
   // (overhaul R7): start a new pin epoch, so the next skill, agent or
   // plan-mode event includes them until a delivery is recorded.
-  bumpPinEpoch(sessionId)
+  bumpPinEpoch(sessionId, { notesRoot: flags.path })
 }

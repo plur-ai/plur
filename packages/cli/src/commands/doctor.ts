@@ -2,6 +2,7 @@ import { readCodexEntry, configuredTokenVariables, codexMcpEnvironment, codexSto
 import { CLI_VERSION } from '../version.js'
 import { codexConfigTomlPath } from '../mcp-config.js'
 import { spawn, type ChildProcess } from 'child_process'
+import { stopProcessTree, stopTreeOnSignal } from '../lib/process-tree.js'
 import { existsSync, readFileSync, realpathSync, statSync, accessSync, constants } from 'fs'
 import { join, extname, dirname, resolve, win32 } from 'path'
 import { homedir, platform } from 'os'
@@ -202,6 +203,8 @@ interface DoctorReport {
    * Advisory only: does not fail the overall check.
    */
   pinOverflow?: { count: number; overflow_count: number; total_cost: number; share: number; budget: number; overflow_ids: string[] } | null
+  /** H15: why `pinOverflow` is null — the pin report could not be read. */
+  pinOverflowError?: string
   /**
    * A `store.pglite` directory the resolved backend tier no longer uses —
    * orphaned disk the user may delete, ideally after `plur migrate` ports its
@@ -227,6 +230,8 @@ interface DoctorReport {
    * rest of the config loads and the key's default applies. Advisory only.
    */
   invalidConfigKeys?: string[]
+  /** H15: config.yaml could not be read or parsed, so its values were not checked. */
+  invalidConfigKeysError?: string
   /**
    * Project stores (`.plur/engrams.yaml`) found from this folder but not
    * added, because their folder has no decision of its own. Advisory only:
@@ -549,17 +554,22 @@ function countStaleContentHashes(flags: GlobalFlags): number {
   }
 }
 
-/** Overhaul D3: pins that do not fit the pinned share. Local read only; never throws. */
-async function checkPinOverflow(flags: GlobalFlags): Promise<DoctorReport['pinOverflow']> {
+/**
+ * Overhaul D3: pins that do not fit the pinned share. Local read only;
+ * never throws — an unreadable report comes back as `error` (H15).
+ */
+export async function readPinOverflow(flags: GlobalFlags): Promise<{ pinOverflow: DoctorReport['pinOverflow']; error?: string }> {
   try {
     const plur = createPlur(flags, { readonly: true, autoDiscover: false })
     const r = await plur.pinFitReport()
     return {
-      count: r.count, overflow_count: r.overflow_count, total_cost: r.total_cost, share: r.share, budget: r.budget,
-      overflow_ids: r.entries.filter(e => !e.fits).map(e => e.id),
+      pinOverflow: {
+        count: r.count, overflow_count: r.overflow_count, total_cost: r.total_cost, share: r.share, budget: r.budget,
+        overflow_ids: r.entries.filter(e => !e.fits).map(e => e.id),
+      },
     }
-  } catch {
-    return null
+  } catch (err: unknown) {
+    return { pinOverflow: null, error: (err as Error)?.message ?? String(err) }
   }
 }
 
@@ -607,27 +617,45 @@ function findIgnoredDuplicateStores(flags: GlobalFlags): DoctorReport['ignoredDu
 
 /**
  * H4: the overhaul keys in config.yaml whose value is invalid and so ignored.
- * Reads the raw YAML only; an unreadable file reports nothing here (the
- * config loader warns about it already).
+ * Reads the raw YAML only. An unreadable or unparseable file has no keys
+ * here and its `error` instead (H15), so doctor says it could not check.
  */
-export function findInvalidConfigKeys(flags: GlobalFlags): string[] {
+export function readInvalidConfigKeys(flags: GlobalFlags): { keys: string[]; error?: string } {
+  const root = flags.path || process.env.PLUR_PATH || join(homedir(), '.plur')
+  const path = join(root, 'config.yaml')
   try {
-    const root = flags.path || process.env.PLUR_PATH || join(homedir(), '.plur')
-    const path = join(root, 'config.yaml')
-    if (!existsSync(path)) return []
-    return invalidOverhaulConfigKeys(yaml.load(readFileSync(path, 'utf8')))
-  } catch {
-    return []
+    if (!existsSync(path)) return { keys: [] }
+    return { keys: invalidOverhaulConfigKeys(yaml.load(readFileSync(path, 'utf8'))) }
+  } catch (err: unknown) {
+    return { keys: [], error: `${path}: ${((err as Error)?.message ?? String(err)).split('\n')[0]}` }
   }
 }
 
-/** The doctor text for `findInvalidConfigKeys`; empty when there is nothing to say. */
-export function invalidConfigKeyLines(keys: string[]): string[] {
-  if (keys.length === 0) return []
-  return [
-    `⚠  config.yaml has ${keys.length} invalid value${keys.length === 1 ? '' : 's'}, ignored (the default applies): ${keys.join(', ')}`,
+/** The invalid keys alone (H4); an unreadable file has none. */
+export function findInvalidConfigKeys(flags: GlobalFlags): string[] {
+  return readInvalidConfigKeys(flags).keys
+}
+
+/**
+ * What applies in place of an invalid value. Most keys fall back to their
+ * default; `pinning.agents` falls back to "request" (schemas/config.ts), so a
+ * typo restricts agent pinning rather than allowing it.
+ */
+const INVALID_KEY_EFFECT: Record<string, string> = {
+  'pinning.agents': '"request" applies, the safe fallback for an invalid value',
+}
+
+/** The doctor text for `readInvalidConfigKeys`; empty when there is nothing to say. */
+export function invalidConfigKeyLines(keys: string[], error?: string): string[] {
+  const lines: string[] = []
+  if (error) lines.push(`⚠  could not read config.yaml to check its values: ${error}`)
+  if (keys.length === 0) return lines
+  const named = keys.map(k => `${k} (${INVALID_KEY_EFFECT[k] ?? 'the default applies'})`)
+  lines.push(
+    `⚠  config.yaml has ${keys.length} invalid value${keys.length === 1 ? '' : 's'}, ignored: ${named.join(', ')}`,
     '   Fix the value or remove the key; the rest of config.yaml is in effect.',
-  ]
+  )
+  return lines
 }
 
 /**
@@ -822,57 +850,6 @@ function resolveProbeTarget(): { entry: McpServerEntry; source: string } {
     if (declared) return { entry: declared, source: isClaudeSettingsFile(cf.path) ? `${cf.label} — not read by Claude Code` : cf.label }
   }
   return { entry: buildMcpServerEntry(), source: 'recommended default (no config declares a plur server)' }
-}
-
-/**
- * Stop a process doctor started AND everything it started (#1911). A
- * configured launcher — `npx -y @plur-ai/mcp@latest`, `/bin/sh -lc 'exec npx
- * …'` — is not the server; the server is its child, and a kill aimed at the
- * launcher alone leaves the server running, writing into ~/.plur after doctor
- * has reported. On POSIX the child is spawned `detached`, so it leads its own
- * process group and the whole tree is signalled at once: SIGTERM, then SIGKILL
- * after a short grace if anything in the group is still there. The grace
- * timer is unref'd, so it never holds doctor open. Windows has no process
- * groups; there only the spawned process is stopped (known gap, see #1911).
- */
-function stopProcessTree(proc: ChildProcess, graceMs = 1000): void {
-  try { proc.stdin?.end() } catch { /* ignore */ }
-  const pid = proc.pid
-  if (process.platform === 'win32' || !pid) {
-    try { proc.kill() } catch { /* ignore */ }
-    return
-  }
-  try {
-    process.kill(-pid, 'SIGTERM')
-  } catch {
-    // No such group (already gone, or not a group leader) — fall back.
-    try { proc.kill() } catch { /* ignore */ }
-    return
-  }
-  setTimeout(() => {
-    try { process.kill(-pid, 0) } catch { return } // group is gone
-    try { process.kill(-pid, 'SIGKILL') } catch { /* ignore */ }
-  }, graceMs).unref()
-}
-
-/**
- * While a detached server tree is running, a signal that stops doctor (Ctrl-C
- * included — the terminal sends it to doctor's process group, which the
- * detached tree has left) must stop the tree too. Returns the function that
- * removes the handlers; each handler stops the tree, removes them, and
- * re-raises the signal so doctor ends as it would have without them.
- */
-function stopTreeOnSignal(proc: ChildProcess): () => void {
-  if (process.platform === 'win32') return () => {}
-  const signals: NodeJS.Signals[] = ['SIGINT', 'SIGTERM', 'SIGHUP']
-  const handler = (sig: NodeJS.Signals) => {
-    remove()
-    stopProcessTree(proc)
-    process.kill(process.pid, sig)
-  }
-  const remove = () => { for (const s of signals) process.removeListener(s, handler) }
-  for (const s of signals) process.on(s, handler)
-  return remove
 }
 
 /**
@@ -1687,7 +1664,7 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
     // under the current normalizer; such engrams are dedup attractors.
     // Advisory: does not fail overall.
     const staleContentHashes = countStaleContentHashes(flags)
-    const pinOverflow = await checkPinOverflow(flags)
+    const { pinOverflow, error: pinOverflowError } = await readPinOverflow(flags)
 
     // Orphaned-PGLite advisory — computed HERE, not in the text renderer, so
     // `--json` consumers see it too. "Selected" goes through the real
@@ -1706,7 +1683,7 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
       : null
 
     const ignoredDuplicateStores = findIgnoredDuplicateStores(flags)
-    const invalidConfigKeys = findInvalidConfigKeys(flags)
+    const { keys: invalidConfigKeys, error: invalidConfigKeysError } = readInvalidConfigKeys(flags)
     const skippedProjectStores = findSkippedProjectStores(flags)
 
     return {
@@ -1714,7 +1691,7 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
       hookShim, mcpShim, handshake, cursorHandshake,
       embedder: embedderWithVcRuntime(embedder, { platform: process.platform, env: process.env }),
       cursorProjectDetected, cursorWired, codexDetected, codexWired, codexCmdShimMcp, windowsHookFallback, agyDetected, agyWired,
-      pgliteGemmaReembedNeeded, staleContentHashes, pinOverflow, pgliteOrphan, ignoredDuplicateStores, invalidConfigKeys, skippedProjectStores, tokenEnvUnset, tokenEnvFound, opencode, outbox, folderMap, overall, serverStores, hookTrust,
+      pgliteGemmaReembedNeeded, staleContentHashes, pinOverflow, ...(pinOverflowError ? { pinOverflowError } : {}), pgliteOrphan, ignoredDuplicateStores, invalidConfigKeys, ...(invalidConfigKeysError ? { invalidConfigKeysError } : {}), skippedProjectStores, tokenEnvUnset, tokenEnvFound, opencode, outbox, folderMap, overall, serverStores, hookTrust,
     }
   })
 }
@@ -1978,6 +1955,11 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
     outputText('   Fix: run `plur sync --reembed --full` once to rebuild the vectors.')
   }
 
+  if (report.pinOverflowError) {
+    outputText('')
+    outputText(`⚠  could not read the pin report: ${report.pinOverflowError}`)
+  }
+
   if (report.pinOverflow && report.pinOverflow.overflow_count > 0) {
     outputText('')
     outputText(`⚠  ${formatPinOverflowLine(report.pinOverflow)}`)
@@ -2015,7 +1997,7 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
     }
   }
 
-  const invalidLines = invalidConfigKeyLines(report.invalidConfigKeys ?? [])
+  const invalidLines = invalidConfigKeyLines(report.invalidConfigKeys ?? [], report.invalidConfigKeysError)
   if (invalidLines.length > 0) {
     outputText('')
     for (const line of invalidLines) outputText(line)

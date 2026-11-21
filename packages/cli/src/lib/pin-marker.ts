@@ -3,6 +3,7 @@ import { join } from 'path'
 import { randomBytes, createHash } from 'crypto'
 import { hookSessionDir } from './session-task.js'
 import { safeSessionKey } from './session-key.js'
+import { recordHookNote } from './hook-runs.js'
 
 /**
  * Pins once per context (retrieval and injection overhaul, W2+4 / R7).
@@ -115,10 +116,14 @@ export function readPinMarker(sessionId: unknown): PinMarker | null {
   }
 }
 
-/** Atomic 0600 write: exclusive no-follow temp file, renamed over the marker. Fail-open. */
-function writePinMarker(m: PinMarker): void {
+/**
+ * Atomic 0600 write: exclusive no-follow temp file, renamed over the marker.
+ * Returns whether it landed; on failure the temp file is removed and the
+ * error is passed back for the caller to act on (H13).
+ */
+function writePinMarker(m: PinMarker): { ok: true } | { ok: false; error: string } {
   const path = pinMarkerPath(m.session_id)
-  if (!path) return
+  if (!path) return { ok: false, error: 'no marker path' }
   const tmp = `${path}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`
   let fd: number | null = null
   try {
@@ -127,9 +132,11 @@ function writePinMarker(m: PinMarker): void {
     closeSync(fd)
     fd = null
     renameSync(tmp, path)
-  } catch {
+    return { ok: true }
+  } catch (err: unknown) {
     if (fd !== null) try { closeSync(fd) } catch { /* ignore */ }
     try { unlinkSync(tmp) } catch { /* ignore */ }
+    return { ok: false, error: (err as Error)?.message ?? String(err) }
   }
 }
 
@@ -164,11 +171,12 @@ function lockMarker(path: string, waitMs: number): (() => void) | null {
 
 /**
  * Start a new context for this session: epoch + 1, no delivery yet. Returns
- * the new marker (null without a session id, or when the lock stayed busy and
- * `forceOnTimeout` is false). By default a bump that cannot take the lock in
+ * the new marker (null without a session id, when the lock stayed busy and
+ * `forceOnTimeout` is false, or when the write failed — then the marker is
+ * removed and a hook-runs note says why, H13). By default a bump that cannot take the lock in
  * `lockWaitMs` writes anyway: a bump fails toward re-delivering the pins.
  */
-export function bumpPinEpoch(sessionId: unknown, opts: { lockWaitMs?: number; forceOnTimeout?: boolean } = {}): PinMarker | null {
+export function bumpPinEpoch(sessionId: unknown, opts: { lockWaitMs?: number; forceOnTimeout?: boolean; notesRoot?: string } = {}): PinMarker | null {
   if (typeof sessionId !== 'string' || !sessionId) return null
   const path = pinMarkerPath(sessionId)
   if (!path) return null
@@ -177,8 +185,14 @@ export function bumpPinEpoch(sessionId: unknown, opts: { lockWaitMs?: number; fo
   try {
     const cur = readPinMarker(sessionId)
     const next: PinMarker = { session_id: sessionId, epoch: (cur?.epoch ?? 0) + 1, pins_delivered: false }
-    writePinMarker(next)
-    return next
+    const written = writePinMarker(next)
+    if (written.ok) return next
+    // H13: the old marker may still say the pins were delivered, to a context
+    // that no longer has them. Without a marker every event includes them.
+    let removed = false
+    try { unlinkSync(path); removed = true } catch (err: unknown) { removed = (err as NodeJS.ErrnoException)?.code === 'ENOENT' }
+    recordHookNote('claude', 'pin_marker', { op: 'epoch-bump', error: written.error, marker_removed: removed }, opts.notesRoot)
+    return null
   } finally {
     release?.()
   }
