@@ -31,10 +31,10 @@ describe('overhaul config keys', () => {
     expect(PlurConfigSchema.parse({})).toEqual({})
   })
 
-  it('resolve to defaults that change nothing', () => {
+  it('resolve to the documented defaults (unified injection on, owner decision 2026-11-16)', () => {
     const empty = PlurConfigSchema.parse({})
     expect(resolveInjectionOverhaul(empty)).toEqual({
-      mode: 'legacy',
+      mode: 'unified',
       recall_limit: 20,
       prohibition_ratio: 0.2,
       query_min_terms: 4,
@@ -44,6 +44,12 @@ describe('overhaul config keys', () => {
     expect(resolvePinningConfig(empty)).toEqual({ agents: 'allow' })
     expect(resolveConsolidateConfig(empty)).toEqual({ threshold: 0.85, apply_enabled: false, nightly_max_changes: 25 })
     expect(resolveLearnConfig(empty)).toEqual({ reinforce_exact: false })
+  })
+
+  it('keeps legacy injection reachable as the rollback path', () => {
+    expect(resolveInjectionOverhaul(PlurConfigSchema.parse({ injection: { mode: 'legacy' } })).mode).toBe('legacy')
+    // An invalid value is dropped on its own, so the default (unified) applies.
+    expect(resolveInjectionOverhaul(PlurConfigSchema.parse({ injection: { mode: 'bogus' } })).mode).toBe('unified')
   })
 
   it('parse and resolve explicit values', () => {

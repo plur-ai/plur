@@ -367,11 +367,11 @@ export const PlurConfigSchema = partialKeepAbsent(z.object({
     // `invalidOverhaulConfigKeys`) instead of failing the whole config parse,
     // which made loadConfig fall back to defaults and drop every store.
     /**
-     * Which selection builds the injected block. `legacy` (default for now) is
-     * today's keyword-overlap selection with the constraints floor and
-     * spreading activation. `unified` packs recall's ranked list behind the
-     * always-on pinned slot (W1). `legacy` is kept for one release as the
-     * rollback path.
+     * Which selection builds the injected block. `unified` (default since
+     * 0.24) packs recall's ranked list behind the always-on pinned slot (W1).
+     * `legacy` is the pre-0.24 keyword-overlap selection with the constraints
+     * floor and spreading activation, kept for one release as the rollback
+     * path.
      */
     mode: OVERHAUL_KEY_SCHEMAS.injection.mode.optional().catch(undefined),
     /** Unified mode: how many of recall's ranked results the task list takes, after the gates. Default 10. */
@@ -582,7 +582,7 @@ export type PlurConfig = z.infer<typeof PlurConfigSchema>
  * absent key absent (see `partialKeepAbsent`), so the defaults live here.
  */
 export const INJECTION_OVERHAUL_DEFAULTS = {
-  mode: 'legacy' as 'legacy' | 'unified',
+  mode: 'unified' as 'legacy' | 'unified',
   recall_limit: 20,
   prohibition_ratio: 0.2,
   query_min_terms: 4,
