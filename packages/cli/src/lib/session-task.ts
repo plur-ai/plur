@@ -33,37 +33,50 @@ function taskPath(sessionId: unknown): string | null {
 }
 
 /**
- * Store the latest prompt for a session, for rehydration after compaction.
- * Written 0600 to an exclusive, no-follow temp file in the verified directory,
- * then renamed over the destination: a symlink planted at the destination is
- * replaced, never followed. Fail-open: a hook must never break the prompt.
+ * Atomic 0600 write of a hook state file: an exclusive, no-follow temp file
+ * in the verified directory, renamed over `path`, so a symlink planted at
+ * `path` is replaced, never followed. On failure the temp file is removed and
+ * the error is returned for the caller to act on (or ignore).
  */
-export function writeSessionTask(sessionId: unknown, text: string): void {
-  const path = taskPath(sessionId)
-  if (!path || !text) return
+export function writeStateFile(path: string, text: string): { ok: true } | { ok: false; error: string } {
   const tmp = `${path}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`
   let fd: number | null = null
   try {
     fd = openSync(tmp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0), 0o600)
-    writeSync(fd, text.slice(0, SESSION_TASK_MAX_CHARS))
+    writeSync(fd, text)
     closeSync(fd)
     fd = null
     renameSync(tmp, path)
-  } catch {
-    if (fd !== null) try { closeSync(fd) } catch {}
-    try { unlinkSync(tmp) } catch {}
+    return { ok: true }
+  } catch (err: unknown) {
+    if (fd !== null) try { closeSync(fd) } catch { /* ignore */ }
+    try { unlinkSync(tmp) } catch { /* ignore */ }
+    return { ok: false, error: (err as Error)?.message ?? String(err) }
   }
 }
 
-export function readSessionTask(sessionId: unknown): string {
-  const path = taskPath(sessionId)
-  if (!path) return ''
+/** A hook state file's text (opened no-follow), or null when absent or unreadable. */
+export function readStateFile(path: string): string | null {
   try {
     const fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0))
     try { return readFileSync(fd, 'utf8') } finally { closeSync(fd) }
   } catch {
-    return ''
+    return null
   }
+}
+
+/**
+ * Store the latest prompt for a session, for rehydration after compaction,
+ * with {@link writeStateFile}. Fail-open: a hook must never break the prompt.
+ */
+export function writeSessionTask(sessionId: unknown, text: string): void {
+  const path = taskPath(sessionId)
+  if (path && text) writeStateFile(path, text.slice(0, SESSION_TASK_MAX_CHARS))
+}
+
+export function readSessionTask(sessionId: unknown): string {
+  const path = taskPath(sessionId)
+  return path ? readStateFile(path) ?? '' : ''
 }
 
 /** Remove a session's task file at session end. unlink never follows a symlink. */
