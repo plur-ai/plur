@@ -10,7 +10,7 @@ import {
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { shouldOutputJson, outputJson, outputText, outputInfo, exit } from '../output.js'
 import { resolveLlmOrExit, missingLlmMessage } from '../lib/llm-bridge.js'
-import { requirePinPolicyConfirmation } from '../lib/pin-confirm.js'
+import { requirePinPolicyConfirmation, confirmUndoPins } from '../lib/pin-confirm.js'
 import { writePrivateFile } from '../lib/private-file.js'
 
 export const FLAGS = [
@@ -118,6 +118,8 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     const change = plur.getChange(undo)
     if (!change) exit(1, `No change ${undo} in the change journal.`)
     if (change.kind !== CONSOLIDATE_CHANGE_KIND) exit(1, `${undo} is a "${change.kind}" change, not a consolidation; undo it with the command that made it.`)
+    // H12: undoing a merge brings pinned originals back into force (S1).
+    await confirmUndoPins(plur, change)
     try {
       const record = await plur.undoChange(undo)
       if (json) outputJson({ success: true, undone: undo, undo_change: record.id, restored: record.rows.map(r => r.id) })

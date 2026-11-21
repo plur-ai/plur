@@ -28,7 +28,7 @@ import {
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { remoteOnlyCommandRefusal } from '../lib/folder-gate.js'
 import { resolveLlmOrExit, missingLlmMessage, UNSPECIFIED_MODEL } from '../lib/llm-bridge.js'
-import { requirePinPolicyConfirmation } from '../lib/pin-confirm.js'
+import { requirePinPolicyConfirmation, confirmUndoPins } from '../lib/pin-confirm.js'
 import { shouldOutputJson, outputJson, outputText, outputInfo, exit } from '../output.js'
 
 export const FLAGS = ['--budget', '--out', '--llm-cmd', '--llm-base-url', '--llm-api-key', '--llm-api-key-env', '--model', '--limit', '--yes', '--scope']
@@ -270,6 +270,8 @@ async function undo(rest: string[], flags: GlobalFlags): Promise<void> {
   const change = plur.getChange(id)
   if (!change) exit(1, `No change ${id} in the change journal.`)
   if (change.kind !== 'pins.apply') exit(1, `${id} is a "${change.kind}" change, not a pins apply; plur pins undo only undoes pins applies.`)
+  // H12: undoing an unpin pins the engram again (S1).
+  await confirmUndoPins(plur, change)
   try {
     const record = await plur.undoChange(id)
     if (shouldOutputJson(flags)) outputJson({ undone: id, change_id: record.id, rows: record.rows.length })
