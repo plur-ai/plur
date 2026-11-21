@@ -58,7 +58,6 @@ function branchLabel(branch: string | null | undefined): string {
   return branch ? branch.replace(/[/:._-]+/g, ' ').trim() : ''
 }
 
-/** Read at most `max` bytes of a small file, or null. */
 /**
  * Open `path` for reading only if it is a regular file (H11): checked before
  * the open, and the open is O_NONBLOCK, so a FIFO or device planted where a
@@ -71,16 +70,22 @@ function openRegularFile(path: string): number | null {
   return openSync(path, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0))
 }
 
-function readSmall(path: string, max = 4096): string | null {
+/**
+ * Read at most `max` bytes of a regular file — its head, or its tail when
+ * `tail` — and whether the slice is shorter than the file. Null on any
+ * failure; never throws.
+ */
+export function readRegularSlice(path: string, max: number, tail = false): { text: string; cut: boolean } | null {
   let fd: number | null = null
   try {
     fd = openRegularFile(path)
     if (fd === null) return null
     const st = fstatSync(fd)
     if (!st.isFile()) return null
-    const buf = Buffer.alloc(Math.min(max, st.size))
-    const n = readSync(fd, buf, 0, buf.length, 0)
-    return buf.subarray(0, n).toString('utf8')
+    const len = Math.min(max, st.size)
+    const buf = Buffer.alloc(len)
+    const n = readSync(fd, buf, 0, len, tail ? st.size - len : 0)
+    return { text: buf.subarray(0, n).toString('utf8'), cut: len < st.size }
   } catch {
     return null
   } finally {
@@ -102,11 +107,11 @@ export function readGitBranch(cwd: string | undefined | null): string | null {
       if (existsSync(dotGit)) {
         let gitDir = dotGit
         if (statSync(dotGit).isFile()) {
-          const ref = readSmall(dotGit)?.match(/^gitdir:\s*(.+)\s*$/m)?.[1]
+          const ref = readRegularSlice(dotGit, 4096)?.text.match(/^gitdir:\s*(.+)\s*$/m)?.[1]
           if (!ref) return null
           gitDir = isAbsolute(ref) ? ref : resolve(dir, ref)
         }
-        const head = readSmall(join(gitDir, 'HEAD'), 1024)
+        const head = readRegularSlice(join(gitDir, 'HEAD'), 1024)?.text
         const m = head?.match(/^ref:\s*refs\/heads\/(.+?)\s*$/m)
         return m ? m[1] : null
       }
@@ -144,17 +149,11 @@ function userText(entry: unknown): string | null {
  */
 export function readLastUserTurns(transcriptPath: unknown, n = 2, maxBytes = 256 * 1024): string[] {
   if (typeof transcriptPath !== 'string' || !transcriptPath) return []
-  let fd: number | null = null
   try {
-    fd = openRegularFile(transcriptPath)
-    if (fd === null) return []
-    const st = fstatSync(fd)
-    if (!st.isFile() || st.size === 0) return []
-    const len = Math.min(maxBytes, st.size)
-    const buf = Buffer.alloc(len)
-    const got = readSync(fd, buf, 0, len, st.size - len)
-    let lines = buf.subarray(0, got).toString('utf8').split('\n')
-    if (len < st.size) lines = lines.slice(1) // the first line is cut
+    const r = readRegularSlice(transcriptPath, maxBytes, true)
+    if (!r || !r.text) return []
+    let lines = r.text.split('\n')
+    if (r.cut) lines = lines.slice(1) // the first line is cut
     const out: string[] = []
     for (let i = lines.length - 1; i >= 0 && out.length < n; i--) {
       const line = lines[i].trim()
@@ -167,8 +166,6 @@ export function readLastUserTurns(transcriptPath: unknown, n = 2, maxBytes = 256
     return out.reverse()
   } catch {
     return []
-  } finally {
-    if (fd !== null) try { closeSync(fd) } catch { /* ignore */ }
   }
 }
 

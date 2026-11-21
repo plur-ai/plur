@@ -482,6 +482,12 @@ anchors:
     rule: never throws.
     tests:
       - packages/cli/test/hook-query.test.ts
+  packages/cli/src/lib/hook-query.ts#readRegularSlice:
+    kind: guarantee
+    rule: Null on any failure; never throws.
+    tests:
+      - packages/cli/test/hook-query.test.ts
+      - packages/cli/test/hook-query-fifo.test.ts
   packages/cli/src/lib/hook-query.ts#STOPWORDS:
     kind: guarantee
     rule: "* Every read here is bounded and swallows its own failure: a hook must never break the prompt for want of context."
