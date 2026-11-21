@@ -54,7 +54,7 @@
  * the journal format, the folding of its lines into records, and the row
  * comparison undo uses.
  */
-import { appendFileSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, statSync, writeFileSync } from 'fs'
+import { appendFileSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'fs'
 import { dirname, join } from 'path'
 import { randomBytes } from 'crypto'
 import { sortKeysDeep } from './history.js'
@@ -339,46 +339,127 @@ function rotateIfLarge(root: string): void {
   } catch { /* no journal yet, or a rename race: append to what is there */ }
 }
 
+/** Meta keys that hold statement text by design; dropped from any line that names a redacted row (H1). */
+const STATEMENT_META_KEYS: readonly string[] = Object.freeze(['merged_statement', 'statement', 'statements'])
+
+/** Text fields of a row snapshot that a meta value may quote. */
+function snapshotTexts(row: unknown): string[] {
+  if (!row || typeof row !== 'object' || isRedactedRow(row)) return []
+  const r = row as { statement?: unknown; rationale?: unknown }
+  return [r.statement, r.rationale].filter((t): t is string => typeof t === 'string' && t.trim().length >= 8)
+}
+
+/**
+ * Strip statement text from a begun line's meta (H1): the known statement
+ * keys go, and any other string (at any depth) that quotes a redacted row's
+ * statement or rationale is removed. Returns how many fields were removed.
+ */
+function redactMeta(meta: Record<string, unknown>, texts: readonly string[]): number {
+  let count = 0
+  for (const key of STATEMENT_META_KEYS) {
+    if (key in meta) { delete meta[key]; count++ }
+  }
+  const quotes = (v: string) => texts.some(t => v.includes(t))
+  const walk = (node: unknown): unknown => {
+    if (typeof node === 'string') return quotes(node) ? undefined : node
+    if (Array.isArray(node)) {
+      const out: unknown[] = []
+      for (const v of node) { const w = walk(v); if (w === undefined) count++; else out.push(w) }
+      return out
+    }
+    if (node && typeof node === 'object') {
+      for (const [k, v] of Object.entries(node as Record<string, unknown>)) {
+        const w = walk(v)
+        if (w === undefined) { delete (node as Record<string, unknown>)[k]; count++ } else (node as Record<string, unknown>)[k] = w
+      }
+    }
+    return node
+  }
+  if (texts.length > 0) walk(meta)
+  if (count > 0) meta._redacted = true
+  return count
+}
+
+/** What one {@link redactChangeJournalDetailed} pass removed. */
+export interface ChangeJournalRedaction {
+  /** Row snapshots (`before`, `after`, committed `after`) replaced by stubs. */
+  snapshots: number
+  /** Meta fields carrying statement text removed from lines that name a redacted row (H1). */
+  meta_fields: number
+  /** Unparseable (torn) lines that named a redacted row and were dropped (H2). */
+  torn_lines: number
+}
+
 /**
  * Redact every snapshot of the given rows in the journal and its rotated
  * generation (S5): `before`/`after` become `{ id, _redacted: true }`. Call
- * under the store lock. Returns how many snapshots were redacted.
+ * under the store lock. Returns how many snapshots, meta fields and torn
+ * lines were redacted ({@link redactChangeJournalDetailed} for the split).
  */
 export function redactChangeJournal(root: string, ids: Iterable<string>): number {
+  const r = redactChangeJournalDetailed(root, ids)
+  return r.snapshots + r.meta_fields + r.torn_lines
+}
+
+/**
+ * {@link redactChangeJournal} with the counts kept apart. Besides the row
+ * snapshots it strips statement text from the meta of every begun line that
+ * names a redacted row (a consolidation keeps `merged_statement` there), and
+ * it drops a torn line that names one: the reader skips such a line anyway,
+ * and passing it through would keep the row's content (H1, H2). The tmp file
+ * is removed when the rewrite fails.
+ */
+export function redactChangeJournalDetailed(root: string, ids: Iterable<string>): ChangeJournalRedaction {
   const wanted = new Set(ids)
-  if (wanted.size === 0) return 0
-  let total = 0
+  const total: ChangeJournalRedaction = { snapshots: 0, meta_fields: 0, torn_lines: 0 }
+  if (wanted.size === 0) return total
   const stub = (id: string) => ({ id, _redacted: true }) as unknown as Engram
+  const namesWanted = (raw: string) => { for (const id of wanted) if (raw.includes(id)) return true; return false }
   for (const file of [CHANGE_JOURNAL_ROTATED_FILE, CHANGE_JOURNAL_FILE]) {
     const path = join(root, file)
     if (!existsSync(path)) continue
-    let count = 0
-    const lines = readFileSync(path, 'utf8').split('\n').map(raw => {
+    const found: ChangeJournalRedaction = { snapshots: 0, meta_fields: 0, torn_lines: 0 }
+    const DROP = Symbol('drop')
+    const lines = readFileSync(path, 'utf8').split('\n').map((raw): string | typeof DROP => {
       if (!raw.trim()) return raw
       let line: JournalLine
-      try { line = JSON.parse(raw) } catch { return raw }
+      try { line = JSON.parse(raw) } catch {
+        if (namesWanted(raw)) { found.torn_lines++; return DROP }
+        return raw
+      }
       if (line?.state === 'begun' && Array.isArray(line.rows)) {
+        const texts: string[] = []
+        let names = false
         for (const row of line.rows) {
           if (!wanted.has(row.id)) continue
-          if (row.before !== null && !isRedactedRow(row.before)) { row.before = stub(row.id); count++ }
-          if (row.after !== null && !isRedactedRow(row.after)) { row.after = stub(row.id); count++ }
+          names = true
+          texts.push(...snapshotTexts(row.before), ...snapshotTexts(row.after))
+          if (row.before !== null && !isRedactedRow(row.before)) { row.before = stub(row.id); found.snapshots++ }
+          if (row.after !== null && !isRedactedRow(row.after)) { row.after = stub(row.id); found.snapshots++ }
         }
+        if (names && line.meta && typeof line.meta === 'object') found.meta_fields += redactMeta(line.meta, texts)
       } else if (line?.state === 'committed' && line.after) {
         for (const id of Object.keys(line.after)) {
-          if (wanted.has(id) && line.after[id] !== null && !isRedactedRow(line.after[id])) { line.after[id] = stub(id); count++ }
+          if (wanted.has(id) && line.after[id] !== null && !isRedactedRow(line.after[id])) { line.after[id] = stub(id); found.snapshots++ }
         }
       } else {
         return raw
       }
       return JSON.stringify(line)
     })
-    if (count === 0) continue
+    if (found.snapshots + found.meta_fields + found.torn_lines === 0) continue
     const tmp = `${path}.${process.pid}.tmp`
-    writeFileSync(tmp, lines.join('\n'), { encoding: 'utf8', mode: 0o600 })
-    const fd = openSync(tmp, 'r')
-    try { fsyncSync(fd) } finally { closeSync(fd) }
-    renameSync(tmp, path)
-    total += count
+    try {
+      writeFileSync(tmp, lines.filter((l): l is string => l !== DROP).join('\n'), { encoding: 'utf8', mode: 0o600 })
+      const fd = openSync(tmp, 'r')
+      try { fsyncSync(fd) } finally { closeSync(fd) }
+      renameSync(tmp, path)
+    } finally {
+      try { if (existsSync(tmp)) unlinkSync(tmp) } catch { /* best effort: the next pass reuses the name */ }
+    }
+    total.snapshots += found.snapshots
+    total.meta_fields += found.meta_fields
+    total.torn_lines += found.torn_lines
   }
   return total
 }

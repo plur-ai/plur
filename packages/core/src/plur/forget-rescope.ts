@@ -16,6 +16,7 @@ import { type MutationOutcome, type RescopeOptions, type RescopeResult } from '.
 
 import { SCOPE_MATCH_THRESHOLD, decideAutoRoute, rankScopes } from '../scope-routing.js'
 import { parseNamespacedId } from '../engrams.js'
+import { CHANGE_JOURNAL_FILE } from '../change-journal.js'
 export interface ForgetRescopeMethods {
   /** Set engram status to 'retired'. Supports primary and store engrams.
    *
@@ -112,7 +113,11 @@ export const forgetRescopeMethods: ForgetRescopeMethods & ThisType<Plur> = {
         const row = (await this._loadTargeted([id])).find(e => e.id === id)
         if (!row || row.status === 'retired') await this.redactChangeJournal([id])
       } catch (err) {
-        logger.warning(`[plur] forget: the change journal could not be redacted for ${id}: ${(err as Error).message}`)
+        // The row is forgotten, but its content may still sit in the journal:
+        // the caller is told, not only the log (H2).
+        const message = `the change journal could not be redacted for ${id}: ${(err as Error).message}. Its earlier content may still be in ${CHANGE_JOURNAL_FILE}; run forget again once the cause is fixed.`
+        logger.warning(`[plur] forget: ${message}`)
+        return { ...outcome, warnings: [...outcome.warnings, message] }
       }
     }
     return outcome
