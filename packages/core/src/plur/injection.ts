@@ -319,7 +319,9 @@ export const injectionMethods: InjectionMethods & ThisType<Plur> = {
         Plur._injectDegradedLogged = true
         logger.warning(`[plur] injectHybrid: embedder unavailable (${embedFailure}) — injecting by keyword match only.`)
       }
-    } else {
+    } else if (result.mode !== 'hybrid-degraded') {
+      // A degraded ranking leg (unified selection) already set
+      // `hybrid-degraded` with its reason; it is kept (H8).
       result.mode = st.disabled ? 'bm25-only' : 'hybrid'
     }
     return result
@@ -612,6 +614,11 @@ export const injectionMethods: InjectionMethods & ThisType<Plur> = {
       ...(includePinned ? { pinned_share_tokens: Math.floor(budget * pinnedShareRatio(this.config.injection?.pinned_ratio)) } : {}),
       ...(relevance ? { relevance } : {}),
       ...(taskIds ? { task_ids: taskIds } : {}),
+      ...(unifiedResult?.ranking_degraded ? {
+        mode: 'hybrid-degraded' as const,
+        embedder_error: unifiedResult.ranking_degraded.embedder_error,
+        ...(unifiedResult.ranking_degraded.degraded_reason ? { degraded_reason: unifiedResult.ranking_degraded.degraded_reason } : {}),
+      } : {}),
     }
   },
 
@@ -687,12 +694,21 @@ export const injectionMethods: InjectionMethods & ThisType<Plur> = {
     let depth = Math.max(1, limit)
     const order: string[] = []
     const fusedById = new Map<string, FusedHit>()
+    // The first degradation any ranking call reports is carried to the
+    // result, not dropped (H8).
+    let rankingDegraded: UnifiedResult['ranking_degraded']
     for (;;) {
       let fusedAll: FusedHit[] = []
       const res = await this._localHybridRanking(task, corpus, depth, {
         rerank, intent, restrict: { scope: options?.scope, scopes: options?.scopes },
         searchOpts: { semantic, queryRewrite, deadlineAt, onRanking: f => { fusedAll = f } },
       })
+      if (res.mode === 'hybrid-degraded' && !rankingDegraded) {
+        rankingDegraded = {
+          embedder_error: res.embedderError ?? 'the ranking ran on keyword matching only',
+          ...(res.degraded_reason ? { degraded_reason: res.degraded_reason } : {}),
+        }
+      }
       const grewFrom = order.length
       const seen = new Set(order)
       for (const f of fusedAll) if (!fusedById.has(f.engram.id)) fusedById.set(f.engram.id, f)
@@ -708,7 +724,9 @@ export const injectionMethods: InjectionMethods & ThisType<Plur> = {
       // legs have offered every candidate (the meaning leg fetches 2× the
       // depth, the keyword leg 3×), so meaning-only candidates are never cut.
       const exhausted = (semantic ? depth * 2 : depth * 3) >= corpus.length
-      if (out.task_count >= limit || out.relevance.gated || order.length === grewFrom || exhausted) return out
+      if (out.task_count >= limit || out.relevance.gated || order.length === grewFrom || exhausted) {
+        return rankingDegraded ? { ...out, ranking_degraded: rankingDegraded } : out
+      }
       depth *= 4
     }
   },

@@ -117,6 +117,12 @@ export type UnifiedResult = InternalInjectionResult & {
   task_count: number
   /** The general task list's ids, in rank order. */
   task_ids: string[]
+  /**
+   * Set when a ranking call's meaning leg degraded (embedder failure, a
+   * deadline, the reranker cap): the injection reports `hybrid-degraded`
+   * with this error and reason instead of dropping it (H8).
+   */
+  ranking_degraded?: { embedder_error: string; degraded_reason?: import('./types.js').DegradedReason }
 }
 
 /** The gated candidate pool: everything this injection may deliver. */
