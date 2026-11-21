@@ -109,10 +109,15 @@ describe('plur pins (fit report, priority, review)', () => {
 
   it('pins priority sets a priority', async () => {
     const e = await store('owner').learn('Never push to main', { pinned: true })
-    const r = await cli(['pins', 'priority', e.id, '80'])
-    expect(r.status, r.stderr).toBe(0)
+    // Raising a pin is reserved for the owner under pinning.agents: request
+    // (H5): the piped CLI is an agent and is refused, the owner's goes through.
+    const piped = await cli(['pins', 'priority', e.id, '80'])
+    expect(piped.status).not.toBe(0)
+    expect((await store().getById(e.id))!.pinned_priority).not.toBe(80)
+    const r = await ttyCli(['pins', 'priority', e.id, '80'])
+    expect(r.status, r.output).toBe(0)
     expect((await store().getById(e.id))!.pinned_priority).toBe(80)
-    expect((await cli(['pins', 'priority', e.id, '500'])).status).not.toBe(0)
+    expect((await ttyCli(['pins', 'priority', e.id, '500'])).status).not.toBe(0)
   }, 60_000)
 
   it.skipIf(!ptyAvailable)('pins review approves and rejects requests as the owner', async () => {
