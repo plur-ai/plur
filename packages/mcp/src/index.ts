@@ -7,7 +7,7 @@ import { fileURLToPath } from 'url'
 import { homedir, platform } from 'os'
 
 import { VERSION } from './version.js'
-import { buildClaudeHooks, isPlurHookSpec, type HookEntry } from '@plur-ai/gateway/harness'
+import { buildClaudeHooks, hooksShapeExpectation, hooksShapeProblem, isPlurHookSpec, type HookEntry } from '@plur-ai/gateway/harness'
 
 const HELP = `plur-mcp v${VERSION} — persistent memory for AI agents
 
@@ -391,35 +391,13 @@ function stripPlurHooks(entries: HookEntry[]): HookEntry[] {
   return kept
 }
 
-const isObject = (v: unknown): v is Record<string, unknown> =>
-  typeof v === 'object' && v !== null && !Array.isArray(v)
-
 /**
- * Where a settings file's `hooks` departs from the shape Claude Code reads
- * (event → list of entries → `hooks` list of hook objects), as the first
- * offending path, or null when it can be merged. A hand-edited file that
- * breaks the structure made init throw midway (#1352). A malformed section is
- * refused: installHooks skips the step, names the path, and never writes the
- * file. Absent or null levels are fine (nothing to merge into), and a hook's
- * own fields are not checked: a command-less hook is a prompt/agent hook,
- * which isPlurCommandHook already handles (#1279).
+ * Where a settings file's `hooks` departs from the shape Claude Code reads, or
+ * null when it can be merged (#1352). The check is shared with every `plur
+ * init` installer leg and `plur doctor` (#1897); see @plur-ai/gateway's
+ * hooks-shape.ts.
  */
-export function hooksShapeProblem(hooks: unknown): string | null {
-  if (hooks === undefined || hooks === null) return null
-  if (!isObject(hooks)) return '`hooks` is not an object'
-  for (const [event, entries] of Object.entries(hooks)) {
-    if (entries === null) continue
-    if (!Array.isArray(entries)) return `hooks.${event} is not a list`
-    for (const [i, entry] of entries.entries()) {
-      if (!isObject(entry)) return `hooks.${event}[${i}] is not an object`
-      if (entry.hooks == null) continue
-      if (!Array.isArray(entry.hooks)) return `hooks.${event}[${i}].hooks is not a list`
-      const bad = entry.hooks.findIndex(h => !isObject(h))
-      if (bad !== -1) return `hooks.${event}[${i}].hooks[${bad}] is not an object`
-    }
-  }
-  return null
-}
+export { hooksShapeProblem }
 
 /**
  * Merge PLUR hooks into Claude Code settings (only I/O: reading plur-hook.meta.json).
@@ -499,9 +477,7 @@ export async function installHooks(): Promise<string> {
   }
   const shapeProblem = hooksShapeProblem(settingsRead.data.hooks)
   if (shapeProblem) {
-    const expected = shapeProblem.startsWith('`hooks` ')
-      ? 'Claude Code expects an object mapping each event to a list of hook entries'
-      : 'Claude Code expects lists of hook objects there'
+    const expected = hooksShapeExpectation(shapeProblem, 'Claude Code')
     return `skipped — in ${settingsPath}, ${shapeProblem}; ${expected}. Fix it by hand, then re-run \`plur-mcp init\``
   }
   const settings = settingsRead.data as Settings
