@@ -9,10 +9,11 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   // Store health (overhaul W6): size, sampled near-copy share, pin load. Read
   // only and model-free (cached vectors only); never fails the status.
   let health: StoreHealth | null = null
-  try { health = await plur.storeHealth() } catch { health = null }
+  let healthError: string | undefined
+  try { health = await plur.storeHealth() } catch (err: unknown) { health = null; healthError = (err as Error)?.message ?? String(err) }
 
   if (shouldOutputJson(flags)) {
-    outputJson({ ...result, ...(health ? { store_health: health } : {}) })
+    outputJson({ ...result, ...(health ? { store_health: health } : {}), ...(healthError !== undefined ? { store_health_error: healthError } : {}) })
   } else {
     // The banner is decoration and --quiet suppresses it; the fields below are
     // the primary output and always print.
@@ -35,6 +36,9 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
         : `    Near-copies: not measured (${nc.reason})`)
       outputText(`    Pins: ${health.pins.count} pinned, ${health.pins.tokens} of ${health.pins.share_tokens} tokens (${Math.round(health.pins.pinned_ratio * 100)}% share)`
         + (health.pins.over_share ? ' — over the share' : ''))
+    } else if (healthError !== undefined) {
+      // H15: say it, rather than leave the section out.
+      outputText(`  Store health: could not read: ${healthError}`)
     }
     // Queued writes are otherwise invisible here, and the ones no retry will
     // deliver are exactly the ones a person has to act on.

@@ -115,6 +115,12 @@ anchors:
       - >-
         packages/cli/test/doctor.test.ts::honours approval in the project .claude/settings.local.json only while git
         does not track it
+  packages/cli/src/commands/doctor.ts#readPinOverflow:
+    kind: guarantee
+    rule: never throws; an unreadable pin report comes back as an error, which doctor prints (H15).
+    tests:
+      - packages/cli/test/pins.test.ts
+      - packages/cli/test/doctor-status-read-errors-h15.test.ts::a pin report that cannot be read is an error
   packages/cli/src/commands/doctor.ts#spawnEnv:
     kind: note
     why: Explains why the probe uses the entry's own environment.
@@ -1276,11 +1282,6 @@ anchors:
     tests:
       - packages/cli/test/plan-file-safety-s6.test.ts
       - packages/cli/test/consolidate-cli.test.ts
-  packages/cli/src/commands/doctor.ts#checkPinOverflow:
-    kind: guarantee
-    rule: never throws.
-    tests:
-      - packages/cli/test/pins.test.ts
   packages/cli/src/commands/hook-inject.ts#eventInjectOptions:
     kind: guarantee
     rule: >-
