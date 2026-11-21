@@ -6,7 +6,7 @@ import { CONSOLIDATE_CHANGE_KIND, CONSOLIDATE_QUEUE_FILE, CONSOLIDATE_STATE_FILE
 import { ChangeAlreadyUndoneError, ChangeConflictError, ChangeJournalError, ChangeJournalUnsupportedError, ChangeNotFoundError, type ChangeRecord, ChangeRedactedError, type ChangeRowSnapshot, type ChangeTx, type PendingChange, UNDO_BOOKKEEPING_FIELDS, type UndoChangeOptions, canonicalRow, carryIgnoredFields, findUndoConflicts, isRedactedRow, journalBegin, journalCommit, newChangeId, readChangeJournal, redactChangeJournal } from '../change-journal.js'
 import { type Engram } from '../schemas/engram.js'
 import { type LlmFunction } from '../types.js'
-import { PinDeniedError, asPinRequested, buildPinRequest, isPinTransition } from '../pin-policy.js'
+import { PinDeniedError, asPinRequested, buildPinRequest, isPinEscalation, isPinTransition, pinEscalationDenied } from '../pin-policy.js'
 import { collapseLineTerminators } from '../sanitize.js'
 import { computeContentHash } from '../content-hash.js'
 import { detectSecrets } from '../secrets.js'
@@ -711,7 +711,13 @@ export const consolidationMethods: ConsolidationMethods & ThisType<Plur> = {
         for (const rid of order) {
           const s = staged.get(rid)!
           const i = position.get(rid)
-          if (!s.row || !isPinTransition(i === undefined ? null : corpus[i], s.row)) continue
+          const prior = i === undefined ? null : corpus[i]
+          // A stronger pin on an existing pin follows the policy too (H5).
+          if (s.row && isPinEscalation(prior, s.row)) {
+            const escalation = this._pinDecisionFor(actor)
+            if (escalation !== 'allow') throw pinEscalationDenied(rid, `change:${kind}`, escalation)
+          }
+          if (!s.row || !isPinTransition(prior, s.row)) continue
           const decision = this._pinDecisionFor(actor)
           if (decision === 'deny') throw new PinDeniedError(rid, `change:${kind}`)
           if (decision === 'request') {

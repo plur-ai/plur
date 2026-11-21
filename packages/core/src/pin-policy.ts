@@ -23,8 +23,10 @@
  * The policy is enforced in core's write path, not in an adapter: `learn`,
  * `learnRouted` (and through them `learnAsync`, `learnBatch` and import),
  * `updateEngram`, `setPinned` and change-journal applies all consult it. Only
- * a TRANSITION to pinned is policed: re-writing an engram that is already
- * pinned, and unpinning, are never restricted.
+ * a TRANSITION to pinned, and a stronger pin on a row already pinned (a
+ * higher priority or the hard tier, {@link isPinEscalation}; refused under
+ * `request` too, since a request cannot carry it), are policed. Re-writing
+ * a pinned engram without strengthening its pin, and unpinning, are not.
  *
  * Not affected (documented behaviour, unchanged): pins that arrive with rows
  * PLUR reads rather than writes — team stores (`stores:` path or url
@@ -145,6 +147,32 @@ export function withoutPinRequest<T extends Record<string, unknown>>(row: T): T 
 /** True when a write moves a row from unpinned (or absent) to pinned. */
 export function isPinTransition(before: { pinned?: unknown } | null | undefined, after: { pinned?: unknown } | null | undefined): boolean {
   return !!after && after.pinned === true && before?.pinned !== true
+}
+
+/**
+ * True when a write keeps a row pinned but makes the pin stronger: a higher
+ * effective priority, or a move to the hard tier (H5). Under `request` or
+ * `deny` that is refused for a restricted caller like a new pin; lowering a
+ * pin, unpinning and a new pin ({@link isPinTransition}) are not escalations.
+ */
+export function isPinEscalation(
+  before: { pinned?: unknown; pinned_tier?: unknown; pinned_priority?: unknown } | null | undefined,
+  after: { pinned?: unknown; pinned_tier?: unknown; pinned_priority?: unknown } | null | undefined,
+): boolean {
+  if (!before || before.pinned !== true || !after || after.pinned !== true) return false
+  if (isHardPinned(after) && !isHardPinned(before)) return true
+  return effectivePinnedPriority(after) > effectivePinnedPriority(before)
+}
+
+/**
+ * The refusal for a pin escalation by a restricted caller (H5). A pin request
+ * cannot carry it: the request record lives on unpinned rows only, so under
+ * `request` it is refused as under `deny`, with the owner's command named.
+ */
+export function pinEscalationDenied(id: string, via: string, agents: PinDecision): PinDeniedError {
+  return new PinDeniedError(id, `${via}:escalate`,
+    `Raising the priority or tier of a pin is reserved for the owner on this install (pinning.agents: ${agents}), so ${id} was not changed. `
+    + `Ask the owner to run \`plur pins priority ${id} <n>\` or re-pin it with the tier wanted.`)
 }
 
 /** One pending request, as `pendingPinRequests()` lists it. */

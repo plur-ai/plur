@@ -298,7 +298,7 @@ export {
   type EngramKind, type TaskFamily, type Outcome, type LearnStructuredData, type EnrichLabel, type EnrichmentBlock,
 } from './enrich.js'
 export {
-  pinDecision, pinRequestOf, buildPinRequest, asPinRequested, withoutPinRequest, isPinTransition,
+  pinDecision, pinRequestOf, buildPinRequest, asPinRequested, withoutPinRequest, isPinTransition, isPinEscalation, pinEscalationDenied,
   computePinFitReport, formatPinOverflowLine, formatPendingPinRequestsLine, comparePinTiebreak, isProhibition,
   PinDeniedError,
   type PinActor, type PinDecision, type PinRequest, type PendingPinRequest, type PinFitReport, type PinFitEntry,

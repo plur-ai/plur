@@ -27,7 +27,7 @@ function pushedContentSignature(engram: Engram): string {
   ])
 }
 
-import { type PinActor, PinDeniedError, asPinRequested, buildPinRequest, isPinTransition, withoutPinRequest } from '../pin-policy.js'
+import { type PinActor, PinDeniedError, asPinRequested, buildPinRequest, isPinEscalation, isPinTransition, pinEscalationDenied, withoutPinRequest } from '../pin-policy.js'
 export interface FeedbackPinMethods {
   /**
    * Update feedback_signals and adjust retrieval_strength. Searches primary, stores, then packs.
@@ -593,6 +593,13 @@ export const feedbackPinMethods: FeedbackPinMethods & ThisType<Plur> = {
       // Agent pinning (overhaul D2): an update that turns the row into a pin
       // follows `pinning.agents` like learn does. Re-writing a row that is
       // already pinned is not a new pin and is never restricted.
+      // A stronger pin on a row that is already pinned (higher priority,
+      // hard tier) follows the same policy (H5); a pin request cannot carry
+      // it, so a restricted caller is refused.
+      if (isPinEscalation(engrams[idx], toWrite)) {
+        const decision = this._pinDecisionFor(options?.actor)
+        if (decision !== 'allow') throw pinEscalationDenied(toWrite.id, 'update', decision)
+      }
       if (isPinTransition(engrams[idx], toWrite)) {
         const decision = this._pinDecisionFor(options?.actor)
         if (decision === 'deny') throw new PinDeniedError(toWrite.id, 'update')
