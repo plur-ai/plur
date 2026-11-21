@@ -1,8 +1,9 @@
 diff --git a/packages/core/src/hybrid-search.ts b/packages/core/src/hybrid-search.ts
+index 429c9df0..9fe8e256 100644
 --- a/packages/core/src/hybrid-search.ts
 +++ b/packages/core/src/hybrid-search.ts
-@@ -178,10 +178,6 @@
-     onFused?: (r: HybridSearchResult) => void
+@@ -199,10 +199,6 @@ export async function hybridSearchWithMeta(
+     queryRewrite?: boolean
    },
  ): Promise<HybridSearchResult> {
 -  if (engrams.length === 0) {
@@ -12,7 +13,7 @@ diff --git a/packages/core/src/hybrid-search.ts b/packages/core/src/hybrid-searc
    const exhaustive = isAggregationQuery(query)
    const effectiveLimit = exhaustive ? Math.max(limit, 50) : limit
    const bm25Limit = Math.min(engrams.length, exhaustive ? effectiveLimit * 5 : effectiveLimit * 3)
-@@ -223,7 +219,7 @@
+@@ -247,7 +243,7 @@ export async function hybridSearchWithMeta(
    // counted in full, the scale the miss-signal threshold is set on), captured
    // BEFORE the optional rerank stage — the miss-signal reasons about fusion
    // strength, not the cross-encoder's reordering.

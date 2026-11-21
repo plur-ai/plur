@@ -1,12 +1,13 @@
 diff --git a/packages/core/src/plur/learn.ts b/packages/core/src/plur/learn.ts
+index 73973152..be6625ad 100644
 --- a/packages/core/src/plur/learn.ts
 +++ b/packages/core/src/plur/learn.ts
-@@ -1010,7 +1010,7 @@
+@@ -1035,7 +1035,7 @@ export const learnMethods: LearnMethods & ThisType<Plur> = {
        // a list of characters.
        relations: ((context?.supersedes?.length ?? 0) > 0 || relatedIds(context?.related).length > 0) ? {
          broader: [], narrower: [], related: relatedIds(context?.related), conflicts: [],
 -        supersedes: [...(context?.supersedes ?? [])], superseded_by: [],
 +        supersedes: [], superseded_by: [], // MUTANT: forward edge dropped
        } : undefined,
-       pinned: context?.pinned === true ? true : undefined,
-       pinned_tier: context?.pin_tier,
+       pinned: context?.pinned === true && !pinRequested ? true : undefined,
+       pinned_tier: pinRequested ? undefined : context?.pin_tier,

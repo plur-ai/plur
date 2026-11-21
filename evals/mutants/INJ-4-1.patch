@@ -1,10 +1,11 @@
 diff --git a/packages/core/src/inject.ts b/packages/core/src/inject.ts
+index 8f0a33f2..9f3db9ef 100644
 --- a/packages/core/src/inject.ts
 +++ b/packages/core/src/inject.ts
-@@ -212,7 +212,7 @@
+@@ -247,7 +247,7 @@ export function skipForValidity(
   * retrieval (`plur_recall`) is deliberately unaffected, so drafts can be reviewed.
   */
- function skipForApproval(engram: Engram): boolean {
+ export function skipForApproval(engram: Engram): boolean {
 -  return (engram as { commitment?: string }).commitment === 'draft'
 +  return false // MUTANT: drafts are delivered
  }

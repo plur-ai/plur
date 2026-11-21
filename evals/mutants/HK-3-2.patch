@@ -1,12 +1,13 @@
 diff --git a/packages/cli/src/lib/codex-hook-io.ts b/packages/cli/src/lib/codex-hook-io.ts
+index 4c2dc535..d0e969d3 100644
 --- a/packages/cli/src/lib/codex-hook-io.ts
 +++ b/packages/cli/src/lib/codex-hook-io.ts
-@@ -381,7 +381,7 @@
-   if (!hybridEnabled()) return { result: await plur.inject(task, opts), mode: 'bm25' }
- 
-   try {
--    const raced = await withDeadline(plur.injectHybrid(task, opts), deadlineMs)
-+    const raced = await plur.injectHybrid(task, opts) // MUTANT: no deadline on the semantic search
+@@ -418,7 +418,7 @@ export async function injectWithFallback<O, R>(
+       ? { ...(opts as object), bookkeeping_deadline_at: Date.now() + deadlineMs - CORE_DEADLINE_MARGIN_MS } as O
+       : opts
+     const hybridSearch = plur.injectHybrid(task, coreOpts)
+-    const raced = await withDeadline(hybridSearch, deadlineMs)
++    const raced = await hybridSearch // MUTANT: no deadline on the semantic search
      if (raced !== DEADLINE_MISSED) return { result: raced, mode: 'hybrid' }
-     process.stderr.write(
-       `[plur] hybrid injection exceeded ${deadlineMs}ms — falling back to BM25 for this turn. ` +
+     // A late failure must not win the race: it yields to the fallback. Its
+     // message still goes to the caller (H14), so it is not lost.

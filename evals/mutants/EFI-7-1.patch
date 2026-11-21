@@ -1,12 +1,13 @@
 diff --git a/packages/cli/src/commands/doctor.ts b/packages/cli/src/commands/doctor.ts
+index cb9d9539..fab47ce2 100644
 --- a/packages/cli/src/commands/doctor.ts
 +++ b/packages/cli/src/commands/doctor.ts
-@@ -1542,7 +1542,7 @@
+@@ -1691,7 +1691,7 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
        hookShim, mcpShim, handshake, cursorHandshake,
        embedder: embedderWithVcRuntime(embedder, { platform: process.platform, env: process.env }),
        cursorProjectDetected, cursorWired, codexDetected, codexWired, codexCmdShimMcp, windowsHookFallback, agyDetected, agyWired,
--      pgliteGemmaReembedNeeded, staleContentHashes, pgliteOrphan, ignoredDuplicateStores, skippedProjectStores, tokenEnvUnset, tokenEnvFound, opencode, outbox, folderMap, overall, serverStores, hookTrust,
-+      pgliteGemmaReembedNeeded, staleContentHashes, pgliteOrphan, ignoredDuplicateStores, skippedProjectStores, tokenEnvUnset, tokenEnvFound, opencode, outbox, folderMap, overall, serverStores: [], hookTrust,
+-      pgliteGemmaReembedNeeded, staleContentHashes, pinOverflow, ...(pinOverflowError ? { pinOverflowError } : {}), pgliteOrphan, ignoredDuplicateStores, invalidConfigKeys, ...(invalidConfigKeysError ? { invalidConfigKeysError } : {}), skippedProjectStores, tokenEnvUnset, tokenEnvFound, opencode, outbox, folderMap, overall, serverStores, hookTrust,
++      pgliteGemmaReembedNeeded, staleContentHashes, pinOverflow, ...(pinOverflowError ? { pinOverflowError } : {}), pgliteOrphan, ignoredDuplicateStores, invalidConfigKeys, ...(invalidConfigKeysError ? { invalidConfigKeysError } : {}), skippedProjectStores, tokenEnvUnset, tokenEnvFound, opencode, outbox, folderMap, overall, serverStores: [], hookTrust,
      }
    })
  }
