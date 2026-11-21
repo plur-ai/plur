@@ -128,6 +128,13 @@ anchors:
       - >-
         packages/cli/test/doctor.test.ts::with hooks and plur MCP present and no handshake, reports unverified (not ok,
         not fail)
+  packages/cli/src/commands/doctor.ts#stopProcessTree:
+    kind: guarantee
+    rule: >-
+      On Linux and macOS, when doctor finishes its connection check it stops the server it started and everything that
+      server's launcher started, so no server keeps running after doctor has reported.
+    tests:
+      - "packages/cli/test/doctor.test.ts::stops the whole server tree it started, not just the launcher (#1911)"
   packages/cli/src/commands/embedder-probe.ts#run:
     kind: guarantee
     rule: The embedder probe refuses to run unless doctor started it.
