@@ -133,6 +133,8 @@ export interface UnifiedPool {
   pins: Engram[]
   /** Superseded candidates with no deliverable replacement (×0.3). */
   penalised: Set<string>
+  /** Left out because a deliverable memory replaces it: id → its replacements among the candidates. */
+  replacedBy?: Map<string, string[]>
 }
 
 /**
@@ -175,10 +177,15 @@ export function buildUnifiedPool(
   const candidates: Engram[] = []
   const pins: Engram[] = []
   const penalised = new Set<string>()
+  const replacedBy = new Map<string, string[]>()
   for (const e of visible) {
     // Replaced by an engram this session can deliver: not current (outside a
-    // historical prompt), so not a candidate for any slot.
-    if (!historical && isReplacedByDeliverable(e, deliverableIds, supersededBy, replacedFromPrimary)) continue
+    // historical prompt), so not a candidate for any slot. Its replacements
+    // are kept so the ranking can put them in its place.
+    if (!historical && isReplacedByDeliverable(e, deliverableIds, supersededBy, replacedFromPrimary)) {
+      replacedBy.set(e.id, [...(e.relations?.superseded_by ?? []), ...(replacedFromPrimary.get(e.id) ?? [])].filter(id => deliverableIds.has(id)))
+      continue
+    }
     if ((e as { pinned?: boolean }).pinned === true) {
       if (includePinned) pins.push(e)
       continue
@@ -186,7 +193,7 @@ export function buildUnifiedPool(
     if (!historical && isSupersededEngram(e)) penalised.add(e.id)
     candidates.push(e)
   }
-  return { candidates, pins, penalised }
+  return { candidates, pins, penalised, replacedBy }
 }
 
 /**
@@ -238,17 +245,28 @@ export function rankForInjection(
  */
 export function orderRecallCandidates(
   order: readonly string[],
-  pool: Pick<UnifiedPool, 'candidates' | 'penalised'>,
+  pool: Pick<UnifiedPool, 'candidates' | 'penalised' | 'replacedBy'>,
   fused: ReadonlyMap<string, { score: number; keyword: number | null; coverage: number | null }>,
   meaning?: ReadonlyMap<string, number>,
 ): RankedCandidate[] {
   const byId = new Map(pool.candidates.map(e => [e.id, e]))
   const list: RankedCandidate[] = []
+  const listed = new Set<string>()
+  const add = (engram: Engram, f: { score: number; keyword: number | null; coverage: number | null } | undefined, pos: number, cosineId: string) => {
+    if (listed.has(engram.id)) return
+    listed.add(engram.id)
+    list.push({ engram, fused: f?.score ?? 1 / (RRF_K + pos + 1), cosine: meaning?.get(cosineId) ?? null, keyword: f?.keyword ?? null, coverage: f?.coverage ?? null })
+  }
   order.forEach((id, pos) => {
     const engram = byId.get(id)
-    if (!engram) return
-    const f = fused.get(id)
-    list.push({ engram, fused: f?.score ?? 1 / (RRF_K + pos + 1), cosine: meaning?.get(id) ?? null, keyword: f?.keyword ?? null, coverage: f?.coverage ?? null })
+    if (engram) { add(engram, fused.get(id), pos, id); return }
+    // A memory recall ranked but a deliverable one replaces: the replacement
+    // takes its place (and its score), so a correction found by the old
+    // wording is still delivered.
+    for (const rid of pool.replacedBy?.get(id) ?? []) {
+      const r = byId.get(rid)
+      if (r) add(r, fused.get(rid) ?? fused.get(id), pos, rid)
+    }
   })
   if (pool.penalised.size === 0) return list
   const kept: RankedCandidate[] = []
