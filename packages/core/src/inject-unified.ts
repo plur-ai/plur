@@ -34,6 +34,7 @@
  * The search here writes nothing (R5); `Plur._formatInjection` keeps
  * injection's own single set of writes.
  */
+import { applyFeedbackOrder } from './feedback-order.js'
 import type { Engram } from './schemas/engram.js'
 import type { LoadedPack } from './engrams.js'
 import { comparePinTiebreak, isProhibition } from './pin-policy.js'
@@ -222,7 +223,8 @@ export function rankForInjection(
   const ranked = out
   for (const c of ranked) if (pool.penalised.has(c.engram.id)) c.fused *= SUPERSEDED_PENALTY
   // Stable: ties keep the keyword-then-meaning order they arrived in.
-  return ranked.sort((a, b) => b.fused - a.fused)
+  // Then feedback, as recall's ranking applies it (`_localHybridRanking`).
+  return applyFeedbackOrder(ranked.sort((a, b) => b.fused - a.fused), c => c.engram)
 }
 
 /**

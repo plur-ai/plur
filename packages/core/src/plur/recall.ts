@@ -1,4 +1,5 @@
 import { agenticSearch } from '../agentic-search.js'
+import { applyFeedbackOrder } from '../feedback-order.js'
 import { reactivate } from '../decay.js'
 import { embedderStatus, embeddingSearch, embeddingSearchWithScores, resetEmbedder, semanticModelState, type EmbedderStatus, type SimilarityResult } from '../embeddings.js'
 import { legacyStorePrefix, matchLegacyPackId, packEngramId, parseNamespacedId, storePrefix } from '../engrams.js'
@@ -1380,6 +1381,10 @@ export const recallMethods: RecallMethods & ThisType<Plur> = {
     } else {
       result = await hybridSearchWithMeta(filtered, query, limit, this.paths.root, rerank, searchOpts)
     }
-    return result
+    // Feedback is part of recall's ranking (owner decision 2026-11-22): it
+    // nudges the finished order, so recall and unified injection — which
+    // takes this order — rank the same way.
+    const reordered = applyFeedbackOrder(result.engrams, e => e)
+    return reordered === result.engrams ? result : { ...result, engrams: reordered }
   },
 }

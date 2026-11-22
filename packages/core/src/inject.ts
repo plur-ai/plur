@@ -1,4 +1,5 @@
 import type { Engram, Association } from './schemas/engram.js'
+import { feedbackFactor } from './feedback-order.js'
 import type { PackManifest } from './schemas/pack.js'
 import { parseNamespacedId, legacyPackEngramId, type LoadedPack } from './engrams.js'
 import { decayedStrength, decayedCoAccessStrength, daysSince, confidenceDecay } from './decay.js'
@@ -614,12 +615,7 @@ export function scoreEngram(
   let score = termHits * rs
 
   // Feedback signal boost: positive feedback increases score, negative decreases
-  const feedback = engram.feedback_signals
-  if (feedback) {
-    const netFeedback = feedback.positive - feedback.negative
-    if (netFeedback > 0) score *= 1 + Math.min(netFeedback * 0.05, 0.3)
-    else if (netFeedback < 0) score *= Math.max(1 + netFeedback * 0.1, 0.5)
-  }
+  score *= feedbackFactor(engram)
 
   // Consolidated engrams get a slight boost (survived reconsolidation)
   if (engram.consolidated) score *= 1.1
