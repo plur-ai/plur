@@ -52,13 +52,21 @@ Length is a symptom, not the rule. Aim for 100–300 characters of `statement`; 
 The statement is the one line an agent acts on. Most memories worth keeping also deserve a **structured body**, written into `structured_data.body`, that carries what the line cannot: the situation it is for, the steps, the reason, the trap. The body is indexed for recall, so it is where the situation words go. In a 2026-11-09 test, replacing one-liners with structured items lifted top-10 recall from 55% to 62%.
 
 ```text
-When: <the situation, in the words a future task will contain>
+When: <2–3 concrete situations, in the words a future task will contain>
+Asks: <three short requests a user would actually type when this applies>
 Do: <the action, or what is true>
 Why: <the mechanism — and so when it stops holding>
 Pitfalls: <the near-miss, what goes wrong if you skip it>
 Anchors: <files, commands, endpoints, ids, names a query will mention>
 ```
 
+What makes a body findable was measured on 2026-11-19: structured bodies were added to the 30 hardest-to-find memories of a 14,000-memory store and to all 5,067 memories competing with them, then each line was scored with PLUR's own hybrid search.
+
+- **`Asks` is the strongest single line.** Three ordinary requests, phrased as tasks, that do not name the rule ("set up the release for Thursday", not "apply the sign-off rule"). On its own it beat every fuller body: 20 targets ranked better, 4 worse. Add it to every memory that should fire on a task.
+- **`When` names situations, not the rule again.** List 2–3 concrete cases. A lesson about evaluating beyond one asset pair went from rank 1,568 to rank 1 once its `When` said "backtesting a trading strategy".
+- **No glossary line.** A list of spelled-out jargon made memories harder to find than no body at all. Put everyday words inside the `When` and `Asks` sentences instead.
+- **Short beats long.** A longer body did no better. Aim for five or six lines.
+- **Dated status notes get no body.** A heartbeat, a status update or an "as of" summary is a snapshot: say so in the statement, give it an expiry or completion trigger, and leave the body out so it does not compete with lasting knowledge.
 - **At most ~300 tokens** (2,000 characters; longer is refused). Leave out a part that has nothing in it rather than padding it.
 - **The statement must still stand alone.** Injection renders the statement, not the body; the body helps the memory be found.
 - **`kind`** says what sort of memory it is: `rule` (a convention to follow), `tool` (a pointer to a command, script, endpoint or file), `fact` (how something is), `preference` (a taste or style choice), `experience` (what happened in a past attempt), `failure_lesson` (what went wrong and what to avoid). It sets `memory_class` when you give none: experiences and failure lessons are episodic, rules and tools procedural, facts and preferences semantic.
@@ -73,7 +81,7 @@ Anchors: <files, commands, endpoints, ids, names a query will mention>
   "structured_data": {
     "kind": "failure_lesson",
     "outcome": "failure",
-    "body": "When: plur_session_start or a hook returns a pointer to a file instead of the memories.\nDo: read the whole file in ~80,000-char slices before the first action.\nWhy: a pointer reads like a result you already have, so skipping it fails silently.\nPitfalls: reading only the head and tail; the redaction rules sat in the unread middle.\nAnchors: session_start, spilled payload, tool-result limit, truncated injection."
+    "body": "When: plur_session_start or a hook returns a pointer to a file instead of the memories; a session starts with a truncated tool result.\nAsks: start the session; load my memory for this repo; what do you remember about this project?\nDo: read the whole file in ~80,000-char slices before the first action.\nWhy: a pointer reads like a result you already have, so skipping it fails silently.\nPitfalls: reading only the head and tail; the redaction rules sat in the unread middle.\nAnchors: session_start, spilled payload, tool-result limit, truncated injection."
   }
 }
 ```
@@ -96,7 +104,7 @@ The failure is structural. For *"publish the new version to npm"*, the top five 
 
 Situation-words help only when the situation is lexically distinctive: *"ssh into the client VPS"* ranked #1, *"investor deck, can we mention the pilots"* ranked #5. Generic situations — *"ready to ship"*, *"finished that part"* — ranked nowhere at all.
 
-So: write the situation words — in the statement where they fit, and in the structured body's `When:` and `Anchors:` lines where they do not. They are what buys you the distinctive cases. **Do not pin to compensate.** Pins are loaded into every session whatever the task, and a pinned set grown by agents crowds out the memories a task actually needs. If you believe a rule needs to be always loaded, say so to the owner and let them decide.
+So: write the situation words — in the statement where they fit, and in the structured body's `When:`, `Asks:` and `Anchors:` lines where they do not. They are what buys you the distinctive cases. **Do not pin to compensate.** Pins are loaded into every session whatever the task, and a pinned set grown by agents crowds out the memories a task actually needs. If you believe a rule needs to be always loaded, say so to the owner and let them decide.
 
 `rationale`, `tags` and the structured body are indexed as well as `statement`, so a concrete mechanism sentence adds retrieval surface at no cost to the statement's length. **Caveat:** for constraints, `rationale` is indexed but *not rendered* to the model (see *What the model actually receives*). It helps findability, not comprehension.
 

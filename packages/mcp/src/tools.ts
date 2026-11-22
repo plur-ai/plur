@@ -1514,7 +1514,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
             type: 'object',
             description: 'The structured form of the memory (optional). `body`: when to apply, what to do, why, pitfalls, anchors — about 300 tokens at most; it is indexed for recall, so write the words a future task will contain. `kind`: what sort of memory this is (sets memory_class when none is given). `outcome`: only when the source states one. No other keys are accepted.',
             properties: {
-              body: { type: 'string', description: 'Structured body: "When: … Do: … Why: … Pitfalls: … Anchors: …". At most ~300 tokens (2,000 characters).' },
+              body: { type: 'string', description: 'Structured body: "When: … Asks: … Do: … Why: … Pitfalls: … Anchors: …". At most ~300 tokens (2,000 characters).' },
               kind: { type: 'string', enum: ['rule', 'tool', 'fact', 'preference', 'experience', 'failure_lesson'], description: 'rule = convention to follow; tool = pointer to a command/script/endpoint/file; fact = how something is; preference = a taste or style choice; experience = what happened in a past attempt; failure_lesson = what went wrong and what to avoid next time.' },
               outcome: { type: 'string', description: '"success" or "failure", or a short stated result. Only when the source says so — never guess.' },
             },
