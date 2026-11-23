@@ -410,7 +410,7 @@ There are four kinds of agent.
 | a person | the user who stated or corrected something |
 | an agent runtime | the assistant that called the learn tool |
 | a model | the model behind a decision |
-| a tool | the memory engine that wrote the record, an extractor or an importer, with its version |
+| a tool | the memory engine that wrote the record, an extractor or an importer, with its version when one is recorded (the engine records none for itself) |
 
 Responsibility passes up the chain:
 
