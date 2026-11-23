@@ -468,7 +468,9 @@ function agentNodes(engram: Engram): {
   // core is the writing tool (`tool: plur-core`). Core is never a calling
   // client, so an older record is read in the current meaning: the same
   // software exports the same way, as a tool, whichever slot it was stored in.
-  const a = recorded.runtime?.name === 'plur-core'
+  // A record whose tool is already plur-core is a current one, so its runtime
+  // is a client that happens to send that name, and it is exported as one.
+  const a = recorded.runtime?.name === 'plur-core' && recorded.tool?.name !== 'plur-core'
     ? { ...recorded, runtime: undefined, tool: recorded.tool ?? recorded.runtime }
     : recorded
   const nodes: Node[] = []

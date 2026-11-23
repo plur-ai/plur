@@ -206,7 +206,9 @@ recorded as `tool: { name: 'plur-core' }`. Engrams written earlier keep the old
 shape on disk. Read an old `runtime: plur-core` as "written by core, calling
 app not recorded". The provenance export does this for you: `plur-core` is
 exported as a tool (`pa:AgentTool`) whichever field holds it, so a store with
-old and new engrams describes the same software one way. History events follow
+old and new engrams describes the same software one way. An engram whose `tool`
+is already `plur-core` is a new one, so a calling app that sends the name
+`plur-core` is exported as its own runtime, next to the tool. History events follow
 the same change: their default actor names `plur-core` as the tool.
 
 To record yourself as well, pass it at the point of learning:

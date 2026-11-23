@@ -953,12 +953,16 @@ anchors:
     kind: guarantee
     rule: >-
       Core is never read as a calling client: a record whose runtime is plur-core (written before #1470) exports
-      plur-core as the tool, exactly as a current record with tool plur-core does.
+      plur-core as the tool, exactly as a current record with tool plur-core does. A record whose tool is already
+      plur-core is a current one, so a client that sends the name plur-core is exported as its own runtime agent.
     tests:
       - "packages/core/test/client-runtime-attribution.test.ts::exports an old `runtime: plur-core` exactly as a new `tool: plur-core`"
       - >-
         packages/core/test/client-runtime-attribution.test.ts::an old record with a tool and the core runtime exports
         like a new one with that tool
+      - >-
+        packages/core/test/client-runtime-attribution.test.ts::a client named plur-core is exported as its own agent,
+        apart from the core tool
   packages/core/src/provenance.ts#ACTIVITY_OF:
     kind: note
     why: Describes which history events map to activities; the "never" refers to events the code does not emit.

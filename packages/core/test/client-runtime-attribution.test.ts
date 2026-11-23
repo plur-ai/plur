@@ -110,6 +110,19 @@ describe('Plur.withRuntime', () => {
     expect(summary.fields.written_by).toBe('Cursor plur-core 9.9 1.0, plur-core')
   })
 
+  it('a client named plur-core is exported as its own agent, apart from the core tool', async () => {
+    const plur = new Plur({ path: dir })
+    const e = await Plur.withRuntime(plur, { name: 'plur-core', version: '9.9' },
+      () => plur.learn('A client cannot hide behind the engine name', { type: 'behavioral' }))
+    const record = buildProvenanceRecord(e)
+    const software = (record['@graph'] as any[])
+      .filter(n => Array.isArray(n['@type']) && n['@type'].includes('prov:SoftwareAgent'))
+      .map(n => ({ id: n['@id'], type: n['@type'] }))
+    expect(software).toContainEqual({ id: 'engram:agent/software/plur-core@9.9', type: ['prov:SoftwareAgent', 'pa:AIAgent'] })
+    expect(software).toContainEqual({ id: 'engram:agent/software/plur-core', type: ['prov:SoftwareAgent', 'pa:AgentTool'] })
+    expect(summariseProvenance(record).fields.written_by).toBe('plur-core 9.9, plur-core')
+  })
+
   it('keeps a runtime the caller passed explicitly', async () => {
     const plur = new Plur({ path: dir })
     const e = await Plur.withRuntime(plur, CLIENT, () => plur.learn('Explicit runtimes are kept', {
