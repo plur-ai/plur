@@ -41,7 +41,7 @@ describe('sanitizeClientRuntime', () => {
     // the PGLite index rejects it as JSON and the whole sync fails.
     const out = sanitizeClientRuntime({ name: 'Cur\ud800sor\udfff', version: '\udc001.0\ud83d' })!
     expect(out).toEqual({ name: 'Cur sor', version: '1.0' })
-    expect(out.name.isWellFormed()).toBe(true)
+    expect(out.name).not.toMatch(/\p{Cs}/u)
     expect(sanitizeClientRuntime({ name: 'app \ud83d\ude00' })).toEqual({ name: 'app 😀' })
   })
 
