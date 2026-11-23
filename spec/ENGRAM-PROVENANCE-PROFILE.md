@@ -425,7 +425,7 @@ configured, so this is the common case, not the exception.
 |---|---|
 | an identity is configured | that identity |
 | none is configured | a fixed address meaning *nobody was identified* |
-| the software that wrote it | always recorded, since we always know our own name and version |
+| the software that wrote it | always recorded by name, since we always know our own name; the engine records no version for itself |
 
 Write the *unidentified* marker rather than leaving the field out. Leaving it out
 is ambiguous. A reader cannot tell whether nobody was identified, or whether the
