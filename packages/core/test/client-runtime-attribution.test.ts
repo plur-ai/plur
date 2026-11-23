@@ -9,7 +9,7 @@ import { mkdtempSync, rmSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import yaml from 'js-yaml'
-import { Plur, buildProvenanceRecord } from '../src/index.js'
+import { Plur, buildProvenanceRecord, summariseProvenance } from '../src/index.js'
 import { PGLiteAdapter } from '../src/storage-pglite.js'
 import { sanitizeClientRuntime, CLIENT_RUNTIME_MAX_LENGTH } from '../src/plur/helpers.js'
 
@@ -43,6 +43,11 @@ describe('sanitizeClientRuntime', () => {
     expect(out).toEqual({ name: 'Cur sor', version: '1.0' })
     expect(out.name.isWellFormed()).toBe(true)
     expect(sanitizeClientRuntime({ name: 'app \ud83d\ude00' })).toEqual({ name: 'app 😀' })
+  })
+
+  it('separates entries with no comma or semicolon left in a name or version', () => {
+    expect(sanitizeClientRuntime({ name: 'Cursor, plur-core 9.9', version: '1.0; plur-core' }))
+      .toEqual({ name: 'Cursor plur-core 9.9', version: '1.0 plur-core' })
   })
 
   it('returns nothing when no usable name is left, and drops a blank version', () => {
@@ -86,6 +91,14 @@ describe('Plur.withRuntime', () => {
       expect(await adapter.count()).toBe(1)
     } finally { await adapter.close() }
   }, 60_000)
+
+  it('a forged client name cannot read as an extra agent in the summary', async () => {
+    const plur = new Plur({ path: dir })
+    const e = await Plur.withRuntime(plur, { name: 'Cursor, plur-core 9.9', version: '1.0' },
+      () => plur.learn('Written-by entries stay unambiguous', { type: 'behavioral' }))
+    const summary = summariseProvenance(buildProvenanceRecord(e))
+    expect(summary.fields.written_by).toBe('Cursor plur-core 9.9 1.0, plur-core')
+  })
 
   it('keeps a runtime the caller passed explicitly', async () => {
     const plur = new Plur({ path: dir })

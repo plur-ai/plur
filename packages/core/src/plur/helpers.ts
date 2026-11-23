@@ -282,11 +282,12 @@ export const CLIENT_RUNTIME_MAX_LENGTH = 128
 // Control (Cc: C0/C1, line feeds, ANSI escapes) and format (Cf: bidi controls,
 // zero-width characters, the Tags block) characters, unpaired surrogates (Cs:
 // with the u flag a valid pair is one code point, so only a lone half matches;
-// the PGLite index rejects one as invalid JSON), plus the Unicode line and
-// paragraph separators. Each becomes a space, so removing one cannot fuse two
-// words, and runs of whitespace then collapse to one space.
+// the PGLite index rejects one as invalid JSON), the Unicode line and paragraph
+// separators, and the comma and semicolon that separate entries in the
+// provenance summary's "Written by" line. Each becomes a space, so removing one
+// cannot fuse two words, and runs of whitespace then collapse to one space.
 // eslint-disable-next-line no-control-regex
-const CLIENT_TEXT_HOSTILE = /[\p{Cc}\p{Cf}\p{Cs}\u2028\u2029]/gu
+const CLIENT_TEXT_HOSTILE = /[\p{Cc}\p{Cf}\p{Cs}\u2028\u2029,;]/gu
 
 function cleanClientText(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined
