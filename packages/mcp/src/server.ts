@@ -3,7 +3,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/server/stdio'
 import { existsSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
-import { Plur, checkForUpdate, formatUpdateCheckFailure, VERSION_CHECK_SUCCESS_TTL_MS, allowBackgroundModelLoad, type FolderPolicy } from '@plur-ai/core'
+import { Plur, checkForUpdate, formatUpdateCheckFailure, VERSION_CHECK_SUCCESS_TTL_MS, allowBackgroundModelLoad, sanitizeClientRuntime, type FolderPolicy } from '@plur-ai/core'
 import { FOLDER_SCOPE, type FolderScopeContext, getToolDefinitions, mcpCanary, validateToolArgs, CURSOR_CORE_TOOL_NAMES, type ToolProfile, resolveToolProfile, setActiveToolProfile } from './tools.js'
 import { payloadDropLogPath, recordPayloadDrop } from './drop-log.js'
 import { FOLDER_GATED_TOOLS, createFolderGate, createWorkspaceDirs, folderOffAnswer, workspaceUnknownAnswer, workspaceWriteScope, workspaceKey } from './folder-gate.js'
@@ -330,9 +330,11 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
     priorOnInitialized?.()
     if (process.env.PLUR_LOG_CLIENT_INFO !== '1') return
     const caps = server.getClientCapabilities()
-    const info = server.getClientVersion()
-    const name = (info?.name ?? 'unknown').replace(/\s+/g, '-') || 'unknown'
-    const version = (info?.version ?? 'unknown').replace(/\s+/g, '-') || 'unknown'
+    // Cleaned and capped like the stored runtime, so escapes and an unbounded
+    // name do not reach the terminal.
+    const info = sanitizeClientRuntime(server.getClientVersion())
+    const name = (info?.name ?? 'unknown').replace(/\s+/g, '-')
+    const version = (info?.version ?? 'unknown').replace(/\s+/g, '-')
     const rootsCap = (caps?.roots ?? null) as { listChanged?: boolean } | null
     const hasRoots = rootsCap !== null
     const listChanged = rootsCap?.listChanged === true
