@@ -12,10 +12,10 @@
   `runtime: plur-core` meant "written by core"; engrams saved before this
   change keep that shape. Read it as "written by core, app not recorded". The
   provenance export treats both shapes the same, so a store with old and new
-  engrams exports core once, as a tool. The client's name and version are cut
-  to 128 characters, and line breaks, control, bidirectional and zero-width
-  characters, unpaired surrogates, commas and semicolons are removed before
-  they are stored. A `runtime` passed to
+  engrams exports core once, as a tool. Before the client's name and version
+  are stored, line breaks, control characters, bidirectional controls,
+  zero-width characters, unpaired surrogates, commas and semicolons become
+  single spaces, and each is cut to 128 characters. A `runtime` passed to
   `plur_learn` is kept as given. See `docs/provenance.md`. (#1470)
 
 ## 0.23.1
