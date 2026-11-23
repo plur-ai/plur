@@ -1,8 +1,9 @@
+diff --git a/packages/cli/src/commands/doctor.ts b/packages/cli/src/commands/doctor.ts
 --- a/packages/cli/src/commands/doctor.ts
 +++ b/packages/cli/src/commands/doctor.ts
-@@ -1546,7 +1546,7 @@
-       configs, hooksInstalled, mcpRegistered, claudeCodeMcp, datacoreCollision, staleNpxHooks, staleNpxMcp, brokenNodeMcp,
-       hookShim, mcpShim, handshake, cursorHandshake, embedder,
+@@ -1542,7 +1542,7 @@
+       hookShim, mcpShim, handshake, cursorHandshake,
+       embedder: embedderWithVcRuntime(embedder, { platform: process.platform, env: process.env }),
        cursorProjectDetected, cursorWired, codexDetected, codexWired, codexCmdShimMcp, windowsHookFallback, agyDetected, agyWired,
 -      pgliteGemmaReembedNeeded, staleContentHashes, pgliteOrphan, ignoredDuplicateStores, skippedProjectStores, tokenEnvUnset, tokenEnvFound, opencode, outbox, folderMap, overall, serverStores, hookTrust,
 +      pgliteGemmaReembedNeeded, staleContentHashes, pgliteOrphan, ignoredDuplicateStores, skippedProjectStores, tokenEnvUnset, tokenEnvFound, opencode, outbox, folderMap, overall, serverStores: [], hookTrust,

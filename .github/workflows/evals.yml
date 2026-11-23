@@ -64,7 +64,7 @@ jobs:
       - uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:
           path: ${{ env.PLUR_MODEL_CACHE_DIR }}
-          key: plur-models-bge-small-en-v1.5
+          key: plur-models-bge-small-en-v1.5-${{ hashFiles('packages/core/src/embedders/model-pins.ts') }}
       - run: pnpm install --frozen-lockfile
       - run: pnpm -r build
       # Configuration commands only, matching the ordinary migration test CI.
@@ -149,7 +149,7 @@ jobs:
       - uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:
           path: ${{ env.PLUR_MODEL_CACHE_DIR }}
-          key: plur-models-bge-small-en-v1.5
+          key: plur-models-bge-small-en-v1.5-${{ hashFiles('packages/core/src/embedders/model-pins.ts') }}
       - run: pnpm install --frozen-lockfile
       - run: pnpm -r build
       - name: Install Codex for real migration registration
@@ -216,7 +216,7 @@ jobs:
       - uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:
           path: ${{ env.PLUR_MODEL_CACHE_DIR }}
-          key: plur-models-bge-small-en-v1.5
+          key: plur-models-bge-small-en-v1.5-${{ hashFiles('packages/core/src/embedders/model-pins.ts') }}
       - run: pnpm install --frozen-lockfile
       - run: pnpm -r build
       # As nightly: the duplicate-handling eval embeds with the real model (R-07).

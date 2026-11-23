@@ -1,11 +1,10 @@
-diff --git a/packages/core/src/index.ts b/packages/core/src/index.ts
-index d018e0d6..4b6a59c4 100644
---- a/packages/core/src/index.ts
-+++ b/packages/core/src/index.ts
-@@ -1734,9 +1734,6 @@ export class Plur {
-         // leave every already-installed pack, and any pack placed in the
-         // directory by hand or by a sync, unsanitised. This is the last gate
-         // before injection, so it is the one that has to hold.
+diff --git a/packages/core/src/plur/store-io.ts b/packages/core/src/plur/store-io.ts
+--- a/packages/core/src/plur/store-io.ts
++++ b/packages/core/src/plur/store-io.ts
+@@ -467,9 +467,6 @@
+         // bypasses learn()/learnRouted(), so a forged boundary would otherwise get through.
+         // Load time, not install time, so hand-placed or synced packs are covered too —
+         // this is the last gate before injection.
 -        for (const f of ['statement', 'rationale', 'source', 'summary', 'domain'] as const) {
 -          if (typeof cloned[f] === 'string') cloned[f] = collapseLineTerminators(cloned[f])
 -        }

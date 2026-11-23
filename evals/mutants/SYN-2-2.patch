@@ -1,8 +1,7 @@
 diff --git a/packages/core/src/sync.ts b/packages/core/src/sync.ts
-index a00c3a56..62aa9c65 100644
 --- a/packages/core/src/sync.ts
 +++ b/packages/core/src/sync.ts
-@@ -177,7 +177,7 @@ export function getSyncStatus(root: string): SyncStatus {
+@@ -181,7 +181,7 @@
  function stageStoreFiles(root: string): number {
    assertNoUnmergedStoreFiles(root)
    for (const secret of SECRET_PATHS) {
@@ -10,4 +9,4 @@ index a00c3a56..62aa9c65 100644
 +    void secret // untracking dropped
    }
    // Root store files (allowlist), EXCEPT `packs` which is staged by its own
-   // file-level allowlist below — never as a whole force-added directory (#428).
+   // file-level allowlist below — never as a whole force-added directory.

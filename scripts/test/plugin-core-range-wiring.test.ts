@@ -83,7 +83,10 @@ describe('release.sh runs the plugin core-range check', () => {
 
   it('before the first publish', () => {
     expect(preCheck).toBeGreaterThan(0)
-    expect(preCheck).toBeLessThan(at(/publish --access public/))
+    // The first publish is Step 5a's staging (#1904); the dry run only prints it.
+    const firstPublish = at(/^bash "\$REPO_ROOT\/scripts\/release-stage-publish\.sh" --version/)
+    expect(firstPublish).toBeGreaterThan(0)
+    expect(preCheck).toBeLessThan(firstPublish)
     expect(preCheck).toBeLessThan(at(/git push origin/))
   })
 

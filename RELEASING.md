@@ -26,6 +26,83 @@ This guide covers the npm release workflow. Python packages follow the same vers
 Publishing credentials (npm auth as `plur9`, the pending `NPM_TOKEN` repo secret, ClawHub OAuth)
 are documented in [`docs/runbooks/credentials.md`](docs/runbooks/credentials.md).
 
+## Before you run `release.sh`
+
+**1. Run the promise and agent evals locally.** CI has no agent or holdout secrets, by
+design, so these run on the release machine:
+
+```sh
+scripts/evals-local.sh gate      # separation check, harness tests, gate against origin/main
+scripts/evals-local.sh nightly   # full scoreboard with the holdout and every planted bug
+scripts/evals-local.sh agents    # agent-behaviour evals, 3 runs each, on the subscription login
+```
+
+Each prints where its results went and exits non-zero on the first failing step ("could not
+tell" counts as a failure). All three must be green on the commit you release.
+
+**2. Credentials come only from the credential broker.** Never copy a token out of an `.env`
+file or another machine. The broker prints the value on stdout, so pipe or assign it; never
+echo it.
+
+- npm: `creds get npm-publish-plur9 --consumer plur-release`. This token can only **stage** a
+  publish (see the next section). Hand it to npm the usual way, for example
+  `npm config set //registry.npmjs.org/:_authToken="$(creds get npm-publish-plur9 --consumer plur-release)"`.
+- PyPI (Step 6 uploads `plur-hermes`): `creds get pypi-tokens --consumer plur-release`, into
+  `PYPI_TOKEN_PLUR_HERMES`. **Fetch it with the system Python first on `PATH`**: deactivate any
+  virtualenv first (`command -v python3` should be the system interpreter). The broker is a
+  Python script; a virtualenv without PyYAML first on `PATH` makes `creds get` print an empty
+  value without failing, and twine (or npm) then answers with a 403 that looks like a bad or
+  revoked token. It is not: re-fetch with the system Python. Check that the variable is set
+  without printing it: `[ -n "$PYPI_TOKEN_PLUR_HERMES" ] && echo set`.
+
+**3. On Linux, put a `sed -i ''` shim first on `PATH`.** Step 1 (the version bumps, which
+`--dry-run` also runs) edits files with `sed -i '' 's/.../.../' <file>`, the macOS (BSD) form,
+where `''` is the in-place backup suffix (none). GNU sed reads that empty argument as the
+script and the real expression as a file name, and fails with
+`can't read s/...: No such file or directory`. The shim drops the empty argument and runs GNU
+sed:
+
+```sh
+mkdir -p ~/.local/bsd-sed && cat > ~/.local/bsd-sed/sed <<'SH'
+#!/bin/sh
+# sed -i '' EXPR FILE (macOS) -> sed -i EXPR FILE (GNU)
+if [ "$1" = "-i" ] && [ "$2" = "" ]; then shift 2; exec /usr/bin/sed -i "$@"; fi
+exec /usr/bin/sed "$@"
+SH
+chmod +x ~/.local/bsd-sed/sed
+PATH="$HOME/.local/bsd-sed:$PATH" ./scripts/release.sh <version> --dry-run
+```
+
+## npm releases are staged, and the owner approves them (issue #1904)
+
+Since 0.23.1 the npm publish token can only stage: `pnpm publish` and `npm publish` get
+`403 E_STAGE_REQUIRED` ("This token can only publish to a staging area"). A staged version is
+not on the registry until the owner approves it with the passkey. `release.sh` Step 5a
+(`scripts/release-stage-publish.sh`) therefore:
+
+1. packs each package from inside its own folder,
+   `cd packages/<p> && pnpm pack --pack-destination <dir>`, in dependency order, core first.
+   Packing resolves the `workspace:` references to real versions (`pnpm --filter ... pack`
+   failed for 0.23.1), and the step refuses a tarball whose `package.json` still has one;
+2. stages each tarball, `npm stage publish <tgz> --access public --tag next`, and records the
+   stage id npm prints;
+3. waits until `npm stage view <id>` shows `staged` (about 10 minutes of `validating`);
+4. **stops and asks the owner** to approve each package with the passkey, core first
+   (`npm stage approve <id>` in the owner's own terminal, or on npmjs.com), and to type
+   `approved`. `--auth-type=web` does not work from a non-interactive shell: npm masks the
+   approval URL and exits with `EOTP`, so the approval stays a human step;
+5. waits until every approved version resolves, then hands back to Step 5b (smoke test from
+   `@next`) and Step 5c (`npm dist-tag add @plur-ai/<pkg>@<version> latest`, which the same
+   token can do without 2FA).
+
+`./scripts/release.sh <version> --dry-run` prints the pack and `npm stage publish` command for
+every package in the release and stages nothing (the helper calls neither npm nor pnpm in that
+mode). `scripts/test/release-stage-publish.test.ts` holds it to that.
+
+If Step 5a fails part-way, nothing has been published: the step prints what it staged and the
+stage ids. Finish by hand (stage the rest, approve, continue from Step 5b) or drop them with
+`npm stage reject <id>`.
+
 ## Manifest gate — the CHANGELOG must declare what ships (issue #544)
 
 `scripts/release.sh` runs a **manifest gate** (Step 3.6) before any irreversible
@@ -99,18 +176,20 @@ one-release lesson:
    (#1066) — a dev scratch script with a hardcoded maintainer path — rode into
    a public repo inside an otherwise-reviewed PR.
 
-5. **The paid agent evals pass on the release commit.** Run
-   `gh workflow run evals.yml -f agents=true --ref <release branch>` and wait for
-   the `agents` job to finish green (each agent promise must pass all three runs,
-   `evals/README.md`). Nothing triggers this automatically; it is this step.
+5. **The promise and agent evals pass on the release commit.** Run
+   `scripts/evals-local.sh gate`, `scripts/evals-local.sh nightly` and
+   `scripts/evals-local.sh agents` on the release machine (see "Before you run
+   `release.sh`" above); each agent promise must pass all three runs
+   (`evals/README.md`). CI has no agent or holdout secrets, by design, so nothing
+   triggers this automatically; it is this step.
 
 Step 3.55 of `release.sh` additionally refuses to ship a version whose own
 CHANGELOG heading still says `(unreleased)` (#1065).
 
 ## Publish verification (npm smoke + PyPI verify)
 
-`scripts/release.sh` publishes npm to the `@next` dist-tag first, smoke-tests, then
-promotes to `@latest` (Step 5). The smoke test (Step 5b) covers **all three promoted
+`scripts/release.sh` stages npm to the `@next` dist-tag first (the owner approves each package
+with the passkey, see above), smoke-tests, then promotes to `@latest` (Step 5). The smoke test (Step 5b) covers **all three promoted
 packages**, not just `cli`:
 
 - `cli` and `mcp` are checked via `npx -y @plur-ai/<pkg>@<version> --version` (both ship a bin).
@@ -251,27 +330,30 @@ The range has two risks, one per direction:
 ## Manual publish (one package)
 
 When `main` has a version bump that hasn't reached npm yet — e.g. `@plur-ai/claw@0.9.10` is on
-`main` but `npm view @plur-ai/claw version` still returns `0.9.9` — anyone with publish rights on
-the `@plur-ai` npm scope can ship it from a clean checkout in under a minute:
+`main` but `npm view @plur-ai/claw version` still returns `0.9.9` — ship it from a clean
+checkout. The token is stage-only, so this is the same staged procedure as Step 5a:
 
 ```sh
 git checkout main && git pull
 pnpm install --frozen-lockfile
 pnpm --filter @plur-ai/claw build
-pnpm --filter @plur-ai/claw publish --access public --no-git-checks
+mkdir -p /tmp/plur-pack && (cd packages/claw && pnpm pack --pack-destination /tmp/plur-pack)
+npm stage publish /tmp/plur-pack/plur-ai-claw-<version>.tgz --access public --tag next
+npm stage view <stage-id>              # wait for "staged" (about 10 minutes)
+# the owner approves with the passkey: npm stage approve <stage-id>, or on npmjs.com
+npm dist-tag add @plur-ai/claw@<version> latest
 ```
 
-Substitute the package name as needed (`@plur-ai/core`, `@plur-ai/mcp`, `@plur-ai/cli`).
+Substitute the package name as needed; when core is among them, stage and approve core first.
 
-### Why `pnpm publish`, not `npm publish`
+### Why `pnpm pack`, not `npm pack`
 
 - The workspace packages depend on each other through `workspace:` specifiers, and
-  `pnpm publish` rewrites them on the way out: claw's `"@plur-ai/core": "workspace:>=0.23.0 <1"`
+  `pnpm pack` rewrites them in the tarball: claw's `"@plur-ai/core": "workspace:>=0.23.0 <1"`
   becomes `>=0.23.0 <1`, and mcp's and cli's `workspace:*` becomes the exact version of the
-  workspace core. `npm publish` would ship the literal `workspace:` string and break the
-  installed tarball.
-- `--no-git-checks` skips pnpm's clean-tree assertion so local build artifacts don't block the
-  publish.
+  workspace core. `npm pack` would keep the literal `workspace:` string and break the
+  installed tarball. `npm stage publish` then uploads that tarball as it is.
+- Pack from inside the package's folder; `pnpm --filter ... pack` failed for 0.23.1.
 
 ### Verify (no auth, ~2s)
 
@@ -283,7 +365,7 @@ Once the npm version matches `main`, the drift is closed.
 
 ### Tag the release
 
-`pnpm publish` does not push a git tag. After a successful publish:
+Staging does not push a git tag. After the approval:
 
 ```sh
 TAG="@plur-ai/claw@$(node -p "require('./packages/claw/package.json').version")"
@@ -323,7 +405,7 @@ until `cli@0.9.3` was bumped (#64) and republished.
 2. If a consumer's published `core` pin is older than the fix, that consumer is shipping the
    broken dep. Bump it: follow the version-bump checklist in `CLAUDE.md`
    (standard-release surfaces: package.json + VERSION constants + test assertions + hermes/python pins), open a PR, merge.
-3. After merge, run the **Manual publish** recipe above for each bumped consumer.
+3. After merge, run the **Manual publish** recipe above (staged, owner approval) for each bumped consumer.
 4. Verify the pin landed:
    ```sh
    npm view @plur-ai/cli@latest dependencies   # expect: { "@plur-ai/core": "<fixed-version>" }
