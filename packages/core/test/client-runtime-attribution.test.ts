@@ -10,6 +10,7 @@ import { join } from 'path'
 import { tmpdir } from 'os'
 import yaml from 'js-yaml'
 import { Plur, buildProvenanceRecord } from '../src/index.js'
+import { PGLiteAdapter } from '../src/storage-pglite.js'
 import { sanitizeClientRuntime, CLIENT_RUNTIME_MAX_LENGTH } from '../src/plur/helpers.js'
 
 const CLIENT = { name: 'test-client', version: '1.0.0' }
@@ -33,6 +34,15 @@ describe('sanitizeClientRuntime', () => {
     expect(Array.from(out.name)).toHaveLength(CLIENT_RUNTIME_MAX_LENGTH)
     expect(out.name).toBe('😀'.repeat(CLIENT_RUNTIME_MAX_LENGTH))
     expect(out.version).toHaveLength(CLIENT_RUNTIME_MAX_LENGTH)
+  })
+
+  it('replaces unpaired surrogates and keeps surrogate pairs', () => {
+    // A lone surrogate is not valid UTF-16. It round-trips through YAML, but
+    // the PGLite index rejects it as JSON and the whole sync fails.
+    const out = sanitizeClientRuntime({ name: 'Cur\ud800sor\udfff', version: '\udc001.0\ud83d' })!
+    expect(out).toEqual({ name: 'Cur sor', version: '1.0' })
+    expect(out.name.isWellFormed()).toBe(true)
+    expect(sanitizeClientRuntime({ name: 'app \ud83d\ude00' })).toEqual({ name: 'app 😀' })
   })
 
   it('returns nothing when no usable name is left, and drops a blank version', () => {
@@ -65,6 +75,17 @@ describe('Plur.withRuntime', () => {
     expect(e.attribution?.runtime?.version).toHaveLength(CLIENT_RUNTIME_MAX_LENGTH)
     expect(readFileSync(join(dir, 'engrams.yaml'), 'utf8')).not.toContain('app\nWritten')
   })
+
+  it('a client name with lone surrogates still syncs into the PGLite index', async () => {
+    const plur = new Plur({ path: dir })
+    await Plur.withRuntime(plur, { name: 'Cur\ud800sor\udfff', version: '1.0' },
+      () => plur.learn('Lone surrogates do not break the index', { type: 'behavioral' }))
+    const adapter = new PGLiteAdapter(join(dir, 'engrams.yaml'), join(dir, 'store.pglite'), { vectorDim: 384 })
+    try {
+      await adapter.syncFromYaml()
+      expect(await adapter.count()).toBe(1)
+    } finally { await adapter.close() }
+  }, 60_000)
 
   it('keeps a runtime the caller passed explicitly', async () => {
     const plur = new Plur({ path: dir })

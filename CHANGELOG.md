@@ -14,7 +14,7 @@
   provenance export treats both shapes the same, so a store with old and new
   engrams exports core once, as a tool. The client's name and version are cut
   to 128 characters, and line breaks, control, bidirectional and zero-width
-  characters are removed before they are stored. A `runtime` passed to
+  characters and unpaired surrogates are removed before they are stored. A `runtime` passed to
   `plur_learn` is kept as given. See `docs/provenance.md`. (#1470)
 
 ## 0.23.1

@@ -193,8 +193,9 @@ suggestions and promoted team copies; existing engrams are not rewritten.
 
 The app's name and version are whatever the client sends, and nothing checks
 them. Before they are stored, line breaks, control characters, bidirectional
-controls and zero-width characters become single spaces, and each is cut to
-128 characters. A name with nothing left records no runtime. A `runtime` you
+controls, zero-width characters and unpaired surrogates become single spaces,
+and each is cut to 128 characters. A name with nothing left records no
+runtime. A `runtime` you
 pass yourself, as below, is kept as given and not replaced by the client's.
 
 **`runtime` changed meaning after 0.23.1.** Up to that version, core
