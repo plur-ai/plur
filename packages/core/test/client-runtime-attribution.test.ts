@@ -50,6 +50,16 @@ describe('sanitizeClientRuntime', () => {
       .toEqual({ name: 'Cursor plur-core 9.9', version: '1.0 plur-core' })
   })
 
+  it('handles a 1 MiB name and version with the same capped result', () => {
+    const big = 'a'.repeat(1 << 20)
+    const out = sanitizeClientRuntime({ name: big, version: '😀'.repeat(1 << 19) })!
+    expect(out.name).toBe('a'.repeat(CLIENT_RUNTIME_MAX_LENGTH))
+    expect(out.version).toBe('😀'.repeat(CLIENT_RUNTIME_MAX_LENGTH))
+    // Leading padding and removed characters ahead of the name still leave it intact.
+    expect(sanitizeClientRuntime({ name: `${' \u200b'.repeat(1000)}Cursor ${'x'.repeat(1 << 20)}` })!.name)
+      .toBe(`Cursor ${'x'.repeat(CLIENT_RUNTIME_MAX_LENGTH - 7)}`)
+  })
+
   it('returns nothing when no usable name is left, and drops a blank version', () => {
     expect(sanitizeClientRuntime(undefined)).toBeUndefined()
     expect(sanitizeClientRuntime(null)).toBeUndefined()

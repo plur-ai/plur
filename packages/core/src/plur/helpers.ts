@@ -289,9 +289,16 @@ export const CLIENT_RUNTIME_MAX_LENGTH = 128
 // eslint-disable-next-line no-control-regex
 const CLIENT_TEXT_HOSTILE = /[\p{Cc}\p{Cf}\p{Cs}\u2028\u2029,;]/gu
 
+// The input is cut to this many UTF-16 units before cleaning, so a 1 MiB name
+// costs no more than a short one. It is 32 times the code-point cap: room for
+// leading whitespace and removed characters ahead of the kept text. A pair
+// split at the cut leaves a lone half, which the cleaning turns into a space.
+const CLIENT_TEXT_SCAN_LIMIT = CLIENT_RUNTIME_MAX_LENGTH * 32
+
 function cleanClientText(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined
-  const flat = value.replace(CLIENT_TEXT_HOSTILE, ' ').replace(/\s+/g, ' ').trim()
+  const flat = value.slice(0, CLIENT_TEXT_SCAN_LIMIT)
+    .replace(CLIENT_TEXT_HOSTILE, ' ').replace(/\s+/g, ' ').trim()
   // Cut on code points, never inside a surrogate pair.
   const cut = Array.from(flat).slice(0, CLIENT_RUNTIME_MAX_LENGTH).join('').trim()
   return cut || undefined
