@@ -904,6 +904,7 @@ export class Plur {
     embedding_model_missing: 'the embedding model is not downloaded yet — keyword results only. Run `plur doctor` once to download it (~133 MB).',
     semantic_deadline: 'semantic search did not finish within the recall deadline — keyword results only',
     reranker_deadline: 'the reranker did not finish within the recall deadline — results are in fusion order',
+    store_embeddings_incomplete: 'the store has not stored a vector for every memory yet — meaning search ran in process over all candidates (complete, slower); the backfill has been started',
   }
 
   /** How long past the deadline to wait for a remote leg that is already

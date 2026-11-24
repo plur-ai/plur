@@ -1352,7 +1352,7 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
   async searchVector(
     query: Float32Array,
     limit: number,
-    opts?: ScopeRestriction & Pick<StorageFilter, 'scope' | 'visibilityGrants'>,
+    opts?: ScopeRestriction & Pick<StorageFilter, 'scope' | 'visibilityGrants' | 'domain'>,
   ): Promise<VectorSearchHit[]> {
     const pool = await this.getPool()
     const t = this.activeVecType
@@ -1366,6 +1366,7 @@ export class PostgresAdapter implements StorageAdapter, AsyncPrimaryStore {
       scopes: opts?.scopes,
       scope: opts?.scope,
       visibilityGrants: opts?.visibilityGrants,
+      domain: opts?.domain,
     })
     const vecIdx = params.length + 1
     const limitIdx = params.length + 2
