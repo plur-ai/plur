@@ -1,4 +1,5 @@
 import type { RecallRemoteReport } from './remote-recall.js'
+import { fadedStrength } from './feedback-order.js'
 import type { Engram } from './schemas/engram.js'
 import { searchEngramsScored, type ScoredKeywordHit } from './fts.js'
 import { embeddingSearch, embedderStatus, type EmbeddingSearchOptions } from './embeddings.js'
@@ -103,15 +104,27 @@ export function fuseLegs(keyword: ScoredKeywordHit[], meaning: Engram[], k = 60)
     return e
   }
   const twoLegs = meaning.length > 0
+  // Equal keyword scores share a rank (the first of them), so the order the
+  // keyword search happened to return equal matches in carries no weight.
+  let shared = 0
   keyword.forEach((h, rank) => {
+    if (rank > 0 && h.score !== keyword[rank - 1].score) shared = rank
     const e = entry(h.engram)
     e.keyword = h.score
     e.coverage = h.coverage
-    e.score += (twoLegs ? h.coverage : 1) / (k + rank + 1)
+    e.score += (twoLegs ? h.coverage : 1) / (k + shared + 1)
   })
   meaning.forEach((m, rank) => { entry(m).score += 1 / (k + rank + 1) })
-  // Stable: ties keep the keyword-then-meaning order they arrived in.
-  return Array.from(scores.values()).sort((a, b) => b.score - a.score)
+  // Equal fused scores are ordered by strength after fading (unused memories
+  // fade, locked ones do not); strength never moves a better match. Stable:
+  // remaining ties keep the keyword-then-meaning order they arrived in.
+  const strength = new Map<string, number>()
+  const strengthOf = (h: FusedHit) => {
+    let v = strength.get(h.engram.id)
+    if (v === undefined) { v = fadedStrength(h.engram); strength.set(h.engram.id, v) }
+    return v
+  }
+  return Array.from(scores.values()).sort((a, b) => b.score - a.score || strengthOf(b) - strengthOf(a))
 }
 
 /** One fused candidate: its RRF score and, when the keyword leg found it, its BM25 score and query coverage. */

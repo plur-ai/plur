@@ -340,7 +340,7 @@ export function computeIdf(
     const idf = new Map<string, number>()
     for (const qt of queryTokens) {
       const df = stats.df.get(qt) ?? 0
-      idf.set(qt, Math.max(0, Math.log(stats.N / (1 + df))))
+      idf.set(qt, bm25Idf(stats.N, df))
     }
     return idf
   }
@@ -357,7 +357,7 @@ export function computeIdf(
     for (const termSet of engramTermSets) {
       if (termSetMatches(termSet, qt)) df++
     }
-    idf.set(qt, Math.max(0, Math.log(N / (1 + df))))
+    idf.set(qt, bm25Idf(N, df))
   }
   return idf
 }
@@ -473,6 +473,16 @@ export function searchEngrams(
 }
 
 /** A BM25 hit with its score and query coverage (see {@link ftsScoreDetail}). */
+/**
+ * The always-positive BM25 idf, log(1 + (N − df + 0.5) / (df + 0.5)). A word
+ * found in most or all memories gets a small weight, never zero: with the
+ * earlier log(N / (1 + df)), a word in 3 of 4 memories scored nothing, so in a
+ * small store only memories with a rarer word were found at all.
+ */
+export function bm25Idf(N: number, df: number): number {
+  return Math.log(1 + (N - df + 0.5) / (df + 0.5))
+}
+
 export interface ScoredKeywordHit { engram: Engram; score: number; coverage: number }
 
 /** {@link searchEngrams}, keeping each hit's BM25 score and query coverage. Same order. */

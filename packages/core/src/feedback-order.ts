@@ -1,4 +1,5 @@
 import type { Engram } from './schemas/engram.js'
+import { confidenceDecay, daysSince, decayedStrength } from './decay.js'
 
 /**
  * The multiplier feedback puts on a ranking score: up to ×1.3 for net
@@ -27,3 +28,23 @@ export function applyFeedbackOrder<T>(ranked: T[], engramOf: (item: T) => Pick<E
   const key = new Map(ranked.map((r, i) => [r, feedbackFactor(engramOf(r)) / (60 + i + 1)]))
   return [...ranked].sort((a, b) => key.get(b)! - key.get(a)!)
 }
+
+/**
+ * A memory's strength after fading, as the legacy scorer computes it: a pack
+ * row or a locked memory keeps its stored strength; any other fades with
+ * disuse, plus the confidence decay for memories without recent positive
+ * feedback.
+ */
+export function fadedStrength(engram: Engram): number {
+  const isPack = (engram as { _pack?: string })._pack !== undefined
+  const locked = (engram as { commitment?: string }).commitment === 'locked'
+  const stored = engram.activation?.retrieval_strength ?? 1
+  let rs = isPack || locked ? stored : decayedStrength(stored, daysSince(engram.activation?.last_accessed ?? ''))
+  if (!isPack) {
+    const fb = engram.feedback_signals
+    const lastPositive = fb && fb.positive > 0 ? engram.activation?.last_accessed ?? null : null
+    rs = confidenceDecay(rs, lastPositive, (engram as { commitment?: string }).commitment as never, undefined)
+  }
+  return rs
+}
+
