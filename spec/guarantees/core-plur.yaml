@@ -566,6 +566,13 @@ anchors:
       - packages/core/test/attribution.test.ts::never takes the identity from the operating system account
       - packages/core/test/attribution.test.ts::records the two things it knows, and invents nothing else
       - packages/core/test/attribution.test.ts::always records what software wrote the memory
+  packages/core/src/plur/helpers.ts#cut:
+    kind: guarantee
+    rule: A client name or version is capped on code points, never inside a surrogate pair.
+    tests:
+      - >-
+        packages/core/test/client-runtime-attribution.test.ts::caps name and version on code points, never inside a
+        surrogate pair
   packages/core/src/plur/helpers.ts#DISCOVERY_TIMESTAMP_REFRESH_MS:
     kind: note
     why: >-

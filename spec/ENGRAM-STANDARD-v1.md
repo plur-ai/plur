@@ -529,7 +529,7 @@ is worse than one with none.
 
 | Field | Type | Range / enum | Semantics |
 |---|---|---|---|
-| `attribution` | object | all sub-fields optional | Who is answerable for this engram. `asserted_by` (address of who or what asserted it), `runtime` (`name`, `version?` of the software that wrote it), `model` (`name`, `prompt_id?`, `prompt_version?`, `prompt_sha256?` — prompt text is never stored), `tool` (`name`, `version?`), `on_behalf_of` (the party the runtime acted for). |
+| `attribution` | object | all sub-fields optional | Who is answerable for this engram. `asserted_by` (address of who or what asserted it), `runtime` (`name`, `version?` of the calling app or agent runtime; omitted when unknown — records written by 0.23.1 and earlier may hold the writing software here, see the profile), `model` (`name`, `prompt_id?`, `prompt_version?`, `prompt_sha256?` — prompt text is never stored), `tool` (`name`, `version?` of the tool that wrote it, such as the memory engine itself, an extractor or an importer), `on_behalf_of` (the party the runtime acted for). |
 | `claim_class` | string | `observed`, `documented`, `structural`, `asserted`, `inferred`, `revised` | What kind of claim this is. Distinguishes a statement a person made from one a model inferred and one a pattern scraped — today those are stored identically. |
 
 `attribution.asserted_by` holds an address and deliberately does not fix its form.

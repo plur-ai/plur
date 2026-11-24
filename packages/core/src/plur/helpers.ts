@@ -273,12 +273,60 @@ export function buildProvenanceBlock(
 }
 
 
+/** The calling client recorded as `attribution.runtime` (#1470). */
+export type ClientRuntime = { name: string; version?: string }
+
+/** Longest client name or version kept, in code points (#1470, #1597). */
+export const CLIENT_RUNTIME_MAX_LENGTH = 128
+
+// Control (Cc: C0/C1, line feeds, ANSI escapes) and format (Cf: bidi controls,
+// zero-width characters, the Tags block) characters, unpaired surrogates (Cs:
+// with the u flag a valid pair is one code point, so only a lone half matches;
+// the PGLite index rejects one as invalid JSON), the Unicode line and paragraph
+// separators, and the comma and semicolon that separate entries in the
+// provenance summary's "Written by" line. Each becomes a space, so removing one
+// cannot fuse two words, and runs of whitespace then collapse to one space.
+// eslint-disable-next-line no-control-regex
+const CLIENT_TEXT_HOSTILE = /[\p{Cc}\p{Cf}\p{Cs}\u2028\u2029,;]/gu
+
+// The input is cut to this many UTF-16 units before cleaning, so a 1 MiB name
+// costs no more than a short one. It is 32 times the code-point cap: room for
+// leading whitespace and removed characters ahead of the kept text. A pair
+// split at the cut leaves a lone half, which the cleaning turns into a space.
+const CLIENT_TEXT_SCAN_LIMIT = CLIENT_RUNTIME_MAX_LENGTH * 32
+
+function cleanClientText(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const flat = value.slice(0, CLIENT_TEXT_SCAN_LIMIT)
+    .replace(CLIENT_TEXT_HOSTILE, ' ').replace(/\s+/g, ' ').trim()
+  // Cut on code points, never inside a surrogate pair.
+  const cut = Array.from(flat).slice(0, CLIENT_RUNTIME_MAX_LENGTH).join('').trim()
+  return cut || undefined
+}
+
+/**
+ * Bound and clean a client-supplied name and version (MCP `initialize.clientInfo`)
+ * before it is stored on every engram the request writes. Both are strings any
+ * client chooses: a line break could forge extra lines in a provenance summary,
+ * a direction override could disguise the name, and nothing bounded the size.
+ * Returns undefined when no usable name is left.
+ */
+export function sanitizeClientRuntime(runtime: { name?: unknown; version?: unknown } | undefined | null): ClientRuntime | undefined {
+  if (!runtime || typeof runtime !== 'object') return undefined
+  const name = cleanClientText(runtime.name)
+  if (!name) return undefined
+  const version = cleanClientText(runtime.version)
+  return version ? { name, version } : { name }
+}
+
 /**
  * Assemble the attribution block for a new engram.
  *
- * Returns undefined when the caller supplied nothing, so the field is absent
- * rather than present-and-empty. We never invent a runtime, and we never read
- * the operating system account for an identity.
+ * Records the writing tool (`plur-core` unless the caller names another) and
+ * who asserted it. `runtime` is the calling app (#1470): kept when the caller
+ * or the request scope (`Plur.withRuntime`) supplies one, otherwise absent. We
+ * never invent a runtime, and we never read the operating system account for
+ * an identity.
  */
 export function buildAttribution(
   context?: LearnContext,
@@ -294,17 +342,12 @@ export function buildAttribution(
   // named in shared records.
   out.asserted_by = a?.asserted_by ?? configuredIdentity ?? ATTRIBUTION_UNIDENTIFIED
 
-  // WHAT WROTE IT. Always recorded, because it is the one fact we always have:
-  // software knows its own name.
-  //
-  // No version here, deliberately: core has no version constant, and adding one
-  // would be one more place `release.sh` has to bump. Every real write arrives
-  // through a wrapper that DOES track its version (plur-mcp, plur-cli) and
-  // passes name and version both; this is the floor beneath them.
-  out.runtime = a?.runtime ?? { name: 'plur-core' }
+  // Core is the writing tool; the runtime is the calling app, when known.
+  // Core has no version constant, so do not invent a version here.
+  out.tool = a?.tool ?? { name: 'plur-core' }
+  if (a?.runtime) out.runtime = a.runtime
 
   if (a?.model) out.model = a.model
-  if (a?.tool) out.tool = a.tool
   if (a?.on_behalf_of) out.on_behalf_of = a.on_behalf_of
   return out
 }

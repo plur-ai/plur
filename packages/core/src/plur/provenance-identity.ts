@@ -150,7 +150,8 @@ export const provenanceIdentityMethods: ProvenanceIdentityMethods & ThisType<Plu
     if (!event.actor) {
       event.actor = {
         asserted_by: this._configuredIdentity() ?? ATTRIBUTION_UNIDENTIFIED,
-        runtime: { name: 'plur-core' },
+        // Core is the writing tool; `runtime` means the calling client (#1470).
+        tool: { name: 'plur-core' },
       }
     }
     return appendHistory(this.paths.root, event)
