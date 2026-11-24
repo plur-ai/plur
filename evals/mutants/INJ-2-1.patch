@@ -1,8 +1,7 @@
-diff --git a/packages/core/src/index.ts b/packages/core/src/index.ts
-index d018e0d6..5a88be94 100644
---- a/packages/core/src/index.ts
-+++ b/packages/core/src/index.ts
-@@ -7879,7 +7879,7 @@ export class Plur {
+diff --git a/packages/core/src/plur/injection.ts b/packages/core/src/plur/injection.ts
+--- a/packages/core/src/plur/injection.ts
++++ b/packages/core/src/plur/injection.ts
+@@ -328,7 +328,7 @@
          // personal family. Deliberately independent of the `permitted`
          // authorization filter above — grants never widen `options.scopes`.
          grantedScopes: this._grantedScopes(),

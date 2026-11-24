@@ -4,6 +4,19 @@
 
 ### Changes
 
+- Memories saved through the MCP server now record which app saved them:
+  `attribution.runtime` holds the name and version the client sent when it
+  connected (Claude Code, Cursor, Codex and so on), for single saves, batches,
+  session-end suggestions and promoted team copies. Core itself is now
+  recorded as `attribution.tool: plur-core`. **Migration note:** until now
+  `runtime: plur-core` meant "written by core"; engrams saved before this
+  change keep that shape. Read it as "written by core, app not recorded". The
+  provenance export treats both shapes the same, so a store with old and new
+  engrams exports core once, as a tool. Before the client's name and version
+  are stored, line breaks, control characters, bidirectional controls,
+  zero-width characters, unpaired surrogates, commas and semicolons become
+  single spaces, and each is cut to 128 characters. A `runtime` passed to
+  `plur_learn` is kept as given. See `docs/provenance.md`. (#1470)
 - Hybrid recall on a store that searches by meaning and by keyword itself
   (a database store such as Postgres with pgvector) now asks the store for
   both searches and combines the two answers, instead of reading every memory

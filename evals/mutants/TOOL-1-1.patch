@@ -1,11 +1,10 @@
 diff --git a/packages/mcp/src/server.ts b/packages/mcp/src/server.ts
-index 9acfdd5d..d3068ce1 100644
 --- a/packages/mcp/src/server.ts
 +++ b/packages/mcp/src/server.ts
-@@ -297,7 +297,7 @@ export async function createServer(plur?: Plur, options?: { profile?: ToolProfil
-       // agents carrying pre-lean instructions (docs, engrams, templates) call
-       // hidden tools by their old names and need a machine-readable recovery
-       // path in the error itself, at the moment recovery matters.
+@@ -410,7 +410,7 @@
+       // an ACTIONABLE error, not a dead-end "Unknown tool" — agents following
+       // docs, engrams or templates call hidden tools by name and need a
+       // machine-readable recovery path in the error itself.
 -      const hidden = getToolDefinitions('full').find(t => t.name === request.params.name)
 +      const hidden = undefined // MUTANT: a hidden or old name is just an unknown tool
        if (hidden) {

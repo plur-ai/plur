@@ -159,6 +159,18 @@ describe.skipIf(!existsSync(DIST_ENTRY))('PLUR_LOG_CLIENT_INFO', () => {
     expect(clientLines(stderr)).toEqual(['[plur] client plain-editor 1.2.3 roots=no listChanged=no'])
   }, 15_000)
 
+  it('logs the client name and version cleaned and capped, without escapes', async () => {
+    const stderr = await stderrAfterInitialize(
+      { name: `evil\u001b[31m\u001b]0;pwned\u0007${'n'.repeat(5000)}`, version: '1.0\u001b[2J' }, {}, true)
+    const lines = clientLines(stderr)
+    expect(lines).toHaveLength(1)
+    expect(lines[0]).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/)
+    const [, , name, version] = lines[0].split(' ')
+    expect(Array.from(name)).toHaveLength(128)
+    expect(name.startsWith('evil-[31m-]0-pwned-n')).toBe(true)
+    expect(version).toBe('1.0-[2J')
+  }, 15_000)
+
   it('without PLUR_LOG_CLIENT_INFO=1 no client line is written', async () => {
     const stderr = await stderrAfterInitialize({ name: 'test-editor', version: '9.9.9' }, { roots: {} }, false)
     expect(clientLines(stderr)).toEqual([])

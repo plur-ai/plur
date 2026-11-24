@@ -1,8 +1,7 @@
-diff --git a/packages/core/src/index.ts b/packages/core/src/index.ts
-index d018e0d6..6b62a2df 100644
---- a/packages/core/src/index.ts
-+++ b/packages/core/src/index.ts
-@@ -6838,7 +6838,7 @@ export class Plur {
+diff --git a/packages/core/src/plur/remote-results.ts b/packages/core/src/plur/remote-results.ts
+--- a/packages/core/src/plur/remote-results.ts
++++ b/packages/core/src/plur/remote-results.ts
+@@ -216,7 +216,7 @@
      // are still filtered by exact membership afterwards (`_filterRemoteRows`).
      const allowList = options?.scopes
      const allowed = (storeScope: string): boolean =>

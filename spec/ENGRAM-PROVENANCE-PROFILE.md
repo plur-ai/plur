@@ -410,7 +410,7 @@ There are four kinds of agent.
 | a person | the user who stated or corrected something |
 | an agent runtime | the assistant that called the learn tool |
 | a model | the model behind a decision |
-| a tool | an extractor or importer, with its version |
+| a tool | the memory engine that wrote the record, an extractor or an importer, with its version when one is recorded (the engine records none for itself) |
 
 Responsibility passes up the chain:
 
@@ -425,7 +425,7 @@ configured, so this is the common case, not the exception.
 |---|---|
 | an identity is configured | that identity |
 | none is configured | a fixed address meaning *nobody was identified* |
-| the software that wrote it | always recorded, since we always know our own name and version |
+| the software that wrote it | always recorded by name, since we always know our own name; the engine records no version for itself |
 
 Write the *unidentified* marker rather than leaving the field out. Leaving it out
 is ambiguous. A reader cannot tell whether nobody was identified, or whether the
@@ -1432,9 +1432,16 @@ three things in `attribution.asserted_by`:
 | an identity is configured | that identity |
 | neither | the `unidentified` marker, written out rather than omitted |
 
-`attribution.runtime` is recorded on **every** write without exception, because
-software always knows its own name. A caller that also knows its version
-supplies both.
+`attribution.tool` names the software that wrote the record (the memory
+engine, an extractor or an importer). `attribution.runtime` names the calling
+app or agent runtime when it is known — for example from the client
+information an MCP client sends when it connects — and is omitted when it is
+not. A caller that also knows its version supplies both.
+
+Records written before this distinction may hold the writing software in
+`attribution.runtime` (in the reference implementation, `runtime: plur-core`
+up to 0.23.1). Consumers read such a record as "written by that tool, calling
+app not recorded", and export it the same way as a record with that tool.
 
 Three rules an implementation MUST follow.
 

@@ -1,8 +1,7 @@
-diff --git a/packages/core/src/index.ts b/packages/core/src/index.ts
-index d018e0d6..0ad8d02a 100644
---- a/packages/core/src/index.ts
-+++ b/packages/core/src/index.ts
-@@ -5825,7 +5825,7 @@ export class Plur {
+diff --git a/packages/core/src/plur/recall.ts b/packages/core/src/plur/recall.ts
+--- a/packages/core/src/plur/recall.ts
++++ b/packages/core/src/plur/recall.ts
+@@ -572,7 +572,7 @@
      }
      if (local.done && local.error !== undefined) throw local.error
      if (!local.done || semanticSkipped !== null) this._maybeFillEmbeddingCache()

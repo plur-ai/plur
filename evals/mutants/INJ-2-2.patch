@@ -1,9 +1,8 @@
 diff --git a/packages/core/src/inject.ts b/packages/core/src/inject.ts
-index ee45ea4a..953d2426 100644
 --- a/packages/core/src/inject.ts
 +++ b/packages/core/src/inject.ts
-@@ -1130,7 +1130,7 @@ export function selectAndSpread(
-   // (replayed: 823 at an injection_budget of 500).
+@@ -1088,7 +1088,7 @@
+   // what they leave (each still also capped by its own budget).
    const remainingAfterSections = Math.max(0, maxTokens - directiveTokens)
    const { selected: dip19Consider } = fillTokenBudget(
 -    dip19Remainder, Math.min(DIP19_CONSIDER_BUDGET, remainingAfterSections),
