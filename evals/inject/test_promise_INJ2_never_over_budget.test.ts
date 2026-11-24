@@ -13,12 +13,17 @@ const measuredTokens = (text: string) => Math.ceil(text.length / CHARS_PER_TOKEN
 
 const TASK = 'deploy the billing service to production'
 const SERVICES = ['billing', 'invoicing', 'ledger', 'payments', 'refunds', 'payouts', 'tax', 'pricing']
+// Each practice is long enough that the 20 memories unified injection hands
+// over at most (its recall limit) still need far more than 900 tokens, so the
+// budget binds in both selection modes. (Setup restated 2026-11-24 with the
+// owner's approval when unified injection became the default; the promise and
+// its checks are unchanged.)
 const PRACTICES = [
-  'with blue-green rollouts and a manual smoke test before switching traffic',
-  'only after the database migration has run on the staging copy first',
-  'behind a feature flag that defaults to off for every existing customer',
-  'during the morning window so the on-call engineer is awake and watching',
-  'with the error budget dashboard open and the rollback command ready to paste',
+  'with blue-green rollouts and a manual smoke test before switching traffic, keeping the old colour warm for an hour and writing the switch time, the build number and the person who switched into the release log',
+  'only after the database migration has run on the staging copy first, has been timed against a copy of last night\'s data, and its down-migration has been tried once so the way back is known to work',
+  'behind a feature flag that defaults to off for every existing customer, with the flag owner named in the change request and a date by which the flag is either turned on for everyone or removed',
+  'during the morning window so the on-call engineer is awake and watching, the support lead has been told what changes for users, and nobody else is deploying a dependent service at the same time',
+  'with the error budget dashboard open and the rollback command ready to paste, a second engineer watching the logs, and a written note of which alert would make you roll back without a discussion',
 ]
 
 describe('INJ-2 the injection never exceeds the budget I set', () => {
@@ -31,7 +36,7 @@ describe('INJ-2 the injection never exceeds the budget I set', () => {
       // 40 distinct memories, every one relevant to the task.
       for (const svc of SERVICES) {
         for (const p of PRACTICES) {
-          await s.plur.learn(`Deploy the ${svc} service to production ${p}.`, { scope: 'global' })
+          await s.plur.learn(`Deploy the ${svc} service to production ${p}. Afterwards, check the ${svc} service's own health page and its two busiest endpoints for ten minutes before calling the deployment done.`, { scope: 'global' })
         }
       }
       expect((await s.plur.list()).length, 'precondition: 40 memories are stored').toBe(40)
