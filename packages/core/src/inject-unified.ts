@@ -186,7 +186,12 @@ export function buildUnifiedPool(
       replacedBy.set(e.id, [...(e.relations?.superseded_by ?? []), ...(replacedFromPrimary.get(e.id) ?? [])].filter(id => deliverableIds.has(id)))
       continue
     }
-    if ((e as { pinned?: boolean }).pinned === true) {
+    // A pin loads unconditionally only where it belongs: a global pin always,
+    // a scoped pin in a session with a scope (visibility above already limits
+    // it to that scope's family). In a session with no scope, a scoped pin
+    // competes as an ordinary candidate and comes in only when relevant
+    // (owner decision 2026-11-25).
+    if ((e as { pinned?: boolean }).pinned === true && (e.scope === 'global' || ctx.scope)) {
       if (includePinned) pins.push(e)
       continue
     }
