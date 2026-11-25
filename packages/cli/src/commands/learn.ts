@@ -178,7 +178,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       '                 Whether somebody stated this or a model worked it out.\n' +
       '  --asserted-by  who is answerable for it. Any address: a local name, a\n' +
       '                 Decentralized Identifier, or an identifier for a process.\n' +
-      '  --body         the structured form: When / Do / Why / Pitfalls / Anchors,\n' +
+      '  --body         the structured form: When / Asks / Do / Why / Pitfalls / Anchors,\n' +
       '                 about 300 tokens at most. Indexed for recall.\n' +
       '  --kind         rule | tool | fact | preference | experience | failure_lesson.\n' +
       '  --outcome      success | failure, or a short stated result — only when stated.')
