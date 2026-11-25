@@ -36,7 +36,13 @@ const PINNED_RULES = [
 
 const TASK = 'deploy the billing service to production'
 
-describe('INJ-6 (kept from INJ-3) a pinned rule is given even when the task does not match it', () => {
+// Restated 2026-11-25 by explicit owner instruction (pins load where they
+// belong): a pinned rule is given in a session within its scope, and a global
+// pin in every session, even when the task does not match. The earlier
+// precondition that an unrelated UNPINNED rule is left out is dropped: unified
+// injection, the default since 0.24, has no relevance cut-off. The pin check
+// itself is unchanged.
+describe('INJ-6 (kept from INJ-3) a pinned rule is given in its scope even when the task does not match it', () => {
   let s: TempStore
   afterEach(() => s?.cleanup())
 
@@ -58,21 +64,29 @@ describe('INJ-6 (kept from INJ-3) a pinned rule is given even when the task does
           const updated = await s.plur.setPinned(rule.id, true)
           expect(updated?.pinned, 'precondition: setPinned reports the rule as pinned').toBe(true)
         }
-        const twin = await s.plur.learn('Always greet returning visitors warmly by their first name',
-          { scope: 'project:alpha' })
 
         const r = await s.plur[path](TASK, { scope: 'project:alpha', budget: 2000 })
         const ids = given(r)
-        // Preconditions: the injection is working, and an equally unrelated
-        // rule that is NOT pinned is left out — so the task really does not match.
+        // Precondition: the injection is working.
         expect(r.count, 'precondition: the agent was given the memories that match the task').toBeGreaterThan(0)
-        expect(ids, 'precondition: an unrelated rule that is not pinned is not given, so the task does not match it')
-          .not.toContain(twin.id)
 
         expect(ids, `the pinned rule ${rule.id} was not given to the agent in its scope; it was given ${JSON.stringify(ids)}`)
           .toContain(rule.id)
       })
     }
+  }
+
+  for (const path of ['inject', 'injectHybrid'] as const) {
+    it(`a global pin is given in a session with no scope (${path})`, async () => {
+      s = await tempStore({ embedder: 'bag-of-words' })
+      for (let i = 1; i <= 6; i++) {
+        await s.plur.learn(`Deploy the billing service to production in step ${i} of the release checklist`, { scope: 'global' })
+      }
+      const rule = await s.plur.learn('Never mention customer names unless users raise them first', { scope: 'global', pinned: true })
+      const r = await s.plur[path](TASK, { budget: 2000 })
+      expect(r.count, 'precondition: the agent was given the memories that match the task').toBeGreaterThan(0)
+      expect(given(r), `the global pinned rule ${rule.id} was not given`).toContain(rule.id)
+    })
   }
 })
 
