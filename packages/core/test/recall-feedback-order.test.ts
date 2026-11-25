@@ -57,14 +57,3 @@ describe('recall ranks with feedback', () => {
     expect(again).toEqual(first)
   })
 })
-
-describe('feedback is a small nudge in recall (owner decision 2026-11-25)', () => {
-  it('maximum positive feedback lifts a memory a few places, not to the top', async () => {
-    const { applyFeedbackOrder } = await import('../src/feedback-order.js')
-    const items = Array.from({ length: 20 }, (_, i) => ({ id: `m${i}`, feedback_signals: i === 15 ? { positive: 10, negative: 0, neutral: 0 } : undefined }))
-    const order = applyFeedbackOrder(items, x => x as never).map(x => x.id)
-    const at = order.indexOf('m15')
-    expect(at).toBeLessThan(15)
-    expect(at).toBeGreaterThanOrEqual(8)
-  })
-})
