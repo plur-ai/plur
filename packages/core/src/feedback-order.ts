@@ -16,16 +16,26 @@ export function feedbackFactor(engram: Pick<Engram, 'feedback_signals'>): number
 }
 
 /**
+ * Feedback's pull in recall: a third of the legacy factor's distance from 1
+ * (at most ×1.1 up, ×0.83 down). The full factor moved memories with positive
+ * feedback past the right answers on a real store copy (one hard-set target
+ * out of the top 10, 2026-11-25); the owner chose a smaller nudge.
+ */
+export function recallFeedbackFactor(engram: Pick<Engram, 'feedback_signals'>): number {
+  return 1 + (feedbackFactor(engram) - 1) / 3
+}
+
+/**
  * Feedback applied to a finished ranking: each item's place is turned into an
- * RRF-style score (1 / (60 + rank)), multiplied by its feedback factor, and
- * re-sorted. Working on places rather than raw scores keeps a reranked order
- * comparable and bounds feedback to a nudge: ×1.3 lifts an item a few places,
+ * RRF-style score (1 / (60 + rank)), multiplied by its recall feedback factor,
+ * and re-sorted. Working on places rather than raw scores keeps a reranked order
+ * comparable and bounds feedback to a nudge: ×1.1 lifts an item a few places,
  * never past a much stronger match. With no feedback on any item the order is
  * returned unchanged (same array).
  */
 export function applyFeedbackOrder<T>(ranked: T[], engramOf: (item: T) => Pick<Engram, 'feedback_signals'>): T[] {
   if (!ranked.some(r => feedbackFactor(engramOf(r)) !== 1)) return ranked
-  const key = new Map(ranked.map((r, i) => [r, feedbackFactor(engramOf(r)) / (60 + i + 1)]))
+  const key = new Map(ranked.map((r, i) => [r, recallFeedbackFactor(engramOf(r)) / (60 + i + 1)]))
   return [...ranked].sort((a, b) => key.get(b)! - key.get(a)!)
 }
 
