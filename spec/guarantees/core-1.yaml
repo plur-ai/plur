@@ -1746,3 +1746,11 @@ anchors:
     tests:
       - packages/core/test/structured-body-search.test.ts
       - packages/core/test/postgres-bm25-pushdown.test.ts
+  packages/core/src/fts.ts#bm25Idf:
+    kind: guarantee
+    rule: >-
+      A query word found in most or all memories keeps a small positive weight, never zero or negative, so in a small
+      store every memory containing it is still found; a rarer word weighs more.
+    tests:
+      - "packages/core/test/recall-common-words-and-strength.test.ts::every memory with the shared word is found, the one with a rarer word first"
+      - "packages/core/test/fts.test.ts::gives a universal term a small positive IDF (no negative weights)"

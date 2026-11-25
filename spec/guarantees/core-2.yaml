@@ -1434,3 +1434,20 @@ anchors:
   packages/core/src/inject.ts#packKeyOf:
     kind: note
     why: Explains a past defect ('never saw a stamp'); states no rule of its own.
+  packages/core/src/feedback-order.ts#applyFeedbackOrder:
+    kind: guarantee
+    rule: >-
+      Feedback is part of recall's ranking: a memory with net positive feedback moves ahead of an equal match with net
+      negative feedback, by at most a few places; with no feedback on any item, recall's order is unchanged.
+    tests:
+      - "packages/core/test/recall-feedback-order.test.ts::positive feedback ranks a memory ahead of an equal match with negative feedback"
+      - "packages/core/test/recall-feedback-order.test.ts::without feedback, recall keeps its own order"
+  packages/core/src/hybrid-search.ts#strength:
+    kind: guarantee
+    rule: >-
+      Equal fused scores are ordered by strength after fading (unused memories fade, locked and pack memories do not);
+      strength never moves a weaker match past a better one.
+    tests:
+      - "packages/core/test/recall-common-words-and-strength.test.ts::a memory unused for 14 days ranks between fresh ones at 0.55 and 0.45"
+      - "packages/core/test/recall-common-words-and-strength.test.ts::a locked memory does not fade; its unlocked twin does"
+      - "packages/core/test/recall-common-words-and-strength.test.ts::strength does not lift a weaker match past a clearly better one"

@@ -1601,3 +1601,13 @@ anchors:
   packages/core/src/storage-postgres.ts#updated:
     kind: note
     why: Explains why the vector is rebuilt on update ('would never be rebuilt' otherwise); states no rule of its own.
+  packages/core/src/inject-unified.ts#buildUnifiedPool:
+    kind: guarantee
+    rule: >-
+      A pin loads unconditionally only where it belongs: a global pin in every session, a scoped pin in a session within
+      its scope; in a session with no scope a scoped pin competes as an ordinary candidate, and in another scope's
+      session it is not visible.
+    tests:
+      - "packages/core/test/inject-unified-scoped-pins.test.ts::in a session within its scope, a scoped pin is always loaded"
+      - "packages/core/test/inject-unified-scoped-pins.test.ts::in a session with no scope, only global pins are always loaded; a scoped pin competes like any memory"
+      - "packages/core/test/inject-unified-scoped-pins.test.ts::in a session of another scope, a scoped pin is not visible at all"
