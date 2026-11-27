@@ -298,6 +298,58 @@ function withoutLoaderMarkers(candidate: Record<string, unknown>): Record<string
   return out
 }
 
+const isPlainObject = (v: unknown): v is Record<string, unknown> =>
+  !!v && typeof v === 'object' && !Array.isArray(v)
+const optString = (o: Record<string, unknown>, k: string): boolean => o[k] === undefined || typeof o[k] === 'string'
+
+/** Nested fields of a remote row whose items downstream code iterates as strings. */
+const STRING_ARRAY_FIELDS = ['tags', 'contraindications', 'source_patterns', 'episode_ids'] as const
+/** Nested fields whose items downstream code dereferences, with the shape each item must have. */
+const OBJECT_ARRAY_FIELDS: Record<string, (item: Record<string, unknown>) => boolean> = {
+  knowledge_anchors: a => typeof a.path === 'string' && optString(a, 'snippet') && optString(a, 'relevance') && optString(a, 'snippet_extracted_at'),
+  entities: e => typeof e.name === 'string' && optString(e, 'type') && optString(e, 'uri'),
+  associations: a => typeof a.target === 'string' && typeof a.target_type === 'string' && typeof a.type === 'string' && typeof a.strength === 'number',
+  sources: s => typeof s.scope === 'string',
+}
+/** Nested fields downstream code reads as objects. */
+const OBJECT_FIELDS = [
+  'relations', 'feedback_signals', 'structured_data', 'temporal', 'dual_coding', 'provenance', 'attribution',
+  'knowledge_type', 'usage', 'episodic', 'exchange', 'insight', 'measured_under', 'previous_version_ref',
+] as const
+
+/**
+ * Security audit 2026-11 (finding 8): normalise the nested shape of a remote row.
+ * Recall, keyword ranking and injection iterate these fields without guards, so one
+ * row carrying `[null]` or a non-iterable value would throw for every reader of the
+ * scope. A malformed ITEM is dropped; a field of the wrong container type is dropped;
+ * the row itself is kept. Returns a new object; the input is not mutated.
+ */
+function normalizeRemoteRowShape(candidate: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...candidate }
+  for (const k of STRING_ARRAY_FIELDS) {
+    if (!(k in out) || out[k] === undefined) continue
+    if (Array.isArray(out[k])) out[k] = (out[k] as unknown[]).filter(v => typeof v === 'string')
+    else if (out[k] !== null) delete out[k]
+  }
+  for (const [k, valid] of Object.entries(OBJECT_ARRAY_FIELDS)) {
+    if (!(k in out) || out[k] === undefined) continue
+    if (Array.isArray(out[k])) out[k] = (out[k] as unknown[]).filter(v => isPlainObject(v) && valid(v))
+    else delete out[k]
+  }
+  for (const k of OBJECT_FIELDS) {
+    if (!(k in out) || out[k] === undefined) continue
+    if (!isPlainObject(out[k])) { delete out[k]; continue }
+    if (k === 'relations') {
+      const rel: Record<string, unknown> = {}
+      for (const [rk, rv] of Object.entries(out[k] as Record<string, unknown>)) {
+        if (Array.isArray(rv)) rel[rk] = rv.filter(v => typeof v === 'string')
+      }
+      out[k] = rel
+    }
+  }
+  return out
+}
+
 /**
  * Validate a remote row against RemoteRowSchema, salvaging schema drift: on failure
  * strip exactly the top-level fields the issues name and re-parse ONCE, so an older
@@ -309,7 +361,7 @@ export function salvageRemoteRow(
   rawCandidate: Record<string, unknown>,
   logContext?: { url: string; rowId?: unknown },
 ): { data: Record<string, unknown>; salvagedFields: string[] } | null {
-  const candidate = withoutLoaderMarkers(rawCandidate)
+  const candidate = normalizeRemoteRowShape(withoutLoaderMarkers(rawCandidate))
   const first = RemoteRowSchema.safeParse(candidate)
   if (first.success) return { data: first.data as Record<string, unknown>, salvagedFields: [] }
   const failing = [...new Set(first.error.issues.map(i => String(i.path[0] ?? '')).filter(Boolean))]
