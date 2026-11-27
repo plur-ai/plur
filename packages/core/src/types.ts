@@ -44,8 +44,10 @@ export interface LearnContext {
    */
   attribution?: {
     asserted_by?: string
+    /** Calling app or agent runtime; omitted when unknown. */
     runtime?: { name: string; version?: string }
     model?: { name: string; prompt_id?: string; prompt_version?: string; prompt_sha256?: string }
+    /** Writing tool; defaults to plur-core. */
     tool?: { name: string; version?: string }
     on_behalf_of?: string
   }
@@ -367,8 +369,11 @@ export interface RecallOptions {
  * Why a hybrid recall or injection answered without (part of) its semantic
  * leg: the model is not on disk (run `plur doctor`), the
  * semantic leg missed the recall deadline, or only the reranker did.
+ * `store_embeddings_incomplete`: the primary store can search by meaning
+ * itself but has not embedded every memory yet, so the recall ranked in
+ * memory over the full candidate set instead (results complete, slower).
  */
-export type DegradedReason = 'embedding_model_missing' | 'semantic_deadline' | 'reranker_deadline'
+export type DegradedReason = 'embedding_model_missing' | 'semantic_deadline' | 'reranker_deadline' | 'store_embeddings_incomplete'
 
 export interface InjectOptions {
   budget?: number

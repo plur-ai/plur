@@ -1,5 +1,36 @@
 # Changelog
 
+## Unreleased
+
+### Changes
+
+- Memories saved through the MCP server now record which app saved them:
+  `attribution.runtime` holds the name and version the client sent when it
+  connected (Claude Code, Cursor, Codex and so on), for single saves, batches,
+  session-end suggestions and promoted team copies. Core itself is now
+  recorded as `attribution.tool: plur-core`. **Migration note:** until now
+  `runtime: plur-core` meant "written by core"; engrams saved before this
+  change keep that shape. Read it as "written by core, app not recorded". The
+  provenance export treats both shapes the same, so a store with old and new
+  engrams exports core once, as a tool. Before the client's name and version
+  are stored, line breaks, control characters, bidirectional controls,
+  zero-width characters, unpaired surrogates, commas and semicolons become
+  single spaces, and each is cut to 128 characters. A `runtime` passed to
+  `plur_learn` is kept as given. See `docs/provenance.md`. (#1470)
+- Hybrid recall on a store that searches by meaning and by keyword itself
+  (a database store such as Postgres with pgvector) now asks the store for
+  both searches and combines the two answers, instead of reading every memory
+  and ranking them in process. Scope, permitted scopes, mounted-scope grants
+  and domain still restrict both searches. While the store has not yet stored
+  a vector for every memory, recall ranks in process as before, starts the
+  backfill, and reports `degraded_reason: store_embeddings_incomplete`; the
+  results are still complete. If the query embedding misses the recall
+  deadline (a cold or slow model), the store's keyword match is returned with
+  `degraded_reason: semantic_deadline`, as on the in-process path. The domain
+  filter goes into the store's meaning search too, so nearer memories of
+  another domain no longer use up its limit. Stores without these searches,
+  the default YAML store and PGlite are unchanged. (#1787)
+
 ## 0.23.1
 
 ### Security

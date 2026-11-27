@@ -86,7 +86,10 @@ describe('hybrid recall pushdown (#906)', () => {
     await new Plur({ path: mkdtempSync(join(tmpdir(), 'plur-906b-')), store: partial.store })
       .recallHybridWithMeta('docker compose', { limit: 5 })
 
-    expect(exhaustive.calls.exhaustive, 'the store was never asked to narrow').toBe(1)
+    // At least once: this stub also has `searchVector`, so the store's own
+    // keyword leg (#1787) is asked too, before the query embedding (REC-7),
+    // and the empty meaning answer then sends the recall to the candidate read.
+    expect(exhaustive.calls.exhaustive, 'the store was never asked to narrow').toBeGreaterThanOrEqual(1)
     expect(exhaustive.calls.load, 'narrowing did not avoid the corpus read')
       .toBeLessThan(partial.calls.load)
   })
@@ -98,7 +101,8 @@ describe('hybrid recall pushdown (#906)', () => {
     const { store, calls } = adapter(corpus, false)
     const plur = new Plur({ path: dir, store })
     await plur.recallHybridWithMeta('docker compose', { limit: 5 })
-    expect(calls.exhaustive).toBe(1)
+    // The keyword leg of #1787 is a second ask; see the test above.
+    expect(calls.exhaustive).toBeGreaterThanOrEqual(1)
     expect(calls.load, 'a non-exhaustive narrowing was used as the candidate set').toBeGreaterThan(0)
   })
 
