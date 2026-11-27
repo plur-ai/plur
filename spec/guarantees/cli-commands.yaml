@@ -665,11 +665,14 @@ anchors:
   packages/cli/src/commands/init.ts#repoFileIsTracked:
     kind: guarantee
     rule: >-
-      A repository settings file counts as untracked only when git positively reports it untracked in a real work
-      tree; when git cannot tell, the answer is "cannot tell", never "untracked".
-    none: >-
-      init still treats "cannot tell" as untracked (audit 2026-11-27 finding 6); its fix waits for the owner to approve
-      moving seven init tests from an empty .git folder to a real repository
+      Only git's positive untracked answer in a real work tree counts as a file the user wrote; when git cannot tell
+      (not a checkout, an invalid .git, no git), the file counts as repository content and init records no decision.
+    tests:
+      - "packages/cli/test/audit-024-f6-init-nongit.test.ts::not a git checkout: no folder-map entry and no adopted store"
+      - "packages/cli/test/audit-024-f6-init-nongit.test.ts::not a git checkout, inside the home folder: no folder-map entry and no adopted store"
+      - "packages/cli/test/audit-024-f6-init-nongit.test.ts::a .git that is not a valid repository gives no evidence either"
+      - "packages/cli/test/audit-024-f6-init-nongit.test.ts::git not available: no folder-map entry"
+      - "packages/cli/test/audit-024-f6-init-nongit.test.ts::control: an untracked settings file in a real git work tree is still recorded as on"
   packages/cli/src/commands/init.ts#clean:
     kind: guarantee
     rule: Running init again does not duplicate PLUR's hooks.
