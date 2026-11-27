@@ -599,10 +599,11 @@ function migrateRepoHooks(flags: GlobalFlags, userPath: string): string | null {
         'so memory stays on without its settings and the next prompt asks whether to trust it'
     } else if (loadFolderMap(root).folders.some(e => e.path === folder || canonicalize(e.path) === target)) {
       recorded = 'the folder map already has it, left as is'
-    } else if (!repoHooksAreThisMachines(settings) || repoFileIsTracked(folder, repoPath)) {
+    } else if (!repoHooksAreThisMachines(settings) || repoFileIsTracked(folder, repoPath) !== false) {
       // security audit 2026-11-06 (#1588): a hook a repository ships is not the user's decision; the folder question asks.
+      // Only git's positive "untracked in this work tree" is evidence a local init wrote the file (not a checkout = unknown).
       recorded = 'not recorded in the folder map: its PLUR hooks may have come with the repository ' +
-        '(they do not name this machine\'s own plur-hook, or the file is committed to git); ' +
+        '(they do not name this machine\'s own plur-hook, or the file is committed to git, or git cannot tell); ' +
         'the folder question asks on the next prompt'
     } else {
       setFolderEntry(root, folder, { mode: 'on' }, { configuredScopes: [] })
