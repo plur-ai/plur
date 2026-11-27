@@ -17,6 +17,7 @@ import { collapseExpandedStores, identityBaseOf, isSafeScopeName, isServerStoreE
 import { normalizeEndpointUrl, RemoteStore } from '../store/remote-store.js'
 import { withLock } from '../file-lock.js'
 import { REFUSED_CREDENTIAL_WRITE } from '../atomic-write.js'
+import { PinDeniedError, type PinActor } from '../pin-policy.js'
 import { AddRemoteStoreError, isFromServerEntry, serverEntryIdOf, serverEntryScopeRefusal, stringList } from './helpers.js'
 
 export interface ConfigStoresMethods {
@@ -98,6 +99,13 @@ export interface ConfigStoresMethods {
       /** The environment variable `token` was read from. The entry then
        *  stores `token_env: <name>` and never the token itself. */
       tokenEnv?: string
+      /** Who registers it (else this instance's default actor). A NEW store
+       *  is refused with PinDeniedError when `pinning.agents` restricts the
+       *  caller: a store's rows load with their pins. */
+      actor?: PinActor
+      /** @internal A registration the owner already decided on (a folder the
+       *  owner mapped, a scope of a server the owner registered). */
+      ownerDecided?: boolean
     }): {
     status: 'added' | 'already_registered' | 'overwritten' | 'token_rotated'; scope: string
     /** On `token_rotated` for a scope of a server entry: every scope
@@ -144,6 +152,8 @@ export interface ConfigStoresMethods {
     url: string; token: string; scope: string
     /** The environment variable `token` was read from: only its name is stored. */
     tokenEnv?: string
+    /** Who registers it (else this instance's default actor); see addStore. */
+    actor?: PinActor
     shared?: boolean; readonly?: boolean; timeoutMs?: number
     /** Replace an entry that already holds `scope` for a DIFFERENT store.
      *  Never implied: without it such a conflict is refused (code
@@ -413,6 +423,13 @@ export const configStoresMethods: ConfigStoresMethods & ThisType<Plur> = {
       /** The environment variable `token` was read from. The entry then
        *  stores `token_env: <name>` and never the token itself. */
       tokenEnv?: string
+      /** Who registers it (else this instance's default actor). A NEW store
+       *  is refused with PinDeniedError when `pinning.agents` restricts the
+       *  caller: a store's rows load with their pins. */
+      actor?: PinActor
+      /** @internal A registration the owner already decided on (a folder the
+       *  owner mapped, a scope of a server the owner registered). */
+      ownerDecided?: boolean
     }): {
     status: 'added' | 'already_registered' | 'overwritten' | 'token_rotated'; scope: string
     /** On `token_rotated` for a scope of a server entry: every scope
@@ -526,6 +543,21 @@ export const configStoresMethods: ConfigStoresMethods & ThisType<Plur> = {
       // exists.
       if (!isRemote) this._materializeLocalStore(storePath)
       return { status: 'already_registered', scope: sameEntry.scope }
+    }
+
+    // A NEW store is a new source of rows, and its rows load with their
+    // pins (team stores are read, not written, so the write-path policy never
+    // sees them). Under pinning.agents request/deny a caller the policy
+    // restricts may not add one: a pin request cannot be recorded on a store
+    // registration, so request refuses as deny does. Re-adding a registered
+    // store and rotating its token (handled above) add no source.
+    if (options?.ownerDecided !== true) {
+      const decision = this._pinDecisionFor(options?.actor)
+      if (decision !== 'allow') {
+        throw new PinDeniedError(null, 'stores.add',
+          `Registering a store is reserved for the owner on this install (pinning.agents: ${decision}), because a store's pinned `
+          + `engrams load into every session. Nothing was registered. Ask the owner to run \`plur stores add\` in a terminal.`)
+      }
     }
 
     // Different endpoint, same scope: forbid by default to prevent
@@ -680,6 +712,8 @@ export const configStoresMethods: ConfigStoresMethods & ThisType<Plur> = {
     url: string; token: string; scope: string
     /** The environment variable `token` was read from: only its name is stored. */
     tokenEnv?: string
+    /** Who registers it (else this instance's default actor); see addStore. */
+    actor?: PinActor
     shared?: boolean; readonly?: boolean; timeoutMs?: number
     /** Replace an entry that already holds `scope` for a DIFFERENT store.
      *  Never implied: without it such a conflict is refused (code
@@ -692,6 +726,7 @@ export const configStoresMethods: ConfigStoresMethods & ThisType<Plur> = {
       url, token, shared: opts.shared, readonly: opts.readonly,
       ...(opts.tokenEnv ? { tokenEnv: opts.tokenEnv } : {}),
       ...(opts.overwriteScope === true ? { overwriteScope: true } : {}),
+      ...(opts.actor ? { actor: opts.actor } : {}),
     })
     return { status, scope, ...(username ? { username } : {}), authorised, ...(token_scopes ? { token_scopes } : {}) }
   },

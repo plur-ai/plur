@@ -31,7 +31,10 @@
  * Not affected (documented behaviour, unchanged): pins that arrive with rows
  * PLUR reads rather than writes — team stores (`stores:` path or url
  * entries, whose rows another client wrote) and installed packs. Their pins
- * load exactly as before. An undo of a journalled change restores the
+ * load exactly as before. Because they load with their pins, REGISTERING a
+ * new store (`addStore`, `addRemoteStore`) is refused under `request` and
+ * `deny` for a caller the policy restricts; re-adding a registered store or
+ * rotating its token is not. An undo of a journalled change restores the
  * before-snapshot as it was, pin included.
  */
 import type { Engram } from './schemas/engram.js'

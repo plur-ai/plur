@@ -1,6 +1,7 @@
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { AddRemoteStoreError, redactToken, redactTokenDeep, folderSetOnCommand, folderEscapedPath } from '@plur-ai/core'
 import { plurRoot } from '../lib/folder-gate.js'
+import { requirePinPolicyConfirmation } from '../lib/pin-confirm.js'
 import { shouldOutputJson, outputJson, outputText, outputInfo, exit } from '../output.js'
 
 const REMOTE_USAGE =
@@ -107,6 +108,14 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const plur = createPlur(flags)
   const subcommand = args[0]
 
+  // Finding 4 (0.24 audit): a store's pinned engrams load into every session,
+  // so under pinning.agents request/deny registering one is an owner action.
+  // Core refuses an agent; PLUR_ACTOR=owner still needs the S1 confirmation
+  // typed at a terminal, which an agent's shell cannot give.
+  if (subcommand === 'add' && plur.defaultActor === 'owner') {
+    await requirePinPolicyConfirmation(plur, 'Register a store (its pinned engrams load into every session)')
+  }
+
   if (subcommand === 'add' && (args.includes('--url') || args.includes('--token') || args.includes('--token-env'))) {
     await addRemote(args, plur, flags)
     return
@@ -120,7 +129,12 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     }
     const shared = args.includes('--shared')
     const readonly = args.includes('--readonly')
-    const result = plur.addStore(path, scope, { shared, readonly })
+    let result: ReturnType<typeof plur.addStore>
+    try {
+      result = plur.addStore(path, scope, { shared, readonly })
+    } catch (err) {
+      exit(1, (err as Error).message)
+    }
 
     // A local store is keyed by its PATH, so adding a NEW scope to an
     // already-registered path is a no-op for that scope (the existing entry's

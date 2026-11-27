@@ -553,7 +553,7 @@ export const foldersPolicyMethods: FoldersPolicyMethods & ThisType<Plur> = {
         }
       } catch {}
 
-      this.addStore(candidate, scope, { shared: true, readonly: false })
+      this.addStore(candidate, scope, { shared: true, readonly: false, ownerDecided: true })
       discovered.push({ path: candidate, scope })
       seen.add(key)
       logger.info(`Auto-discovered project store: ${candidate} (${scope})`)
