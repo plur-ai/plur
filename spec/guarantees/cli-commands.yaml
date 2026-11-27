@@ -662,6 +662,14 @@ anchors:
     kind: guarantee
     rule: An unparseable Cursor mcp.json is refused, never read as empty and written back.
     none: no test runs init --cursor against a malformed mcp.json
+  packages/cli/src/commands/init.ts#repoFileIsTracked:
+    kind: guarantee
+    rule: >-
+      A repository settings file counts as untracked only when git positively reports it untracked in a real work
+      tree; when git cannot tell, the answer is "cannot tell", never "untracked".
+    none: >-
+      init still treats "cannot tell" as untracked (audit 2026-11-27 finding 6); its fix waits for the owner to approve
+      moving seven init tests from an empty .git folder to a real repository
   packages/cli/src/commands/init.ts#clean:
     kind: guarantee
     rule: Running init again does not duplicate PLUR's hooks.

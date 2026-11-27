@@ -401,6 +401,16 @@ anchors:
     tests:
       - packages/cli/test/legacy-plur-yaml.test.ts::warns about tracked tokens without exposing the token
       - packages/cli/test/legacy-plur-yaml.test.ts::emits a safe tracked-token warning before later injection can fail
+  packages/cli/src/lib/git-tracked.ts#gitFileTracked:
+    kind: guarantee
+    rule: >-
+      A file is reported untracked only when git positively says so inside a real work tree; no git, a folder that is
+      not a repository, a refused repository or a timeout give "cannot tell", and GIT_* variables of the launching
+      process are ignored.
+    tests:
+      - "packages/cli/test/audit-024-f1-doctor-nongit.test.ts::a .git that is not a valid repository gives no evidence either"
+      - "packages/cli/test/audit-024-f1-doctor-nongit.test.ts::git not available: the folder file is not approval"
+      - "packages/cli/test/audit-024-f1-doctor-nongit.test.ts::control: in a real git work tree an untracked settings.local.json still approves"
   packages/cli/src/lib/no-follow-write.ts#componentsUnder:
     kind: guarantee
     rule: PLUR never writes through a symlink a repository committed anywhere on the path under the project.
