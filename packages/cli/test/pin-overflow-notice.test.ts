@@ -52,7 +52,7 @@ describe('sessionStartPinLines', () => {
     await store('agent').learn('Never rotate credentials unasked', { pinned: true })
     const lines = await sessionStartPinLines(store())
     expect(lines).toHaveLength(1)
-    expect(lines[0]).toBe('[PLUR] 2 pin requests waiting for the owner — review with `plur pins review`.')
+    expect(lines[0]).toBe('[PLUR] 2 pin requests waiting for the owner — review with `plur pin review`.')
   })
 
   it('an advisory failure leaves the line out, never throws', async () => {

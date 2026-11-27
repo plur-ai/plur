@@ -810,7 +810,7 @@ export const MCP_REINFORCE_EXACT_DEFAULT = true
  */
 const PIN_REQUEST_NOTE =
   'Stored UNPINNED: on this install pinning is reserved for the owner (pinning.agents: request). '
-  + 'A pin request was recorded; the owner reviews it with `plur pins review`. Do not retry the pin, '
+  + 'A pin request was recorded; the owner reviews it with `plur pin review`. Do not retry the pin, '
   + 'and tell the user it is waiting for their approval.'
 function pinRequestReply(engram: unknown): Record<string, unknown> {
   const request = pinRequestOf(engram as never)

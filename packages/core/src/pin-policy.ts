@@ -172,7 +172,7 @@ export function isPinEscalation(
 export function pinEscalationDenied(id: string, via: string, agents: PinDecision): PinDeniedError {
   return new PinDeniedError(id, `${via}:escalate`,
     `Raising the priority or tier of a pin is reserved for the owner on this install (pinning.agents: ${agents}), so ${id} was not changed. `
-    + `Ask the owner to run \`plur pins priority ${id} <n>\` or re-pin it with the tier wanted.`)
+    + `Ask the owner to run \`plur pin priority ${id} <n>\` or re-pin it with the tier wanted.`)
 }
 
 /** One pending request, as `pendingPinRequests()` lists it. */
@@ -190,7 +190,7 @@ export interface PendingPinRequest {
 export function formatPendingPinRequestsLine(pending: readonly unknown[] | number): string {
   const n = typeof pending === 'number' ? pending : pending.length
   if (n <= 0) return ''
-  return `${n} pin request${n === 1 ? '' : 's'} waiting for the owner — review with \`plur pins review\`.`
+  return `${n} pin request${n === 1 ? '' : 's'} waiting for the owner — review with \`plur pin review\`.`
 }
 
 // ── Fit report (D3) ─────────────────────────────────────────────────────────
@@ -328,5 +328,5 @@ export function computePinFitReport(
 export function formatPinOverflowLine(report: Pick<PinFitReport, 'overflow_count' | 'count' | 'total_cost' | 'share' | 'budget'>): string {
   if (report.overflow_count <= 0) return ''
   return `${report.overflow_count} of ${report.count} pinned engram${report.count === 1 ? '' : 's'} do not fit the pinned share `
-    + `(${report.total_cost} tokens pinned, share ${report.share} of a ${report.budget}-token budget) and are not loaded — see \`plur pins\`.`
+    + `(${report.total_cost} tokens pinned, share ${report.share} of a ${report.budget}-token budget) and are not loaded — see \`plur pin\`.`
 }

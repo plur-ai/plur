@@ -2,7 +2,7 @@
  * The CLI's ONE model bridge: how a command that needs judgement gets an
  * `LlmFunction`. Core never calls a model itself (no external calls in core);
  * it takes this function. Used by `plur consolidate`, `plur enrich`,
- * `plur pins audit` and `plur tensions --scan`.
+ * `plur pin audit` and `plur tensions --scan`.
  *
  * Precedence:
  *  1. A host model command — `--llm-cmd "<shell command>"`, else the

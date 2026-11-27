@@ -66,14 +66,8 @@ Commands:
   promote <id>            Promote an engram to active
   rescope <id...> --to <scope>  Move engram(s) to another scope
                           [--keep-local] [--dry-run]; also: promote <id> --to <scope>
-  consolidate --plan      Propose merging near-copies (same scope); --out <file>, --nightly,
-                          --llm-cmd "<cmd>" (host model: prompt on stdin, answer on stdout)
-  consolidate --apply <f> Merge the proposed clusters (--limit 1 first; --yes; consolidate.apply_enabled)
-  consolidate --undo <id> Undo one merged cluster by its change id
   rescope --plan|--apply <file>|--undo <change>
                           Propose scopes for global engrams from covers, apply as one undoable change
-  enrich --plan|--apply <file>|--undo <change>
-                          Label memories (kind, outcome, when it applies) with a host model; undoable
   upload                  Preview local memories for authorized team scopes
                           --yes sends; --only <id,…> limits the selection
   migrate [up|down|status] Run schema migrations
@@ -111,14 +105,14 @@ Commands:
                           [--reranker <name>] [--sample N] [--seed N] [--force]
   tensions [--scan]       List or scan for engram contradictions
   pin <id> / unpin <id>   Pin or unpin an engram (the owner's pin; [--scope <s>])
-  pins                    Pinned set: priority, cost, the pinned share, what does not fit,
+  pin                     Pinned set: priority, cost, the pinned share, what does not fit,
                           and pending pin requests [--budget N]
-  pins priority <id> <n>  Set a pin's priority (1-100, higher loads first)
-  pins review             Pending pin requests; review approve|reject <id...>
-  pins audit              Ask the host model which pins apply to every task (proposal file;
+  pin priority <id> <n>   Set a pin's priority (1-100, higher loads first)
+  pin review              Pending pin requests; pin review approve|reject <id...>
+  pin audit               Ask the host model which pins apply to every task (proposal file;
                           changes nothing) [--out <file>] [--llm-cmd <cmd> | PLUR_LLM_CMD]
-  pins apply <file>       Apply a reviewed proposal, journalled [--limit N] --yes
-  pins undo <change-id>   Undo a pins apply
+  pin apply <file>        Apply a reviewed proposal, journalled [--limit N] --yes
+  pin undo <change-id>    Undo a pin apply
   audit [--source X]      Audit working memory (claude-code|claw|hermes) for conflicts vs engrams
   hook-inject                   (internal) Hook handler for engram injection
   hook-observe            (internal) Hook handler for observation capture

@@ -1,18 +1,18 @@
 /**
- * `plur pins` — the pinned set, owner-side (overhaul D2, D3, W3).
+ * `plur pin` — the pinned set, owner-side (overhaul D2, D3, W3).
  *
- *   plur pins [--budget N]               fit report: each pin's priority, tier, cost, whether it
+ *   plur pin [--budget N]               fit report: each pin's priority, tier, cost, whether it
  *                                        fits the pinned share, and pending pin requests
- *   plur pins priority <id> <n>          set a pin's priority (1-100, higher loads first)
- *   plur pins review                     list pending pin requests (pinning.agents: request)
- *   plur pins review approve <id...>     pin them (with the tier/priority they asked for)
- *   plur pins review reject <id...>      clear the request, leave the engram unpinned
- *   plur pins audit [--out f] [--llm-cmd c] [--budget N]
+ *   plur pin priority <id> <n>          set a pin's priority (1-100, higher loads first)
+ *   plur pin review                     list pending pin requests (pinning.agents: request)
+ *   plur pin review approve <id...>     pin them (with the tier/priority they asked for)
+ *   plur pin review reject <id...>      clear the request, leave the engram unpinned
+ *   plur pin audit [--out f] [--llm-cmd c] [--budget N]
  *                                        ask the host model which pins apply to every task and
  *                                        propose short forms; writes a proposal, changes nothing
- *   plur pins apply <file> [--limit N] --yes
+ *   plur pin apply <file> [--limit N] --yes
  *                                        apply a reviewed proposal as one journalled change
- *   plur pins undo <change-id>           undo an apply
+ *   plur pin undo <change-id>           undo an apply
  *
  * The CLI is the owner (see `resolveCliActor`), so its pins are never turned
  * into requests. `plur pin <id>` / `plur unpin <id>` live in pin.ts/unpin.ts
@@ -35,13 +35,13 @@ export const FLAGS = ['--budget', '--out', '--llm-cmd', '--llm-base-url', '--llm
 export const FLAGS_WITH_VALUES = ['--budget', '--out', '--llm-cmd', '--llm-base-url', '--llm-api-key', '--llm-api-key-env', '--model', '--limit', '--scope']
 
 const USAGE = [
-  'Usage: plur pins [--budget N]',
-  '       plur pins priority <id> <1-100>',
-  '       plur pins review [approve|reject <id...>]',
-  '       plur pins audit [--out <file>] [--llm-cmd "<cmd>"] (or PLUR_LLM_CMD)',
+  'Usage: plur pin [--budget N]',
+  '       plur pin priority <id> <1-100>',
+  '       plur pin review [approve|reject <id...>]',
+  '       plur pin audit [--out <file>] [--llm-cmd "<cmd>"] (or PLUR_LLM_CMD)',
   '                       [--llm-base-url <https-url> --llm-api-key-env <VAR> --model <name>]',
-  '       plur pins apply <proposal-file> [--limit N] --yes',
-  '       plur pins undo <change-id>',
+  '       plur pin apply <proposal-file> [--limit N] --yes',
+  '       plur pin undo <change-id>',
 ].join('\n')
 
 interface Parsed { positional: string[]; budget?: number; out?: string; llm: LlmBridgeOptions; limit?: number; yes: boolean; scope?: string }
@@ -87,7 +87,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   }
 }
 
-/** The text form of `plur pins` (exported for tests: a piped CLI prints JSON). */
+/** The text form of `plur pin` (exported for tests: a piped CLI prints JSON). */
 export function printReport(r: PinFitReport, pending: PendingPinRequest[]): void {
   outputText(`Pinned share: ${r.used} of ${r.share} tokens used (pinned_ratio ${r.pinned_ratio} of a ${r.budget}-token budget); `
     + `all pins together cost ${r.total_cost} tokens (${Math.round(r.load_ratio * 100)}% of the budget).`)
@@ -106,8 +106,8 @@ export function printReport(r: PinFitReport, pending: PendingPinRequest[]): void
   if (overflow) {
     outputText('')
     outputText(`⚠  ${overflow}`)
-    outputText('   Fix: give the pins that matter a higher priority (plur pins priority <id> <n>), unpin situational ones')
-    outputText('   (plur pins audit proposes which), or raise injection_budget / injection.pinned_ratio.')
+    outputText('   Fix: give the pins that matter a higher priority (plur pin priority <id> <n>), unpin situational ones')
+    outputText('   (plur pin audit proposes which), or raise injection_budget / injection.pinned_ratio.')
   }
   if (pending.length > 0) {
     outputText('')
@@ -126,7 +126,7 @@ async function report(p: Parsed, flags: GlobalFlags): Promise<void> {
 
 async function priority(rest: string[], flags: GlobalFlags): Promise<void> {
   const [id, raw] = rest
-  if (!id || raw === undefined) exit(1, `Usage: plur pins priority <id> <1-100>`)
+  if (!id || raw === undefined) exit(1, `Usage: plur pin priority <id> <1-100>`)
   const n = Number(raw)
   if (!Number.isInteger(n) || n < 1 || n > 100) exit(1, `Priority must be a whole number from 1 to 100, got ${raw}`)
   const plur = createPlur(flags)
@@ -155,10 +155,10 @@ async function review(rest: string[], flags: GlobalFlags): Promise<void> {
       if (q.request.reason) outputText(`    reason: ${q.request.reason}`)
     }
     outputText('')
-    outputText('Approve with `plur pins review approve <id...>`, reject with `plur pins review reject <id...>`.')
+    outputText('Approve with `plur pin review approve <id...>`, reject with `plur pin review reject <id...>`.')
     return
   }
-  if ((verb !== 'approve' && verb !== 'reject') || ids.length === 0) exit(1, 'Usage: plur pins review [approve|reject <id...>]')
+  if ((verb !== 'approve' && verb !== 'reject') || ids.length === 0) exit(1, 'Usage: plur pin review [approve|reject <id...>]')
   const plur = createPlur(flags)
   if (verb === 'approve') await requirePinPolicyConfirmation(plur, `Approve ${ids.length} pin request${ids.length === 1 ? '' : 's'}`)
   const results: Array<{ id: string; status: 'pinned' | 'rejected' | 'error' | 'requested'; error?: string }> = []
@@ -192,7 +192,7 @@ async function audit(p: Parsed, flags: GlobalFlags): Promise<void> {
   const refused = remoteOnlyCommandRefusal(flags, 'A pin audit sends memories to a model, which is not the team server')
   if (refused) exit(1, refused)
   const bridge = resolveLlmOrExit(p.llm)
-  if (!bridge) exit(1, missingLlmMessage('plur pins audit'))
+  if (!bridge) exit(1, missingLlmMessage('plur pin audit'))
   // Read-only engine: the audit changes nothing in the store.
   const plur = createPlur(flags, { readonly: true })
   // S6: by default next to the store it audits, never into the current folder
@@ -218,12 +218,12 @@ async function audit(p: Parsed, flags: GlobalFlags): Promise<void> {
   if (needApproval > 0) {
     outputText(`${needApproval} short form${needApproval === 1 ? ' is' : 's are'} for prohibitions: each applies only after you set "approved": true on it.`)
   }
-  outputText(`Then try one: plur pins apply ${out} --limit 1 --yes   (undo: plur pins undo <change-id>)`)
+  outputText(`Then try one: plur pin apply ${out} --limit 1 --yes   (undo: plur pin undo <change-id>)`)
 }
 
 async function apply(rest: string[], p: Parsed, flags: GlobalFlags): Promise<void> {
   const [file] = rest
-  if (!file) exit(1, 'Usage: plur pins apply <proposal-file> [--limit N] --yes')
+  if (!file) exit(1, 'Usage: plur pin apply <proposal-file> [--limit N] --yes')
   // S1: under a restrictive pinning policy, a terminal confirmation first.
   if (p.yes) await requirePinPolicyConfirmation(createPlur(flags, { readonly: true }), `Apply the pin audit ${file}`)
   if (!existsSync(file)) exit(1, `No such file: ${file}`)
@@ -235,8 +235,8 @@ async function apply(rest: string[], p: Parsed, flags: GlobalFlags): Promise<voi
   }
   const changing = proposal.items.filter(i => i.action !== 'keep').length
   if (!p.yes) {
-    exit(1, `plur pins apply changes up to ${p.limit !== undefined ? Math.min(p.limit, changing) : changing} engram(s) in your store. `
-      + 'Re-run with --yes to apply (start with --limit 1 for a one-item trial; every apply can be undone with plur pins undo <change-id>).')
+    exit(1, `plur pin apply changes up to ${p.limit !== undefined ? Math.min(p.limit, changing) : changing} engram(s) in your store. `
+      + 'Re-run with --yes to apply (start with --limit 1 for a one-item trial; every apply can be undone with plur pin undo <change-id>).')
   }
   const plur = createPlur(flags)
   let result
@@ -253,18 +253,18 @@ async function apply(rest: string[], p: Parsed, flags: GlobalFlags): Promise<voi
     outputText(`${o.id}: ${o.action} — ${o.status}${o.detail ? ` (${o.detail})` : ''}`)
   }
   outputText(applied.length > 0
-    ? `Applied ${applied.length} change${applied.length === 1 ? '' : 's'} as ${result.change!.id}. Undo with: plur pins undo ${result.change!.id}`
+    ? `Applied ${applied.length} change${applied.length === 1 ? '' : 's'} as ${result.change!.id}. Undo with: plur pin undo ${result.change!.id}`
     : 'Nothing was applied.')
   if (refused.length > 0) outputText(`${refused.length} item${refused.length === 1 ? ' was' : 's were'} refused — see above.`)
 }
 
 async function undo(rest: string[], flags: GlobalFlags): Promise<void> {
   const [id] = rest
-  if (!id) exit(1, 'Usage: plur pins undo <change-id>')
+  if (!id) exit(1, 'Usage: plur pin undo <change-id>')
   const plur = createPlur(flags)
   const change = plur.getChange(id)
   if (!change) exit(1, `No change ${id} in the change journal.`)
-  if (change.kind !== 'pins.apply') exit(1, `${id} is a "${change.kind}" change, not a pins apply; plur pins undo only undoes pins applies.`)
+  if (change.kind !== 'pins.apply') exit(1, `${id} is a "${change.kind}" change, not a pins apply; plur pin undo only undoes pins applies.`)
   // H12: undoing an unpin pins the engram again (S1).
   await confirmUndoPins(plur, change)
   try {

@@ -5,8 +5,8 @@ import { exit } from '../output.js'
 
 /**
  * Audit S1: under `pinning.agents: request` or `deny`, the commands that
- * grant pins or apply a journalled change in bulk — `plur pin`, `plur pins
- * review approve`, `plur pins apply`, `consolidate --apply`, `enrich --apply`,
+ * grant pins or apply a journalled change in bulk — `plur pin`, `plur pin
+ * review approve`, `plur pin apply`, `consolidate --apply`, `enrich --apply`,
  * `rescope --apply` — need a confirmation typed at an interactive terminal.
  * PLUR_ACTOR=owner makes the CLI the owner, but an agent with a shell can set
  * that variable as easily as a person; it cannot type at the person's

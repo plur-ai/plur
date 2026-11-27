@@ -86,7 +86,7 @@ What makes a body findable was measured on 2026-11-19: structured bodies were ad
 }
 ```
 
-`plur_learn` accepts `structured_data` with exactly `body`, `kind` and `outcome`; the CLI takes `--body`, `--kind`, `--outcome`. Any other key is refused. `plur enrich` labels existing memories with a kind after the fact, without touching their statements.
+`plur_learn` accepts `structured_data` with exactly `body`, `kind` and `outcome`; the CLI takes `--body`, `--kind`, `--outcome`. Any other key is refused.
 
 ## Findability: write the situation, not the subject
 

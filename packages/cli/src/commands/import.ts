@@ -95,7 +95,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   })
 
   const pinsNote = pinsNotConfirmed === 0 ? undefined : pinOutcome === 'requested'
-    ? `${pinsNotConfirmed} pinned record(s) were imported but NOT pinned: pinning.agents needs a confirmation typed at a terminal. They wait as pin requests; review with: plur pins review`
+    ? `${pinsNotConfirmed} pinned record(s) were imported but NOT pinned: pinning.agents needs a confirmation typed at a terminal. They wait as pin requests; review with: plur pin review`
     : `${pinsNotConfirmed} pinned record(s) were imported but NOT pinned: pinning.agents is "deny" and the pins were not confirmed at a terminal. Pin them with: plur pin <id>`
 
   if (shouldOutputJson(flags)) {

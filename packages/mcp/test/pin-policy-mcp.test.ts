@@ -30,7 +30,7 @@ describe('MCP pinning under pinning.agents (D2)', () => {
     expect(res.pinned).toBe(false)
     expect(res.pin_request?.by).toBe('agent')
     expect(String(res.pin_note)).toMatch(/not pinned|unpinned/i)
-    expect(String(res.pin_note)).toContain('plur pins review')
+    expect(String(res.pin_note)).toContain('plur pin review')
     const stored = (await plur.getById(res.id))!
     expect(stored.pinned).toBeUndefined()
     expect(pinRequestOf(stored)).not.toBeNull()

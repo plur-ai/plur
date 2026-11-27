@@ -1369,7 +1369,7 @@ async function resultHasPins(plur: Pick<Plur, 'listPinned'>, result: { injected_
 /**
  * The pin lines of the session-start header, each only when non-empty:
  *  - D3: pins that do not fit their share, from the same fit report
- *    `plur pins` and `plur doctor` print (`pinFitReport()`), so the CLI and
+ *    `plur pin` and `plur doctor` print (`pinFitReport()`), so the CLI and
  *    the hook agree;
  *  - D2: pin requests waiting for the owner (`pendingPinRequests()`).
  * Advisory: a failure leaves the line out, never the session start.

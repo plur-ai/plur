@@ -148,7 +148,7 @@ export const pinningMethods: PinningMethods & ThisType<Plur> = {
     if (this._pinDecisionFor(actor) !== 'allow') {
       throw new PinDeniedError(id, `${verb}:pin_request`,
         `Reviewing a pin request is an owner action on this install (pinning.agents: ${resolvePinningConfig(this.config).agents}), `
-        + `so ${id}'s request was not ${verb === 'approve' ? 'approved' : 'rejected'}. The owner runs \`plur pins ${verb} ${id}\`.`)
+        + `so ${id}'s request was not ${verb === 'approve' ? 'approved' : 'rejected'}. The owner runs \`plur pin review ${verb} ${id}\`.`)
     }
     return actor
   },

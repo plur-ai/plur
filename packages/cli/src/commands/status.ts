@@ -32,7 +32,7 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
       const nc = health.near_copy
       outputText(`  Store health: ${health.active} active of ${health.rows} rows`)
       outputText(nc.available
-        ? `    Near-copies: ${(nc.share_090 * 100).toFixed(0)}% at >= 0.90, ${(nc.share_085 * 100).toFixed(0)}% at >= 0.85 (sample of ${nc.sample_size}, seed ${nc.seed}) — plur consolidate --plan`
+        ? `    Near-copies: ${(nc.share_090 * 100).toFixed(0)}% at >= 0.90, ${(nc.share_085 * 100).toFixed(0)}% at >= 0.85 (sample of ${nc.sample_size}, seed ${nc.seed})`
         : `    Near-copies: not measured (${nc.reason})`)
       outputText(`    Pins: ${health.pins.count} pinned, ${health.pins.tokens} of ${health.pins.share_tokens} tokens (${Math.round(health.pins.pinned_ratio * 100)}% share)`
         + (health.pins.over_share ? ' — over the share' : ''))

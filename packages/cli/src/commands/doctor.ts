@@ -1963,8 +1963,8 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
   if (report.pinOverflow && report.pinOverflow.overflow_count > 0) {
     outputText('')
     outputText(`⚠  ${formatPinOverflowLine(report.pinOverflow)}`)
-    outputText('   Pins over the share are skipped at injection. Fix: `plur pins` shows each pin\'s cost and')
-    outputText('   priority; raise the priority of the ones that matter, unpin situational ones (`plur pins audit`')
+    outputText('   Pins over the share are skipped at injection. Fix: `plur pin` shows each pin\'s cost and')
+    outputText('   priority; raise the priority of the ones that matter, unpin situational ones (`plur pin audit`')
     outputText('   proposes which), or raise injection_budget / injection.pinned_ratio.')
   }
 
