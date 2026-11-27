@@ -1,35 +1,129 @@
 # Changelog
 
-## Unreleased
+## 0.24.0
+
+The retrieval and injection overhaul: what an agent is given at the start of a
+prompt is now recall's own ranking, so the memory you would find with
+`plur recall` is the memory the agent sees. On a 14,000-memory test store the
+right memory is injected for about 89 of 100 questions on two test sets
+(0.23: 1 and 15). Full notes: `docs/release-notes/0.24.0.md`.
 
 ### Changes
 
-- Memories saved through the MCP server now record which app saved them:
-  `attribution.runtime` holds the name and version the client sent when it
-  connected (Claude Code, Cursor, Codex and so on), for single saves, batches,
-  session-end suggestions and promoted team copies. Core itself is now
-  recorded as `attribution.tool: plur-core`. **Migration note:** until now
-  `runtime: plur-core` meant "written by core"; engrams saved before this
-  change keep that shape. Read it as "written by core, app not recorded". The
-  provenance export treats both shapes the same, so a store with old and new
-  engrams exports core once, as a tool. Before the client's name and version
-  are stored, line breaks, control characters, bidirectional controls,
-  zero-width characters, unpaired surrogates, commas and semicolons become
-  single spaces, and each is cut to 128 characters. A `runtime` passed to
-  `plur_learn` is kept as given. See `docs/provenance.md`. (#1470)
-- Hybrid recall on a store that searches by meaning and by keyword itself
-  (a database store such as Postgres with pgvector) now asks the store for
-  both searches and combines the two answers, instead of reading every memory
-  and ranking them in process. Scope, permitted scopes, mounted-scope grants
-  and domain still restrict both searches. While the store has not yet stored
-  a vector for every memory, recall ranks in process as before, starts the
-  backfill, and reports `degraded_reason: store_embeddings_incomplete`; the
-  results are still complete. If the query embedding misses the recall
-  deadline (a cold or slow model), the store's keyword match is returned with
-  `degraded_reason: semantic_deadline`, as on the in-process path. The domain
-  filter goes into the store's meaning search too, so nearer memories of
-  another domain no longer use up its limit. Stores without these searches,
-  the default YAML store and PGlite are unchanged. (#1787)
+- **Injection uses recall's ranking (unified injection), now the default.**
+  The task section of the injected block is recall's top results in recall's
+  order, after pinned memories. Up to 20 task memories per injection (was 10);
+  `plur inject` and the event hooks honour the configured token budget. The
+  previous selection stays for this release as the rollback:
+  `injection.mode: legacy` in `config.yaml`. A relevance cut-off exists
+  (`injection.min_relevance_signal`) but ships off: no signal emptied the task
+  section on unrelated prompts without losing right answers.
+- **Event injections (skills, agents, plans, subagents) use the same
+  pipeline,** keyword-first, single-flight, and never download the model or
+  contact a team server. The right memory at those moments went from 1 in 30
+  to about 14 in 30 on the test set. `plur init` registers event hooks with
+  20 s; older installs keep 10 s and keep working, and `plur doctor` names them.
+- **The injection query is built from the session's context** (stored task,
+  project scope, git branch, the last two user turns), not only the last prompt.
+- **Feedback is part of recall's ranking.** Rating a memory up or down moves
+  it in `plur recall` and in injection alike, on every recall path, including
+  a store's own searches.
+- **Recall on small stores and among equal matches.** A word found in most
+  memories still counts a little (keyword weight is always positive), so
+  small stores no longer come back nearly empty. Among equally good matches, a
+  memory left unused ranks below a fresh one; locked and pack memories do not fade.
+- **A corrected memory is delivered even when found by its old wording:** the
+  replacement takes the old memory's place in the ranking.
+- **Pins load where they belong.** A global pin loads in every session; a
+  scoped pin loads in sessions within its scope; in a session with no scope, a
+  scoped pin is used only when recall finds it relevant. Pins are sent once per
+  context (first prompt, after a compaction or resume, once per subagent), not
+  on every event.
+- **Agent pinning policy** (`pinning.agents`: `allow`, `request` or `deny`;
+  unset keeps today's `allow`): under `request` an agent's pin becomes a
+  request the owner approves;
+  raising a pin's priority follows the same policy; an invalid setting fails
+  safe to `request`. Session start shows pin overflow and pending requests.
+- **`plur pin` manages the pinned set.** `plur pin` alone lists pins with
+  priority, cost and what does not fit the pin share; `plur pin priority`,
+  `plur pin review approve|reject`, `plur pin audit` (a host model proposes
+  shorter or merged pins; changes nothing), `plur pin apply` and
+  `plur pin undo`. `plur pins` works the same for this release.
+- **`plur rescope --plan`** proposes team or project scopes for global
+  memories from a scope map, with preview, apply and undo.
+- **Structured memory bodies are searchable** (When / Asks / Do / Why /
+  Pitfalls / Anchors; `plur learn --body`, `--kind`, `--outcome`, the same
+  fields on `plur_learn`). The engram-creation skill teaches what measured
+  best: an "Asks" line helps findability most.
+- **Exact restatements reinforce** the existing memory instead of creating a
+  copy when saved through the MCP server (`plur_learn`, `plur_learn_batch`,
+  session end); a restatement with a new body, kind or rationale is still
+  written. `learn.reinforce_exact` decides when set.
+- **A shared change journal** sits behind every undoable store operation and
+  redacts rows of forgotten memories.
+- `plur status` shows store health, including the share of near-copies.
+  Merging near-copies and labelling memories are built but not listed in the
+  help for this release; they become one `plur review` queue (with
+  contradictions and approvals) in the next release.
+- Hybrid recall on a store that searches by meaning and by keyword itself (a
+  database store such as Postgres with pgvector) asks the store for both
+  searches and combines the answers instead of ranking every memory in
+  process. While vectors are missing, recall ranks in process, starts the
+  backfill and reports `degraded_reason: store_embeddings_incomplete`; on a
+  missed query-embedding deadline it returns the keyword match with
+  `degraded_reason: semantic_deadline`. The default YAML store and PGlite are
+  unchanged. (#1787, #1898)
+- Memories saved through the MCP server record which app saved them:
+  `attribution.runtime` holds the client's name and version (Claude Code,
+  Cursor, Codex and so on); core itself is recorded as
+  `attribution.tool: plur-core`. **Migration note:** engrams saved before keep
+  `runtime: plur-core`, read as "written by core, app not recorded"; the
+  provenance export treats both shapes the same. Client names are cleaned of
+  control and invisible characters and cut to 128 characters. See
+  `docs/provenance.md`. (#1470)
+- A binary sidecar for the embedding cache, and keyword search tokenises each
+  memory once per process. Hooks hand core their deadline and keep a late
+  hybrid result instead of injecting nothing.
+
+### Fixes
+
+- `plur doctor` stops the whole MCP server tree after its check, not only the
+  first process. (#1911)
+- `plur init` (Claude Code, Codex and Cursor legs) and `plur doctor` no longer
+  crash on, or merge into, a hand-edited hooks section they cannot read: the
+  hooks step is skipped, the file is named and left as it was. (#1897)
+- The MCP server skips the hooks step instead of crashing on a malformed or
+  null hooks section. (#1352)
+- Releases stage npm packages for passkey approval instead of publishing
+  directly. (#1904)
+- Test isolation and cleanup fixes for Codex and doctor tests, and planted-bug
+  evals re-anchored to the new file layout. (#1901, #1902, #1905)
+
+### Security
+
+From an independent security and silent-failure review of the overhaul, each
+fixed with a test seen failing first:
+
+- Forgotten memories are redacted from the change journal, including torn
+  lines and temporary files.
+- Answers from a host model (store maintenance, pin audit) are size-bounded,
+  parsed safely, fenced as data and scanned for secrets; the model bridge caps
+  its output and stops the whole command tree.
+- Rescope plans cannot move non-global memories; imports and undos that would
+  restore pins need the pin-policy confirmation; an agent with a shell cannot
+  bypass the pin policy.
+- Team-store rows are never sent to a host model for labelling.
+- `plur doctor` and `plur status` say when they could not read the config, the
+  pin report or store health; degraded rankings, skipped counters and event
+  retrieval plans are recorded instead of silently dropped.
+
+### Behaviour changes to check after upgrading
+
+- The injected block is shorter on unrelated prompts and longer on related
+  ones (up to 20 task memories). To go back: `injection.mode: legacy`.
+- Spreading activation (pulling in neighbours of selected memories) belongs to
+  the legacy selection only.
+- A scoped pin no longer loads in sessions outside its scope.
 
 ## 0.23.1
 
