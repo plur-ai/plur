@@ -1,9 +1,10 @@
 diff --git a/packages/core/src/plur/forget-rescope.ts b/packages/core/src/plur/forget-rescope.ts
+index 569935ed..62bc505e 100644
 --- a/packages/core/src/plur/forget-rescope.ts
 +++ b/packages/core/src/plur/forget-rescope.ts
-@@ -572,7 +572,7 @@
-       )
-     }
+@@ -603,7 +603,7 @@ export const forgetRescopeMethods: ForgetRescopeMethods & ThisType<Plur> = {
+     // invalid target fails the whole batch early. ---
+     const { route, remoteDriver } = this._rescopeRoute(target)
  
 -    const opts = { dryRun: options?.dry_run === true, keepLocal: options?.keep_local === true }
 +    const opts = { dryRun: (options as any)?.dryRun === true, keepLocal: options?.keep_local === true }
