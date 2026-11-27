@@ -1180,6 +1180,18 @@ anchors:
   packages/cli/src/commands/stores.ts#flagValue:
     kind: note
     why: Describes the helper's return value; the refusal happens in its callers.
+  packages/cli/src/commands/stores.ts#run:
+    kind: guarantee
+    rule: >-
+      Under pinning.agents request or deny, plur stores add needs the confirmation typed at an interactive terminal; run
+      by an agent, or with PLUR_ACTOR=owner and no terminal, it is refused and nothing is registered.
+    tests:
+      - >-
+        packages/cli/test/audit-024-f4-stores-add-cli.test.ts::plur stores add <path> from an agent shell is
+        refused, nothing registered
+      - >-
+        packages/cli/test/audit-024-f4-stores-add-cli.test.ts::PLUR_ACTOR=owner without a terminal is refused for
+        path, url and plur remote
   packages/cli/src/commands/stores.ts#skippedStoreLines:
     kind: guarantee
     rule: A folder path in a suggested command is quoted or escaped, never run as shell words when pasted.
@@ -1317,6 +1329,16 @@ anchors:
     tests:
       - packages/cli/test/pins.test.ts
       - packages/cli/test/cli-actor-s1.test.ts
+  packages/cli/src/commands/pins.ts#priority:
+    kind: guarantee
+    rule: >-
+      Under pinning.agents request or deny, raising a pin's priority as the owner needs the confirmation typed at an
+      interactive terminal; PLUR_ACTOR=owner alone is refused and the priority is unchanged.
+    tests:
+      - >-
+        packages/cli/test/audit-024-f7-pin-priority-confirm.test.ts::PLUR_ACTOR=owner without a terminal cannot
+        raise a priority (pin and pins forms)
+      - "packages/cli/test/audit-024-f7-pin-priority-confirm.test.ts::the owner at a terminal raises it after typing yes"
   packages/cli/src/commands/pins.ts#out:
     kind: guarantee
     rule: "S6: by default next to the store it audits, never into the current folder"

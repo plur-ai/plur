@@ -304,6 +304,30 @@ anchors:
       - >-
         packages/core/test/config-owner-only.test.ts::protection that cannot be established: the write is refused and
         config.yaml is unchanged
+  packages/core/src/config.ts#fallbackConfig:
+    kind: guarantee
+    rule: An error elsewhere in config.yaml never relaxes the owner's pinning.agents to the allow default.
+    tests:
+      - "packages/core/test/audit-024-f5-config-pinning-failsafe.test.ts::an invalid unrelated key: the owner's value is kept"
+      - >-
+        packages/core/test/audit-024-f5-config-pinning-failsafe.test.ts::invalid key: an agent pin through core is
+        refused, not stored pinned
+  packages/core/src/config.ts#readablePinning:
+    kind: guarantee
+    rule: >-
+      In a config that cannot be fully read, a pinning section that cannot be read itself fails safe to request; a
+      config that never set pinning keeps the allow default.
+    tests:
+      - packages/core/test/audit-024-f5-config-pinning-failsafe.test.ts::a pinning section that cannot be read itself fails safe to request
+      - packages/core/test/audit-024-f5-config-pinning-failsafe.test.ts::a config that never set pinning keeps the allow default, broken or not
+  packages/core/src/config.ts#pinningFromBrokenYaml:
+    kind: guarantee
+    rule: >-
+      For YAML that does not parse, the owner's top-level pinning block is read on its own and kept; a mention of pinning
+      that cannot be read back fails safe to request.
+    tests:
+      - "packages/core/test/audit-024-f5-config-pinning-failsafe.test.ts::YAML that does not parse: the owner's value is kept"
+      - packages/core/test/audit-024-f5-config-pinning-failsafe.test.ts::a pinning section that cannot be read itself fails safe to request
   packages/core/src/config.ts#loadConfig:
     kind: guarantee
     rule: >-
