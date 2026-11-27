@@ -2,11 +2,18 @@
 
 ## 0.24.0
 
-The retrieval and injection overhaul: what an agent is given at the start of a
-prompt is now recall's own ranking, so the memory you would find with
-`plur recall` is the memory the agent sees. On a 14,000-memory test store the
-right memory is injected for about 89 of 100 questions on two test sets
-(0.23: 1 and 15). Full notes: `docs/release-notes/0.24.0.md`.
+Agents get the memories recall finds.
+
+- Injection follows recall's ranking
+- Feedback reorders recall
+- Scoped pins load in scope
+- `plur pin` manages pins
+
+What an agent is given at the start of a prompt is now recall's own ranking,
+so the memory you would find with `plur recall` is the memory the agent sees.
+On a 14,000-memory test store the right memory is injected for about 89 of 100
+questions on two test sets (0.23: 1 and 15). Full notes:
+`docs/release-notes/0.24.0.md`.
 
 ### Changes
 
