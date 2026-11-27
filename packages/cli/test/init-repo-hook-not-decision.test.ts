@@ -86,6 +86,8 @@ describe('plur init does not turn a repo-shipped PLUR hook into a folder decisio
 
   it("this machine's own shim (what an older local init wrote) is still recorded as on", () => {
     const repo = repoWithHook('ownrepo', `${join(home, '.plur', 'bin', 'plur-hook')} hook-inject`)
+    rmSync(join(repo, '.git'), { recursive: true, force: true })
+    execFileSync('git', ['-C', repo, 'init', '-q'], { stdio: 'ignore' })
     init(repo)
     expect(text(join(plurRoot, 'folders.yaml'))).toContain(repo)
   }, 60_000)

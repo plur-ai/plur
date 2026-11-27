@@ -22,6 +22,7 @@ import { pathToFileURL } from 'url'
 import { tmpdir } from 'os'
 import { load as loadYaml } from 'js-yaml'
 import { resolveFolderPolicy } from '@plur-ai/core'
+import { execFileSync } from 'child_process'
 import { runCli } from './helpers/spawn.js'
 import { builtCliPath } from './helpers/built-cli.js'
 
@@ -163,7 +164,14 @@ describe('re-running plur init in a repo that holds PLUR prompt hooks (#1467 mig
     if (plurYaml !== undefined) writeFileSync(join(repo, '.plur.yaml'), plurYaml)
   }
 
+  /** Make the fake repo a real git work tree: only git's positive "untracked" counts as an older local init's file. */
+  function realRepo(): void {
+    rmSync(join(repo, '.git'), { recursive: true, force: true })
+    execFileSync('git', ['init', '-q'], { cwd: repo, stdio: 'ignore' })
+  }
+
   it('moves the hooks to user settings, removes only PLUR\'s hooks from the repo, keeps its MCP entry, records the repo as on', () => {
+    realRepo()
     olderInstall()
     const before = read(repoFile())
     init()
@@ -260,6 +268,7 @@ describe('re-running plur init in a repo that holds PLUR prompt hooks (#1467 mig
   })
 
   it('a trusted .plur.yaml: recorded on, and its scope still applies (#1469 review)', () => {
+    realRepo()
     olderInstall('scope: project:repo-hint\n')
     mkdirSync(join(home, '.plur'), { recursive: true })
     const parent = join(home, 'code')
@@ -272,6 +281,7 @@ describe('re-running plur init in a repo that holds PLUR prompt hooks (#1467 mig
   })
 
   it('a read-only repo settings file: the migration is reported as failed and init does the rest (#1469 review)', () => {
+    realRepo()
     if (process.platform === 'win32' || process.getuid?.() === 0) return // chmod does not bind here
     olderInstall()
     const before = raw(repoFile())
@@ -295,6 +305,7 @@ describe('re-running plur init in a repo that holds PLUR prompt hooks (#1467 mig
   })
 
   it('a malformed folders.yaml: reported as FAILED like any other failure, hooks stay in the repo (#1469 review)', () => {
+    realRepo()
     olderInstall()
     mkdirSync(join(home, '.plur'), { recursive: true })
     writeFileSync(mapFile(), 'version: 1\nfolders: [unclosed\n')
@@ -334,6 +345,7 @@ describe('re-running plur init in a repo that holds PLUR prompt hooks (#1467 mig
       })
 
       it('a trusted .plur.yaml and a new --scope: trust is per folder, so the new scope applies, as in a fresh trusted repo', () => {
+        realRepo()
         olderInstall('scope: project:old\n')
         mkdirSync(join(home, '.plur'), { recursive: true })
         const parent = join(home, 'code')

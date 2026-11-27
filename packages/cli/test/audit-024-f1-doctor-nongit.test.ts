@@ -32,12 +32,14 @@ afterEach(() => { rmSync(base, { recursive: true, force: true, maxRetries: 10, r
 
 function doctorJsonIn(cwd: string, extraEnv: NodeJS.ProcessEnv = {}): any {
   let stdout = ''
+  let stderr = ''
   try {
     stdout = execSync(`"${process.execPath}" ${CLI} doctor --json`, {
-      encoding: 'utf-8', timeout: 30000, cwd,
+      encoding: 'utf-8', timeout: 50000, cwd, stdio: ['ignore', 'pipe', 'pipe'],
       env: { ...isolatedHomeEnv(home), PLUR_DISABLE_EMBEDDINGS: '1', PLUR_DOCTOR_TIMEOUT: '5000', ...extraEnv },
     })
-  } catch (err: any) { stdout = err.stdout?.toString() ?? '' }
+  } catch (err: any) { stdout = err.stdout?.toString() ?? ''; stderr = err.stderr?.toString() ?? String(err) }
+  if (!stdout.trim()) throw new Error(`doctor printed no report:\n${stderr}`)
   return JSON.parse(stdout)
 }
 
@@ -83,6 +85,8 @@ describe('doctor: a non-git folder cannot approve its own .mcp.json server', () 
     const bin = join(base, 'bin-node-only')
     mkdirSync(bin)
     symlinkSync(process.execPath, join(bin, 'node'))
+    // The unapproved fallback probe runs `npx`; a stand-in that stays up keeps doctor from racing a process that exits at once.
+    writeFileSync(join(bin, 'npx'), '#!/bin/sh\nexec /bin/sleep 1\n', { mode: 0o755 })
     expect(doctorJsonIn(dir, { PATH: bin }).handshake.command ?? '').not.toContain('nogit-server.sh')
     expect(existsSync(marker)).toBe(false)
   }, 60_000)
