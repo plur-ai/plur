@@ -1,10 +1,10 @@
 import { lstatSync, readFileSync, unlinkSync } from 'fs'
 import { basename, dirname, join } from 'path'
-import { spawnSync } from 'child_process'
 import { isDeepStrictEqual } from 'util'
 import yaml from 'js-yaml'
 import { atomicWrite, currentWindowsAccount, findProjectConfigPath, ServerStoreEntrySchema } from '@plur-ai/core'
 import { backupWriter } from '../enterprise/backup.js'
+import { gitFileTracked } from './git-tracked.js'
 
 type Outcome = 'none' | 'deleted' | 'stripped' | 'tracked-token' | 'symlink-skipped' | 'unknown-tracking'
 const fields = ['remote_url', 'remote_token', 'remote_scopes']
@@ -65,14 +65,7 @@ export function cleanupLegacyPlurYaml(dir: string, deps: {
 }
 
 function gitTracked(path: string): boolean | null {
-  // Git index/worktree/config overrides belong to the launching process,
-  // not necessarily the project whose file is being inspected.
-  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith('GIT_')))
-  const options = { cwd: dirname(path), env, encoding: 'utf8' as const, timeout: 2000, windowsHide: true }
-  const repo = spawnSync('git', ['rev-parse', '--is-inside-work-tree'], options)
-  if (repo.status !== 0 || repo.stdout.trim() !== 'true') return null
-  const result = spawnSync('git', ['ls-files', '--error-unmatch', '--', basename(path)], options)
-  return result.status === 0 ? true : result.status === 1 ? false : null
+  return gitFileTracked(dirname(path), basename(path), 2000)
 }
 
 /** Advisory only. Never print file contents or an exception carrying a token. */

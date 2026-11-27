@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync, readdirSync, copyFileSync, statSync } from 'fs'
 import { execFileSync, type ExecFileSyncOptions } from 'child_process'
+import { gitFileTracked } from '../lib/git-tracked.js'
 import { join, dirname, basename } from 'path'
 import { fileURLToPath } from 'url'
 import { homedir, platform } from 'os'
@@ -674,20 +675,17 @@ function isPlurHook(entry: HookEntry): boolean {
 }
 
 /**
- * The repo settings file is committed to git. An older local `plur init` wrote
+ * Is the repo settings file committed to git? An older local `plur init` wrote
  * `.claude/settings.json` as an untracked local file; a cloned repository can
  * only deliver files it commits. So a tracked file came with the repository,
  * and even a hook naming this home's own plur-hook (the path can be guessed)
- * is not the user's decision (security audit 2026-11-06). No git, or a folder
- * that is not a repository, counts as untracked.
+ * is not the user's decision (security audit 2026-11-06). `false` only when git
+ * positively reports the file untracked in a real work tree; `null` when that
+ * cannot be told (no git, a folder that is not a repository such as an archive
+ * or copied tree, git refusing it), which is no evidence the user wrote it.
  */
-export function repoFileIsTracked(folder: string, file: string): boolean {
-  try {
-    execFileSync('git', ['-C', folder, 'ls-files', '--error-unmatch', '--', file], { stdio: 'ignore', timeout: 5000 })
-    return true
-  } catch {
-    return false
-  }
+export function repoFileIsTracked(folder: string, file: string): boolean | null {
+  return gitFileTracked(folder, file)
 }
 
 /** Every PLUR hook in `settings` is bound to this machine's own install (see isThisMachinesPlurHookSpec). */

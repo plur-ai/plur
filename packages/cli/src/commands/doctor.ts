@@ -1386,9 +1386,11 @@ function localScopePlur(config: Record<string, unknown>, cwd: string): Record<st
  * projects[<dir>]: `plur` in enabledMcpjsonServers, or
  * enableAllProjectMcpServers: true (also honoured in the user's own
  * ~/.claude/settings.json, and in the project's .claude/settings.local.json
- * while git does not track it; a tracked file, like .claude/settings.json, is
- * repository content and never approves). `plur` in disabledMcpjsonServers
- * wins. Anything else is unapproved.
+ * only when git positively reports it untracked in a real work tree; a tracked
+ * file, like .claude/settings.json, is repository content and never approves,
+ * and so is the file of a folder where git cannot tell: not a checkout (an
+ * archive, a copied tree), no git, or git refusing it). `plur` in
+ * disabledMcpjsonServers wins. Anything else is unapproved.
  */
 function projectMcpServerApproved(mcpJsonPath: string): boolean {
   type Approval = { enabledMcpjsonServers?: unknown; disabledMcpjsonServers?: unknown; enableAllProjectMcpServers?: unknown }
@@ -1397,7 +1399,7 @@ function projectMcpServerApproved(mcpJsonPath: string): boolean {
   const p = (projects && typeof projects === 'object' ? (projects as Record<string, unknown>)[dir] : undefined) as Approval | undefined
   const userSettings = readConfig(claudeCodeGlobalSettingsPath()) as Approval
   const localPath = join('.claude', 'settings.local.json')
-  const local = (existsSync(join(dir, localPath)) && !repoFileIsTracked(dir, localPath) ? readConfig(join(dir, localPath)) : {}) as Approval
+  const local = (existsSync(join(dir, localPath)) && repoFileIsTracked(dir, localPath) === false ? readConfig(join(dir, localPath)) : {}) as Approval
   const sources = [p, userSettings, local]
   const lists = (key: 'enabledMcpjsonServers' | 'disabledMcpjsonServers') =>
     sources.some(src => Array.isArray(src?.[key]) && (src![key] as unknown[]).includes('plur'))
