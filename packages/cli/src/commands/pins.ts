@@ -23,7 +23,7 @@ import { join } from 'path'
 import { emitPlan } from '../lib/journal-cli.js'
 import {
   formatPinOverflowLine, formatPendingPinRequestsLine, validatePinAuditProposal, PinDeniedError,
-  pinRequestOf, type PinFitReport, type PendingPinRequest,
+  pinRequestOf, isPinEscalation, type PinFitReport, type PendingPinRequest,
 } from '@plur-ai/core'
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { remoteOnlyCommandRefusal } from '../lib/folder-gate.js'
@@ -130,6 +130,15 @@ async function priority(rest: string[], flags: GlobalFlags): Promise<void> {
   const n = Number(raw)
   if (!Number.isInteger(n) || n < 1 || n > 100) exit(1, `Priority must be a whole number from 1 to 100, got ${raw}`)
   const plur = createPlur(flags)
+  // Finding 7 (0.24 audit): raising a pin strengthens it, so as the owner
+  // (PLUR_ACTOR=owner can be set by an agent) it asks the S1 question `plur
+  // pin` asks. An agent is refused by core; lowering strengthens nothing.
+  if (plur.defaultActor === 'owner') {
+    const row = await plur.getById(id)
+    if (row && isPinEscalation(row, { ...row, pinned_priority: n } as never)) {
+      await requirePinPolicyConfirmation(plur, `Raise the priority of ${id} to ${n}`)
+    }
+  }
   try {
     const e = await plur.setPinPriority(id, n)
     if (!e) exit(1, `Engram not found: ${id}`)
