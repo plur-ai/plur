@@ -51,8 +51,15 @@ anchors:
     kind: guarantee
     rule: >-
       One scope of a server entry cannot be replaced on its own; adding a store with a token taken from an environment
-      variable stores only the variable name; re-adding an existing store is idempotent.
+      variable stores only the variable name; re-adding an existing store is idempotent; under pinning.agents request or
+      deny a caller the pin policy restricts cannot register a new store, path or url, and nothing is written.
     tests:
+      - >-
+        packages/core/test/audit-024-f4-stores-add-pins.test.ts::an agent cannot register a path store, and its
+        pins are not injected
+      - >-
+        packages/core/test/audit-024-f4-stores-add-pins.test.ts::an agent cannot register a url store either, and
+        nothing is written
       - >-
         packages/core/test/multi-scope-store-entry.test.ts::replacing one scope of a server entry with another store is
         refused and changes nothing

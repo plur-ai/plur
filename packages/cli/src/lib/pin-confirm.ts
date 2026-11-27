@@ -13,7 +13,9 @@ import { exit } from '../output.js'
  * terminal (an agent's shell tool runs without one). Under `allow` (the
  * default) nothing is asked. Exits 1 when refused; returns when confirmed.
  * H11/H12: `plur import` of pinned records and an undo that puts a pin back
- * ask the same question.
+ * ask the same question. 0.24 audit: so do `plur pin priority` when it raises
+ * a pin, and registering a store (`plur stores add`, `plur remote`), whose
+ * pinned engrams load into every session.
  */
 export async function requirePinPolicyConfirmation(
   plur: Pick<Plur, 'pinPolicyFor'>,

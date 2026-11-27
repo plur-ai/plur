@@ -4,6 +4,7 @@ import { join } from 'path'
 import { homedir } from 'os'
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { shouldOutputJson, outputJson, outputText, outputInfo, exit } from '../output.js'
+import { requirePinPolicyConfirmation } from '../lib/pin-confirm.js'
 import {
   AddRemoteStoreError, FolderMapError, canonicalize, coversHomeOrRoot, findProjectConfigPath, readProjectConfigFromPath,
   normalizeEndpointUrl, redactToken, redactTokenDeep, type FolderPolicy,
@@ -239,6 +240,12 @@ async function connect(parsed: Parsed, flags: GlobalFlags): Promise<void> {
   if (coversHomeOrRoot(folder, homedir())) return exit(1, `${coversHomeMessage(folder)} Nothing was written.`)
 
   const plur = createPlur(flags)
+  // Finding 4 (0.24 audit): registering team stores is an owner action under
+  // pinning.agents request/deny (their pinned engrams load into every
+  // session). Core refuses an agent; PLUR_ACTOR=owner needs the S1 question.
+  if (plur.defaultActor === 'owner') {
+    await requirePinPolicyConfirmation(plur, 'Register team stores (their pinned engrams load into every session)')
+  }
   const refuse = (err: unknown, prefix: string): never => {
     const raw = err instanceof Error ? err.message : String(err)
     const msg = redactToken(raw, tok).replace(

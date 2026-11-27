@@ -4695,7 +4695,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
 
     {
       name: 'plur_stores_add',
-      description: 'Register an additional engram store. Either filesystem (path) or remote (url+token, e.g. PLUR Enterprise). One remote URL can host multiple scopes — call once per team scope you are authorized for; each registers independently. Returns status: "added" or "already_registered".',
+      description: 'Register an additional engram store. Either filesystem (path) or remote (url+token, e.g. PLUR Enterprise). One remote URL can host multiple scopes — call once per team scope you are authorized for; each registers independently. Returns status: "added" or "already_registered". Under pinning.agents request or deny, registering a new store is reserved for the owner (error pin_denied; the owner runs `plur stores add`).',
       annotations: { title: 'Add store', destructiveHint: false, idempotentHint: true },
       inputSchema: {
         type: 'object',
@@ -4733,6 +4733,9 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
             ? await plur.addRemoteStore({ url, token: token!, scope: requestedScope, shared: args.shared as boolean | undefined, readonly: args.readonly as boolean | undefined })
             : plur.addStore(path ?? '', requestedScope, { shared: args.shared as boolean | undefined, readonly: args.readonly as boolean | undefined })
         } catch (err) {
+          // Under pinning.agents request/deny, registering a NEW store is an
+          // owner action: a store's pinned rows load into every session.
+          if (err instanceof PinDeniedError) return pinDeniedReply(err)
           return { success: false, error: (err as Error).message }
         }
         // A local store is identified by its PATH, so registering a NEW

@@ -871,7 +871,7 @@ export const discoveryMethods: DiscoveryMethods & ThisType<Plur> = {
           continue
         }
         try {
-          const { status } = this.addStore('', scope, { url: d.url, token, ...(tokenEnv ? { tokenEnv } : {}) })
+          const { status } = this.addStore('', scope, { url: d.url, token, ...(tokenEnv ? { tokenEnv } : {}), ownerDecided: true })
           if (status === 'added') added.push(scope)
           else already.push(scope)
         } catch (err) {
@@ -925,7 +925,7 @@ export const discoveryMethods: DiscoveryMethods & ThisType<Plur> = {
     }
     const sibling = this._storesForEndpoint(match.url)[0]
     const token = sibling?.token
-    const { status } = this.addStore('', scope, { url: match.url, token, ...(sibling?.token_env ? { tokenEnv: sibling.token_env } : {}) })
+    const { status } = this.addStore('', scope, { url: match.url, token, ...(sibling?.token_env ? { tokenEnv: sibling.token_env } : {}), ownerDecided: true })
     // Persist covers/description/sensitivity so suggestScope activates.
     this.persistScopeMetadata(discoveries)
     // Registering a scope also clears any prior dismissal of it —
