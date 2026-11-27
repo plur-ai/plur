@@ -1458,6 +1458,15 @@ anchors:
       under the same lock), and it REFUSES — {@link ChangeConflictError},…
     tests:
       - packages/core/test/change-journal.test.ts
+  packages/core/src/change-journal.ts#ChangeJournalRedactOptions:
+    kind: guarantee
+    rule: >-
+      A row the store still holds is never pulled into a redaction as derived content; a row it no longer holds that a
+      change created alongside a redacted row (an undone consolidation's merged row), or whose snapshot quotes a
+      redacted row's text, is redacted in every line of both generations (security audit 2026-11-27).
+    tests:
+      - packages/core/test/audit-024-f3-journal-derived-rows.test.ts
+      - packages/core/test/harden-change-journal-redact.test.ts
   packages/core/src/change-journal.ts#PendingChange:
     kind: guarantee
     rule: Do slow work (model calls, network) before `apply`, never inside it.

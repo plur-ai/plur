@@ -215,7 +215,11 @@ export const consolidationMethods: ConsolidationMethods & ThisType<Plur> = {
     // The journal holds personal rows in full: never touched from a remote-only folder.
     this._remoteOnlyRefuseLocalStore('Redacting the change journal (run it outside the remote-only folder)')
     if (ids.length === 0) return 0
-    return await this._withStoreLock(this.paths.engrams, async () => redactChangeJournal(this.paths.root, ids))
+    return await this._withStoreLock(this.paths.engrams, async () => {
+      // Rows the store still holds are not pulled in as derived content.
+      const held = new Set((await this._primaryStore.load()).map(e => e.id))
+      return redactChangeJournal(this.paths.root, ids, { held: id => held.has(id) })
+    })
   },
 
   listChanges(): ChangeRecord[] {

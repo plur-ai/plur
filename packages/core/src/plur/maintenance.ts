@@ -176,8 +176,9 @@ export const maintenanceMethods: MaintenanceMethods & ThisType<Plur> = {
         // Every removed row, by identity — a retired row can share its id with
         // a kept one, and it must still be named.
         const kept = new Set(active)
+        const keptIds = new Set(active.map(e => e.id))
         // The change journal must not keep what compaction removed (S5).
-        try { redactChangeJournal(this.paths.root, engrams.filter(e => !kept.has(e)).map(e => e.id)) } catch (err) {
+        try { redactChangeJournal(this.paths.root, engrams.filter(e => !kept.has(e)).map(e => e.id), { held: id => keptIds.has(id) }) } catch (err) {
           // Reported in the result, not only the log (H2).
           const message = `the change journal could not be redacted: ${(err as Error).message}. The removed rows' content may still be in changes.jsonl.`
           logger.warning(`[plur] compact: ${message}`)
