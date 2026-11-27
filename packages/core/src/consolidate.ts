@@ -33,6 +33,7 @@ import type { Engram } from './schemas/engram.js'
 import { classifyPolarity } from './polarity.js'
 import { DEDUP_DECISION_GUIDE } from './dedup.js'
 import { computeContentHash } from './content-hash.js'
+import { collapseLineTerminators } from './sanitize.js'
 import type { LlmFunction } from './types.js'
 import { buildPinRequest, asPinRequested, pinRequestOf } from './pin-policy.js'
 import { cosineSimilarity } from './embeddings.js'
@@ -532,8 +533,18 @@ export interface PlanCluster {
   protected_reasons: ProtectedReason[]
   /** True when a member is pinned, locked or a prohibition, or a non-base member carries a body, rationale or dual coding: apply needs `approved: true` (D7). */
   requires_owner_approval: boolean
-  /** The owner's per-cluster approval. Set by hand in the proposal file. */
+  /**
+   * The owner's per-cluster approval. Set by hand in the proposal file. It
+   * covers the merged statement as it stands when the owner sets it: the
+   * model pass clears it whenever it writes a decision into the cluster.
+   */
   approved: boolean
+  /**
+   * Optional binding of the approval to one statement
+   * ({@link approvalStatementHash} of the reviewed `merged_statement`). When
+   * present, apply refuses the cluster unless the statement still hashes to it.
+   */
+  approved_statement_hash?: string
   decision: 'pending' | 'merge' | 'split'
   merged_statement?: string
   reason?: string
@@ -613,7 +624,29 @@ export function assertConsolidationPlan(plan: unknown): asserts plan is Consolid
     if (!c || typeof c.id !== 'string' || typeof c.scope !== 'string' || !Array.isArray(c.members) || c.members.length < 2) {
       throw new ConsolidatePlanInvalidError(`Plan ${p.plan_id}: malformed cluster ${JSON.stringify((c as { id?: unknown })?.id ?? null)}.`)
     }
+    if (c.approved_statement_hash !== undefined && typeof c.approved_statement_hash !== 'string') {
+      throw new ConsolidatePlanInvalidError(`Plan ${p.plan_id}: cluster ${c.id}: approved_statement_hash must be a string.`)
+    }
   }
+}
+
+/**
+ * The hash an approval is bound to: the content hash of the merged statement
+ * as apply reads it (line terminators collapsed, trimmed).
+ */
+export function approvalStatementHash(statement: string): string {
+  return computeContentHash(collapseLineTerminators(statement).trim())
+}
+
+/**
+ * Does the owner's approval cover this statement? `approved: true`, and when
+ * the cluster carries `approved_statement_hash`, the statement must still
+ * hash to it.
+ */
+export function approvalCovers(cluster: Pick<PlanCluster, 'approved' | 'approved_statement_hash'>, statement: string): boolean {
+  if (cluster.approved !== true) return false
+  if (cluster.approved_statement_hash === undefined) return true
+  return cluster.approved_statement_hash === approvalStatementHash(statement)
 }
 
 /** Recount `progress` from the clusters. */

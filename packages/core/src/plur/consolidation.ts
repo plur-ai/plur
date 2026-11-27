@@ -2,7 +2,7 @@ import * as fs from 'fs'
 import { Plur } from '../index.js'
 
 
-import { CONSOLIDATE_CHANGE_KIND, CONSOLIDATE_QUEUE_FILE, CONSOLIDATE_QUEUE_KEEP_ENTRIES, CONSOLIDATE_QUEUE_MAX_BYTES, CONSOLIDATE_STATE_FILE, CONSOLIDATION_PLAN_KIND, ConsolidateApplyDisabledError, type ConsolidateApplyOptions, type ConsolidateApplyResult, type ConsolidatePlanOptions, ConsolidateTrialRequiredError, type ConsolidationItem, type ConsolidationPlan, PARAPHRASE_QUEUE_THRESHOLD, type PlanCluster, type StoreHealth, assertConsolidationPlan, blockKeyFor, buildConsolidationPrompt, candidatePairs, clusterProtectedReasons, completeLinkageClusters, groupBy, mergeEngrams, mixedPolarity, newPlanId, nightlySeed, parseConsolidationResponse, polarityOf, referencesTo, refreshProgress, remapReferences, retireInto, seededSample, structuredBodyOf } from '../consolidate.js'
+import { CONSOLIDATE_CHANGE_KIND, CONSOLIDATE_QUEUE_FILE, CONSOLIDATE_QUEUE_KEEP_ENTRIES, CONSOLIDATE_QUEUE_MAX_BYTES, CONSOLIDATE_STATE_FILE, CONSOLIDATION_PLAN_KIND, ConsolidateApplyDisabledError, type ConsolidateApplyOptions, type ConsolidateApplyResult, type ConsolidatePlanOptions, ConsolidateTrialRequiredError, type ConsolidationItem, type ConsolidationPlan, PARAPHRASE_QUEUE_THRESHOLD, type PlanCluster, type StoreHealth, approvalCovers, assertConsolidationPlan, blockKeyFor, buildConsolidationPrompt, candidatePairs, clusterProtectedReasons, completeLinkageClusters, groupBy, mergeEngrams, mixedPolarity, newPlanId, nightlySeed, parseConsolidationResponse, polarityOf, referencesTo, refreshProgress, remapReferences, retireInto, seededSample, structuredBodyOf } from '../consolidate.js'
 import { ChangeAlreadyUndoneError, ChangeConflictError, ChangeJournalError, ChangeJournalUnsupportedError, ChangeNotFoundError, type ChangeRecord, ChangeRedactedError, type ChangeRowSnapshot, type ChangeTx, type PendingChange, UNDO_BOOKKEEPING_FIELDS, type UndoChangeOptions, canonicalRow, carryIgnoredFields, findUndoConflicts, isRedactedRow, journalBegin, journalCommit, newChangeId, readChangeJournal, redactChangeJournal } from '../change-journal.js'
 import { type Engram } from '../schemas/engram.js'
 import { type LlmFunction } from '../types.js'
@@ -466,6 +466,10 @@ export const consolidationMethods: ConsolidationMethods & ThisType<Plur> = {
       const parsed = parseConsolidationResponse(answer, batch.length)
       batch.forEach((c, j) => {
         const d = parsed[j]
+        // An approval given before the model decided covers no statement:
+        // the owner approves what they read, so a decision written now
+        // starts unapproved.
+        if (d.decision === 'merge' || d.decision === 'split') { c.approved = false; delete c.approved_statement_hash }
         if (d.decision === 'merge') { c.decision = 'merge'; c.merged_statement = d.statement; c.reason = d.reason }
         else if (d.decision === 'split') { c.decision = 'split'; c.reason = d.reason }
       })
@@ -495,10 +499,14 @@ export const consolidationMethods: ConsolidationMethods & ThisType<Plur> = {
       if (appliedClusters.has(cluster.id)) { skip('already_applied'); continue }
       if (cluster.decision === 'split') { skip('split'); continue }
       if (cluster.decision !== 'merge' || !cluster.merged_statement?.trim()) { skip('not_decided'); continue }
-      if (cluster.requires_owner_approval && cluster.approved !== true) { skip('needs_approval', cluster.protected_reasons.join(', ')); continue }
-      if (result.applied.length >= limit) { skip('limit'); continue }
       // The plan file is editable: a statement is one line, as every write path makes it (S8).
       const statement = collapseLineTerminators(cluster.merged_statement).trim()
+      // The approval covers the statement the owner reviewed, not a later one.
+      if (cluster.requires_owner_approval && !approvalCovers(cluster, statement)) {
+        skip('needs_approval', cluster.approved === true ? 'the merged statement changed since it was approved' : cluster.protected_reasons.join(', '))
+        continue
+      }
+      if (result.applied.length >= limit) { skip('limit'); continue }
       if (polarityOf({ statement, polarity: null }) !== cluster.polarity) { skip('polarity_changed'); continue }
       if (detectSecrets(statement).length > 0 || this._offendingHitsForScope(statement, cluster.scope).length > 0) { skip('sensitive'); continue }
       if (this._isRemoteBackedScope(cluster.scope)) { skip('not_local', cluster.scope); continue }
@@ -545,7 +553,7 @@ export const consolidationMethods: ConsolidationMethods & ThisType<Plur> = {
             : 'the members no longer share the planned block')
         }
         if (mixedPolarity(members)) throw new Skip('drifted', 'the members no longer share a polarity')
-        if (clusterProtectedReasons(members).length > 0 && cluster.approved !== true) {
+        if (clusterProtectedReasons(members).length > 0 && !approvalCovers(cluster, statement)) {
           throw new Skip('needs_approval', 'a member is pinned, locked or a prohibition, or a non-base member carries a body, rationale or dual coding')
         }
         const all = tx.all()

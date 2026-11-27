@@ -285,7 +285,7 @@ export {
 export {
   candidatePairs, completeLinkageClusters, blockKeyFor, polarityOf, mixedPolarity, protectedReasons, clusterProtectedReasons, mergeBase, nonBaseMembersCarryContent, structuredBodyOf,
   nightlySeed, seededSample, seededRandom, buildConsolidationPrompt, parseConsolidationResponse,
-  mergeEngrams, retireInto, remapReferences, assertConsolidationPlan,
+  mergeEngrams, retireInto, remapReferences, assertConsolidationPlan, approvalStatementHash, approvalCovers,
   ConsolidateError, ConsolidateApplyDisabledError, ConsolidateTrialRequiredError, ConsolidatePlanInvalidError,
   CONSOLIDATE_QUEUE_FILE, CONSOLIDATE_STATE_FILE, CONSOLIDATE_CHANGE_KIND, CONSOLIDATION_PLAN_KIND, PARAPHRASE_QUEUE_THRESHOLD,
   type ConsolidationPlan, type PlanCluster, type PlanMember, type ConsolidationItem, type NeighbourPair, type Cluster,

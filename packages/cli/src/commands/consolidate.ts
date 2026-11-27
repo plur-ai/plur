@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from 'fs'
 import { join, resolve } from 'path'
 import {
+  approvalCovers,
   assertConsolidationPlan,
   ConsolidateError,
   ChangeJournalError,
@@ -127,7 +128,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     const path = resolve(applyFile)
     const p = readPlan(path)
     if (!yes) {
-      const ready = p.clusters.filter(c => c.decision === 'merge' && (!c.requires_owner_approval || c.approved)).length
+      const ready = p.clusters.filter(c => c.decision === 'merge' && (!c.requires_owner_approval || approvalCovers(c, c.merged_statement ?? ''))).length
       exit(1, `Refusing to apply without --yes. ${ready} cluster(s) in ${path} are ready to merge; review the file, then run:\n  plur consolidate --apply ${applyFile} --limit 1 --yes`)
     }
     let res
@@ -183,7 +184,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     merge: merge.length,
     split: result.clusters.filter(c => c.decision === 'split').length,
     pending: result.progress.pending,
-    needs_approval: merge.filter(c => c.requires_owner_approval && !c.approved).length,
+    needs_approval: merge.filter(c => c.requires_owner_approval && !approvalCovers(c, c.merged_statement ?? '')).length,
     complete: result.progress.complete,
     ...(result.progress.last_error ? { last_error: result.progress.last_error } : {}),
     stats: result.stats,

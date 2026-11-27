@@ -1519,6 +1519,15 @@ anchors:
     tests:
       - packages/core/test/consolidate.test.ts
       - packages/core/test/consolidate-apply.test.ts
+  packages/core/src/consolidate.ts#PlanCluster:
+    kind: guarantee
+    rule: >-
+      The owner's approval covers the merged statement as it stands when it is set: the model pass clears it whenever
+      it writes a decision into the cluster, and with `approved_statement_hash` apply refuses the cluster unless the
+      statement still hashes to it (security audit 2026-11-27).
+    tests:
+      - packages/core/test/audit-024-f2-consolidation-approval.test.ts
+      - packages/core/test/consolidate-apply.test.ts
   packages/core/src/enrich.ts#(module):
     kind: guarantee
     rule: >-
