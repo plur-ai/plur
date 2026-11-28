@@ -160,9 +160,15 @@ seen failing first:
   in the list. One check, where config.yaml's list of stores is written,
   covers `plur stores add`, `plur remote`, `plur login`,
   `plur scopes register`, `plur stores discover --register`, MCP
-  `plur_stores_add` and `plur_scopes_discover` with `register`; a second
-  server is a new address even when its scopes are already served (#1946).
-  Replacing a key, removing an entry or saving one again is not checked. A
+  `plur_stores_add` and `plur_scopes_discover` with `register`, and
+  connecting a folder's own store; a second server is a new address even
+  when its scopes are already served, and turning a per-scope entry into a
+  server entry counts as adding (#1946). A folder switched on through the
+  folder question (with its one-time code) turns memory on but does not
+  connect the repository's own store; the owner does that in a terminal
+  (`plur folders set <folder> --on` asks to connect it, or
+  `plur stores add`). Replacing a key, removing an entry or saving one again
+  is not checked. A
   server's own scope refresh on an entry already in the list (after
   `plur login`, background discovery) still adds the scopes it grants
   without asking (#1940). Run as the owner, the
