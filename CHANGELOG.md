@@ -172,10 +172,12 @@ seen failing first:
   server's own scope refresh on an entry already in the list (after
   `plur login`, background discovery) still adds the scopes it grants
   without asking (#1940). Run as the owner, the
-  CLI asks the confirmation on every `plur stores add`, `plur login`,
+  CLI asks the confirmation on every `plur stores add`, `plur login <url>`,
   `plur remote` and `plur scopes register`, even when nothing new is added,
   so a non-interactive token-rotation script needs a terminal; core refuses
-  only additions. An error elsewhere in `config.yaml` never turns the setting
+  only additions. The one-time move of an old `~/.plur/config.json` sign-in
+  waits for that confirmation: `plur login --status`, or a run without a
+  terminal, leaves the file in place and says so. An error elsewhere in `config.yaml` never turns the setting
   into `allow`; at worst (a duplicate top-level `pinning:` key, or flow-style
   YAML with a syntax error) a `deny` reads as `request`, which still refuses
   agents' pins and registrations. `plur pin priority`
