@@ -34,7 +34,7 @@ afterEach(() => rmSync(base, { recursive: true, force: true }))
 const config = (agents: 'allow' | 'request' | 'deny') =>
   writeFileSync(join(root, 'config.yaml'), `embeddings:\n  enabled: false\nindex: false\npinning:\n  agents: ${agents}\n`)
 const stores = () => ((yaml.load(readFileSync(join(root, 'config.yaml'), 'utf8')) as { stores?: unknown[] }).stores ?? [])
-const env = (extra: NodeJS.ProcessEnv = {}) => ({ ...isolatedHomeEnv(home), PLUR_PATH: root, PLUR_DISABLE_EMBEDDINGS: '1', PLUR_TEST_DISCOVER_IN_TMP: '1', ...extra })
+const env = (extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv => ({ ...isolatedHomeEnv(home), PLUR_PATH: root, PLUR_DISABLE_EMBEDDINGS: '1', PLUR_TEST_DISCOVER_IN_TMP: '1', ...extra })
 
 function cli(args: string[], extra: NodeJS.ProcessEnv = {}) {
   return new Promise<{ out: string; status: number | null }>(resolve => {
