@@ -38,12 +38,15 @@ questions on two test sets (0.23: 1 and 15). Full notes:
 - **The injection query is built from the session's context** (stored task,
   project scope, git branch, the last two user turns), not only the last prompt.
 - **Feedback is part of recall's ranking.** Rating a memory up or down moves
-  it in `plur recall` and in injection alike, on every recall path, including
-  a store's own searches.
+  it in hybrid recall (the default for `plur recall` and MCP `plur_recall`,
+  including a store's own searches) and in injection alike. Keyword-only
+  recall (`plur recall --fast`, `plur_recall` with `mode: keyword`, the
+  library's `plur.recall()`) and semantic-only recall do not apply it yet.
 - **Recall on small stores and among equal matches.** A word found in most
   memories still counts a little (keyword weight is always positive), so
-  small stores no longer come back nearly empty. Among equally good matches, a
-  memory left unused ranks below a fresh one; locked and pack memories do not fade.
+  small stores no longer come back nearly empty. Among equally good matches in
+  hybrid recall, a memory left unused ranks below a fresh one; locked and pack
+  memories do not fade.
 - **A corrected memory is delivered even when found by its old wording:** the
   replacement takes the old memory's place in the ranking.
 - **Pins load where they belong.** A global pin loads in every session. In a
@@ -52,9 +55,9 @@ questions on two test sets (0.23: 1 and 15). Full notes:
   `local`, or any scope without a shared prefix) or in a team scope mounted
   under `stores:`; a pin in another project or space scope no longer loads.
   In a session with no scope, a scoped pin is used only when recall finds it
-  relevant. Pins are sent once per
-  context (first prompt, after a compaction or resume, once per subagent), not
-  on every event.
+  relevant. The Claude Code hooks send pins once per context (first prompt,
+  after a compaction or resume, once per subagent), not on every event; the
+  Codex, Cursor and Antigravity hooks send them with every injection.
 - **Agent pinning policy** (`pinning.agents`: `allow`, `request` or `deny`;
   unset keeps today's `allow`): under `request` an agent's pin becomes a
   request the owner approves;
@@ -122,9 +125,12 @@ fixed with a test seen failing first:
 
 - Forgotten memories are redacted from the change journal, including torn
   lines and temporary files.
-- Answers from a host model (store maintenance, pin audit) are size-bounded,
-  parsed safely, fenced as data and scanned for secrets; the model bridge caps
-  its output and stops the whole command tree.
+- Answers from a host model (store maintenance, pin audit) are parsed safely,
+  fenced as data and scanned for secrets; store maintenance reads at most a
+  fixed length of each answer. The command bridge (`--llm-cmd`,
+  `PLUR_LLM_CMD`) caps an answer at 4 MB, has a timeout and stops the whole
+  command tree. The HTTP bridge (`--llm-base-url`) does not yet bound the
+  size or the time of an answer.
 - Rescope plans cannot move non-global memories; imports and undos that would
   restore pins need the pin-policy confirmation. The confirmation must be typed
   at an interactive terminal, which stops an agent acting through the MCP
@@ -150,8 +156,12 @@ seen failing first:
   `plur_scopes_discover` with `register`); an error
   elsewhere in `config.yaml` never relaxes the setting; `plur pin priority`
   asks the same typed confirmation as `plur pin` before raising a pin.
-- An owner's approval of a merge covers only the merged statement it was given
-  for; forgetting a memory also removes rows derived from it from the change
+- An owner's approval of a merge is cleared whenever the model pass writes a
+  new decision into the cluster, and a cluster that carries
+  `approved_statement_hash` is applied only with the statement of that hash.
+  Nothing writes that hash yet, so a hand-set `approved: true` without it
+  covers whatever merged statement the plan holds when it is applied.
+  Forgetting a memory also removes rows derived from it from the change
   journal.
 - A malformed row from a team store no longer makes recall and injection fail
   for everyone in that scope: bad nested items are dropped where rows enter.
