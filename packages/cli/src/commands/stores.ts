@@ -111,7 +111,10 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   // Finding 4 (0.24 audit): a store's pinned engrams load into every session,
   // so under pinning.agents request/deny registering one is an owner action.
   // Core refuses an agent; PLUR_ACTOR=owner still needs the S1 confirmation
-  // typed at a terminal, which an agent's shell cannot give.
+  // typed at an interactive terminal. That stops an agent acting through the
+  // MCP server or a non-interactive shell; against an agent with a shell it
+  // is friction, not a boundary (a pseudo-terminal passes it, and such an
+  // agent can edit config.yaml directly).
   if (subcommand === 'add' && plur.defaultActor === 'owner') {
     await requirePinPolicyConfirmation(plur, 'Register a store (its pinned engrams load into every session)')
   }
