@@ -25,6 +25,11 @@ questions on two test sets (0.23: 1 and 15). Full notes:
   `injection.mode: legacy` in `config.yaml`. A relevance cut-off exists
   (`injection.min_relevance_signal`) but ships off: no signal emptied the task
   section on unrelated prompts without losing right answers.
+- **Nearby rules that do not apply are left out.** When two memories are
+  near-copies (for example "write review summaries as bullets" and "write
+  incident summaries as paragraphs") and the task's words point to one of
+  them, the other is not given beside it. Equally relevant variants whose
+  differences the task does not mention are all given.
 - **Event injections (skills, agents, plans, subagents) use the same
   pipeline,** keyword-first, single-flight, and never download the model or
   contact a team server. The right memory at those moments went from 1 in 30
@@ -124,7 +129,27 @@ fixed with a test seen failing first:
   pin report or store health; degraded rankings, skipped counters and event
   retrieval plans are recorded instead of silently dropped.
 
+A scoped re-audit of the 0.24 changes found eight more, all fixed with a test
+seen failing first:
+
+- `plur doctor` and `plur init` trust a project settings file only when git
+  positively reports it untracked in a real work tree; a folder that is not a
+  git checkout no longer approves itself or counts as your decision.
+- Under `pinning.agents: request` or `deny`, only the owner registers a new
+  store (`plur stores add`, `plur remote`, MCP `plur_stores_add`); an error
+  elsewhere in `config.yaml` never relaxes the setting; `plur pin priority`
+  asks the same typed confirmation as `plur pin` before raising a pin.
+- An owner's approval of a merge covers only the merged statement it was given
+  for; forgetting a memory also removes rows derived from it from the change
+  journal.
+- A malformed row from a team store no longer makes recall and injection fail
+  for everyone in that scope: bad nested items are dropped where rows enter.
+
 ### Behaviour changes to check after upgrading
+
+- Under `pinning.agents: request` or `deny`, registering a store from an agent
+  is refused, and from a terminal it asks for confirmation; a token piped into
+  `plur stores add --token -` counts as an agent (use `--token-env`).
 
 - The injected block is shorter on unrelated prompts and longer on related
   ones (up to 20 task memories). To go back: `injection.mode: legacy`.
