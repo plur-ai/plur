@@ -160,8 +160,14 @@ seen failing first:
   `plur stores discover --register`, MCP `plur_stores_add` and
   `plur_scopes_discover` with `register`). Scopes a server newly grants to
   an entry the owner registered are still added without asking (the scope
-  refresh after `plur login`, background discovery); an error
-  elsewhere in `config.yaml` never relaxes the setting; `plur pin priority`
+  refresh after `plur login`, background discovery). Run as the owner, the
+  CLI asks the confirmation on every `plur stores add`, `plur login`,
+  `plur remote` and `plur scopes register`, even when nothing new is added,
+  so a non-interactive token-rotation script needs a terminal; core refuses
+  only additions. An error elsewhere in `config.yaml` never turns the setting
+  into `allow`; at worst (a duplicate top-level `pinning:` key, or flow-style
+  YAML with a syntax error) a `deny` reads as `request`, which still refuses
+  agents' pins and registrations. `plur pin priority`
   asks the same typed confirmation as `plur pin` before raising a pin.
 - An owner's approval of a merge is cleared whenever the model pass writes a
   new decision into the cluster, and a cluster that carries
