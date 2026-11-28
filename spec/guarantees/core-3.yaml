@@ -1518,9 +1518,10 @@ anchors:
       - packages/core/test/consolidate-apply.test.ts
   packages/core/src/consolidate.ts#parseConsolidationResponse:
     kind: guarantee
-    rule: Anything unclear is `pending` — never a merge.
+    rule: Anything unclear is `pending` — never a merge; an empty STATEMENT line is not a merge.
     tests:
       - packages/core/test/consolidate.test.ts
+      - packages/core/test/audit-024-r3-consolidate-empty-statement.test.ts
       - packages/core/test/consolidate-apply.test.ts
   packages/core/src/consolidate.ts#PlanMember:
     kind: guarantee
