@@ -155,12 +155,17 @@ seen failing first:
   is not a git checkout, or sits inside another repository (for example under
   a directory that repository ignores), no longer approves itself or counts as
   your decision.
-- Under `pinning.agents: request` or `deny`, only the owner registers a new
-  store (`plur stores add`, `plur remote`, `plur login`, `plur scopes register`,
-  `plur stores discover --register`, MCP `plur_stores_add` and
-  `plur_scopes_discover` with `register`). Scopes a server newly grants to
-  an entry the owner registered are still added without asking (the scope
-  refresh after `plur login`, background discovery). Run as the owner, the
+- Under `pinning.agents: request` or `deny`, only the owner can add a new
+  server address, a new local store file, or a new scope on a store already
+  in the list. One check, where config.yaml's list of stores is written,
+  covers `plur stores add`, `plur remote`, `plur login`,
+  `plur scopes register`, `plur stores discover --register`, MCP
+  `plur_stores_add` and `plur_scopes_discover` with `register`; a second
+  server is a new address even when its scopes are already served (#1946).
+  Replacing a key, removing an entry or saving one again is not checked. A
+  server's own scope refresh on an entry already in the list (after
+  `plur login`, background discovery) still adds the scopes it grants
+  without asking (#1940). Run as the owner, the
   CLI asks the confirmation on every `plur stores add`, `plur login`,
   `plur remote` and `plur scopes register`, even when nothing new is added,
   so a non-interactive token-rotation script needs a terminal; core refuses
