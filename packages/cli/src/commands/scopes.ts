@@ -1,5 +1,6 @@
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { shouldOutputJson, outputJson, outputText, outputInfo, exit } from '../output.js'
+import { requirePinPolicyConfirmation } from '../lib/pin-confirm.js'
 
 /**
  * `plur scopes` — where a human decides on authorized-but-unregistered shared scopes:
@@ -29,6 +30,12 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   if (subcommand === 'register') {
     const scope = args[1]
     if (!scope) exit(1, 'Usage: plur scopes register <scope>')
+    // A new scope is a new store: under pinning.agents request/deny core
+    // refuses an agent, and PLUR_ACTOR=owner asks the confirmation
+    // `plur stores add` asks (0.24 review round 2).
+    if (plur.defaultActor === 'owner') {
+      await requirePinPolicyConfirmation(plur, 'Register a scope as a store (its pinned engrams load into every session)')
+    }
     try {
       const { url, status } = await plur.registerScope(scope)
       if (json) return outputJson({ success: true, action: 'register', scope, url, status })

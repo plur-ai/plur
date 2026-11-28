@@ -1160,9 +1160,18 @@ anchors:
         nothing
   packages/cli/src/commands/scopes.ts#run:
     kind: guarantee
-    rule: Personal scopes are never offered for registration, and a refused register exits 1 without truncating JSON output.
+    rule: >-
+      Personal scopes are never offered for registration, and a refused register exits 1 without truncating JSON
+      output. Under pinning.agents request or deny, plur scopes register is refused when run by an agent, or with
+      PLUR_ACTOR=owner and no terminal, and nothing is registered.
     tests:
       - packages/cli/test/scopes.test.ts::register a scope no configured remote authorizes → reports failure and exits 1
+      - >-
+        packages/cli/test/audit-024-r2-scopes-register-cli.test.ts::from an agent shell, scopes register and stores
+        discover --register are refused
+      - >-
+        packages/cli/test/audit-024-r2-scopes-register-cli.test.ts::PLUR_ACTOR=owner without a terminal is refused
+        for both
   packages/cli/src/commands/status.ts#plur:
     kind: guarantee
     rule: plur status never writes to the store.
@@ -1194,9 +1203,13 @@ anchors:
   packages/cli/src/commands/stores.ts#run:
     kind: guarantee
     rule: >-
-      Under pinning.agents request or deny, plur stores add needs the confirmation typed at an interactive terminal; run
-      by an agent, or with PLUR_ACTOR=owner and no terminal, it is refused and nothing is registered.
+      Under pinning.agents request or deny, plur stores add and plur stores discover --register need the confirmation
+      typed at an interactive terminal; run by an agent, or with PLUR_ACTOR=owner and no terminal, they are refused and
+      nothing is registered.
     tests:
+      - >-
+        packages/cli/test/audit-024-r2-scopes-register-cli.test.ts::from an agent shell, scopes register and stores
+        discover --register are refused
       - >-
         packages/cli/test/audit-024-f4-stores-add-cli.test.ts::plur stores add <path> from an agent shell is
         refused, nothing registered

@@ -4851,7 +4851,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
 
     {
       name: 'plur_scopes_discover',
-      description: 'Discover which scopes your remote token is authorized for via the enterprise server (GET /api/v1/me), and which of those are not yet registered locally. Read-only by default; pass register:true to register all authorized-but-unregistered scopes in one step. Only shared-family scopes (group:/project:/space:/team:/org:/public) are auto-registered — personal-family scopes (global/local/user:*/agent:*) advertised by /me are skipped and surfaced in the result, and scopes the user has dismissed are respected (NOT registered by the batch path; register one individually via the CLI `plur scopes register <scope>` to override, which also clears the dismissal). Use this when you have access to multiple team scopes on one server.',
+      description: 'Discover which scopes your remote token is authorized for via the enterprise server (GET /api/v1/me), and which of those are not yet registered locally. Read-only by default; pass register:true to register all authorized-but-unregistered scopes in one step. Only shared-family scopes (group:/project:/space:/team:/org:/public) are auto-registered — personal-family scopes (global/local/user:*/agent:*) advertised by /me are skipped and surfaced in the result, and scopes the user has dismissed are respected (NOT registered by the batch path; register one individually via the CLI `plur scopes register <scope>` to override, which also clears the dismissal). Under pinning.agents request or deny, register:true is reserved for the owner (error pin_denied). Use this when you have access to multiple team scopes on one server.',
       annotations: { title: 'Discover scopes', readOnlyHint: false, idempotentHint: true },
       inputSchema: {
         type: 'object',
@@ -4891,7 +4891,15 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
         if (!register) {
           return { discovered }
         }
-        const registered = await plur.registerDiscoveredScopes({ url })
+        // Each new scope is a new store: under pinning.agents request/deny
+        // core turns the agent away, and the reply is plur_stores_add's.
+        let registered: Awaited<ReturnType<typeof plur.registerDiscoveredScopes>>
+        try {
+          registered = await plur.registerDiscoveredScopes({ url })
+        } catch (err) {
+          if (err instanceof PinDeniedError) return { ...pinDeniedReply(err), discovered }
+          throw err
+        }
         return { discovered, registered }
       },
     },

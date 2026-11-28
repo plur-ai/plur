@@ -18,7 +18,8 @@ import { exit } from '../output.js'
  * 1 when refused; returns when confirmed.
  * H11/H12: `plur import` of pinned records and an undo that puts a pin back
  * ask the same question. 0.24 audit: so do `plur pin priority` when it raises
- * a pin, and registering a store (`plur stores add`, `plur remote`), whose
+ * a pin, and registering a store (`plur stores add`, `plur remote`,
+ * `plur scopes register`, `plur stores discover --register`), whose
  * pinned engrams load into every session.
  */
 export async function requirePinPolicyConfirmation(

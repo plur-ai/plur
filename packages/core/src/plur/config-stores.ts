@@ -104,7 +104,7 @@ export interface ConfigStoresMethods {
        *  caller: a store's rows load with their pins. */
       actor?: PinActor
       /** @internal A registration the owner already decided on (a folder the
-       *  owner mapped, a scope of a server the owner registered). */
+       *  owner mapped). */
       ownerDecided?: boolean
     }): {
     status: 'added' | 'already_registered' | 'overwritten' | 'token_rotated'; scope: string
@@ -428,7 +428,7 @@ export const configStoresMethods: ConfigStoresMethods & ThisType<Plur> = {
        *  caller: a store's rows load with their pins. */
       actor?: PinActor
       /** @internal A registration the owner already decided on (a folder the
-       *  owner mapped, a scope of a server the owner registered). */
+       *  owner mapped). */
       ownerDecided?: boolean
     }): {
     status: 'added' | 'already_registered' | 'overwritten' | 'token_rotated'; scope: string

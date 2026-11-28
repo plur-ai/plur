@@ -171,8 +171,20 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
 
   if (subcommand === 'discover') {
     const register = args.includes('--register')
+    // Each new scope is a new store: the same owner rule as `stores add`
+    // (0.24 review round 2).
+    if (register && plur.defaultActor === 'owner') {
+      await requirePinPolicyConfirmation(plur, 'Register the discovered scopes as stores (their pinned engrams load into every session)')
+    }
     const discoveries = await plur.discoverRemoteScopes()
-    const registered = register ? await plur.registerDiscoveredScopes() : []
+    let registered: Awaited<ReturnType<typeof plur.registerDiscoveredScopes>> = []
+    if (register) {
+      try {
+        registered = await plur.registerDiscoveredScopes()
+      } catch (err) {
+        exit(1, (err as Error).message)
+      }
+    }
 
     if (shouldOutputJson(flags)) {
       outputJson({ discovered: discoveries, ...(register ? { registered } : {}) })

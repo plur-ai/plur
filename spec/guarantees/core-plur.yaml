@@ -155,7 +155,8 @@ anchors:
     kind: guarantee
     rule: >-
       A failed or degraded server answer never replaces a non-empty cached scope list, and a server can only tighten the
-      local leak guard, never loosen it with an allow list.
+      local leak guard, never loosen it with an allow list. Registering discovered scopes follows addStore's
+      store-registration pin policy.
     lean:
       - PlurSpec/RoutingDiscovery.lean:nonempty_cache_replaced_only_by_ok
       - PlurSpec/RoutingDiscovery.lean:malformed_keeps_cache
@@ -166,6 +167,9 @@ anchors:
       - >-
         packages/core/test/scope-metadata-trust.test.ts::drops a hostile remote allow; the guard still demotes sensitive
         content
+      - >-
+        packages/core/test/audit-024-r2-discovery-register-pins.test.ts::an agent's registerScope is refused, an
+        absent actor too
   packages/core/src/plur/discovery.ts#discoveryMethods.checkServerStores:
     kind: guarantee
     rule: The server check reports a malformed server entry instead of silently treating it as nothing to check.
@@ -212,10 +216,14 @@ anchors:
     kind: guarantee
     rule: >-
       Batch registration never auto-registers a personal-family scope a server lists, skips dismissed scopes, and one
-      failing scope does not abort the rest of the batch.
+      failing scope does not abort the rest of the batch; under pinning.agents request or deny a caller the pin policy
+      restricts is refused for the whole batch and no new store is written.
     tests:
       - packages/core/test/scope-discovery.test.ts::#382 refuses to auto-register personal-family scopes returned by /me
       - packages/core/test/scope-discovery.test.ts::batch register respects dismissals
+      - >-
+        packages/core/test/audit-024-r2-discovery-register-pins.test.ts::an agent's registerDiscoveredScopes is
+        refused and config.yaml is untouched
   packages/core/src/plur/discovery.ts#timeoutHandle:
     kind: guarantee
     rule: Listing stores with remote counts never hangs on an unresponsive remote; its load is cut off by a timeout.

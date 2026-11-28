@@ -17,6 +17,7 @@ import { isSafeScopeName, safeOrigin, withCompatScope } from '../store-expand.js
 import type { MeResponse } from '../store/remote-store.js'
 import { normalizeEndpointUrl, RemoteHttpError, RemoteStore, tokenEnvUnsetMessage } from '../store/remote-store.js'
 import { withLock } from '../file-lock.js'
+import { type PinActor, PinDeniedError } from '../pin-policy.js'
 import { DISCOVERY_SNAPSHOT_KEYS, discoveryChanged, isEnterpriseServerEntry, isPlainObject, sanitizeForbidCategories, scopesServedElsewhere, serverCredential, stableJson, stringList } from './helpers.js'
 import { type CheckResult, type RegisterDiscoveredResult, type RemoteHealth, type RemoteScopeDiscovery, type ServerDiscoveryOutcome, type ServerStoreCheck, type StoreSummary } from './types.js'
 
@@ -161,8 +162,13 @@ export interface DiscoveryMethods {
    *
    * Returns per-URL what was newly `added` vs `already_registered`. A URL whose
    * `/me` failed yields `ok:false` and registers nothing.
+   *
+   * Each new scope is a new store, so it follows {@link addStore}'s policy
+   * for `actor` (else this instance's default actor): under
+   * `pinning.agents` request/deny a restricted caller is refused with
+   * PinDeniedError before anything new is written.
    */
-  registerDiscoveredScopes(opts?: { url?: string; timeoutMs?: number }): Promise<RegisterDiscoveredResult[]>
+  registerDiscoveredScopes(opts?: { url?: string; timeoutMs?: number; actor?: PinActor }): Promise<RegisterDiscoveredResult[]>
 
   /**
    * Single source of truth for the "authorized but unregistered" offer (CLI
@@ -185,9 +191,10 @@ export interface DiscoveryMethods {
    * Rejects personal-family scopes (`user:*`/`global`/…) — same guard as
    * the batch path: a `/me`-advertised personal scope must never become a
    * routing target for the user's default/unscoped writes. Throws if no
-   * configured remote authorizes the scope.
+   * configured remote authorizes the scope. A new scope follows
+   * {@link addStore}'s store-registration policy for `actor`.
    */
-  registerScope(scope: string, opts?: { url?: string; timeoutMs?: number }): Promise<{ url: string; status: 'added' | 'already_registered' | 'overwritten' | 'token_rotated' }>
+  registerScope(scope: string, opts?: { url?: string; timeoutMs?: number; actor?: PinActor }): Promise<{ url: string; status: 'added' | 'already_registered' | 'overwritten' | 'token_rotated' }>
 
   /**
    * Dismiss a scope from the "authorized but unregistered" offer. It is
@@ -823,7 +830,7 @@ export const discoveryMethods: DiscoveryMethods & ThisType<Plur> = {
     }))
   },
 
-  async registerDiscoveredScopes(opts?: { url?: string; timeoutMs?: number }): Promise<RegisterDiscoveredResult[]> {
+  async registerDiscoveredScopes(opts?: { url?: string; timeoutMs?: number; actor?: PinActor }): Promise<RegisterDiscoveredResult[]> {
     const discoveries = await this.discoverRemoteScopes(opts)
     const results = discoveries.map(d => {
       if (!d.ok) return { url: d.url, ok: false, added: [], already_registered: [], skipped: [], error: d.error }
@@ -871,10 +878,15 @@ export const discoveryMethods: DiscoveryMethods & ThisType<Plur> = {
           continue
         }
         try {
-          const { status } = this.addStore('', scope, { url: d.url, token, ...(tokenEnv ? { tokenEnv } : {}), ownerDecided: true })
+          // A new scope is a new store: the same pin policy as addStore
+          // applies (0.24 review round 2).
+          const { status } = this.addStore('', scope, { url: d.url, token, ...(tokenEnv ? { tokenEnv } : {}), actor: opts?.actor })
           if (status === 'added') added.push(scope)
           else already.push(scope)
         } catch (err) {
+          // A policy refusal is the caller's answer, not one bad scope: it
+          // ends the batch before any new store is written.
+          if (err instanceof PinDeniedError) throw err
           // A single bad/conflicting scope (e.g. one already bound to a
           // DIFFERENT endpoint → addStore throws) must NOT abort the whole batch
           // and leave a partial registration. Record it as skipped and continue
@@ -913,7 +925,7 @@ export const discoveryMethods: DiscoveryMethods & ThisType<Plur> = {
     return { scopes, failures }
   },
 
-  async registerScope(scope: string, opts?: { url?: string; timeoutMs?: number }): Promise<{ url: string; status: 'added' | 'already_registered' | 'overwritten' | 'token_rotated' }> {
+  async registerScope(scope: string, opts?: { url?: string; timeoutMs?: number; actor?: PinActor }): Promise<{ url: string; status: 'added' | 'already_registered' | 'overwritten' | 'token_rotated' }> {
     if (!isSharedScope(scope)) {
       throw new Error(`refusing to register non-shared scope "${scope}" — only shared-family scopes (group:/project:/space:/team:/org:/public) can be registered from discovery; add a personal-backed store explicitly with \`plur stores add\``)
     }
@@ -925,7 +937,7 @@ export const discoveryMethods: DiscoveryMethods & ThisType<Plur> = {
     }
     const sibling = this._storesForEndpoint(match.url)[0]
     const token = sibling?.token
-    const { status } = this.addStore('', scope, { url: match.url, token, ...(sibling?.token_env ? { tokenEnv: sibling.token_env } : {}), ownerDecided: true })
+    const { status } = this.addStore('', scope, { url: match.url, token, ...(sibling?.token_env ? { tokenEnv: sibling.token_env } : {}), actor: opts?.actor })
     // Persist covers/description/sensitivity so suggestScope activates.
     this.persistScopeMetadata(discoveries)
     // Registering a scope also clears any prior dismissal of it —

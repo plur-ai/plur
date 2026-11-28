@@ -143,7 +143,9 @@ seen failing first:
   positively reports it untracked in a real work tree; a folder that is not a
   git checkout no longer approves itself or counts as your decision.
 - Under `pinning.agents: request` or `deny`, only the owner registers a new
-  store (`plur stores add`, `plur remote`, MCP `plur_stores_add`); an error
+  store (`plur stores add`, `plur remote`, `plur scopes register`,
+  `plur stores discover --register`, MCP `plur_stores_add` and
+  `plur_scopes_discover` with `register`); an error
   elsewhere in `config.yaml` never relaxes the setting; `plur pin priority`
   asks the same typed confirmation as `plur pin` before raising a pin.
 - An owner's approval of a merge covers only the merged statement it was given
