@@ -1,5 +1,5 @@
 import { type GlobalFlags } from '../plur.js'
-import { clearFolderAsk, isResumeStart, parsePayload, readStdinRaw } from '../lib/folder-gate.js'
+import { clearFolderAsk, hookFolderPolicy, isResumeStart, isWorkingMode, parsePayload, payloadDir, readStdinRaw } from '../lib/folder-gate.js'
 import { bumpPinEpoch } from '../lib/pin-marker.js'
 
 /**
@@ -17,6 +17,8 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
   clearFolderAsk(sessionId)
   // A resumed context may not hold the pins an earlier injection gave it
   // (overhaul R7): start a new pin epoch, so the next skill, agent or
-  // plan-mode event includes them until a delivery is recorded.
+  // plan-mode event includes them until a delivery is recorded. Only where
+  // memory is on: an off folder gets nothing written.
+  if (!isWorkingMode(hookFolderPolicy(payloadDir(payload as Record<string, unknown>), flags))) return
   bumpPinEpoch(sessionId, { notesRoot: flags.path })
 }
