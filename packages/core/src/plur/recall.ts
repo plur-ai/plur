@@ -631,8 +631,9 @@ export const recallMethods: RecallMethods & ThisType<Plur> = {
         const reason: DegradedReason = storeFallback
         result = { ...result, degraded_reason: result.degraded_reason ?? reason, embedderError: result.embedderError ?? Plur.DEGRADED_MESSAGES[reason] }
       }
-      // Feedback is part of recall's ranking on every path, the store's own
-      // searches included (owner decision 2026-11-22).
+      // Feedback is part of hybrid recall's ranking, the store's own searches
+      // included (owner decision 2026-11-22); injection applies it too.
+      // Keyword-only and semantic-only recall do not apply it yet.
       const reordered = applyFeedbackOrder(result.engrams, e => e)
       return reordered === result.engrams ? result : { ...result, engrams: reordered }
     }
