@@ -2,6 +2,7 @@ import type { RemoteOnlyStatus } from './remote-only.js'
 import type { Engram, MeasuredUnder } from './schemas/engram.js'
 import type { InjectionSource } from './history.js'
 import type { RecallRemoteReport } from './remote-recall.js'
+import type { LearnStructuredData } from './enrich.js'
 export type { Engram, KnowledgeAnchor, Association, MeasuredUnder } from './schemas/engram.js'
 export type { Episode } from './schemas/episode.js'
 export type { PlurConfig } from './schemas/config.js'
@@ -43,8 +44,10 @@ export interface LearnContext {
    */
   attribution?: {
     asserted_by?: string
+    /** Calling app or agent runtime; omitted when unknown. */
     runtime?: { name: string; version?: string }
     model?: { name: string; prompt_id?: string; prompt_version?: string; prompt_sha256?: string }
+    /** Writing tool; defaults to plur-core. */
     tool?: { name: string; version?: string }
     on_behalf_of?: string
   }
@@ -85,6 +88,13 @@ export interface LearnContext {
    * pin_tier="hard".
    */
   pinned_priority?: number
+  /**
+   * Who is writing (overhaul D2): `owner` (a person at the CLI) is never
+   * restricted; `agent` and an absent actor follow `pinning.agents`. Only
+   * consulted when the write would pin. Never persisted; defaults to the
+   * instance's actor (`new Plur({ actor })` / `setDefaultActor`).
+   */
+  actor?: 'owner' | 'agent'
   /**
    * Start of the knowledge's validity window (ISO YYYY-MM-DD). Stored in
    * `temporal.valid_from`; inject/recall skip the engram before this date.
@@ -140,6 +150,23 @@ export interface LearnContext {
    * is not part of one. The session recorded in provenance is `session_id`.
    */
   session?: string
+  /**
+   * Write-time reinforcement default for this caller (overhaul D8). Used only
+   * when `learn.reinforce_exact` is absent from config.yaml: the config always
+   * decides when it says something. The MCP server passes `true` (one constant,
+   * `MCP_REINFORCE_EXACT_DEFAULT`); core's own default is off. Never persisted.
+   */
+  reinforce_exact_default?: boolean
+  /**
+   * The structured form of the memory (overhaul W10): `body` (when to apply,
+   * what to do, why, pitfalls, anchors — about 300 tokens at most), `kind`
+   * (rule, tool, fact, preference, experience, failure_lesson) and `outcome`
+   * when the source states one. Stored in `structured_data`; the body is
+   * indexed for recall. Any other key is refused (`_`-prefixed keys are
+   * PLUR's own bookkeeping). A stated kind sets `memory_class` when none is
+   * given.
+   */
+  structured_data?: LearnStructuredData
 }
 
 /** Extended context for async learn with LLM dedup. */
@@ -159,7 +186,13 @@ export interface DedupConfig {
 
 export interface LearnAsyncResult {
   engram: Engram
-  decision: DedupDecision
+  /**
+   * What happened. `REINFORCE` (overhaul D8): the statement equalled an
+   * existing engram's after normalising case, whitespace and punctuation, and
+   * `learn.reinforce_exact` is on, so that engram (`existing_id`) was
+   * reinforced and nothing new was written.
+   */
+  decision: DedupDecision | 'REINFORCE'
   existing_id?: string
   tensions?: string[]
   /**
@@ -227,7 +260,7 @@ export interface LearnBatchFailure {
 export interface LearnBatchResult {
   /** Successful outcomes, in input order (excludes failed statements). */
   results: LearnAsyncResult[]
-  stats: { added: number; updated: number; merged: number; noops: number; failed: number }
+  stats: { added: number; updated: number; merged: number; noops: number; failed: number; reinforced?: number }
   /** Per-statement failures — a bad item does not abort the whole batch. */
   failures: LearnBatchFailure[]
 }
@@ -336,8 +369,11 @@ export interface RecallOptions {
  * Why a hybrid recall or injection answered without (part of) its semantic
  * leg: the model is not on disk (run `plur doctor`), the
  * semantic leg missed the recall deadline, or only the reranker did.
+ * `store_embeddings_incomplete`: the primary store can search by meaning
+ * itself but has not embedded every memory yet, so the recall ranked in
+ * memory over the full candidate set instead (results complete, slower).
  */
-export type DegradedReason = 'embedding_model_missing' | 'semantic_deadline' | 'reranker_deadline'
+export type DegradedReason = 'embedding_model_missing' | 'semantic_deadline' | 'reranker_deadline' | 'store_embeddings_incomplete'
 
 export interface InjectOptions {
   budget?: number
@@ -383,10 +419,49 @@ export interface InjectOptions {
   deadline_ms?: number
   /** Absolute form — see {@link RecallOptions.deadline_at}. */
   deadline_at?: number
+  /**
+   * Epoch ms by which the caller needs the result, applied ONLY to the
+   * best-effort injection counter (not to the search). A hook racing a
+   * deadline passes it so a whole-file counter write is not started too close
+   * to the deadline; the search runs on exactly as before, which the hook's
+   * background embedding-cache build relies on.
+   */
+  bookkeeping_deadline_at?: number
   /** `.plur.yaml` remote endpoint (hook path org context) — see
    *  {@link RemoteProjectConfig}. */
   remote_project?: RemoteProjectConfig
+  /**
+   * Offer the always-on slot (pinned engrams) in this injection. Default true.
+   * `false` when the context already holds them — the Claude Code hook passes
+   * it on skill, agent and plan-mode events in a context whose pins were
+   * delivered (overhaul W2+4). Pins are then neither injected nor reported
+   * as omitted.
+   */
+  include_pinned?: boolean
+  /**
+   * Per-call override of `injection.mode` (overhaul W1): `legacy` is the
+   * keyword-overlap selection with the constraints floor and spreading;
+   * `unified` is the always-on slot plus recall's ranked list.
+   */
+  mode?: 'legacy' | 'unified'
+  /**
+   * Unified mode: rewrite the lexical query as recall does. Default true,
+   * except for `source: 'hook'`, where it is off unless set here or
+   * `PLUR_QUERY_REWRITE` is on (D6).
+   */
+  query_rewrite?: boolean
+  /**
+   * Session context to extend the query with (overhaul W5): the stored
+   * session task, the project scope label, the git branch, the last user
+   * turns. The local search uses the task plus these (`buildInjectionQuery`);
+   * the remote leg is sent the task alone. The query used is then recorded on
+   * the result as `query`.
+   */
+  query_context?: string[]
 }
+
+/** Per-injection relevance signals (overhaul W8 plumbing). See `RelevanceSignals` in inject-unified.ts. */
+export type InjectionRelevance = import('./inject-unified.js').RelevanceSignals
 
 export interface InjectionResult {
   directives: string
@@ -441,6 +516,18 @@ export interface InjectionResult {
    * Absent when nothing was omitted.
    */
   omitted_pinned?: Array<{ id: string; cost: number; reason: 'pinned-sub-budget' | 'total-budget' | 'hard-tier-cap' | 'soft-tier-budget' }>
+  /** The query this injection searched with, exactly, when `query_context` extended it (overhaul W5). */
+  query?: string
+  /** Which selection built the block (`injection.mode` or the per-call `mode`). */
+  selection?: 'legacy' | 'unified'
+  /** Whether the always-on slot was offered (`include_pinned`). */
+  pins_included?: boolean
+  /** The pinned share of the budget in tokens, when pins were offered. */
+  pinned_share_tokens?: number
+  /** Unified mode only: the relevance signals of this injection's ranking (W8). */
+  relevance?: InjectionRelevance
+  /** Unified mode only: the general task list's engram ids, in recall's rank order (pins and the prohibition slice not included). */
+  task_ids?: string[]
 }
 
 export interface CaptureContext {

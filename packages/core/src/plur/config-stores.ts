@@ -17,6 +17,8 @@ import { collapseExpandedStores, identityBaseOf, isSafeScopeName, isServerStoreE
 import { normalizeEndpointUrl, RemoteStore } from '../store/remote-store.js'
 import { withLock } from '../file-lock.js'
 import { REFUSED_CREDENTIAL_WRITE } from '../atomic-write.js'
+import { PinDeniedError, type PinActor } from '../pin-policy.js'
+import { checkStoreWrite, storeRegistrationRefusal, type StoreWriteAuthority } from '../store-additions.js'
 import { AddRemoteStoreError, isFromServerEntry, serverEntryIdOf, serverEntryScopeRefusal, stringList } from './helpers.js'
 
 export interface ConfigStoresMethods {
@@ -71,7 +73,9 @@ export interface ConfigStoresMethods {
    *  concurrent writers cannot lose each other's change; the in-memory refresh
    *  happens after release. */
   /** @internal */
-  persistStores(stores: StoreEntry[], opts?: {
+  persistStores(stores: StoreEntry[], opts: {
+    /** Who is writing (required): an addition follows {@link checkStoreWrite}. */
+    authority: StoreWriteAuthority
     serverSensitivityScopes?: Set<string>
     onConfigWrite?: (before: string | null, after: string) => void
     /** A new key for a server entry: written in place onto the one
@@ -98,6 +102,10 @@ export interface ConfigStoresMethods {
       /** The environment variable `token` was read from. The entry then
        *  stores `token_env: <name>` and never the token itself. */
       tokenEnv?: string
+      /** Who registers it (else this instance's default actor). A NEW store
+       *  is refused with PinDeniedError when `pinning.agents` restricts the
+       *  caller: a store's rows load with their pins. */
+      actor?: PinActor
     }): {
     status: 'added' | 'already_registered' | 'overwritten' | 'token_rotated'; scope: string
     /** On `token_rotated` for a scope of a server entry: every scope
@@ -128,6 +136,11 @@ export interface ConfigStoresMethods {
      *  that removes stale entries (the file is still as read); a throw writes
      *  nothing. `plur login --remove-stale` backs config.yaml up here. */
     beforeRemove?: (configPath: string) => void
+    /** Who registers it (else this instance's default actor). A write that
+     *  adds a scope no entry served before (a new server entry, or a new
+     *  scope on one) follows addStore's store-registration policy; a new key
+     *  for the same scopes does not. */
+    actor?: PinActor
   }): Promise<{ status: 'added' | 'updated' | 'unchanged'; fold: FoldReport; removed: ScopeHolder[]; migratedLegacy?: boolean }>
 
   /**
@@ -144,6 +157,8 @@ export interface ConfigStoresMethods {
     url: string; token: string; scope: string
     /** The environment variable `token` was read from: only its name is stored. */
     tokenEnv?: string
+    /** Who registers it (else this instance's default actor); see addStore. */
+    actor?: PinActor
     shared?: boolean; readonly?: boolean; timeoutMs?: number
     /** Replace an entry that already holds `scope` for a DIFFERENT store.
      *  Never implied: without it such a conflict is refused (code
@@ -258,7 +273,9 @@ export const configStoresMethods: ConfigStoresMethods & ThisType<Plur> = {
     return true
   },
 
-  persistStores(stores: StoreEntry[], opts?: {
+  persistStores(stores: StoreEntry[], opts: {
+    /** Who is writing (required): an addition follows {@link checkStoreWrite}. */
+    authority: StoreWriteAuthority
     serverSensitivityScopes?: Set<string>
     onConfigWrite?: (before: string | null, after: string) => void
     /** A new key for a server entry: written in place onto the one
@@ -293,6 +310,8 @@ export const configStoresMethods: ConfigStoresMethods & ThisType<Plur> = {
       // trusted: another process may have inserted or reordered entries since
       // these were loaded.
       const rawArray = Array.isArray(configData.stores) ? (configData.stores as unknown[]) : []
+      // A copy for the store-registration check below: nothing here may change it.
+      const beforeStores = structuredClone(rawArray)
       const ids = serverEntryIdentities(rawArray)
       const indexById = new Map<string, number>()
       ids.forEach((id, i) => { if (id !== undefined) indexById.set(id, i) })
@@ -344,6 +363,9 @@ export const configStoresMethods: ConfigStoresMethods & ThisType<Plur> = {
       })
       configData.stores = (out as StoreEntry[])
         .map(e => storeEntryForDisk(e as unknown as Record<string, unknown>) as unknown as StoreEntry)
+      // The one store-registration rule (0.24 review round 6), on the list
+      // read under this lock and the list about to be written.
+      checkStoreWrite(beforeStores, configData.stores as unknown[], opts?.authority, actor => this._pinDecisionFor(actor))
       // Atomic + fsynced. A plain writeFileSync truncates in place, and
       // loadConfig turns a parse failure into DEFAULT config — so a crash
       // mid-write would silently erase store registrations and route later
@@ -413,6 +435,10 @@ export const configStoresMethods: ConfigStoresMethods & ThisType<Plur> = {
       /** The environment variable `token` was read from. The entry then
        *  stores `token_env: <name>` and never the token itself. */
       tokenEnv?: string
+      /** Who registers it (else this instance's default actor). A NEW store
+       *  is refused with PinDeniedError when `pinning.agents` restricts the
+       *  caller: a store's rows load with their pins. */
+      actor?: PinActor
     }): {
     status: 'added' | 'already_registered' | 'overwritten' | 'token_rotated'; scope: string
     /** On `token_rotated` for a scope of a server entry: every scope
@@ -507,7 +533,7 @@ export const configStoresMethods: ConfigStoresMethods & ThisType<Plur> = {
             throw new Error(`addStore: scope "${sameEntry.scope}" is listed by more than one server entry for ${safeOrigin(sameEntry.url!)}, ` +
               `so which entry's key to replace is ambiguous. Nothing was changed. Remove the duplicate from config.yaml or re-run the enterprise setup.`)
           }
-          this.persistStores(config.stores ?? [], { serverEntryToken: { entry: sameEntry, token: options.token, tokenEnv } })
+          this.persistStores(config.stores ?? [], { authority: { kind: 'caller', actor: options?.actor }, serverEntryToken: { entry: sameEntry, token: options.token, tokenEnv } })
           const token_scopes = (config.stores ?? []).filter(s => serverEntryIdOf(s) === id).map(s => s.scope)
           logger.info(`[plur:addStore] rotated the server key for ${safeOrigin(sameEntry.url!)} (${token_scopes.length} scope(s))`)
           return { status: 'token_rotated', scope: sameEntry.scope, token_scopes }
@@ -515,7 +541,7 @@ export const configStoresMethods: ConfigStoresMethods & ThisType<Plur> = {
         const rotated = (config.stores ?? []).map(s =>
           s === sameEntry ? { ...s, token: options.token, token_env: tokenEnv } : s,
         )
-        this.persistStores(rotated)
+        this.persistStores(rotated, { authority: { kind: 'caller', actor: options?.actor } })
         logger.info(`[plur:addStore] rotated token for ${safeOrigin(options.url ?? "")} (scope "${sameEntry.scope}")`)
         return { status: 'token_rotated', scope: sameEntry.scope }
       }
@@ -527,6 +553,20 @@ export const configStoresMethods: ConfigStoresMethods & ThisType<Plur> = {
       if (!isRemote) this._materializeLocalStore(storePath)
       return { status: 'already_registered', scope: sameEntry.scope }
     }
+
+    // A NEW store is a new source of rows, and its rows load with their
+    // pins (team stores are read, not written, so the write-path policy never
+    // sees them). Under pinning.agents request/deny a caller the policy
+    // restricts may not add one: a pin request cannot be recorded on a store
+    // registration, so request refuses as deny does. Re-adding a registered
+    // store and rotating its token (handled above) add no source.
+    // persistStores applies the rule itself (checkStoreWrite); this earlier
+    // copy only stops a refused registration before a local store file is
+    // created. Every entry reaching here is a new source or a new scope on
+    // one, which the central rule also counts as an addition.
+    const authority: StoreWriteAuthority = { kind: 'caller', actor: options?.actor }
+    const decision = this._pinDecisionFor(authority.actor)
+    if (decision !== 'allow') throw new PinDeniedError(null, 'stores.add', storeRegistrationRefusal(decision))
 
     // Different endpoint, same scope: forbid by default to prevent
     // silent ambiguity ("which store does scope X belong to?"). Override
@@ -572,7 +612,7 @@ export const configStoresMethods: ConfigStoresMethods & ThisType<Plur> = {
     const stores = scopeConflict
       ? [...(config.stores ?? []).filter(s => s.scope !== scope), newEntry]
       : [...(config.stores ?? []), newEntry]
-    this.persistStores(stores)
+    this.persistStores(stores, { authority })
     return { status: scopeConflict ? 'overwritten' : 'added', scope }
   },
 
@@ -589,6 +629,11 @@ export const configStoresMethods: ConfigStoresMethods & ThisType<Plur> = {
      *  that removes stale entries (the file is still as read); a throw writes
      *  nothing. `plur login --remove-stale` backs config.yaml up here. */
     beforeRemove?: (configPath: string) => void
+    /** Who registers it (else this instance's default actor). A write that
+     *  adds a scope no entry served before (a new server entry, or a new
+     *  scope on one) follows addStore's store-registration policy; a new key
+     *  for the same scopes does not. */
+    actor?: PinActor
   }): Promise<{ status: 'added' | 'updated' | 'unchanged'; fold: FoldReport; removed: ScopeHolder[]; migratedLegacy?: boolean }> {
     let parsed: URL
     try { parsed = new URL(url) } catch {
@@ -644,8 +689,16 @@ export const configStoresMethods: ConfigStoresMethods & ThisType<Plur> = {
         // Windows (a verified access list, or the write is refused).
         rawStores.splice(0, rawStores.length, ...result.stores)
         return true
+        // A new server address, or a new scope on one, is a new source of
+        // rows loaded with its pins: _updateRawStores applies the
+        // store-registration rule (0.24 review round 6).
+      }, {
+        kind: 'caller', actor: opts.actor,
+        refusal: decision => `Signing in to a new server, or to a new scope on one, is reserved for the owner on this install (pinning.agents: ${decision}), `
+          + `because a store's pinned engrams load into every session. Nothing was registered. Ask the owner to run \`plur login\` in a terminal.`,
       }, opts.onConfigWrite)
     } catch (err) {
+      if (err instanceof PinDeniedError) throw err
       const e = err as { message?: unknown; name?: unknown; mark?: { line?: unknown }; code?: unknown }
       if (typeof e?.message === 'string' && e.message.startsWith('registerEnterpriseServer: ')) throw err
       // A refused credential write (owner-only protection) keeps its cause and the
@@ -680,6 +733,8 @@ export const configStoresMethods: ConfigStoresMethods & ThisType<Plur> = {
     url: string; token: string; scope: string
     /** The environment variable `token` was read from: only its name is stored. */
     tokenEnv?: string
+    /** Who registers it (else this instance's default actor); see addStore. */
+    actor?: PinActor
     shared?: boolean; readonly?: boolean; timeoutMs?: number
     /** Replace an entry that already holds `scope` for a DIFFERENT store.
      *  Never implied: without it such a conflict is refused (code
@@ -692,6 +747,7 @@ export const configStoresMethods: ConfigStoresMethods & ThisType<Plur> = {
       url, token, shared: opts.shared, readonly: opts.readonly,
       ...(opts.tokenEnv ? { tokenEnv: opts.tokenEnv } : {}),
       ...(opts.overwriteScope === true ? { overwriteScope: true } : {}),
+      ...(opts.actor ? { actor: opts.actor } : {}),
     })
     return { status, scope, ...(username ? { username } : {}), authorised, ...(token_scopes ? { token_scopes } : {}) }
   },

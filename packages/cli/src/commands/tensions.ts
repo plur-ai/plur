@@ -2,7 +2,7 @@ import { createPlur, type GlobalFlags } from '../plur.js'
 import { remoteOnlyCommandRefusal } from '../lib/folder-gate.js'
 import { shouldOutputJson, outputJson, outputText, outputInfo, exit } from '../output.js'
 import type { LlmFunction } from '@plur-ai/core'
-import { makeHttpLlm, llmFromEnv } from '@plur-ai/gateway/harness'
+import { resolveLlmOrExit, missingLlmMessage } from '../lib/llm-bridge.js'
 
 /**
  * plur tensions — scan for contradictions, manage the tension lifecycle.
@@ -30,7 +30,9 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   let winner: string | undefined
   let llmBaseUrl: string | undefined
   let llmApiKey: string | undefined
+  let llmApiKeyEnv: string | undefined
   let llmModel: string | undefined
+  let llmCmd: string | undefined
 
   let i = 0
   while (i < args.length) {
@@ -48,7 +50,9 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     else if (arg === '--winner' && i + 1 < args.length) { winner = args[++i]; i++ }
     else if (arg === '--llm-base-url' && i + 1 < args.length) { llmBaseUrl = args[++i]; i++ }
     else if (arg === '--llm-api-key' && i + 1 < args.length) { llmApiKey = args[++i]; i++ }
+    else if (arg === '--llm-api-key-env' && i + 1 < args.length) { llmApiKeyEnv = args[++i]; i++ }
     else if (arg === '--model' && i + 1 < args.length) { llmModel = args[++i]; i++ }
+    else if (arg === '--llm-cmd' && i + 1 < args.length) { llmCmd = args[++i]; i++ }
     else if ((arg === 'confirm' || arg === 'dismiss' || arg === 'resolve') && !action) { action = arg; i++ }
     else if (action && !tensionId && arg.startsWith('T-')) { tensionId = arg; i++ }
     else { i++ }
@@ -101,17 +105,13 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   if (scan) {
     const refused = remoteOnlyCommandRefusal(flags, 'A tension scan sends memories to a model, which is not the team server')
     if (refused) exit(1, refused)
+    // `allowEnvKeys`: the tension scan keeps its long-standing
+    // OPENROUTER_API_KEY / OPENAI_API_KEY fallback for existing users.
     const llm: LlmFunction | undefined =
-      llmBaseUrl
-        ? makeHttpLlm(llmBaseUrl, llmApiKey ?? '', llmModel)
-        : llmFromEnv()
+      resolveLlmOrExit({ llmCmd, baseUrl: llmBaseUrl, apiKey: llmApiKey, apiKeyEnv: llmApiKeyEnv, model: llmModel, allowEnvKeys: true })?.llm
 
     if (!llm) {
-      exit(
-        1,
-        'tensions --scan requires an LLM.\n' +
-        'Set OPENROUTER_API_KEY or OPENAI_API_KEY, or pass --llm-base-url + --llm-api-key.',
-      )
+      exit(1, missingLlmMessage('tensions --scan', { allowEnvKeys: true }))
       return
     }
 

@@ -309,6 +309,22 @@ anchors:
       - >-
         packages/core/test/server-entry-writeback-identity.test.ts::an authoritative server update lands in forbid inside
         scope_settings, as a union
+  packages/core/src/store-additions.ts#checkStoreWrite:
+    kind: guarantee
+    rule: >-
+      The one store-registration rule, applied by both writers of config.yaml's stores list under the config lock:
+      under pinning.agents request or deny, a write that adds a store source (a server address or a local store file)
+      or a new scope on an existing source is refused for a caller the pin policy restricts and nothing is written; a
+      server's own scope refresh may add scopes to a listed server, never a new source; a metadata write adds nothing.
+      Turning a url into a server entry is an addition. Replacing a key, removing, reordering, re-saving and folding
+      into an existing server entry are not additions (#1946).
+    tests:
+      - packages/core/test/audit-024-r7-fold-then-refresh.test.ts
+      - packages/core/test/audit-024-r7-metadata-race.test.ts
+      - packages/core/test/store-additions.test.ts
+      - packages/core/test/audit-024-r6-store-additions-guard.test.ts
+      - packages/core/test/audit-024-r6-config-writers.test.ts
+      - packages/cli/test/audit-024-r4-login-pins.test.ts
   packages/core/src/server-discovery.ts#(module):
     kind: guarantee
     rule: a failed, unauthorised or malformed scope answer from the server never replaces a non-empty cached scope list
@@ -1450,3 +1466,186 @@ anchors:
     tests:
       - "packages/core/test/version-check.test.ts::a corrupt cache file is ignored and rewritten"
       - "packages/core/test/version-check.test.ts::a fresh answer on disk is used by a new process without a lookup"
+  packages/core/src/change-journal.ts#(module):
+    kind: guarantee
+    rule: >-
+      The apply runs under the store write lock, so the before-snapshots are exactly what the change replaced and two
+      changes never interleave. * What undo guarantees: it restores the before-snapshots atomically (one store write,
+      under the same lock), and it REFUSES — {@link ChangeConflictError},…
+    tests:
+      - packages/core/test/change-journal.test.ts
+  packages/core/src/change-journal.ts#ChangeJournalRedactOptions:
+    kind: guarantee
+    rule: >-
+      A row the store still holds is never pulled into a redaction as derived content; a row it no longer holds that a
+      change created alongside a redacted row (an undone consolidation's merged row), or whose snapshot quotes a
+      redacted row's text, is redacted in every line of both generations (security audit 2026-11-27).
+    tests:
+      - packages/core/test/audit-024-f3-journal-derived-rows.test.ts
+      - packages/core/test/harden-change-journal-redact.test.ts
+  packages/core/src/change-journal.ts#PendingChange:
+    kind: guarantee
+    rule: Do slow work (model calls, network) before `apply`, never inside it.
+    tests:
+      - packages/core/test/change-journal.test.ts
+  packages/core/src/change-journal.ts#rotateIfLarge:
+    kind: guarantee
+    rule: >-
+      Rotate before a new change begins, never between a change's two lines: a journal over the size limit becomes the one
+      older generation, replacing the previous one (whose changes can then no longer be undone).
+    tests:
+      - packages/core/test/change-journal.test.ts
+  packages/core/src/change-journal.ts#UNDO_BOOKKEEPING_FIELDS:
+    kind: guarantee
+    rule: >-
+      They are not content, so by default they never block an undo: an engram injected once after a merge must still be
+      undoable.
+    tests:
+      - packages/core/test/change-journal.test.ts
+  packages/core/src/consolidate.ts#(module):
+    kind: guarantee
+    rule: >-
+      Within a block every engram's top-k neighbours at or above the threshold are found from the stored vectors: exactly
+      for blocks up to `exactBlockMax`, and by random-hyperplane LSH above that, so a 100k store is never compared
+      all-pairs. Core never calls a model API itself. One journalled change…
+    tests:
+      - packages/core/test/consolidate.test.ts
+      - packages/core/test/consolidate-apply.test.ts
+  packages/core/src/consolidate.ts#blockKeyFor:
+    kind: guarantee
+    rule: Engrams in different blocks are never compared.
+    tests:
+      - packages/core/test/consolidate.test.ts
+      - packages/core/test/consolidate-apply.test.ts
+  packages/core/src/consolidate.ts#candidatePairs:
+    kind: guarantee
+    rule: a reported pair always has its true score.
+    tests:
+      - packages/core/test/consolidate.test.ts
+      - packages/core/test/consolidate-apply.test.ts
+  packages/core/src/consolidate.ts#mergeEngrams:
+    kind: guarantee
+    rule: >-
+      never pinned: a pinned original (or one with a pending pin request) becomes `structured_data.pin_request` in
+      pin-policy's shape (by/via `consolidate`), so `plur pins review` lists it; The most restrictive visibility of any
+      member: a merge never publishes a private row.
+    tests:
+      - packages/core/test/consolidate.test.ts
+      - packages/core/test/consolidate-apply.test.ts
+  packages/core/src/consolidate.ts#parseConsolidationResponse:
+    kind: guarantee
+    rule: >-
+      Anything unclear is `pending` — never a merge; an empty STATEMENT line is not a merge; a long run of spaces or
+      tabs is parsed in linear time.
+    tests:
+      - packages/core/test/audit-024-r4-consolidate-parse-speed.test.ts
+      - packages/core/test/consolidate.test.ts
+      - packages/core/test/audit-024-r3-consolidate-empty-statement.test.ts
+      - packages/core/test/consolidate-apply.test.ts
+  packages/core/src/consolidate.ts#PlanMember:
+    kind: guarantee
+    rule: apply refuses the cluster if it changed.
+    tests:
+      - packages/core/test/consolidate.test.ts
+      - packages/core/test/consolidate-apply.test.ts
+  packages/core/src/consolidate.ts#PlanCluster:
+    kind: guarantee
+    rule: >-
+      The owner's approval covers the merged statement as it stands when it is set: the model pass clears it whenever
+      it writes a decision into the cluster, and with `approved_statement_hash` apply refuses the cluster unless the
+      statement still hashes to it (security audit 2026-11-27).
+    tests:
+      - packages/core/test/audit-024-f2-consolidation-approval.test.ts
+      - packages/core/test/consolidate-apply.test.ts
+  packages/core/src/enrich.ts#(module):
+    kind: guarantee
+    rule: >-
+      Every other `structured_data` key is either PLUR's own bookkeeping (`_routed`, `_outbox`, …), which a caller must
+      not be able to forge, or an extension nobody validates — so both are refused. `knowledge_type` is never created or
+      altered: its `cognitive_level` decides the injection section a row…
+    tests:
+      - packages/core/test/enrich.test.ts
+  packages/core/src/enrich.ts#enrichRow:
+    kind: guarantee
+    rule: >-
+      The statement, `knowledge_type` and every other field are left as they are, so enrichment never changes how or where
+      a row is injected.
+    tests:
+      - packages/core/test/enrich.test.ts
+  packages/core/src/inject-unified.ts#(module):
+    kind: note
+    why: Describes the injection layout; 'always-on' names the pinned slot and states no rule of its own.
+  packages/core/src/inject-unified.ts#exhausted:
+    kind: note
+    why: Explains why the deeper search keeps going; the rule itself is tested with the selection.
+  packages/core/src/inject-unified.ts#pinOrder:
+    kind: note
+    why: A section label ('Always-on slot'); states no rule of its own.
+  packages/core/src/inject-unified.ts#relevance:
+    kind: note
+    why: Explains which part the relevance gate leaves alone; 'always-on' names the pinned slot.
+  packages/core/src/inject-unified.ts#UnifiedConfig:
+    kind: note
+    why: "'always-on' names the pinned slot; states no rule of its own."
+  packages/core/src/pin-audit.ts#(module):
+    kind: guarantee
+    rule: >-
+      an item whose engram changed since the audit (statement, pin) is skipped, never applied to a row the proposal did
+      not see.
+    tests:
+      - packages/core/test/pin-fit-audit.test.ts
+  packages/core/src/pin-audit.ts#PinAuditItem:
+    kind: guarantee
+    rule: Set by a person, never by the audit.
+    tests:
+      - packages/core/test/pin-fit-audit.test.ts
+  packages/core/src/pin-audit.ts#planPinApply:
+    kind: guarantee
+    rule: that item is refused.
+    tests:
+      - packages/core/test/pin-fit-audit.test.ts
+  packages/core/src/pin-policy.ts#(module):
+    kind: guarantee
+    rule: >-
+      `deny` — the write is refused with {@link PinDeniedError}. * The caller is an {@link PinActor}: `owner` (the CLI, a
+      person at a terminal) is never restricted; Only a TRANSITION to pinned, and a stronger pin on a row already
+      pinned (higher priority or the hard tier), are policed: re-writing a pinned engram without strengthening its pin,
+      and unpinning, are not restricted.
+    tests:
+      - packages/core/test/pin-policy.test.ts
+      - packages/core/test/harden-pin-escalation.test.ts
+  packages/core/src/pin-policy.ts#isPinEscalation:
+    kind: guarantee
+    rule: >-
+      Raising the priority of a pin, or moving it to the hard tier, by an agent or an absent actor is refused under
+      pinning.agents request or deny; lowering a pin and the owner's changes are not.
+    tests:
+      - "packages/core/test/harden-pin-escalation.test.ts::an agent cannot raise a pin's priority"
+      - "packages/core/test/harden-pin-escalation.test.ts::an agent update cannot move a pin to the hard tier"
+      - "packages/core/test/harden-pin-escalation.test.ts::a journalled change by an agent cannot raise a pin's priority"
+      - "packages/core/test/harden-pin-escalation.test.ts::an agent may lower a pin's priority; the owner may raise it"
+  packages/core/src/pin-policy.ts#pinDecision:
+    kind: guarantee
+    rule: "`owner` is always allowed"
+    tests:
+      - packages/core/test/pin-policy.test.ts
+  packages/core/src/pin-policy.ts#pinEscalationDenied:
+    kind: guarantee
+    rule: >-
+      A pin escalation under pinning.agents request is refused like deny, since a pin request cannot be recorded on a
+      row that is already pinned; the refusal names the owner's command.
+    tests:
+      - "packages/core/test/harden-pin-escalation.test.ts::an agent cannot raise a pin's priority"
+  packages/core/src/storage-postgres.ts#updated:
+    kind: note
+    why: Explains why the vector is rebuilt on update ('would never be rebuilt' otherwise); states no rule of its own.
+  packages/core/src/inject-unified.ts#buildUnifiedPool:
+    kind: guarantee
+    rule: >-
+      A pin loads unconditionally only where it belongs: a global pin in every session, a scoped pin in a session within
+      its scope; in a session with no scope a scoped pin competes as an ordinary candidate, and in another scope's
+      session it is not visible.
+    tests:
+      - "packages/core/test/inject-unified-scoped-pins.test.ts::in a session within its scope, a scoped pin is always loaded"
+      - "packages/core/test/inject-unified-scoped-pins.test.ts::in a session with no scope, only global pins are always loaded; a scoped pin competes like any memory"
+      - "packages/core/test/inject-unified-scoped-pins.test.ts::in a session of another scope, a scoped pin is not visible at all"

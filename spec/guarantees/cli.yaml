@@ -374,3 +374,8 @@ anchors:
         packages/cli/test/known-flags.test.ts::refuses --path with no value, rather than falling back to the default
         store
       - packages/cli/test/known-flags.test.ts::refuses --path whose value is the next flag
+  packages/cli/src/plur.ts#cliActor:
+    kind: guarantee
+    rule: The pinning policy (`pinning.agents`) restricts an agent, never the owner.
+    tests:
+      - packages/cli/test/cli-actor-s1.test.ts

@@ -22,9 +22,13 @@ import type {
 import { INGEST_PATTERNS, isStoreTeardownError, PRIMARY_AUTO_EMBED_BATCH } from './helpers.js'
 import { type IndexSyncError, type IngestCandidate, type IngestOptions } from './types.js'
 
+import { redactChangeJournal } from '../change-journal.js'
 export interface MaintenanceMethods {
-  /** Remove retired engrams from storage. Returns count of removed and remaining. */
-  compact(): Promise<{ removed: number; remaining: number }>
+  /**
+   * Remove retired engrams from storage. Returns count of removed and
+   * remaining, and `warnings` (e.g. the change journal could not be redacted).
+   */
+  compact(): Promise<{ removed: number; remaining: number; warnings: string[] }>
 
   /**
    * Rebuild the derived index from YAML source of truth.
@@ -153,7 +157,7 @@ export interface MaintenanceMethods {
 }
 
 export const maintenanceMethods: MaintenanceMethods & ThisType<Plur> = {
-  async compact(): Promise<{ removed: number; remaining: number }> {
+  async compact(): Promise<{ removed: number; remaining: number; warnings: string[] }> {
     this._assertWritable()
     this._remoteOnlyRefuseLocalStore('Compacting the store (run it outside the remote-only folder)')
     return await this._withStoreLock(this.paths.engrams, async () => {
@@ -163,6 +167,7 @@ export const maintenanceMethods: MaintenanceMethods & ThisType<Plur> = {
       // it would lose the only durable record of that pending DELETE.
       const active = engrams.filter(e => e.status !== 'retired' || !!(e as any).structured_data?._retireRemote)
       const removed = engrams.length - active.length
+      const warnings: string[] = []
       if (removed > 0) {
         // Removing retired engrams IS this method, so the shrink guard is lifted.
         await this._writeEngrams(this.paths.engrams, active, { allowShrink: true })
@@ -171,6 +176,14 @@ export const maintenanceMethods: MaintenanceMethods & ThisType<Plur> = {
         // Every removed row, by identity — a retired row can share its id with
         // a kept one, and it must still be named.
         const kept = new Set(active)
+        const keptIds = new Set(active.map(e => e.id))
+        // The change journal must not keep what compaction removed (S5).
+        try { redactChangeJournal(this.paths.root, engrams.filter(e => !kept.has(e)).map(e => e.id), { held: id => keptIds.has(id) }) } catch (err) {
+          // Reported in the result, not only the log (H2).
+          const message = `the change journal could not be redacted: ${(err as Error).message}. The removed rows' content may still be in changes.jsonl.`
+          logger.warning(`[plur] compact: ${message}`)
+          warnings.push(message)
+        }
         try {
           this._appendHistory({
             event: 'store_compacted',
@@ -181,7 +194,7 @@ export const maintenanceMethods: MaintenanceMethods & ThisType<Plur> = {
         } catch { /* history is an audit trail, never a gate on the write */ }
         await this._syncIndex()
       }
-      return { removed, remaining: active.length }
+      return { removed, remaining: active.length, warnings }
     })
   },
 

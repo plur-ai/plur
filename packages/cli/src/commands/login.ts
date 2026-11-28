@@ -11,6 +11,7 @@ import { outputText, outputInfo, outputError, outputJson, shouldOutputJson } fro
 import { urlOpener } from '../lib/open-url.js'
 import { deviceName, isHeadless, isWslRelease } from '../enterprise/device-name.js'
 import { migrateLegacyLogin } from '../enterprise/legacy-login.js'
+import { requirePinPolicyConfirmation } from '../lib/pin-confirm.js'
 import {
   normaliseHost, readJson, fetchMe, personalScopeOf, holderLine, takeoverMessage, backupSecretFile, redactConsoleWith,
   type FetchFn, type MeAnswer,
@@ -798,24 +799,44 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     return
   }
 
-  // A remaining ~/.plur/config.json is moved into config.yaml once.
-  await migrateLegacyLogin({ home: homedir(), plur: () => createPlur(flags, { autoDiscover: false }), print: outputError })
+  // The host is read first: `plur login <url>` asks the owner's confirmation
+  // once, before both the config.json move and the sign-in.
+  let origin: string | undefined
+  if (!parsed.status && parsed.host) {
+    try {
+      origin = normaliseHost(parsed.host)
+    } catch (err) {
+      outputError(`Error: ${(err as Error).message}`)
+      process.exit(1)
+    }
+  }
+
+  // A server entry is a store whose pinned engrams load into every session:
+  // under pinning.agents request/deny the owner confirms at a terminal, as
+  // for `plur stores add`, before anything is written or the device sign-in
+  // starts; core turns away an agent's write (0.24 review rounds 4 and 8).
+  const plur = createPlur(flags, { autoDiscover: false })
+  let ownerConfirmed = false
+  if (origin !== undefined && plur.defaultActor === 'owner') {
+    await requirePinPolicyConfirmation(plur, `Sign in to ${origin} and register it as a store (its pinned engrams load into every session)`)
+    ownerConfirmed = true
+  }
+
+  // A remaining ~/.plur/config.json is moved into config.yaml once. Under
+  // request/deny it moves only with the confirmation above; `--status` has no
+  // confirmation step, so there it stays for a later `plur login`.
+  await migrateLegacyLogin({
+    home: homedir(), plur: () => createPlur(flags, { autoDiscover: false }), print: outputError,
+    ownerConfirmed: async () => ownerConfirmed,
+  })
 
   // --status: token validity per configured (url, token) credential
   if (parsed.status) {
     await runStatus(flags)
   }
 
-  if (!parsed.host) {
+  if (origin === undefined) {
     outputError(`Missing required argument: <host>\n\n${HELP}`)
-    process.exit(1)
-  }
-
-  let origin: string
-  try {
-    origin = normaliseHost(parsed.host)
-  } catch (err) {
-    outputError(`Error: ${(err as Error).message}`)
     process.exit(1)
   }
 

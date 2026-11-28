@@ -767,3 +767,8 @@ anchors:
         clean
     promises:
       - TOOL-3
+  packages/mcp/src/tools.ts#pinPolicy:
+    kind: guarantee
+    rule: "Overhaul D2: a pin this caller may not make is refused (deny) or"
+    tests:
+      - packages/mcp/test/pin-policy-mcp.test.ts

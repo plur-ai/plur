@@ -169,6 +169,16 @@ describe('Claude Code hooks read the folder map (#1347)', () => {
     expect(existsSync(join(dir, 'tmp', 'plur-sessions', 'cc-off.stop-count'))).toBe(false)
   })
 
+  it('off: session resume and session end write no pin marker (CI windows-editors, 0.24)', () => {
+    mapFolder(repo, '    plur: off\n')
+    const sessions = join(dir, 'tmp', 'plur-sessions')
+    const resume = { session_id: 'cc-off-resume', cwd: repo, hook_event_name: 'SessionStart', source: 'resume' }
+    expect(cli(['hook-session-resume'], resume).status).toBe(0)
+    expect(existsSync(join(sessions, 'cc-off-resume.pins'))).toBe(false)
+    expect(cli(['hook-session-end'], { session_id: 'cc-off-resume', cwd: repo, reason: 'exit' }).status).toBe(0)
+    expect(existsSync(join(sessions, 'cc-off-resume.pins'))).toBe(false)
+  })
+
   it('on via the map: injects, and a map scope is the session scope', () => {
     mapFolder(repo, '    plur: on\n')
     const on = context(cli(['hook-inject'], payload(PROMPT, 'cc-on')).stdout)

@@ -51,6 +51,8 @@ function contextWith(field: keyof LearnContext, value: string): LearnContext {
     case 'attribution': context.attribution = { asserted_by: value, model: { name: 'm', prompt_id: value } }; break
     case 'measured_under': context.measured_under = { model: value }; break
     case 'supersedes': context.supersedes = [value]; break
+    // W10: only body / kind / outcome validate; the body is the free text.
+    case 'structured_data': context.structured_data = { body: value }; break
     // Only stored when the engram is locked.
     case 'locked_reason': context.commitment = 'locked'; context.locked_reason = value; break
     default: (context as Record<string, unknown>)[field] = value

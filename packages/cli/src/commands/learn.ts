@@ -5,7 +5,7 @@ import { shouldOutputJson, outputJson, outputText, outputInfo, exit } from '../o
  * Flags this command accepts. Anything else is refused rather than silently
  * dropped.
  */
-export const FLAGS_WITH_VALUES = ['--scope', '--type', '--domain', '--source', '--rationale', '--tags', '--visibility', '--abstract', '--derived-from', '--knowledge-anchors', '--dual-coding', '--supersedes', '--license', '--claim-class', '--asserted-by']
+export const FLAGS_WITH_VALUES = ['--scope', '--type', '--domain', '--source', '--rationale', '--tags', '--visibility', '--abstract', '--derived-from', '--knowledge-anchors', '--dual-coding', '--supersedes', '--license', '--claim-class', '--asserted-by', '--body', '--kind', '--outcome']
 
 /**
  * How long `plur learn` waits for a team server before saving to the outbox,
@@ -17,6 +17,7 @@ export const FLAGS = [
   '--scope', '--type', '--domain', '--source', '--rationale', '--tags',
   '--visibility', '--abstract', '--derived-from', '--knowledge-anchors',
   '--dual-coding', '--supersedes', '--license', '--claim-class', '--asserted-by',
+  '--body', '--kind', '--outcome',
 ]
 
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
@@ -50,6 +51,11 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   let license: string | undefined
   let claimClass: 'observed' | 'documented' | 'structural' | 'asserted' | 'inferred' | 'revised' | undefined
   let assertedBy: string | undefined
+  // W10: the structured form — body (when / do / why / pitfalls / anchors),
+  // kind and a stated outcome. Validated in core.
+  let body: string | undefined
+  let kind: string | undefined
+  let outcome: string | undefined
 
   /** Reject `--license --claim-class observed`, where the value is the next flag. */
   const value = (flag: string, raw: string | undefined): string => {
@@ -134,6 +140,14 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       }
       claimClass = v as typeof claimClass; i++
     }
+    else if (arg === '--body' && i + 1 < args.length) { body = value('--body', args[++i]); i++ }
+    else if (arg === '--kind' && i + 1 < args.length) {
+      const v = args[++i]
+      const allowed = ['rule', 'tool', 'fact', 'preference', 'experience', 'failure_lesson']
+      if (!allowed.includes(v)) exit(1, `Unknown --kind "${v}". One of: ${allowed.join(', ')}.`)
+      kind = v; i++
+    }
+    else if (arg === '--outcome' && i + 1 < args.length) { outcome = value('--outcome', args[++i]); i++ }
     // `--` ends flag parsing: the next token is the statement, verbatim, even
     // when it starts with `-`.
     else if (arg === '--') {
@@ -154,7 +168,8 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     exit(1, 'Usage: plur learn <statement> [--scope <scope>] [--type <type>] [--domain <domain>] ' +
       '[--source <s>] [--rationale <r>] [--tags a,b,c] [--visibility private|public|template] ' +
       '[--abstract <id>] [--derived-from <id>] [--knowledge-anchors <json>] [--dual-coding <json>] ' +
-      '[--supersedes id1,id2] [--license <spdx-id>] [--claim-class <kind>] [--asserted-by <who>]\n' +
+      '[--supersedes id1,id2] [--license <spdx-id>] [--claim-class <kind>] [--asserted-by <who>] ' +
+      '[--body <text>] [--kind <kind>] [--outcome <o>]\n' +
       '       plur learn [flags] -- <statement>   (a statement that starts with "-")\n\n' +
       '  --license      which licence governs reuse of this memory, e.g. cc-by-4.0.\n' +
       '                 Leave it out and a default applies that nobody chose, and\n' +
@@ -162,7 +177,11 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       '  --claim-class  observed | documented | structural | asserted | inferred | revised.\n' +
       '                 Whether somebody stated this or a model worked it out.\n' +
       '  --asserted-by  who is answerable for it. Any address: a local name, a\n' +
-      '                 Decentralized Identifier, or an identifier for a process.')
+      '                 Decentralized Identifier, or an identifier for a process.\n' +
+      '  --body         the structured form: When / Asks / Do / Why / Pitfalls / Anchors,\n' +
+      '                 about 300 tokens at most. Indexed for recall.\n' +
+      '  --kind         rule | tool | fact | preference | experience | failure_lesson.\n' +
+      '  --outcome      success | failure, or a short stated result — only when stated.')
   }
 
   // Build the context conditionally: when --scope is absent, OMIT the scope key
@@ -189,6 +208,13 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     ...(knowledgeAnchors !== undefined ? { knowledge_anchors: knowledgeAnchors } : {}),
     ...(dualCoding !== undefined ? { dual_coding: dualCoding } : {}),
     ...(supersedes !== undefined ? { supersedes } : {}),
+    ...(body !== undefined || kind !== undefined || outcome !== undefined
+      ? { structured_data: {
+          ...(body !== undefined ? { body } : {}),
+          ...(kind !== undefined ? { kind: kind as 'rule' } : {}),
+          ...(outcome !== undefined ? { outcome } : {}),
+        } }
+      : {}),
     // A CLI invocation is a session too, so sources[].session_id is never null.
     // PLUR_SESSION_ID lets a wrapping harness thread its own id through;
     // otherwise the run identifies itself as a CLI run.
@@ -250,9 +276,14 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     } catch { /* advisory only */ }
   }
 
+  // Overhaul D8: with learn.reinforce_exact on, an exact restatement
+  // reinforced an existing engram instead of writing a new one.
+  const reinforced = plur.reinforcementOf(engram)
+
   if (shouldOutputJson(flags)) {
     outputJson({
       id: reportedId,
+      ...(reinforced ? { decision: 'REINFORCE', existing_id: reinforced.existing_id, swallowed: reinforced.swallowed } : {}),
       statement: engram.statement,
       scope: engram.scope,
       type: engram.type,
@@ -273,7 +304,9 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     })
   } else {
     // Confirmation of a requested mutation → suppressed by --quiet.
-    outputInfo(`Learned: "${engram.statement}"`, flags)
+    outputInfo(reinforced
+      ? `Reinforced the existing engram: "${engram.statement}" (your text "${reinforced.swallowed}" says the same)`
+      : `Learned: "${engram.statement}"`, flags)
     outputInfo(`  ID: ${reportedId} | Scope: ${engram.scope} | Type: ${engram.type}${engram.domain ? ` | Domain: ${engram.domain}` : ''}`, flags)
     if (delivered.delivery === 'outbox') {
       // Not where a reader assumes a team save went — never suppressed.

@@ -115,6 +115,12 @@ anchors:
       - >-
         packages/cli/test/doctor.test.ts::honours approval in the project .claude/settings.local.json only while git
         does not track it
+  packages/cli/src/commands/doctor.ts#readPinOverflow:
+    kind: guarantee
+    rule: never throws; an unreadable pin report comes back as an error, which doctor prints (H15).
+    tests:
+      - packages/cli/test/pins.test.ts
+      - packages/cli/test/doctor-status-read-errors-h15.test.ts::a pin report that cannot be read is an error
   packages/cli/src/commands/doctor.ts#spawnEnv:
     kind: note
     why: Explains why the probe uses the entry's own environment.
@@ -353,7 +359,7 @@ anchors:
       The Cursor context rule file is rewritten on every session start, even with no memories or on failure, so it never
       shows a stale session.
     none: no test checks the rule file after a failed or empty session start
-  packages/cli/src/commands/hook-inject.ts#{ result, mode, hybrid }:
+  packages/cli/src/commands/hook-inject.ts#{ result, mode, hybrid, pending }:
     kind: guarantee
     rule: >-
       When hybrid search misses its deadline or fails, the turn is served by local keyword search, which never contacts
@@ -656,6 +662,17 @@ anchors:
     kind: guarantee
     rule: An unparseable Cursor mcp.json is refused, never read as empty and written back.
     none: no test runs init --cursor against a malformed mcp.json
+  packages/cli/src/commands/init.ts#repoFileIsTracked:
+    kind: guarantee
+    rule: >-
+      Only git's positive untracked answer in a real work tree counts as a file the user wrote; when git cannot tell
+      (not a checkout, an invalid .git, no git), the file counts as repository content and init records no decision.
+    tests:
+      - "packages/cli/test/audit-024-f6-init-nongit.test.ts::not a git checkout: no folder-map entry and no adopted store"
+      - "packages/cli/test/audit-024-f6-init-nongit.test.ts::not a git checkout, inside the home folder: no folder-map entry and no adopted store"
+      - "packages/cli/test/audit-024-f6-init-nongit.test.ts::a .git that is not a valid repository gives no evidence either"
+      - "packages/cli/test/audit-024-f6-init-nongit.test.ts::git not available: no folder-map entry"
+      - "packages/cli/test/audit-024-f6-init-nongit.test.ts::control: an untracked settings file in a real git work tree is still recorded as on"
   packages/cli/src/commands/init.ts#clean:
     kind: guarantee
     rule: Running init again does not duplicate PLUR's hooks.
@@ -684,6 +701,13 @@ anchors:
     rule: A malformed Cursor hooks.json is refused, never overwritten.
     tests:
       - packages/cli/test/init-cursor.test.ts::refuses to overwrite a malformed .cursor/hooks.json
+  packages/cli/src/commands/init.ts#hooksShapeRefusal:
+    kind: guarantee
+    rule: >-
+      A hooks section that breaks the harness's shape skips that hooks step with the path named; the file is never
+      written.
+    tests:
+      - packages/cli/test/malformed-hooks-1897.test.ts
   packages/cli/src/commands/init.ts#installClaudeCodeMcp:
     kind: guarantee
     rule: >-
@@ -1129,16 +1153,31 @@ anchors:
     none: no test runs plur rerank-eval to a harmful verdict
   packages/cli/src/commands/restore.ts#run:
     kind: guarantee
-    rule: plur restore is refused in a remote-only folder and changes nothing.
+    rule: >-
+      plur restore is refused in a remote-only folder and changes nothing; under pinning.agents request or deny, a
+      restore that pins engrams again is refused without the confirmation typed at an interactive terminal, and the
+      store is unchanged.
     tests:
+      - >-
+        packages/cli/test/audit-024-r4-restore-pins.test.ts::a restore that pins an engram again is refused without a
+        terminal
       - >-
         packages/cli/test/folder-remote-only.test.ts::plur restore in a remote-only folder is refused and changes
         nothing
   packages/cli/src/commands/scopes.ts#run:
     kind: guarantee
-    rule: Personal scopes are never offered for registration, and a refused register exits 1 without truncating JSON output.
+    rule: >-
+      Personal scopes are never offered for registration, and a refused register exits 1 without truncating JSON
+      output. Under pinning.agents request or deny, plur scopes register is refused when run by an agent, or with
+      PLUR_ACTOR=owner and no terminal, and nothing is registered.
     tests:
       - packages/cli/test/scopes.test.ts::register a scope no configured remote authorizes → reports failure and exits 1
+      - >-
+        packages/cli/test/audit-024-r2-scopes-register-cli.test.ts::from an agent shell, scopes register and stores
+        discover --register are refused
+      - >-
+        packages/cli/test/audit-024-r2-scopes-register-cli.test.ts::PLUR_ACTOR=owner without a terminal is refused
+        for both
   packages/cli/src/commands/status.ts#plur:
     kind: guarantee
     rule: plur status never writes to the store.
@@ -1167,6 +1206,22 @@ anchors:
   packages/cli/src/commands/stores.ts#flagValue:
     kind: note
     why: Describes the helper's return value; the refusal happens in its callers.
+  packages/cli/src/commands/stores.ts#run:
+    kind: guarantee
+    rule: >-
+      Under pinning.agents request or deny, plur stores add and plur stores discover --register need the confirmation
+      typed at an interactive terminal; run by an agent, or with PLUR_ACTOR=owner and no terminal, they are refused and
+      nothing is registered.
+    tests:
+      - >-
+        packages/cli/test/audit-024-r2-scopes-register-cli.test.ts::from an agent shell, scopes register and stores
+        discover --register are refused
+      - >-
+        packages/cli/test/audit-024-f4-stores-add-cli.test.ts::plur stores add <path> from an agent shell is
+        refused, nothing registered
+      - >-
+        packages/cli/test/audit-024-f4-stores-add-cli.test.ts::PLUR_ACTOR=owner without a terminal is refused for
+        path, url and plur remote
   packages/cli/src/commands/stores.ts#skippedStoreLines:
     kind: guarantee
     rule: A folder path in a suggested command is quoted or escaped, never run as shell words when pasted.
@@ -1256,3 +1311,72 @@ anchors:
     kind: guarantee
     rule: plur verify can never write to the store it examines.
     none: no test runs plur verify and checks the store is unchanged
+  packages/cli/src/commands/hook-inject.ts#eventInjectOptions:
+    kind: guarantee
+    rule: >-
+      An event never dials a team server (`remote: false`, no `remote_project`): events fire on every skill, agent and
+      plan-mode tool call, and the first prompt already read the team store for this context.
+    tests:
+      - packages/cli/test/hook-inject-event-safety.test.ts
+  packages/cli/src/commands/hook-inject.ts#exitIfAbandonedHybrid:
+    kind: guarantee
+    rule: An event never starts the warm-up
+    tests:
+      - packages/cli/test/hook-inject-event-safety.test.ts
+  packages/cli/src/commands/hook-inject.ts#hookQueryContext:
+    kind: guarantee
+    rule: Never throws.
+    tests:
+      - packages/cli/test/hook-query.test.ts
+  packages/cli/src/commands/hook-inject.ts#modelOnDisk:
+    kind: guarantee
+    rule: Never loads or downloads it.
+    tests:
+      - packages/cli/test/hook-inject-event-safety.test.ts
+  packages/cli/src/commands/hook-inject.ts#planEventRetrieval:
+    kind: guarantee
+    rule: "the model is on disk (checked last, bounded by `modelCheckMs`): an event never downloads it."
+    tests:
+      - packages/cli/test/hook-inject-event-safety.test.ts
+  packages/cli/src/commands/hook-inject.ts#resultHasPins:
+    kind: guarantee
+    rule: >-
+      H9: did this injection's block hold at least one pinned engram? A delivery is recorded only then: an injection whose
+      pins did not fit (or a store with none yet) must not make later events leave out pins they never gave.
+    tests:
+      - packages/cli/test/hook-inject-pins-epoch.test.ts
+  packages/cli/src/commands/hook-inject.ts#sessionStartPinLines:
+    kind: guarantee
+    rule: "Advisory: a failure leaves the line out, never the session start."
+    tests:
+      - packages/cli/test/pin-overflow-notice.test.ts
+  packages/cli/src/commands/pins.ts#(module):
+    kind: guarantee
+    rule: >-
+      writes a proposal, changes nothing plur pins apply <file> [--limit N] --yes apply a reviewed proposal as one
+      journalled change plur pins undo <change-id> undo an apply * The CLI is the owner (see `resolveCliActor`), so its
+      pins are never turned into requests.
+    tests:
+      - packages/cli/test/pins.test.ts
+      - packages/cli/test/cli-actor-s1.test.ts
+  packages/cli/src/commands/pins.ts#priority:
+    kind: guarantee
+    rule: >-
+      Under pinning.agents request or deny, raising a pin's priority as the owner needs the confirmation typed at an
+      interactive terminal; PLUR_ACTOR=owner alone is refused and the priority is unchanged.
+    tests:
+      - >-
+        packages/cli/test/audit-024-f7-pin-priority-confirm.test.ts::PLUR_ACTOR=owner without a terminal cannot
+        raise a priority (pin and pins forms)
+      - "packages/cli/test/audit-024-f7-pin-priority-confirm.test.ts::the owner at a terminal raises it after typing yes"
+  packages/cli/src/commands/pins.ts#out:
+    kind: guarantee
+    rule: "S6: by default next to the store it audits, never into the current folder"
+    tests:
+      - packages/cli/test/pins.test.ts
+      - packages/cli/test/cli-actor-s1.test.ts
+  packages/cli/src/commands/status.ts#health:
+    kind: guarantee
+    rule: never fails the status.
+    tests:
+      - packages/cli/test/consolidate-cli.test.ts

@@ -102,6 +102,19 @@ export interface LearnAsyncDeps {
    * seen. Optional so hand-built deps keep working.
    */
   holdAsDraft?: (id: string) => Promise<void>
+  /**
+   * Write-time reinforcement (overhaul D8). Called on an exact content-hash
+   * match; returns null when reinforcement does not apply (off, or the match
+   * is locked, a draft, superseded, queued or not in this scope), else the
+   * outcome of the routed write — `REINFORCE` when it reinforced the match.
+   * Optional: without it a hash match is a NOOP, as before.
+   */
+  reinforce?: (hit: Engram, statement: string, context?: LearnContext) => Promise<{ engram: Engram; decision: 'REINFORCE' | 'NOOP' | 'ADD' } | null>
+  /**
+   * Queue near-paraphrases of a just-written engram for the next consolidation
+   * plan (overhaul D8). Optional; best effort.
+   */
+  queueParaphrases?: (engram: Engram, neighbours: Array<{ id: string; score: number; scope?: string }>, context?: LearnContext) => void
 }
 
 
@@ -361,6 +374,8 @@ export async function learnAsync(
   // Step 1: Content hash fast-path (scope-aware)
   const hashMatch = await deps.hashDedup(statement, context?.scope)
   if (hashMatch) {
+    const r = deps.reinforce ? await deps.reinforce(hashMatch, statement, context) : null
+    if (r) return { engram: r.engram, decision: r.decision, ...(r.decision === 'ADD' ? {} : { existing_id: r.engram.id }) }
     return { engram: hashMatch, decision: 'NOOP', existing_id: hashMatch.id }
   }
 
@@ -454,6 +469,7 @@ export async function learnAsync(
         source: context?.source,
         dual_coding: context?.dual_coding as never,
         knowledge_anchors: context?.knowledge_anchors as never,
+        structured_data: (context as { structured_data?: unknown } | undefined)?.structured_data as never,
       })
       const scores = (await deps.similarityScores(query, candidates))
         .slice()
@@ -515,6 +531,12 @@ export async function learnAsync(
 
   // Step 5: Execute
   const executed = await executeDedupDecision(deps, statement, context, decision, targetId, opts)
+  if (deps.queueParaphrases && nearDuplicates?.length && (executed.decision === 'ADD' || executed.decision === 'UPDATE')) {
+    const scopeOf = new Map(candidates.map(c => [c.id, c.scope]))
+    try {
+      deps.queueParaphrases(executed.engram, nearDuplicates.map(n => ({ id: n.id, score: n.score, scope: scopeOf.get(n.id) })), context)
+    } catch { /* best effort */ }
+  }
   return { ...executed, dedup: { mode: dedupMode, ...(nearDuplicates ? { near_duplicates: nearDuplicates } : {}) } }
 }
 
@@ -571,7 +593,7 @@ export async function learnBatch(
 ): Promise<LearnBatchResult> {
   const results: LearnAsyncResult[] = []
   const failures: LearnBatchFailure[] = []
-  const stats = { added: 0, updated: 0, merged: 0, noops: 0, failed: 0 }
+  const stats = { added: 0, updated: 0, merged: 0, noops: 0, failed: 0, reinforced: 0 }
 
   const maxLlmCalls = opts.maxLlmCalls ?? 50
   let llmCallsUsed = 0
@@ -639,7 +661,8 @@ export async function learnBatch(
       // input even though `results` is compacted (failed statements absent).
       results.push({ ...result, input_index: i })
       const key = result.decision.toLowerCase()
-      if (key === 'noop') stats.noops++
+      if (key === 'reinforce') stats.reinforced++
+      else if (key === 'noop') stats.noops++
       else if (key === 'merge') stats.merged++
       else {
         if (key === 'update') stats.updated++

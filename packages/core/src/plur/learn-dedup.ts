@@ -9,6 +9,9 @@ import type {
 } from '../types.js'
 import { LLM_BREAKER_COOLDOWN_MS, LLM_BREAKER_THRESHOLD, LLM_BREAKER_WINDOW_MS } from './helpers.js'
 
+import { applyFeedbackSignal } from '../feedback.js'
+import { isRemoteOnlyQueued } from '../remote-only-rows.js'
+import { validateLearnStructuredData } from '../enrich.js'
 export interface LearnDedupMethods {
   /** Apply a duplicate-write to an existing engram: increment write_count,
    * append source, persist to the store the engram lives in.
@@ -112,6 +115,20 @@ export interface LearnDedupMethods {
    */
   /** @internal */
   _recordLlmSuccess(): void
+
+  /**
+   * True when a write whose statement matches `hit` carries content `hit`
+   * does not hold: a structured body, kind or outcome, or a rationale, that
+   * differs from the hit's (finding 6). Such a write is not absorbed as a
+   * duplicate — that would drop the body — but written as its own engram,
+   * where consolidation can later merge it with the owner's approval.
+   */
+  /** @internal */
+  _incomingCarriesNewContent(hit: Engram, context: LearnContext | undefined): boolean
+
+  /** May an exact restatement reinforce this engram (overhaul R8)? */
+  /** @internal */
+  _reinforceEligible(e: Engram, scope: string): boolean
 }
 
 export const learnDedupMethods: LearnDedupMethods & ThisType<Plur> = {
@@ -130,6 +147,19 @@ export const learnDedupMethods: LearnDedupMethods & ThisType<Plur> = {
     const currentSources = (target as any).sources ?? []
     target.write_count = currentCount + 1
     ;(target as any).sources = [...currentSources, this._buildSourceEntry(scope, context)]
+    // Overhaul D8: with `learn.reinforce_exact` on, an exact normalised
+    // restatement also REINFORCES the engram it matched — through the
+    // existing feedback and activation fields only (an automatic positive
+    // signal: strength and recency, never commitment) — when that engram is
+    // active, current, in this scope, not locked, not a draft, not a pack row
+    // and not waiting in an outbox. Otherwise the write is absorbed as before.
+    const reinforce = this._reinforceExactEnabled(context) && this._reinforceEligible(target, scope)
+    let reinforced = false
+    const today = new Date().toISOString().slice(0, 10)
+    if (reinforce && idx !== -1) {
+      applyFeedbackSignal(target, 'positive', today, { source: 'auto' })
+      reinforced = true
+    }
     // Record the absorption: the caller is handed an engram it did not write,
     // and without a trace a misdirected absorption is indistinguishable from
     // lost memory.
@@ -142,6 +172,7 @@ export const learnDedupMethods: LearnDedupMethods & ThisType<Plur> = {
           matched_on: 'content_hash',
           write_count_after: target.write_count,
           scope,
+          ...(reinforce ? { reinforce: true } : {}),
           // Enough to spot a misdirected absorption without storing the
           // incoming statement verbatim.
           incoming_preview: statement.slice(0, 120),
@@ -173,13 +204,24 @@ export const learnDedupMethods: LearnDedupMethods & ThisType<Plur> = {
           if (!row || row.status !== 'active') return
           row.write_count = (row.write_count ?? (row as any).reference_count ?? 1) + 1
           ;(row as any).sources = [...((row as any).sources ?? []), sourceEntry]
+          if (reinforce && this._reinforceEligible(row, scope)) {
+            applyFeedbackSignal(row, 'positive', today, { source: 'auto' })
+            reinforced = true
+          }
           await this._writeEngrams(storeInfo.path, storeEngrams)
           await this._syncIndex()
           // The caller gets the persisted count, not the pre-lock guess.
           target.write_count = row.write_count
           ;(target as any).sources = (row as any).sources
+          if (reinforced) {
+            target.feedback_signals = row.feedback_signals
+            target.activation = row.activation
+          }
         })
       }
+    }
+    if (reinforced) {
+      this._reinforced.set(target, { decision: 'REINFORCE', existing_id: target.id, existing_statement: target.statement, swallowed: statement })
     }
     return target
   },
@@ -545,5 +587,28 @@ export const learnDedupMethods: LearnDedupMethods & ThisType<Plur> = {
   _recordLlmSuccess(): void {
     const now = Date.now()
     this._llmFailures = this._llmFailures.filter(t => now - t < LLM_BREAKER_WINDOW_MS)
+  },
+
+  _incomingCarriesNewContent(hit: Engram, context: LearnContext | undefined): boolean {
+    let incoming: ReturnType<typeof validateLearnStructuredData>
+    try { incoming = validateLearnStructuredData(context?.structured_data) } catch { incoming = undefined }
+    const sd = (hit.structured_data ?? {}) as Record<string, unknown>
+    if (incoming) {
+      for (const key of ['body', 'kind', 'outcome'] as const) {
+        const v = incoming[key]
+        if (v !== undefined && v !== sd[key]) return true
+      }
+    }
+    const why = typeof context?.rationale === 'string' ? context.rationale.trim() : ''
+    return why !== '' && why !== (hit.rationale ?? '').trim()
+  },
+
+  _reinforceEligible(e: Engram, scope: string): boolean {
+    if (e.status !== 'active' || e.scope !== scope) return false
+    if ((e.relations?.superseded_by?.length ?? 0) > 0) return false
+    if (e.commitment === 'locked' || e.commitment === 'draft') return false
+    if (e.pack || (e as any)._pack) return false
+    if ((e as any).structured_data?._outbox || isRemoteOnlyQueued(e)) return false
+    return true
   },
 }

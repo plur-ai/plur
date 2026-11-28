@@ -61,7 +61,7 @@ exports[`plur init on darwin/linux output is unchanged (#1267) > hook commands m
         {
           "type": "command",
           "command": "<HOME>/.plur/bin/plur-hook hook-inject --event plan_mode",
-          "timeout": 10
+          "timeout": 20
         }
       ]
     },
@@ -71,7 +71,7 @@ exports[`plur init on darwin/linux output is unchanged (#1267) > hook commands m
         {
           "type": "command",
           "command": "<HOME>/.plur/bin/plur-hook hook-inject --event skill",
-          "timeout": 10
+          "timeout": 20
         }
       ]
     },
@@ -81,7 +81,7 @@ exports[`plur init on darwin/linux output is unchanged (#1267) > hook commands m
         {
           "type": "command",
           "command": "<HOME>/.plur/bin/plur-hook hook-inject --event agent",
-          "timeout": 10
+          "timeout": 20
         }
       ]
     },
@@ -136,7 +136,7 @@ exports[`plur init on darwin/linux output is unchanged (#1267) > hook commands m
         {
           "type": "command",
           "command": "<HOME>/.plur/bin/plur-hook hook-inject --event subagent",
-          "timeout": 10
+          "timeout": 20
         }
       ]
     }

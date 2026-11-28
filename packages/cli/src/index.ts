@@ -1,5 +1,5 @@
 import { shouldOutputJson, outputJson, setQuiet, exit } from './output.js'
-import { parseGlobalFlags, createPlur } from './plur.js'
+import { parseGlobalFlags, createPlur, setCliActor } from './plur.js'
 import { unknownFlagMessage } from './known-flags.js'
 import { exitWhenStoreIdle } from './lib/store-lock-exit.js'
 
@@ -66,6 +66,8 @@ Commands:
   promote <id>            Promote an engram to active
   rescope <id...> --to <scope>  Move engram(s) to another scope
                           [--keep-local] [--dry-run]; also: promote <id> --to <scope>
+  rescope --plan|--apply <file>|--undo <change>
+                          Propose scopes for global engrams from covers, apply as one undoable change
   upload                  Preview local memories for authorized team scopes
                           --yes sends; --only <id,…> limits the selection
   migrate [up|down|status] Run schema migrations
@@ -102,6 +104,15 @@ Commands:
   rerank-eval             Per-store reranker self-eval gate (advisory)
                           [--reranker <name>] [--sample N] [--seed N] [--force]
   tensions [--scan]       List or scan for engram contradictions
+  pin <id> / unpin <id>   Pin or unpin an engram (the owner's pin; [--scope <s>])
+  pin                     Pinned set: priority, cost, the pinned share, what does not fit,
+                          and pending pin requests [--budget N]
+  pin priority <id> <n>   Set a pin's priority (1-100, higher loads first)
+  pin review              Pending pin requests; pin review approve|reject <id...>
+  pin audit               Ask the host model which pins apply to every task (proposal file;
+                          changes nothing) [--out <file>] [--llm-cmd <cmd> | PLUR_LLM_CMD]
+  pin apply <file>        Apply a reviewed proposal, journalled [--limit N] --yes
+  pin undo <change-id>    Undo a pin apply
   audit [--source X]      Audit working memory (claude-code|claw|hermes) for conflicts vs engrams
   hook-inject                   (internal) Hook handler for engram injection
   hook-observe            (internal) Hook handler for observation capture
@@ -182,6 +193,8 @@ const COMMANDS: Record<string, string> = {
   import: './commands/import.js',
   promote: './commands/promote.js',
   rescope: './commands/rescope.js',
+  consolidate: './commands/consolidate.js',
+  enrich: './commands/enrich.js',
   upload: './commands/upload.js',
   'similarity-search': './commands/similarity-search.js',
   stores: './commands/stores.js',
@@ -211,6 +224,9 @@ const COMMANDS: Record<string, string> = {
   'rerank-eval': './commands/rerank-eval.js',
   tensions: './commands/tensions.js',
   audit: './commands/audit.js',
+  pin: './commands/pin.js',
+  unpin: './commands/unpin.js',
+  pins: './commands/pins.js',
   'hook-inject': './commands/hook-inject.js',
   'hook-observe': './commands/hook-observe.js',
   'hook-learn-check': './commands/hook-learn-check.js',
@@ -291,6 +307,9 @@ function separatedArgs(cmd: string | undefined, rest: string[]): string[] {
 if (!command || !COMMANDS[command]) {
   exit(1, `Unknown command: ${command}. Run 'plur --help' for usage.`)
 }
+
+// Overhaul D2: hooks run inside an agent session, so their writes are an agent's.
+if (command.startsWith('hook-')) setCliActor('agent')
 
 try {
   const mod = await import(COMMANDS[command])

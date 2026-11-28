@@ -304,6 +304,33 @@ anchors:
       - >-
         packages/core/test/config-owner-only.test.ts::protection that cannot be established: the write is refused and
         config.yaml is unchanged
+  packages/core/src/config.ts#fallbackConfig:
+    kind: guarantee
+    rule: >-
+      An error elsewhere in config.yaml never relaxes the owner's pinning.agents to the allow default; a config.yaml
+      that exists but cannot be read gives request.
+    tests:
+      - packages/core/test/audit-024-f5-config-pinning-failsafe.test.ts::a config.yaml that cannot be read fails safe to request
+      - "packages/core/test/audit-024-f5-config-pinning-failsafe.test.ts::an invalid unrelated key: the owner's value is kept"
+      - >-
+        packages/core/test/audit-024-f5-config-pinning-failsafe.test.ts::invalid key: an agent pin through core is
+        refused, not stored pinned
+  packages/core/src/config.ts#readablePinning:
+    kind: guarantee
+    rule: >-
+      In a config that cannot be fully read, a pinning section that cannot be read itself fails safe to request; a
+      config that never set pinning keeps the allow default.
+    tests:
+      - packages/core/test/audit-024-f5-config-pinning-failsafe.test.ts::a pinning section that cannot be read itself fails safe to request
+      - packages/core/test/audit-024-f5-config-pinning-failsafe.test.ts::a config that never set pinning keeps the allow default, broken or not
+  packages/core/src/config.ts#pinningFromBrokenYaml:
+    kind: guarantee
+    rule: >-
+      For YAML that does not parse, the owner's top-level pinning block is read on its own and kept; a mention of pinning
+      that cannot be read back fails safe to request.
+    tests:
+      - "packages/core/test/audit-024-f5-config-pinning-failsafe.test.ts::YAML that does not parse: the owner's value is kept"
+      - packages/core/test/audit-024-f5-config-pinning-failsafe.test.ts::a pinning section that cannot be read itself fails safe to request
   packages/core/src/config.ts#loadConfig:
     kind: guarantee
     rule: >-
@@ -1706,3 +1733,51 @@ anchors:
       - >-
         packages/core/test/formal-remote-health-breaker.test.ts::a host-wide 429 cooldown from an older file is still
         honoured to its end
+  packages/core/src/content-fields.ts#LEARN_CONTEXT_FIELD_ROLES.actor:
+    kind: guarantee
+    rule: "Who is writing: an enum, never persisted."
+    tests:
+      - packages/core/test/pin-policy.test.ts
+  packages/core/src/content-fields.ts#LEARN_CONTEXT_FIELD_ROLES.reinforce_exact_default:
+    kind: guarantee
+    rule: never persisted.
+    tests:
+      - packages/core/test/learn-reinforce.test.ts
+  packages/core/src/embeddings.ts#engramVectors:
+    kind: guarantee
+    rule: without it nothing is embedded and nothing is written, so a read-only caller (`plur status`) never loads the model.
+    tests:
+      - packages/core/test/embeddings-vector-sidecar.test.ts
+  packages/core/src/embeddings.ts#loadMainCache:
+    kind: guarantee
+    rule: the sidecar carries the old stamp and is simply never matched.
+    tests:
+      - packages/core/test/embeddings-vector-sidecar.test.ts
+  packages/core/src/embeddings.ts#vectorSidecarPath:
+    kind: guarantee
+    rule: "Derived state: never synced, never the file of record, safe to delete."
+    tests:
+      - packages/core/test/embeddings-vector-sidecar.test.ts
+  packages/core/src/fts.ts#engramTermSet:
+    kind: note
+    why: A caller contract ('must not mutate') on an internal cache, not a product guarantee.
+  packages/core/src/fts.ts#engramTokenCache:
+    kind: note
+    why: A caller contract ('must not mutate') on an internal cache, not a product guarantee.
+  packages/core/src/fts.ts#SEARCH_INDEX_VERSION:
+    kind: guarantee
+    rule: >-
+      It moves when the tokenizer OR the search-text composition changes, so a row derived under either older contract
+      reads as stale and is re-derived lazily, in the background, by the existing backfill — never on a hook's critical
+      path. Never equal to a bare tokenizer version, which is what rows…
+    tests:
+      - packages/core/test/structured-body-search.test.ts
+      - packages/core/test/postgres-bm25-pushdown.test.ts
+  packages/core/src/fts.ts#bm25Idf:
+    kind: guarantee
+    rule: >-
+      A query word found in most or all memories keeps a small positive weight, never zero or negative, so in a small
+      store every memory containing it is still found; a rarer word weighs more.
+    tests:
+      - "packages/core/test/recall-common-words-and-strength.test.ts::every memory with the shared word is found, the one with a rarer word first"
+      - "packages/core/test/fts.test.ts::gives a universal term a small positive IDF (no negative weights)"

@@ -147,3 +147,30 @@ anchors:
     kind: guarantee
     rule: 'A contradiction''s category is advisory: resolution never branches on it.'
     none: no test checks that resolution ignores the category
+  packages/core/src/schemas/config.ts#PlurConfigSchema.agents:
+    kind: guarantee
+    rule: agent pinning, so a typo ("denny") becomes 'request', never 'allow'.
+    tests:
+      - packages/core/test/overhaul-config.test.ts
+  packages/core/src/schemas/config.ts#PlurConfigSchema.consolidate:
+    kind: guarantee
+    rule: "`apply_enabled` (default false) — `plur consolidate --apply` refuses until this is set"
+    tests:
+      - packages/core/test/overhaul-config.test.ts
+  packages/core/src/schemas/config.ts#PlurConfigSchema.learn:
+    kind: guarantee
+    rule: Never similarity-only.
+    tests:
+      - packages/core/test/overhaul-config.test.ts
+  packages/core/src/schemas/config.ts#PlurConfigSchema.mode:
+    kind: guarantee
+    rule: >-
+      with NO schema default: an absent key stays absent and is never written Which selection builds the injected block.
+      `unified` packs recall's ranked list behind the always-on pinned slot.
+    tests:
+      - packages/core/test/overhaul-config.test.ts
+  packages/core/src/schemas/config.ts#PlurConfigSchema.pinning:
+    kind: guarantee
+    rule: "The owner (`actor: 'owner'`, the CLI) is never restricted; `deny` refuses the write."
+    tests:
+      - packages/core/test/overhaul-config.test.ts

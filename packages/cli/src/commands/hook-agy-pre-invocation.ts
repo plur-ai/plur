@@ -16,7 +16,7 @@ import {
   lastUserInput,
   emitInjectSteps,
 } from '../lib/agy-hook-io.js'
-import { resolveProjectRemote, projectRemoteRefusalNotice } from '../lib/project-remote.js'
+import { resolveProjectRemote, projectRemoteRefusalNotice, projectRemoteWithheldNotice } from '../lib/project-remote.js'
 import { recordInjected } from '../lib/auto-rate.js'
 
 /**
@@ -125,8 +125,12 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
     const projectRemote = resolveProjectRemote(plur, workspace ?? process.cwd())
     // With a workspace, the session scope is the folder policy's.
     const projectConfig = policy ? sessionSettings(policy, projectRemote.config) : projectRemote.config
+    // Pins once per context (overhaul R7) applies to Claude Code's skill,
+    // agent and plan-mode events. Antigravity has no such event and no signal
+    // for a compacted context, so every injection offers the pins (fail open).
     const injectOpts = {
       budget: isFirst ? 3000 : 2000,
+      include_pinned: true,
       ...(projectConfig.scope ? { scope: projectConfig.scope } : {}),
       ...(projectRemote.remoteProject ? { remote_project: projectRemote.remoteProject } : {}),
     }
@@ -149,7 +153,8 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
         : `[PLUR Memory — ${result.count} engrams recalled for this prompt via ${mode}]`
       const refusal = isFirst
         ? [
-          projectRemote.refusedFrom ? projectRemoteRefusalNotice(projectRemote.refusedFrom, plur.storageRoot) : null,
+          projectRemote.refusedFrom ? projectRemoteRefusalNotice(projectRemote.refusedFrom, plur.storageRoot)
+            : projectRemote.withheldUrl ? projectRemoteWithheldNotice(projectRemote.withheldUrl) : null,
         ].filter(Boolean).map(n => `${n}\n\n`).join('')
         : ''
       // Only on the FIRST turn: the refusal persists until the user acts on it,

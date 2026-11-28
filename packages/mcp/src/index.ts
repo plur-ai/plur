@@ -7,7 +7,7 @@ import { fileURLToPath } from 'url'
 import { homedir, platform } from 'os'
 
 import { VERSION } from './version.js'
-import { buildClaudeHooks, isPlurHookSpec, type HookEntry } from '@plur-ai/gateway/harness'
+import { buildClaudeHooks, hooksShapeExpectation, hooksShapeProblem, isPlurHookSpec, type HookEntry } from '@plur-ai/gateway/harness'
 
 const HELP = `plur-mcp v${VERSION} — persistent memory for AI agents
 
@@ -392,7 +392,16 @@ function stripPlurHooks(entries: HookEntry[]): HookEntry[] {
 }
 
 /**
+ * Where a settings file's `hooks` departs from the shape Claude Code reads, or
+ * null when it can be merged (#1352). The check is shared with every `plur
+ * init` installer leg and `plur doctor` (#1897); see @plur-ai/gateway's
+ * hooks-shape.ts.
+ */
+export { hooksShapeProblem }
+
+/**
  * Merge PLUR hooks into Claude Code settings (only I/O: reading plur-hook.meta.json).
+ * Expects a `hooks` section hooksShapeProblem accepts.
  * A hook is PLUR's only when isPlurHookSpec says so.
  * - No PLUR hook: append the full set ('installed').
  * - PLUR hooks present: remove PLUR's PostCompact hooks (dropping emptied entries) and,
@@ -465,6 +474,11 @@ export async function installHooks(): Promise<string> {
   const settingsRead = readJsonObjectForWrite(settingsPath)
   if (!settingsRead.ok) {
     return `skipped — ${settingsPath} exists but is not a JSON object; writing would discard your other settings. Fix it by hand, then re-run \`plur-mcp init\``
+  }
+  const shapeProblem = hooksShapeProblem(settingsRead.data.hooks)
+  if (shapeProblem) {
+    const expected = hooksShapeExpectation(shapeProblem, 'Claude Code')
+    return `skipped — in ${settingsPath}, ${shapeProblem}; ${expected}. Fix it by hand, then re-run \`plur-mcp init\``
   }
   const settings = settingsRead.data as Settings
 

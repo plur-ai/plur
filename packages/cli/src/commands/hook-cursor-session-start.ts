@@ -4,7 +4,7 @@ import { existsSync, readFileSync, unlinkSync } from 'fs'
 import { cursorHookFolder, sessionSettings, folderAskOnce, untrustedPlurYamlAsk, isFolderAskText, createAskPlur, bindHookFolder, remoteOnlyLines } from '../lib/folder-gate.js'
 import { cursorContextRulePath } from '../mcp-config.js'
 import { readStdinJson, cursorConversationId, markSessionStarted, writeContextRule, removeGeneratedContextRules } from '../lib/cursor-hook-io.js'
-import { resolveProjectRemote, projectRemoteRefusalNotice } from '../lib/project-remote.js'
+import { resolveProjectRemote, projectRemoteRefusalNotice, projectRemoteWithheldNotice } from '../lib/project-remote.js'
 import { recordInjected } from '../lib/auto-rate.js'
 import { recordHookRun } from '../lib/hook-runs.js'
 import { cachedServerLines } from '../lib/server-session.js'
@@ -83,7 +83,9 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
     const legacyLines = cleanupLegacyProjectAtSessionStart(dir, plur.storageRoot)
     const projectRemote = resolveProjectRemote(plur, dir)
     const projectConfig = sessionSettings(policy, projectRemote.config)
-    const injectOpts = { budget: 3000, ...(projectConfig.scope ? { scope: projectConfig.scope } : {}) }
+    // Cursor injects once, at session start: a new context, so the pins are
+    // offered (overhaul R7 has no Cursor event that shares a context).
+    const injectOpts = { budget: 3000, include_pinned: true, ...(projectConfig.scope ? { scope: projectConfig.scope } : {}) }
 
     // NOT hybrid, and therefore NOT remote — see the BM25-only note in this
     // file's header. This hook is bounded at 10s, and hybrid loads the BGE
@@ -118,7 +120,8 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
     // for the trust reason here, and because remote memory does not reach
     // this hook regardless.
     const refusal = [
-      projectRemote.refusedFrom ? projectRemoteRefusalNotice(projectRemote.refusedFrom, plur.storageRoot) : null,
+      projectRemote.refusedFrom ? projectRemoteRefusalNotice(projectRemote.refusedFrom, plur.storageRoot)
+        : projectRemote.withheldUrl ? projectRemoteWithheldNotice(projectRemote.withheldUrl) : null,
     ].filter(Boolean).map(n => `${n}\n\n`).join('')
     // An untrusted .plur.yaml: memories load without its settings, and the
     // trust question rides along once per conversation (owner, 2026-11-14).

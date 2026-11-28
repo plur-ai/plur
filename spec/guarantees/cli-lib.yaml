@@ -401,6 +401,31 @@ anchors:
     tests:
       - packages/cli/test/legacy-plur-yaml.test.ts::warns about tracked tokens without exposing the token
       - packages/cli/test/legacy-plur-yaml.test.ts::emits a safe tracked-token warning before later injection can fail
+      - >-
+        packages/cli/test/legacy-plur-yaml.test.ts::warns, without the token, when it cannot tell whether a token file
+        is committed
+      - packages/cli/test/legacy-plur-yaml.test.ts::cleans up an untracked token file in a subfolder of the repository
+  packages/cli/src/lib/git-tracked.ts#gitFileTracked:
+    kind: guarantee
+    rule: >-
+      A file is reported untracked only when git positively says so inside a real work tree, by default one whose top
+      level is the folder itself; no git, a folder that is not a repository, a folder nested in another repository's
+      work tree (unless the caller asks only whether the file is committed), a path through a symbolic link or outside
+      the folder, a refused repository or a timeout give "cannot tell", and GIT_* variables of the launching process
+      are ignored.
+    tests:
+      - >-
+        packages/cli/test/audit-024-f1-doctor-nongit.test.ts::a settings.local.json behind a committed .claude symlink
+        does not approve
+      - >-
+        packages/cli/test/audit-024-f6-init-nongit.test.ts::a settings file behind a committed .claude symlink: no
+        folder-map entry and no adopted store
+      - >-
+        packages/cli/test/audit-024-f6-init-nongit.test.ts::nested in another repository under an ignored directory:
+        no folder-map entry and no adopted store
+      - "packages/cli/test/audit-024-f1-doctor-nongit.test.ts::a .git that is not a valid repository gives no evidence either"
+      - "packages/cli/test/audit-024-f1-doctor-nongit.test.ts::git not available: the folder file is not approval"
+      - "packages/cli/test/audit-024-f1-doctor-nongit.test.ts::control: in a real git work tree an untracked settings.local.json still approves"
   packages/cli/src/lib/no-follow-write.ts#componentsUnder:
     kind: guarantee
     rule: PLUR never writes through a symlink a repository committed anywhere on the path under the project.
@@ -450,6 +475,14 @@ anchors:
   packages/cli/src/lib/session-task.ts#removeSessionTask:
     kind: note
     why: States how unlink behaves (it does not follow a symlink); a fact about the platform call.
+  packages/cli/src/lib/session-task.ts#writeStateFile:
+    kind: guarantee
+    rule: >-
+      A hook state file is written atomically and 0600 through an exclusive no-follow temp file renamed over the path,
+      so a symlink planted at the path is replaced, never followed.
+    tests:
+      - packages/cli/test/pin-marker.test.ts
+      - packages/cli/test/pin-marker-context.test.ts
   packages/cli/src/lib/session-task.ts#writeSessionTask:
     kind: guarantee
     rule: >-
@@ -464,3 +497,154 @@ anchors:
         packages/cli/test/hook-force-exit-lock.test.ts::runCodexHook — the exit of every Codex and Antigravity hook —
         waits for its own store lock
       - packages/cli/test/hook-force-exit-lock.test.ts::hook-inject, when its watchdog fires mid-write
+  packages/cli/src/lib/codex-hook-io.ts#injectWithFallback:
+    kind: guarantee
+    rule: "A late failure must not win the race: it yields to the fallback."
+    tests:
+      - packages/cli/test/codex-hook-io.test.ts
+  packages/cli/src/lib/hook-query.ts#openRegularFile:
+    kind: guarantee
+    rule: >-
+      Open `path` for reading only if it is a regular file: checked before the open, and the open is O_NONBLOCK, so a FIFO
+      or device planted where a git HEAD or a transcript is expected can never block the hook's synchronous open (the
+      watchdog cannot fire while the thread is blocked).
+    tests:
+      - packages/cli/test/hook-query-fifo.test.ts
+  packages/cli/src/lib/hook-query.ts#readLastUserTurns:
+    kind: guarantee
+    rule: never throws.
+    tests:
+      - packages/cli/test/hook-query.test.ts
+  packages/cli/src/lib/hook-query.ts#readRegularSlice:
+    kind: guarantee
+    rule: Null on any failure; never throws.
+    tests:
+      - packages/cli/test/hook-query.test.ts
+      - packages/cli/test/hook-query-fifo.test.ts
+  packages/cli/src/lib/hook-query.ts#STOPWORDS:
+    kind: guarantee
+    rule: "* Every read here is bounded and swallows its own failure: a hook must never break the prompt for want of context."
+    tests:
+      - packages/cli/test/hook-query.test.ts
+  packages/cli/src/lib/journal-cli.ts#emitPlan:
+    kind: guarantee
+    rule: Write a plan to `out` (atomic, 0600, never through a symlink — it quotes memory text, S6), or to stdout as JSON.
+    tests:
+      - packages/cli/test/plan-file-safety-s6.test.ts
+      - packages/cli/test/rescope-enrich-plan.test.ts
+      - packages/cli/test/consolidate-cli.test.ts
+  packages/cli/src/lib/journal-cli.ts#undoCommand:
+    kind: guarantee
+    rule: refuses other kinds.
+    tests:
+      - packages/cli/test/plan-file-safety-s6.test.ts
+      - packages/cli/test/rescope-enrich-plan.test.ts
+  packages/cli/src/lib/llm-bridge.ts#(module):
+    kind: guarantee
+    rule: >-
+      Core never calls a model itself (no external calls in core); The newer commands never pick up an API key from the
+      environment on their own; with no explicit bridge they refuse ({@link missingLlmMessage}).
+    tests:
+      - packages/cli/test/llm-bridge.test.ts
+      - packages/cli/test/llm-bridge-key-s13.test.ts
+  packages/cli/src/lib/llm-bridge.ts#checkLlmBaseUrl:
+    kind: guarantee
+    rule: plain http only to a loopback host (localhost, 127.0.0.0/8, ::1), where the key never leaves the machine.
+    tests:
+      - packages/cli/test/llm-bridge.test.ts
+      - packages/cli/test/llm-bridge-key-s13.test.ts
+  packages/cli/src/lib/llm-bridge.ts#LlmBridgeOptions:
+    kind: guarantee
+    rule: the newer commands must not.
+    tests:
+      - packages/cli/test/llm-bridge.test.ts
+      - packages/cli/test/llm-bridge-key-s13.test.ts
+  packages/cli/src/lib/llm-bridge.ts#makeCommandLlm:
+    kind: guarantee
+    rule: >-
+      A non-zero exit, a signal, the timeout, output past the cap (4 MB) or an empty answer is an error (with the
+      command's stderr, trimmed), never an empty reply.
+    tests:
+      - packages/cli/test/llm-bridge.test.ts
+      - packages/cli/test/llm-bridge-key-s13.test.ts
+  packages/cli/src/lib/llm-bridge.ts#ResolvedLlm:
+    kind: guarantee
+    rule: Which bridge was chosen, for the user (never a secret).
+    tests:
+      - packages/cli/test/llm-bridge.test.ts
+      - packages/cli/test/llm-bridge-key-s13.test.ts
+  packages/cli/src/lib/llm-bridge.ts#resolveLlm:
+    kind: guarantee
+    rule: >-
+      Throws (message safe to print, never a key) on an unusable endpoint: a base URL that is not https or loopback http,
+      a named key variable that is unset, or both key options at once.
+    tests:
+      - packages/cli/test/llm-bridge.test.ts
+      - packages/cli/test/llm-bridge-key-s13.test.ts
+  packages/cli/src/lib/pin-marker.ts#name:
+    kind: guarantee
+    rule: than cut, so two contexts never share a marker by truncation.
+    tests:
+      - packages/cli/test/pin-marker.test.ts
+      - packages/cli/test/pin-marker-context.test.ts
+  packages/cli/src/lib/pin-marker.ts#pinContext:
+    kind: guarantee
+    rule: >-
+      SubagentStart, or an event carrying `agent_type`, with no agent id: a subagent we cannot key — always include, never
+      record.
+    tests:
+      - packages/cli/test/pin-marker.test.ts
+      - packages/cli/test/pin-marker-context.test.ts
+  packages/cli/src/lib/pin-marker.ts#PinContext:
+    kind: guarantee
+    rule: null = no marker (include, never record).
+    tests:
+      - packages/cli/test/pin-marker.test.ts
+      - packages/cli/test/pin-marker-context.test.ts
+  packages/cli/src/lib/pin-marker.ts#PinMarker:
+    kind: guarantee
+    rule: >-
+      * The pinned engrams are the always-on slot. - A delivery is recorded only after the hook's output reached stdout,
+      and only for the epoch it was read under, so a bump that races an injection is never overwritten by it. Its events —
+      SubagentStart and the tool events fired inside it — carry…
+    tests:
+      - packages/cli/test/pin-marker.test.ts
+      - packages/cli/test/pin-marker-context.test.ts
+  packages/cli/src/lib/pin-marker.ts#removePinMarker:
+    kind: guarantee
+    rule: unlink never follows a symlink.
+    tests:
+      - packages/cli/test/pin-marker.test.ts
+      - packages/cli/test/pin-marker-context.test.ts
+  packages/cli/src/lib/pin-marker.ts#shouldIncludePins:
+    kind: guarantee
+    rule: >-
+      Should this injection offer the pins? `event` is the hook-inject `--event` value, or null for the first-prompt and
+      rehydrate injections (which always include them).
+    tests:
+      - packages/cli/test/pin-marker.test.ts
+      - packages/cli/test/pin-marker-context.test.ts
+  packages/cli/src/lib/pin-marker.ts#writePinMarker:
+    kind: guarantee
+    rule: "Atomic 0600 write: exclusive no-follow temp file, renamed over the marker."
+    tests:
+      - packages/cli/test/pin-marker.test.ts
+      - packages/cli/test/pin-marker-context.test.ts
+      - packages/cli/test/pin-marker-write-failure-h13.test.ts
+  packages/cli/src/lib/private-file.ts#writePrivateFile:
+    kind: guarantee
+    rule: >-
+      S6: write a file that quotes memory text (a plan, a pin-audit proposal): atomically through core's `atomicWrite`
+      (exclusive 0600 temp file, renamed over the path), owner-only even over an existing wider file, and never through a
+      symlink — a link planted at the path is refused rather than…
+    tests:
+      - packages/cli/test/plan-file-safety-s6.test.ts
+  packages/cli/src/lib/process-tree.ts#stopProcessTree:
+    kind: guarantee
+    rule: >-
+      On Linux and macOS, stopping a process the CLI started stops everything it started too (the process group): when
+      doctor finishes its connection check no server keeps running after doctor has reported (#1911), and a model
+      command that times out or passes the output cap leaves nothing running (H16).
+    tests:
+      - "packages/cli/test/doctor.test.ts::stops the whole server tree it started, not just the launcher (#1911)"
+      - packages/cli/test/llm-bridge.test.ts::the timeout stops what the command started, not only the shell

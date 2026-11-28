@@ -62,6 +62,7 @@ keys/
 embeddings/
 .embeddings-cache.json
 .embeddings-cache.delta.jsonl
+.embeddings-cache.vectors.bin
 .embeddings-cache.json.lock
 *.db
 *.sqlite

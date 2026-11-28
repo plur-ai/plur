@@ -1,7 +1,7 @@
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { shouldOutputJson, outputJson, outputText, outputInfo, exit } from '../output.js'
 import { findProjectConfigPath, readProjectConfigFromPath, FolderMapError } from '@plur-ai/core'
-import { nonceRequired, fail, nonceSession } from './folders.js'
+import { nonceRequired, fail, nonceSession, connectRepository } from './folders.js'
 
 /**
  * Split `[dir] [--nonce <n>]`. Returns null on a malformed argument
@@ -47,7 +47,8 @@ export function refuseTrustWithoutNonce(nonce: string | undefined, json: boolean
  */
 /** What a grant covers, and what it does not. */
 export const TRUST_COVERS =
-  'Trust covers the .plur.yaml files in every folder below it. A repository\'s own memory store (.plur/engrams.yaml) is still added only after you decide on that repository: plur folders set <repo> --on, or plur trust <repo>.'
+  'Trust covers the .plur.yaml files in every folder below it. A repository\'s own memory store (.plur/engrams.yaml) is still added only after you decide on that repository: plur folders set <repo> --on, or plur trust <repo>. '
+  + 'Under pinning.agents request or deny, that store and the server a .plur.yaml names are connected only by the owner at a terminal (plur trust without --nonce), after a typed yes.'
 
 export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   if (args.includes('--list')) {
@@ -89,6 +90,10 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const configPath = findProjectConfigPath(dir)
   const config = readProjectConfigFromPath(configPath)
   const declares = configPath && (config.scope || config.domain || config.remote_url)
+  // Under pinning.agents request or deny, the folder's own store and the
+  // server its .plur.yaml names are connected only by the owner at a
+  // terminal (0.24 review round 9, part of #1947).
+  const connected = await connectRepository(plur, dir, parsed.nonce === undefined)
 
   if (shouldOutputJson(flags)) {
     outputJson({
@@ -98,6 +103,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       ...(config.scope ? { scope: config.scope } : {}),
       ...(config.domain ? { domain: config.domain } : {}),
       ...(config.remote_url ? { remote_url: config.remote_url } : {}),
+      ...connected.json,
     })
     return
   }
@@ -114,5 +120,7 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   } else {
     outputInfo('No .plur.yaml found here (or above, within this project) — nothing for an adapter to adopt yet. This grant takes effect if one is added later.', flags)
   }
-  outputInfo('Recorded in folders.yaml, and in trust.yaml for adapters on an older core (the opencode plugin). A .plur.yaml in this directory (or below it) may now use the remote it names, and adapters that check trust honour its scope/domain.', flags)
+  outputInfo('Recorded in folders.yaml, and in trust.yaml for adapters on an older core (the opencode plugin). A .plur.yaml in this directory (or below it) may now use the remote it names (under pinning.agents request or deny, once the owner has added that server), and adapters that check trust honour its scope/domain.', flags)
+  for (const l of connected.lines) outputInfo(l, flags)
+  for (const n of connected.notes) outputText(n)
 }

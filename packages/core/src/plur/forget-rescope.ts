@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto'
 import { computeContentHash } from '../content-hash.js'
 import { Plur } from '../index.js'
+import type { RescopeApplyResult, RescopePlan, RescopePlanItem } from './types.js'
 import { logger } from '../logger.js'
 import { NEEDS_ACTION_STATUSES } from '../outbox-health.js'
 import type { Engram } from '../schemas/engram.js'
@@ -13,6 +14,9 @@ import type { UploadLocalResult } from '../types.js'
 import { REMOTE_PROBE_TIMEOUT_MS } from './helpers.js'
 import { type MutationOutcome, type RescopeOptions, type RescopeResult } from './types.js'
 
+import { SCOPE_MATCH_THRESHOLD, decideAutoRoute, rankScopes } from '../scope-routing.js'
+import { parseNamespacedId } from '../engrams.js'
+import { CHANGE_JOURNAL_FILE } from '../change-journal.js'
 export interface ForgetRescopeMethods {
   /** Set engram status to 'retired'. Supports primary and store engrams.
    *
@@ -57,10 +61,69 @@ export interface ForgetRescopeMethods {
    */
   /** @internal */
   _retireRescopedSource(id: string, toScope: string, newId: string): Promise<boolean>
+
+  /**
+   * Which route a rescope to `target` takes (#676 constraint 4): `remote` for
+   * a writable URL-backed store, `local` for a local-family scope or a path
+   * store. Throws for a readonly store or an unmatched scope. Shared by
+   * {@link rescope} and the journalled plan apply (W7), so the two cannot
+   * disagree about what a target is.
+   */
+  /** @internal */
+  _rescopeRoute(target: string): { route: 'remote'; remoteDriver: RemoteStore } | { route: 'local'; remoteDriver: null }
+
+  /**
+   * Propose a scope for every active global engram in the local primary store
+   * (overhaul W7), from the SAME deterministic router the write path uses
+   * (`rankScopes` over the scopes' `covers` + `decideAutoRoute`; a conforming
+   * `<org>.<team>.<area>` domain is the signal it weighs most). Shared scopes
+   * are allowed as targets — unlike an unscoped write, a plan is read by a
+   * person before it is applied. Engrams the router cannot place stay global
+   * and are counted. Reads only; changes nothing.
+   */
+  planRescope(): Promise<RescopePlan>
+
+  /**
+   * Apply a rescope plan through the change journal (W7): one journalled
+   * change, undoable with {@link undoChange}. Uses rescope's own local route
+   * (`_rescopeRoute`, `_rewriteScopeInPlace`, the sensitivity guard), so the
+   * moved row keeps its id, activation and history.
+   *
+   * Applies only to locally owned rows moving to scopes kept on this machine
+   * (local-family or a path store). Everything else is REFUSED, per item,
+   * with the reason: a target held on a team server (a remote push cannot be
+   * journalled or undone here — `plur rescope <id> --to <scope>` does it
+   * explicitly), a row with a queued delivery, a row no longer global or
+   * gone since the plan, a sensitivity hit, an identical engram already at
+   * the target. `limit` stops after that many rows have been moved.
+   */
+  applyRescopePlan(plan: RescopePlan, options?: { limit?: number }): Promise<RescopeApplyResult>
+
+  /** @internal */
+  _forget(id: string, reason?: string, options?: { force?: boolean; scope?: string }): Promise<MutationOutcome>
 }
 
 export const forgetRescopeMethods: ForgetRescopeMethods & ThisType<Plur> = {
   async forget(id: string, reason?: string, options?: { force?: boolean; scope?: string }): Promise<MutationOutcome> {
+    const outcome = await this._forget(id, reason, options)
+    // A row forget retired or deleted in the local store is redacted from the
+    // change journal (S5); one still active (write_count above zero) is not.
+    if (!this._remoteOnly && !this._readonly && !parseNamespacedId(id)) {
+      try {
+        const row = (await this._loadTargeted([id])).find(e => e.id === id)
+        if (!row || row.status === 'retired') await this.redactChangeJournal([id])
+      } catch (err) {
+        // The row is forgotten, but its content may still sit in the journal:
+        // the caller is told, not only the log (H2).
+        const message = `the change journal could not be redacted for ${id}: ${(err as Error).message}. Its earlier content may still be in ${CHANGE_JOURNAL_FILE}; run forget again once the cause is fixed.`
+        logger.warning(`[plur] forget: ${message}`)
+        return { ...outcome, warnings: [...outcome.warnings, message] }
+      }
+    }
+    return outcome
+  },
+
+  async _forget(id: string, reason?: string, options?: { force?: boolean; scope?: string }): Promise<MutationOutcome> {
     this._assertWritable()
     // Remote-only mode: a save queued from a remote-only folder is DELETED,
     // not retired, since a retired row would keep its content on this
@@ -538,39 +601,7 @@ export const forgetRescopeMethods: ForgetRescopeMethods & ThisType<Plur> = {
 
     // --- Resolve the target route ONCE, before touching any engram, so an
     // invalid target fails the whole batch early. ---
-    const remoteDriver = this._resolveRemoteStoreForScope(target)
-    const storeEntry = (this.config.stores ?? []).find(s => s.scope === target)
-    // Case-SENSITIVE on purpose, unlike `isSharedScope`'s case-folded prefix
-    // test. This is typo protection on an explicit move: the target is written
-    // verbatim as the row's scope (never normalised), and every reader matches
-    // scopes exactly (`global` in the inject/recall filters, `isScopeWithin`,
-    // the store `scope ===` lookups). Folding here would accept `Global` or
-    // `Project:app` as local-family and strand the row under a scope no filter
-    // recognises as global, while `isSharedScope` classes `Project:app` as
-    // SHARED. Refusing it with the "check for typos" error below fails loud.
-    const isLocalFamily = target === 'local' || target === 'global' || target.startsWith('project:')
-    let route: 'remote' | 'local'
-    if (remoteDriver) {
-      route = 'remote'
-    } else if (storeEntry?.url && storeEntry.readonly === true) {
-      // Authorization: same rule the learnRouted write path applies: a
-      // readonly entry never receives writes. Refuse rather than leave the
-      // engram stranded somewhere it can never sync from.
-      throw new Error(
-        `Cannot rescope to "${target}": the configured store for that scope is readonly for this client. `
-        + `Ask for write access or pick another scope.`,
-      )
-    } else if (isLocalFamily || storeEntry) {
-      route = 'local'
-    } else {
-      const configured = (this.config.stores ?? []).map(s => s.scope)
-      throw new Error(
-        `Cannot rescope to "${target}": no configured store matches that scope. `
-        + `Valid targets: local, global, project:*`
-        + (configured.length ? `, or a configured store scope (${configured.join(', ')})` : '')
-        + `. Check for typos — an unmatched shared scope would never reach a team store.`,
-      )
-    }
+    const { route, remoteDriver } = this._rescopeRoute(target)
 
     const opts = { dryRun: options?.dry_run === true, keepLocal: options?.keep_local === true }
     const results: RescopeResult[] = []
@@ -747,12 +778,7 @@ export const forgetRescopeMethods: ForgetRescopeMethods & ThisType<Plur> = {
       const t = fresh.find(e => e.id === id)
       if (!t || t.status === 'retired') return false
       const from = t.scope
-      t.scope = target
-      const tsd = (t as any).structured_data
-      const nextSd: Record<string, unknown> = {
-        ...(tsd && typeof tsd === 'object' && !Array.isArray(tsd) ? tsd : {}),
-        _rescoped: { from_scope: from, at: now },
-      }
+      const nextSd = Plur._rewriteScopeInPlace(t, target, now)
       // CANCEL any pending delivery to the store we are moving away from: a
       // queued `_outbox` entry would later deliver to the old store and silently
       // revert the rescope. Dropping is right on this branch only — `route ===
@@ -832,5 +858,181 @@ export const forgetRescopeMethods: ForgetRescopeMethods & ThisType<Plur> = {
       data: { reason: `rescoped to ${toScope}`, rescoped_to: newId, routed_to: 'rescope' },
     })
     return true
+  },
+
+  _rescopeRoute(target: string): { route: 'remote'; remoteDriver: RemoteStore } | { route: 'local'; remoteDriver: null } {
+    const remoteDriver = this._resolveRemoteStoreForScope(target)
+    const storeEntry = (this.config.stores ?? []).find(s => s.scope === target)
+    // Case-SENSITIVE on purpose, unlike `isSharedScope`'s case-folded prefix
+    // test. This is typo protection on an explicit move: the target is written
+    // verbatim as the row's scope (never normalised), and every reader matches
+    // scopes exactly (`global` in the inject/recall filters, `isScopeWithin`,
+    // the store `scope ===` lookups). Folding here would accept `Global` or
+    // `Project:app` as local-family and strand the row under a scope no filter
+    // recognises as global, while `isSharedScope` classes `Project:app` as
+    // SHARED. Refusing it with the "check for typos" error below fails loud.
+    const isLocalFamily = target === 'local' || target === 'global' || target.startsWith('project:')
+    if (remoteDriver) {
+      return { route: 'remote', remoteDriver }
+    } else if (storeEntry?.url && storeEntry.readonly === true) {
+      // Authorization: same rule the learnRouted write path applies: a
+      // readonly entry never receives writes. Refuse rather than leave the
+      // engram stranded somewhere it can never sync from.
+      throw new Error(
+        `Cannot rescope to "${target}": the configured store for that scope is readonly for this client. `
+        + `Ask for write access or pick another scope.`,
+      )
+    } else if (isLocalFamily || storeEntry) {
+      return { route: 'local', remoteDriver: null }
+    } else {
+      const configured = (this.config.stores ?? []).map(s => s.scope)
+      throw new Error(
+        `Cannot rescope to "${target}": no configured store matches that scope. `
+        + `Valid targets: local, global, project:*`
+        + (configured.length ? `, or a configured store scope (${configured.join(', ')})` : '')
+        + `. Check for typos — an unmatched shared scope would never reach a team store.`,
+      )
+    }
+  },
+
+  async planRescope(): Promise<RescopePlan> {
+    this._remoteOnlyRefuseLocalStore('Planning a rescope of personal memories (run it outside the remote-only folder)')
+    this.reloadConfigIfChanged()
+    const cfg = this.config.scope_routing ?? {}
+    const scopes = this._writableScopeMetadata()
+    const rows = await this._loadCached(this.paths.engrams)
+    const items: RescopePlanItem[] = []
+    const unmapped: string[] = []
+    let considered = 0
+    for (const e of rows) {
+      if (e.status !== 'active' || e.scope !== 'global' || Plur._isRemoteOnlyQueued(e)) continue
+      considered++
+      const candidates = rankScopes(
+        { statement: e.statement, domain: e.domain, tags: e.tags },
+        scopes,
+        cfg.weight_tag !== undefined ? { weightTag: cfg.weight_tag } : undefined,
+      )
+      const decision = decideAutoRoute(candidates, {
+        matchThreshold: cfg.match_threshold ?? SCOPE_MATCH_THRESHOLD,
+        allowSharedScope: true,
+        refuseScope: s => this._refuseRemotePersonalAutoRoute(s),
+      })
+      if (decision.action !== 'route' || !decision.scope || !decision.candidate) { unmapped.push(e.id); continue }
+      let route: 'local' | 'remote' | 'invalid'
+      try { route = this._rescopeRoute(decision.scope).route } catch { route = 'invalid' }
+      items.push({
+        id: e.id,
+        from_scope: 'global',
+        to_scope: decision.scope,
+        route,
+        confidence: Math.round(decision.candidate.confidence * 1000) / 1000,
+        reason: decision.candidate.reason,
+        ...(e.domain ? { domain: e.domain } : {}),
+        statement: e.statement.length > 120 ? e.statement.slice(0, 117) + '...' : e.statement,
+      })
+    }
+    return {
+      version: 1,
+      kind: 'plur.rescope-plan',
+      created_at: new Date().toISOString(),
+      considered,
+      items,
+      unmapped: { count: unmapped.length, ids: unmapped },
+    }
+  },
+
+  async applyRescopePlan(plan: RescopePlan, options: { limit?: number } = {}): Promise<RescopeApplyResult> {
+    this._assertWritable()
+    this._remoteOnlyRefuseLocalStore('Applying a rescope plan (run it outside the remote-only folder)')
+    if (!plan || plan.kind !== 'plur.rescope-plan' || !Array.isArray(plan.items)) {
+      throw new TypeError('applyRescopePlan: not a rescope plan (expected kind "plur.rescope-plan")')
+    }
+    const limit = options.limit ?? Infinity
+    if (!(limit >= 1)) throw new TypeError('applyRescopePlan: limit must be at least 1')
+    this.reloadConfigIfChanged()
+    const refused: RescopeApplyResult['refused'] = []
+    const local: RescopePlanItem[] = []
+    const routes = new Map<string, string | null>()
+    for (const item of plan.items) {
+      // The planner proposes global rows only; the plan is an editable file,
+      // so an item naming another source scope is refused, not trusted (H4).
+      if (item.from_scope !== 'global') {
+        refused.push({ id: item.id, to_scope: item.to_scope, reason: `from_scope "${String(item.from_scope)}" is not global: a rescope plan only moves global engrams (use plur rescope ${item.id} --to ${item.to_scope} to move this one explicitly)` })
+        continue
+      }
+      if (!routes.has(item.to_scope)) {
+        try {
+          routes.set(item.to_scope, this._rescopeRoute(item.to_scope).route === 'remote'
+            ? `"${item.to_scope}" is held on a team server; a remote move cannot be journalled or undone here. Move it explicitly with: plur rescope ${item.id} --to ${item.to_scope}`
+            : null)
+        } catch (err) { routes.set(item.to_scope, (err as Error).message) }
+      }
+      const why = routes.get(item.to_scope)
+      if (why) refused.push({ id: item.id, to_scope: item.to_scope, reason: why.replace(/plur rescope \S+ --to/, `plur rescope ${item.id} --to`) })
+      else local.push(item)
+    }
+
+    const now = new Date().toISOString()
+    // Decide per row against a corpus; run once outside the lock (to skip an
+    // empty change) and again inside it (authoritative).
+    const decide = (get: (id: string) => Engram | undefined, all: () => Engram[]) => {
+      const moves: Array<{ item: RescopePlanItem; row: Engram }> = []
+      const why: RescopeApplyResult['refused'] = []
+      let byHash: Map<string, Engram[]> | null = null
+      for (const item of local) {
+        if (moves.length >= limit) break
+        const row = get(item.id)
+        const no = (reason: string) => why.push({ id: item.id, to_scope: item.to_scope, reason })
+        if (!row) { no('not in the local primary store (only locally owned rows can be moved here)'); continue }
+        if (row.status !== 'active') { no(`not active (${row.status}) — changed since the plan`); continue }
+        if (row.scope !== item.from_scope) { no(`no longer ${item.from_scope} (now ${row.scope}) — changed since the plan`); continue }
+        if (Plur._isRemoteOnlyQueued(row) || (row as any).structured_data?._outbox) {
+          no(`has a queued delivery to a team server, so it is not locally owned; use plur rescope ${item.id} --to ${item.to_scope}`); continue
+        }
+        const ctx = this._engramContextFields(row)
+        const offending = this._offendingHitsForScope(ctx ? `${row.statement}\n${JSON.stringify(ctx)}` : row.statement, item.to_scope)
+        if (offending.length > 0) {
+          no(`blocked: sensitive content (${[...new Set(offending.map(h => h.pattern))].join(', ')}) must not reach "${item.to_scope}"`); continue
+        }
+        if (!byHash) {
+          byHash = new Map()
+          for (const e of all()) {
+            if (e.status !== 'active') continue
+            const h = (e as any).content_hash as string | undefined
+            if (h) byHash.set(h, [...(byHash.get(h) ?? []), e])
+          }
+        }
+        const hash = (row as any).content_hash ?? computeContentHash(row.statement)
+        const twin = (byHash.get(hash) ?? []).find(e => e.id !== row.id && e.scope === item.to_scope)
+        if (twin) { no(`an identical engram is already in ${item.to_scope} (${twin.id}); use plur rescope ${item.id} --to ${item.to_scope} to retire this copy`); continue }
+        moves.push({ item, row })
+      }
+      return { moves, why }
+    }
+
+    const primary = await this._loadCached(this.paths.engrams)
+    const index = new Map(primary.map(e => [e.id, e]))
+    const preview = decide(id => index.get(id), () => primary)
+    if (preview.moves.length === 0) {
+      return { change: null, applied: [], refused: [...refused, ...preview.why] }
+    }
+
+    let inLock: ReturnType<typeof decide> = { moves: [], why: [] }
+    const change = await this.beginChange('rescope.apply', { plan_created_at: plan.created_at, limit: options.limit ?? null })
+      .apply(tx => {
+        inLock = decide(id => tx.get(id), () => tx.all())
+        for (const { item, row } of inLock.moves) {
+          Plur._rewriteScopeInPlace(row, item.to_scope, now)
+          tx.put(row)
+        }
+      })
+    const applied = inLock.moves.map(({ item }) => ({ id: item.id, from_scope: item.from_scope, to_scope: item.to_scope }))
+    for (const a of applied) {
+      this._appendHistory({
+        event: 'engram_rescoped', engram_id: a.id, timestamp: now,
+        data: { from_scope: a.from_scope, to_scope: a.to_scope, new_id: a.id, routed_to: 'local', change_id: change.id },
+      })
+    }
+    return { change, applied, refused: [...refused, ...inLock.why] }
   },
 }

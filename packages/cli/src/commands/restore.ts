@@ -7,8 +7,32 @@
  * `--yes` actually writes.
  */
 import type { GlobalFlags } from '../plur.js'
-import { detectPlurStorage, listBackups, planRestore, restoreBackup, resolveFolderPolicy, RemoteOnlyWriteError } from '@plur-ai/core'
+import { readFileSync } from 'fs'
+import yaml from 'js-yaml'
+import { detectPlurStorage, listBackups, loadConfig, pinDecision, planRestore, restoreBackup, resolveFolderPolicy, RemoteOnlyWriteError, type PinActor } from '@plur-ai/core'
 import { shouldOutputJson, outputJson, outputText, exit } from '../output.js'
+import { requirePinPolicyConfirmation } from '../lib/pin-confirm.js'
+
+/** Ids of the rows in force as pins (present, active, pinned) in a store file; empty for a file that does not read. */
+function livePinIds(file: string): Set<string> {
+  try {
+    const doc = yaml.load(readFileSync(file, 'utf8')) as { engrams?: unknown } | null
+    const rows = Array.isArray(doc?.engrams) ? doc.engrams as Array<{ id?: unknown; pinned?: unknown; status?: unknown }> : []
+    return new Set(rows.filter(r => r && r.pinned === true && r.status === 'active' && typeof r.id === 'string').map(r => r.id as string))
+  } catch {
+    return new Set()
+  }
+}
+
+/**
+ * H12 for a snapshot: how many engrams restoring `snapshot` over `current`
+ * would pin again (in force as pins in the snapshot, not in the current
+ * store). An unreadable current store counts every snapshot pin.
+ */
+export function restorePutsPinsBack(snapshot: string, current: string): number {
+  const now = livePinIds(current)
+  return [...livePinIds(snapshot)].filter(id => !now.has(id)).length
+}
 
 function usage(): never {
   exit(1, [
@@ -104,6 +128,15 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     }
     lines.push('', 'Nothing has been changed. Re-run with --yes to restore.')
     return outputText(lines.join('\n'))
+  }
+
+  // A restore that pins engrams again asks what an undo that puts pins back
+  // asks (H12): under pinning.agents request/deny, a confirmation typed at
+  // an interactive terminal. The policy is read from config.yaml as it is.
+  const repinned = restorePutsPinsBack(plan.backup.path, storePath)
+  if (repinned > 0) {
+    const policy = { pinPolicyFor: (actor?: PinActor) => pinDecision(loadConfig(paths.config), actor) }
+    await requirePinPolicyConfirmation(policy, `Restore ${plan.backup.stamp}, which pins ${repinned} engram${repinned === 1 ? '' : 's'} again`)
   }
 
   try {

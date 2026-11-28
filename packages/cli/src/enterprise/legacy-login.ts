@@ -33,6 +33,14 @@ async function migrate(opts: {
   /** Tests: the host the owner-only protection of the copy runs on. */
   backupHost?: BackupHost
   onKey?: (key: string) => void
+  /**
+   * Whether the owner confirmed, at a terminal, adding a server under
+   * pinning.agents request or deny (0.24 review round 8, part of #1946).
+   * Asked only when the actor is the owner and the policy restricts agents;
+   * false, or absent, keeps config.json for a later `plur login`. An agent
+   * actor goes to core, which turns the move away.
+   */
+  ownerConfirmed?: () => Promise<boolean>
 }): Promise<LegacyLoginOutcome> {
   const file = join(opts.home, '.plur', 'config.json')
   if (!existsSync(file)) return 'none'
@@ -97,6 +105,13 @@ async function migrate(opts: {
       `The sign-in to ${origin} in ${shown} is no longer accepted by the server, so it was not moved into config.yaml.`,
       `Run \`plur login ${origin}\` to sign in again.`,
     ]) ? 'set-aside' : 'kept'
+  }
+
+  let restricted = false
+  try { restricted = plur.defaultActor === 'owner' && plur.pinPolicyFor('agent') !== 'allow' } catch { restricted = true }
+  if (restricted && !(await (opts.ownerConfirmed?.() ?? Promise.resolve(false)))) {
+    say(`The sign-in to ${origin} in ${shown} was not moved into config.yaml: under pinning.agents ${plur.pinPolicyFor('agent')} adding a server needs the owner's confirmation at a terminal. Run \`plur login ${origin}\` in a terminal to move it.`)
+    return 'kept'
   }
 
   try {

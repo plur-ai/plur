@@ -17,6 +17,7 @@ Claude Code's `hook-inject` was async with a 90s timeout until #1313.
 | Antigravity | pre-invocation | 20s |
 | Cursor | `sessionStart` | 10s |
 | Claude Code | `UserPromptSubmit`, `SessionStart` (matcher `compact`) | 20s; the hook exits itself at 15s (`PLUR_HOOK_CEILING_MS`) |
+| Claude Code | events: `EnterPlanMode`, `Skill`, `Agent`, `SubagentStart` (`hook-inject --event`) | 20s since the injection overhaul (10s before; `plur doctor` flags the old value). The run bounds itself inside the old 10s either way: hybrid on a 4s soft deadline (`PLUR_HOOK_EVENT_DEADLINE_MS`), then keyword search, under a 9s self-watchdog (`PLUR_HOOK_EVENT_CEILING_MS`) |
 | All four | end-of-turn auto-rate (`hook-auto-rate`, #1310) | 10s (sync), self-capped at 9s from process start, plus up to 0.8s waiting for an in-flight store write |
 
 Codex's own default is 600s. PLUR's are deliberately tight so a wedged hook

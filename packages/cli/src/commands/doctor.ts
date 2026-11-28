@@ -1,7 +1,8 @@
 import { readCodexEntry, configuredTokenVariables, codexMcpEnvironment, codexStorageRoot } from '../codex-config.js'
 import { CLI_VERSION } from '../version.js'
 import { codexConfigTomlPath } from '../mcp-config.js'
-import { spawn } from 'child_process'
+import { spawn, type ChildProcess } from 'child_process'
+import { stopProcessTree, stopTreeOnSignal } from '../lib/process-tree.js'
 import { existsSync, readFileSync, realpathSync, statSync, accessSync, constants } from 'fs'
 import { join, extname, dirname, resolve, win32 } from 'path'
 import { homedir, platform } from 'os'
@@ -26,8 +27,12 @@ import { hasPlurCursorHooks, readCursorHooksConfig } from '../cursor-hooks.js'
 import { isPlurHookCommand, isPlurHookSpec } from '../lib/hook-command.js'
 import { hasPlurCodexHooks, readCodexHooksConfig } from '../codex-hooks.js'
 import { hasPlurAgyHooks, readAgyHooksConfig } from '../antigravity-hooks.js'
+import { flatHooksShapeProblem, hooksShapeProblem } from '@plur-ai/gateway/harness'
 import { codexHome, missingNodeEntryPaths, readCodexPlurMcpCommand, isOwnWin32CmdShimCommand } from '../mcp-config.js'
 import { opencodeConfigDir, opencodeConfigPath, readOpencodeConfig, PLUR_OPENCODE_PLUGIN } from '../opencode-config.js'
+import { formatPinOverflowLine } from '@plur-ai/core'
+import { invalidOverhaulConfigKeys } from '@plur-ai/core'
+import yaml from 'js-yaml'
 import { computeContentHash, detectPlurStorage, loadEngrams, resolveBackendTier, loadConfig, describeNeedsAction, describeHeld, classifyStoreDuplicates, folderMapProblem, tokenFromEnv, tokenEnvUnsetDetail, tokenEnvUnsetFix, offlineByEnv, windowsSystemRoot, npmLatest } from '@plur-ai/core'
 import { plurRoot } from '../lib/folder-gate.js'
 import { readHookInstalls, readHookRuns, type HookTool } from '../lib/hook-runs.js'
@@ -36,6 +41,7 @@ import { repairAdvice, repairCommandFor } from './folders.js'
 import { repoFileIsTracked } from './init.js'
 import { codexInstalled } from '../lib/codex-binary.js'
 import { commandSpawn } from '../lib/command-spawn.js'
+import { CLAUDE_INJECT_TIMEOUT_S } from '../lib/claude-inject-budget.js'
 
 /**
  * plur doctor — diagnose a Claude Code / Claude Desktop / Cursor installation.
@@ -55,6 +61,12 @@ interface ConfigFileReport {
   hasPlurMcp: boolean
   hasDatacoreMcp: boolean
   hasPlurHooks: boolean
+  /**
+   * Where the file's `hooks` section breaks the shape its harness reads, as
+   * the first offending path (#1897). Set only then; `hasPlurHooks` is false,
+   * because the hooks are unreadable, and `plur init` skips the file.
+   */
+  hooksProblem?: string
 }
 
 interface HookShimReport {
@@ -89,6 +101,12 @@ interface DoctorReport {
   claudeCodeMcp: ClaudeCodeMcpReport
   datacoreCollision: boolean
   staleNpxHooks: boolean
+  /**
+   * Claude Code event hooks (`hook-inject --event`) installed with a timeout
+   * below what `plur init` writes now (overhaul W2+4), with the settings file
+   * each is in. Absent when none.
+   */
+  staleEventTimeouts?: Array<{ path: string; event: string; timeout?: number }>
   staleNpxMcp: boolean
   /**
    * Config files whose `plur` entry is PLUR's own Windows node form
@@ -179,6 +197,15 @@ interface DoctorReport {
    */
   staleContentHashes: number
   /**
+   * Pins against the pinned share of the injection budget (overhaul D3).
+   * Pins that do not fit are not loaded at injection; a pin is never dropped
+   * invisibly, so doctor names the overflow. `null` when it cannot be read.
+   * Advisory only: does not fail the overall check.
+   */
+  pinOverflow?: { count: number; overflow_count: number; total_cost: number; share: number; budget: number; overflow_ids: string[] } | null
+  /** H15: why `pinOverflow` is null — the pin report could not be read. */
+  pinOverflowError?: string
+  /**
    * A `store.pglite` directory the resolved backend tier no longer uses —
    * orphaned disk the user may delete, ideally after `plur migrate` ports its
    * vectors. `null` when there is no such directory or when PGLite IS the
@@ -197,6 +224,14 @@ interface DoctorReport {
    * the overall check.
    */
   ignoredDuplicateStores: Array<{ path: string; scope: string; duplicateOf: string; primary: boolean }>
+  /**
+   * Overhaul config keys (injection.mode, pinning.agents, consolidate.*, …)
+   * whose value in config.yaml is invalid and therefore ignored (H4): the
+   * rest of the config loads and the key's default applies. Advisory only.
+   */
+  invalidConfigKeys?: string[]
+  /** H15: config.yaml could not be read or parsed, so its values were not checked. */
+  invalidConfigKeysError?: string
   /**
    * Project stores (`.plur/engrams.yaml`) found from this folder but not
    * added, because their folder has no decision of its own. Advisory only:
@@ -322,9 +357,11 @@ export interface OpencodePluginLookup {
 }
 
 function hasAnyPlurHook(config: Record<string, unknown>): boolean {
+  // A section that breaks the shape is reported by inspectConfigs (#1897).
+  if (hooksShapeProblem(config.hooks)) return false
   const hooks = (config.hooks ?? {}) as Record<string, Array<{ hooks?: Array<{ command?: string; args?: unknown }> }>>
   for (const entries of Object.values(hooks)) {
-    for (const entry of entries) {
+    for (const entry of entries ?? []) {
       for (const h of entry.hooks ?? []) {
         // The same matcher init uses: PLUR's launcher (shim, npx, or the
         // Windows exec form) plus any hook-*.
@@ -379,12 +416,41 @@ function windowsHookFallbackEditors(configs: ConfigFileReport[]): string[] {
   return out
 }
 
-function hasStaleNpxHooks(config: Record<string, unknown>): boolean {
-  const hooks = (config.hooks ?? {}) as Record<string, Array<{ hooks?: Array<{ command?: string }> }>>
-  for (const entries of Object.values(hooks)) {
+/**
+ * Claude Code event hooks (`plur hook-inject --event <type>`) installed with a
+ * timeout below what `plur init` writes now (overhaul W2+4: 20 s, the main
+ * hook's). The hook works within the old 10 s — a shorter soft deadline and a
+ * keyword fallback — but a stale entry gives the hybrid leg less room. An
+ * entry with no timeout gets Claude Code's default and is not stale.
+ */
+export function staleEventHookTimeouts(config: Record<string, unknown>): Array<{ event: string; hookEvent: string; matcher?: string; timeout?: number }> {
+  const out: Array<{ event: string; hookEvent: string; matcher?: string; timeout?: number }> = []
+  // A section that breaks the shape is reported by inspectConfigs.
+  if (hooksShapeProblem(config.hooks)) return out
+  const hooks = (config.hooks ?? {}) as Record<string, Array<{ matcher?: string; hooks?: Array<{ command?: string; timeout?: number }> }>>
+  for (const [hookEvent, entries] of Object.entries(hooks)) {
+    if (!Array.isArray(entries)) continue
     for (const entry of entries) {
+      for (const h of entry?.hooks ?? []) {
+        const m = typeof h?.command === 'string' ? h.command.match(/\bhook-inject\s+--event\s+([a-z_]+)/) : null
+        if (!m) continue
+        if (typeof h.timeout === 'number' && h.timeout < CLAUDE_INJECT_TIMEOUT_S) {
+          out.push({ event: m[1], hookEvent, ...(entry.matcher ? { matcher: entry.matcher } : {}), timeout: h.timeout })
+        }
+      }
+    }
+  }
+  return out
+}
+
+function hasStaleNpxHooks(config: Record<string, unknown>): boolean {
+  // A section that breaks the shape is reported by inspectConfigs (#1897).
+  if (hooksShapeProblem(config.hooks)) return false
+  const hooks = (config.hooks ?? {}) as Record<string, Array<{ hooks?: Array<{ command?: unknown }> }>>
+  for (const entries of Object.values(hooks)) {
+    for (const entry of entries ?? []) {
       for (const h of entry.hooks ?? []) {
-        if (h.command && h.command.includes('npx') && h.command.includes('@plur-ai/cli')) return true
+        if (typeof h.command === 'string' && h.command.includes('npx') && h.command.includes('@plur-ai/cli')) return true
       }
     }
   }
@@ -488,6 +554,25 @@ function countStaleContentHashes(flags: GlobalFlags): number {
   }
 }
 
+/**
+ * Overhaul D3: pins that do not fit the pinned share. Local read only;
+ * never throws — an unreadable report comes back as `error` (H15).
+ */
+export async function readPinOverflow(flags: GlobalFlags): Promise<{ pinOverflow: DoctorReport['pinOverflow']; error?: string }> {
+  try {
+    const plur = createPlur(flags, { readonly: true, autoDiscover: false })
+    const r = await plur.pinFitReport()
+    return {
+      pinOverflow: {
+        count: r.count, overflow_count: r.overflow_count, total_cost: r.total_cost, share: r.share, budget: r.budget,
+        overflow_ids: r.entries.filter(e => !e.fits).map(e => e.id),
+      },
+    }
+  } catch (err: unknown) {
+    return { pinOverflow: null, error: (err as Error)?.message ?? String(err) }
+  }
+}
+
 /** Classify the outbox. Local read only; never throws. */
 async function checkOutbox(flags: GlobalFlags): Promise<DoctorReport['outbox']> {
   try {
@@ -528,6 +613,49 @@ function findIgnoredDuplicateStores(flags: GlobalFlags): DoctorReport['ignoredDu
   } catch {
     return []
   }
+}
+
+/**
+ * H4: the overhaul keys in config.yaml whose value is invalid and so ignored.
+ * Reads the raw YAML only. An unreadable or unparseable file has no keys
+ * here and its `error` instead (H15), so doctor says it could not check.
+ */
+export function readInvalidConfigKeys(flags: GlobalFlags): { keys: string[]; error?: string } {
+  const root = flags.path || process.env.PLUR_PATH || join(homedir(), '.plur')
+  const path = join(root, 'config.yaml')
+  try {
+    if (!existsSync(path)) return { keys: [] }
+    return { keys: invalidOverhaulConfigKeys(yaml.load(readFileSync(path, 'utf8'))) }
+  } catch (err: unknown) {
+    return { keys: [], error: `${path}: ${((err as Error)?.message ?? String(err)).split('\n')[0]}` }
+  }
+}
+
+/** The invalid keys alone (H4); an unreadable file has none. */
+export function findInvalidConfigKeys(flags: GlobalFlags): string[] {
+  return readInvalidConfigKeys(flags).keys
+}
+
+/**
+ * What applies in place of an invalid value. Most keys fall back to their
+ * default; `pinning.agents` falls back to "request" (schemas/config.ts), so a
+ * typo restricts agent pinning rather than allowing it.
+ */
+const INVALID_KEY_EFFECT: Record<string, string> = {
+  'pinning.agents': '"request" applies, the safe fallback for an invalid value',
+}
+
+/** The doctor text for `readInvalidConfigKeys`; empty when there is nothing to say. */
+export function invalidConfigKeyLines(keys: string[], error?: string): string[] {
+  const lines: string[] = []
+  if (error) lines.push(`⚠  could not read config.yaml to check its values: ${error}`)
+  if (keys.length === 0) return lines
+  const named = keys.map(k => `${k} (${INVALID_KEY_EFFECT[k] ?? 'the default applies'})`)
+  lines.push(
+    `⚠  config.yaml has ${keys.length} invalid value${keys.length === 1 ? '' : 's'}, ignored: ${named.join(', ')}`,
+    '   Fix the value or remove the key; the rest of config.yaml is in effect.',
+  )
+  return lines
 }
 
 /**
@@ -614,13 +742,15 @@ function inspectConfigs(): ConfigFileReport[] {
       // Claude Code's nested { matcher, hooks: [...] } wrapper — hasAnyPlurHook
       // would silently read it as "no hooks installed" even when they are.
       const hooksConfig = readCursorHooksConfig(cf.path)
+      const hooksProblem = flatHooksShapeProblem(hooksConfig.hooks)
       return {
         label: cf.label,
         path: cf.path,
         exists: true,
         hasPlurMcp: false,
         hasDatacoreMcp: false,
-        hasPlurHooks: hasPlurCursorHooks(hooksConfig),
+        hasPlurHooks: !hooksProblem && hasPlurCursorHooks(hooksConfig),
+        ...(hooksProblem ? { hooksProblem } : {}),
       }
     }
     if (cf.kind === 'agy-hooks') {
@@ -638,13 +768,15 @@ function inspectConfigs(): ConfigFileReport[] {
     }
     if (cf.kind === 'codex-hooks') {
       const hooksConfig = readCodexHooksConfig(cf.path)
+      const hooksProblem = hooksShapeProblem(hooksConfig.hooks)
       return {
         label: cf.label,
         path: cf.path,
         exists: true,
         hasPlurMcp: false,
         hasDatacoreMcp: false,
-        hasPlurHooks: hasPlurCodexHooks(hooksConfig),
+        hasPlurHooks: !hooksProblem && hasPlurCodexHooks(hooksConfig),
+        ...(hooksProblem ? { hooksProblem } : {}),
       }
     }
     if (cf.kind === 'codex-toml') {
@@ -670,6 +802,7 @@ function inspectConfigs(): ConfigFileReport[] {
       }
     }
     const config = readConfig(cf.path)
+    const hooksProblem = hooksShapeProblem(config.hooks)
     return {
       label: cf.label,
       path: cf.path,
@@ -677,6 +810,7 @@ function inspectConfigs(): ConfigFileReport[] {
       hasPlurMcp: hasPlurMcp(config),
       hasDatacoreMcp: hasDatacoreMcp(config),
       hasPlurHooks: hasAnyPlurHook(config),
+      ...(hooksProblem ? { hooksProblem } : {}),
     }
   })
 }
@@ -747,21 +881,27 @@ async function mcpHandshake(
       result = { ...result, probed: source, command: [entry.command, ...entry.args].join(' ') } as typeof result
       if (resolved) return
       resolved = true
-      try { proc.kill() } catch { /* ignore */ }
+      removeSignalHandlers()
+      if (proc) stopProcessTree(proc)
       resolve(result)
     }
 
-    let proc: ReturnType<typeof spawn>
+    let proc: ReturnType<typeof spawn> | undefined
+    let removeSignalHandlers = () => {}
     try {
       // On Windows a configured `npx` or `.cmd` cannot be spawned directly
       // (ENOENT / EINVAL); resolve it the way init runs Codex.
       const spec = target ? { file: entry.command, args: entry.args, windowsVerbatimArguments: false } : commandSpawn(entry.command, entry.args)
       proc = spawn(spec.file, spec.args, {
         stdio: ['pipe', 'pipe', 'pipe'],
+        // Own process group on POSIX, so finish() can stop the server a
+        // launcher started, not only the launcher (#1911).
+        detached: process.platform !== 'win32',
         ...(spec.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
         ...(spawnEnv ? { env: spawnEnv } : {}),
         ...(target?.cwd ? { cwd: target.cwd } : {}),
       })
+      removeSignalHandlers = stopTreeOnSignal(proc)
     } catch (err: unknown) {
       finish({ ok: false, error: `spawn failed: ${(err as Error).message}` })
       return
@@ -1246,9 +1386,11 @@ function localScopePlur(config: Record<string, unknown>, cwd: string): Record<st
  * projects[<dir>]: `plur` in enabledMcpjsonServers, or
  * enableAllProjectMcpServers: true (also honoured in the user's own
  * ~/.claude/settings.json, and in the project's .claude/settings.local.json
- * while git does not track it; a tracked file, like .claude/settings.json, is
- * repository content and never approves). `plur` in disabledMcpjsonServers
- * wins. Anything else is unapproved.
+ * only when git positively reports it untracked in a real work tree; a tracked
+ * file, like .claude/settings.json, is repository content and never approves,
+ * and so is the file of a folder where git cannot tell: not a checkout (an
+ * archive, a copied tree), no git, or git refusing it). `plur` in
+ * disabledMcpjsonServers wins. Anything else is unapproved.
  */
 function projectMcpServerApproved(mcpJsonPath: string): boolean {
   type Approval = { enabledMcpjsonServers?: unknown; disabledMcpjsonServers?: unknown; enableAllProjectMcpServers?: unknown }
@@ -1257,7 +1399,7 @@ function projectMcpServerApproved(mcpJsonPath: string): boolean {
   const p = (projects && typeof projects === 'object' ? (projects as Record<string, unknown>)[dir] : undefined) as Approval | undefined
   const userSettings = readConfig(claudeCodeGlobalSettingsPath()) as Approval
   const localPath = join('.claude', 'settings.local.json')
-  const local = (existsSync(join(dir, localPath)) && !repoFileIsTracked(dir, localPath) ? readConfig(join(dir, localPath)) : {}) as Approval
+  const local = (existsSync(join(dir, localPath)) && repoFileIsTracked(dir, localPath) === false ? readConfig(join(dir, localPath)) : {}) as Approval
   const sources = [p, userSettings, local]
   const lists = (key: 'enabledMcpjsonServers' | 'disabledMcpjsonServers') =>
     sources.some(src => Array.isArray(src?.[key]) && (src![key] as unknown[]).includes('plur'))
@@ -1329,6 +1471,13 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
     const config = readConfig(c.path)
     return hasStaleNpxHooks(config)
   })
+
+  // Event hooks installed with the old 10s timeout (overhaul W2+4).
+  const staleEventTimeouts: NonNullable<DoctorReport['staleEventTimeouts']> = []
+  for (const c of configs) {
+    if (!c.exists) continue
+    for (const s of staleEventHookTimeouts(readConfig(c.path))) staleEventTimeouts.push({ path: c.path, event: s.event, timeout: s.timeout })
+  }
 
   // Check for stale npx-based MCP server registration
   const staleNpxMcp = configs.some((c) => {
@@ -1517,6 +1666,7 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
     // under the current normalizer; such engrams are dedup attractors.
     // Advisory: does not fail overall.
     const staleContentHashes = countStaleContentHashes(flags)
+    const { pinOverflow, error: pinOverflowError } = await readPinOverflow(flags)
 
     // Orphaned-PGLite advisory — computed HERE, not in the text renderer, so
     // `--json` consumers see it too. "Selected" goes through the real
@@ -1535,14 +1685,15 @@ function buildReport(skipHandshake: boolean, flags: GlobalFlags): Promise<Doctor
       : null
 
     const ignoredDuplicateStores = findIgnoredDuplicateStores(flags)
+    const { keys: invalidConfigKeys, error: invalidConfigKeysError } = readInvalidConfigKeys(flags)
     const skippedProjectStores = findSkippedProjectStores(flags)
 
     return {
-      configs, hooksInstalled, mcpRegistered, claudeCodeMcp, datacoreCollision, staleNpxHooks, staleNpxMcp, brokenNodeMcp,
+      configs, hooksInstalled, mcpRegistered, claudeCodeMcp, datacoreCollision, staleNpxHooks, ...(staleEventTimeouts.length ? { staleEventTimeouts } : {}), staleNpxMcp, brokenNodeMcp,
       hookShim, mcpShim, handshake, cursorHandshake,
       embedder: embedderWithVcRuntime(embedder, { platform: process.platform, env: process.env }),
       cursorProjectDetected, cursorWired, codexDetected, codexWired, codexCmdShimMcp, windowsHookFallback, agyDetected, agyWired,
-      pgliteGemmaReembedNeeded, staleContentHashes, pgliteOrphan, ignoredDuplicateStores, skippedProjectStores, tokenEnvUnset, tokenEnvFound, opencode, outbox, folderMap, overall, serverStores, hookTrust,
+      pgliteGemmaReembedNeeded, staleContentHashes, pinOverflow, ...(pinOverflowError ? { pinOverflowError } : {}), pgliteOrphan, ignoredDuplicateStores, invalidConfigKeys, ...(invalidConfigKeysError ? { invalidConfigKeysError } : {}), skippedProjectStores, tokenEnvUnset, tokenEnvFound, opencode, outbox, folderMap, overall, serverStores, hookTrust,
     }
   })
 }
@@ -1597,6 +1748,9 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
     if (c.hasDatacoreMcp) flags.push('datacore MCP')
     outputText(`  ${tick(c.hasPlurMcp || c.hasPlurHooks)} ${c.label}: ${flags.length ? flags.join(', ') : '(empty)'}`)
     outputText(`     ${c.path}`)
+    if (c.hooksProblem) {
+      outputText(`     ✗ hooks cannot be read: ${c.hooksProblem}. Fix it by hand; \`plur init\` leaves this file alone until then`)
+    }
   }
 
   outputText('')
@@ -1745,6 +1899,13 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
     outputText(`✗ Hook shim: ${report.hookShim.error}`)
   }
 
+  if (report.staleEventTimeouts?.length) {
+    outputText('')
+    const list = report.staleEventTimeouts.map(s => `${s.event} (${s.timeout}s)`).join(', ')
+    outputText(`⚠  Event hooks have a timeout below ${CLAUDE_INJECT_TIMEOUT_S}s: ${list}.`)
+    outputText('   They still inject (keyword fallback inside the old timeout); run `plur init` to give the meaning-model search its full time.')
+  }
+
   if (report.staleNpxHooks) {
     outputText('')
     outputText('⚠  Hooks still use npx — slow (200-2000ms per hook) and vulnerable to cache corruption.')
@@ -1796,6 +1957,19 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
     outputText('   Fix: run `plur sync --reembed --full` once to rebuild the vectors.')
   }
 
+  if (report.pinOverflowError) {
+    outputText('')
+    outputText(`⚠  could not read the pin report: ${report.pinOverflowError}`)
+  }
+
+  if (report.pinOverflow && report.pinOverflow.overflow_count > 0) {
+    outputText('')
+    outputText(`⚠  ${formatPinOverflowLine(report.pinOverflow)}`)
+    outputText('   Pins over the share are skipped at injection. Fix: `plur pin` shows each pin\'s cost and')
+    outputText('   priority; raise the priority of the ones that matter, unpin situational ones (`plur pin audit`')
+    outputText('   proposes which), or raise injection_budget / injection.pinned_ratio.')
+  }
+
   if (report.staleContentHashes > 0) {
     outputText('')
     outputText(`⚠  ${report.staleContentHashes} engram${report.staleContentHashes === 1 ? '' : 's'} have a stale content_hash.`)
@@ -1823,6 +1997,12 @@ export function printText(report: DoctorReport, flags?: GlobalFlags): void {
     if (report.ignoredDuplicateStores.some(d => !d.primary)) {
       outputText('   Remove an entry that repeats another store\'s file and scope from config.yaml by hand.')
     }
+  }
+
+  const invalidLines = invalidConfigKeyLines(report.invalidConfigKeys ?? [], report.invalidConfigKeysError)
+  if (invalidLines.length > 0) {
+    outputText('')
+    for (const line of invalidLines) outputText(line)
   }
 
   for (const line of skippedStoreLines(report.skippedProjectStores, plurRoot(flags))) outputText(line.startsWith('Found') ? `⚠  ${line}` : line)

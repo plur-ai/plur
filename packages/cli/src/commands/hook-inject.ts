@@ -7,17 +7,19 @@ import { createPlur, type GlobalFlags } from '../plur.js'
 import { cleanupStaleSessionFiles } from '../lib/codex-hook-io.js'
 import { checkpointRoot } from './hook-learn-check.js'
 import { hookFolderPolicy, payloadDir, sessionSettings, folderAskOnce, untrustedPlurYamlAsk, createAskPlur, bindHookFolder, remoteOnlyLines } from '../lib/folder-gate.js'
-import { skippedStoreNotice } from '@plur-ai/core'
+import { skippedStoreNotice, formatPinOverflowLine, formatPendingPinRequestsLine, semanticModelState, withDeadline, DEADLINE_MISSED } from '@plur-ai/core'
 import type { FolderPolicy } from '@plur-ai/core'
 import { safeSessionKey } from '../lib/session-key.js'
-import { injectWithFallback, hybridEnabled, type Injectable, type InjectOutcome } from '../lib/codex-hook-io.js'
+import { injectWithFallback, hybridEnabled, effectiveInjectMode, type Injectable, type InjectOutcome, type InjectFallbackHooks } from '../lib/codex-hook-io.js'
 import { waitForOwnStoreLock, exitWhenStoreIdle, EXIT_LOCK_WAIT_MS } from '../lib/store-lock-exit.js'
 import { correctionReminder } from './hook-correction-detect.js'
 import { recordInjected } from '../lib/auto-rate.js'
-import { recordHookRun } from '../lib/hook-runs.js'
+import { recordHookRun, recordHookNote, type HookNote } from '../lib/hook-runs.js'
 import { cachedServerLines } from '../lib/server-session.js'
 import { cleanupLegacyProjectAtSessionStart } from '../lib/legacy-plur-yaml.js'
 import { hookSessionDir, readSessionTask, writeSessionTask } from '../lib/session-task.js'
+import { readPinMarker, bumpPinEpoch, recordPinsDelivered, pinContext, isEpochBumpStart } from '../lib/pin-marker.js'
+import { buildHookQueryContext, contentWordCount, isEventLabel, readGitBranch, readLastUserTurns } from '../lib/hook-query.js'
 
 // Remote budget (ms) for the recall leg inside injectHybrid. The hook runs on
 // every prompt: long enough for healthy round trips, short enough to be
@@ -158,7 +160,7 @@ function emitContextConfirmed(hookEventName: string, additionalContext: string):
 const REMINDER_INTERVAL_MS = 10 * 60 * 1000 // 10 minutes
 
 import { claimHookDegradationLines, type Plur } from '@plur-ai/core'
-import { resolveProjectRemote, projectRemoteRefusalNotice, type ProjectRemote } from '../lib/project-remote.js'
+import { resolveProjectRemote, projectRemoteRefusalNotice, projectRemoteWithheldNotice, type ProjectRemote } from '../lib/project-remote.js'
 import { hookSessionKey } from '../lib/session-key.js'
 
 /**
@@ -212,10 +214,6 @@ export function injectSessionKey(input: Record<string, unknown>, ppid: number | 
 function sessionStatePath(key: string, ext: string): string | null {
   const dir = sessionDir()
   return dir ? join(dir, `${key}.${ext}`) : null
-}
-
-function sessionMarkerPath(key: string): string | null {
-  return sessionStatePath(key, 'marker')
 }
 
 /**
@@ -551,6 +549,130 @@ export const WATCHDOG_LOCK_WAIT_MS = 3_000
 const HOOK_CEILING_MS = parseInt(process.env.PLUR_HOOK_CEILING_MS ?? '', 10) || HOOK_CEILING_DEFAULT_MS
 
 /**
+ * Event injections (plan mode, skill, agent, subagent) run the same unified
+ * selection as the first prompt since the overhaul (W2+4), keyword-first
+ * (H1): the hybrid leg only when `planEventRetrieval` says it is cheap and
+ * safe, on a soft deadline, then the keyword search. `plur init` now
+ * registers them with the main hook's 20s, but installs made before keep 10s
+ * and nothing relies on users re-running init (D6), so an event run bounds
+ * itself inside the OLD 10s: a 4s hybrid deadline, then BM25, under a 9s
+ * self-watchdog whose store-idle wait is 0.5s (H5: 9.5s in all).
+ */
+export const EVENT_HYBRID_DEADLINE_DEFAULT_MS = 4_000
+export const EVENT_CEILING_DEFAULT_MS = 9_000
+/** How long the event watchdog, once fired, waits for this process's store lock (H5). */
+export const EVENT_WATCHDOG_LOCK_WAIT_MS = 500
+/** How long an event waits for the "is the model on disk" check before taking the keyword leg (H1). */
+export const EVENT_MODEL_CHECK_MS = 1_500
+const EVENT_HYBRID_DEADLINE_MS = parseInt(process.env.PLUR_HOOK_EVENT_DEADLINE_MS ?? '', 10) || EVENT_HYBRID_DEADLINE_DEFAULT_MS
+const EVENT_CEILING_MS = Math.min(HOOK_CEILING_MS, parseInt(process.env.PLUR_HOOK_EVENT_CEILING_MS ?? '', 10) || EVENT_CEILING_DEFAULT_MS)
+// The watchdog ceiling of THIS run: the event ceiling for --event runs.
+let runCeilingMs = HOOK_CEILING_MS
+
+/** H5: the most an event run can take — its watchdog ceiling plus the store-idle wait after it fires. */
+export function eventWatchdogBudgetMs(): number {
+  return EVENT_CEILING_MS + EVENT_WATCHDOG_LOCK_WAIT_MS
+}
+
+/** Is the embeddings cache warm enough that a hybrid search does not have to embed the store? */
+function embeddingCacheWarm(storeRoot: string): boolean {
+  try { return statSync(join(storeRoot, '.embeddings-cache.json')).size > 0 } catch { return false }
+}
+
+/** A lock file younger than LOCK_STALE_MS: its run is live. */
+function freshLockAt(path: string | null): boolean {
+  if (!path) return false
+  try { return Date.now() - statSync(path).mtimeMs < LOCK_STALE_MS } catch { return false }
+}
+
+/** The model's files are on disk (or it is loaded). Never loads or downloads it. */
+async function modelOnDisk(): Promise<boolean> {
+  try {
+    const state = await semanticModelState()
+    return state === 'ready' || state === 'cached'
+  } catch {
+    return false
+  }
+}
+
+export interface EventRetrievalPlan {
+  mode: 'hybrid' | 'keyword'
+  reason: 'hybrid-off' | 'cache-cold' | 'cache-warming' | 'hybrid-busy' | 'no-lock' | 'model-missing' | 'ok'
+  /** Held only for `hybrid`: the per-session single-flight lock, released by the caller. */
+  hold?: InjectLockHold
+}
+
+/**
+ * H1: which leg an event injection runs. Keyword unless ALL hold:
+ *   - hybrid is not switched off (PLUR_HOOK_HYBRID);
+ *   - the embeddings cache exists, and no cache warm-up is running — a cold
+ *     store would be embedded from scratch inside a hook;
+ *   - the session's first-prompt injection is not running, and this run wins
+ *     the per-session event single-flight lock (`lockPath`, O_EXCL) — N
+ *     concurrent event hooks start at most one hybrid run (each loads the
+ *     embedder, ~160 MB RSS);
+ *   - the model is on disk (checked last, bounded by `modelCheckMs`): an
+ *     event never downloads it.
+ * The cheap file checks run first. The lock is held only for `hybrid`.
+ */
+export async function planEventRetrieval(opts: {
+  lockPath: string | null
+  firstPromptLockPath: string | null
+  storeRoot: string
+  modelReady?: () => Promise<boolean>
+  hybridEnabled?: boolean
+  modelCheckMs?: number
+}): Promise<EventRetrievalPlan> {
+  if (!(opts.hybridEnabled ?? hybridEnabled())) return { mode: 'keyword', reason: 'hybrid-off' }
+  if (!embeddingCacheWarm(opts.storeRoot)) return { mode: 'keyword', reason: 'cache-cold' }
+  if (warmMarkerHeld(join(opts.storeRoot, WARM_MARKER))) return { mode: 'keyword', reason: 'cache-warming' }
+  if (freshLockAt(opts.firstPromptLockPath)) return { mode: 'keyword', reason: 'hybrid-busy' }
+  const lock = takeInjectLock(opts.lockPath)
+  if (lock.status === 'busy') return { mode: 'keyword', reason: 'hybrid-busy' }
+  if (lock.status !== 'acquired' || !lock.hold) return { mode: 'keyword', reason: 'no-lock' }
+  const check = (opts.modelReady ?? modelOnDisk)().catch(() => false)
+  // Referenced, not unref()'d: a check that hangs with no other handle would
+  // otherwise let Node exit 13 (unsettled await) before the bound fires.
+  const ready = await withDeadline(check, opts.modelCheckMs ?? EVENT_MODEL_CHECK_MS)
+  if (ready === DEADLINE_MISSED || !ready) {
+    releaseInjectLock(lock.hold)
+    return { mode: 'keyword', reason: 'model-missing' }
+  }
+  return { mode: 'hybrid', reason: 'ok', hold: lock.hold }
+}
+
+/**
+ * H3: the inject options of an event injection. An event never dials a team
+ * server (`remote: false`, no `remote_project`): events fire on every skill,
+ * agent and plan-mode tool call, and the first prompt already read the team
+ * store for this context. A remote-only folder is the exception — it has no
+ * local store, so its team-server read is the only read (bounded as on the
+ * first prompt).
+ */
+export function eventInjectOptions(o: {
+  remoteOnly: boolean
+  remoteProject?: ProjectRemote['remoteProject']
+  scope?: string
+  sessionId?: string
+  queryContext?: string[]
+  includePinned?: boolean
+  /** config.yaml `injection_budget`; used when larger than the 3,000 event floor. */
+  configBudget?: number
+}) {
+  return {
+    budget: Math.max(3000, o.configBudget ?? 0),
+    source: 'hook' as const,
+    include_pinned: o.includePinned ?? true,
+    ...(o.remoteOnly
+      ? { remote_timeout_ms: REMOTE_TIMEOUT_MS, ...(o.remoteProject ? { remote_project: o.remoteProject } : {}) }
+      : { remote: false as const }),
+    ...(o.scope ? { scope: o.scope } : {}),
+    ...(o.sessionId ? { session_id: o.sessionId } : {}),
+    ...(o.queryContext && o.queryContext.length > 0 ? { query_context: o.queryContext } : {}),
+  }
+}
+
+/**
  * The first-prompt / rehydrate retrieval. The hook is sync, so it
  * cannot wait on an embedder for as long as it takes: hybrid races a soft
  * deadline (PLUR_HOOK_HYBRID_DEADLINE_MS, default 8s) and BM25 serves the
@@ -562,12 +684,20 @@ export async function injectForHook<O, R>(
   task: string,
   opts: O,
   deadlineMs?: number,
-): Promise<InjectOutcome<R> & { hybrid: Promise<unknown> | null }> {
+  hooks?: InjectFallbackHooks,
+): Promise<InjectOutcome<R> & { hybrid: Promise<unknown> | null; pending: Promise<unknown> | null }> {
   // Keep hold of the hybrid search: when it misses the deadline it is still
   // running, and the exit must wait for it to finish its store write.
+  // Likewise the BM25 fallback when a late hybrid result won the race: it is
+  // still running and records its injection under the store lock.
   let hybrid: Promise<unknown> | null = null
+  let fallback: Promise<unknown> | null = null
   const tracked: Injectable<O, R> = {
-    inject: (t, o) => plur.inject(t, o),
+    inject: (t, o) => {
+      const p = plur.inject(t, o)
+      fallback = p.catch(() => undefined)
+      return p
+    },
     injectHybrid: (t, o) => {
       const p = plur.injectHybrid(t, o)
       hybridInFlight = true
@@ -575,8 +705,10 @@ export async function injectForHook<O, R>(
       return p
     },
   }
-  const outcome = await injectWithFallback(tracked, task, opts, deadlineMs)
-  return { ...outcome, hybrid }
+  const outcome = await injectWithFallback(tracked, task, opts, deadlineMs, hooks)
+  // What may still be running when the hook wants to exit.
+  const pending = outcome.mode === 'bm25' ? hybrid : fallback
+  return { ...outcome, hybrid, pending }
 }
 
 /**
@@ -592,11 +724,7 @@ export const ABANDONED_HYBRID_WAIT_MS = 5_000
 
 /** Resolve true when `p` settles, or false after `ms`, whichever comes first. */
 export function settleWithin(p: Promise<unknown>, ms: number): Promise<boolean> {
-  let timer: NodeJS.Timeout | undefined
-  return Promise.race([
-    p.then(() => true, () => true),
-    new Promise<boolean>(r => { timer = setTimeout(() => r(false), Math.max(0, ms)) }),
-  ]).finally(() => { if (timer) clearTimeout(timer) })
+  return withDeadline(p.then(() => true, () => true), Math.max(0, ms)).then(r => r === true)
 }
 
 /**
@@ -750,6 +878,14 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     return
   }
 
+  // R7: SessionStart with source compact or resume starts a context whose
+  // earlier injections may be gone — a new pin epoch, recorded before any
+  // work, so a run cut short leaves the epoch undelivered (fail open). For
+  // source clear the payload already carries a new session id, so this only
+  // starts that session's marker (see isEpochBumpStart, H10).
+  if (isEpochBumpStart(input)) bumpPinEpoch(input.session_id, { notesRoot: flags.path })
+  runCeilingMs = event ? EVENT_CEILING_MS : HOOK_CEILING_MS
+
   // Watchdog: guarantee this process exits even if something in the hook run
   // hangs. Remote calls are individually budgeted, so this is the ceiling on
   // the whole run (embedder load, fs stalls, stray async). Installed after the
@@ -768,11 +904,12 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     // A hybrid search still running at the ceiling is embedding a cold store:
     // same as a missed deadline, the cache would stay cold. The check runs at
     // the exit itself, after the store-idle wait.
-    void exitWhenStoreIdle(WATCHDOG_LOCK_WAIT_MS, () => {
-      if (hybridInFlight && storeRoot) startEmbeddingWarmup(storeRoot, runFlags)
+    // An event never starts the warm-up, and waits less.
+    void exitWhenStoreIdle(event ? EVENT_WATCHDOG_LOCK_WAIT_MS : WATCHDOG_LOCK_WAIT_MS, () => {
+      if (!event && hybridInFlight && storeRoot) startEmbeddingWarmup(storeRoot, runFlags)
       process.exit(0)
     })
-  }, Math.max(0, runStartedAt + HOOK_CEILING_MS - Date.now()))
+  }, Math.max(0, runStartedAt + runCeilingMs - Date.now()))
   watchdog.unref()
 
   const key = sessionKey(input)
@@ -787,31 +924,90 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     const plur = createPlur(flags)
     bindHookFolder(plur, dir, policy)
     const label = `[PLUR Memory — ${event}]`
+    storeRoot = plur.storageRoot
+    runFlags = flags
 
-    // BM25-only, deliberately. Event hooks are sync (context must arrive
-    // before the tool runs) with a 10s timeout. The BGE embedder can take
-    // ~20s to load in a cold CLI process on a store of a few thousand
-    // engrams, so hybrid would be killed at the timeout every time. Event
-    // task strings ("skill: X", "agent: Y") are short keyword queries where
-    // BM25 holds its own. The first-message injection uses hybrid on an 8s
-    // soft deadline, then BM25, under a 20s hook timeout.
+    // The same unified selection as the first prompt (overhaul W2+4),
+    // keyword-first (H1): the hybrid leg only on a warm cache with the model
+    // on disk and no other hybrid run of this session live.
     // Attribute the retrieval to this session when the marker is readable, so
     // the memory receipt can count (engram, session) pairs from hook traffic —
     // which is the large majority of all injections.
     let eventSessionId: string | undefined
     if (marker) try { eventSessionId = JSON.parse(readFileSync(marker, 'utf8')).sessionId } catch { /* fail-open */ }
-    const result = await plur.inject(task, { budget: 3000, source: 'hook', session_id: eventSessionId })
-    recordInjected('claude', input.session_id, result.injected_ids) // auto-rate
-    if (result.count > 0) {
-      const parts: string[] = []
-      if (result.directives) parts.push(result.directives)
-      if (result.constraints) parts.push(result.constraints)
-      if (result.consider) parts.push(result.consider)
-      emitContext(
-        claudeHookEventName(input, { rehydrate: false, event }),
-        `${label} ${result.count} engrams\n\n${parts.join('\n')}`,
-      )
+    // R7: pins once per context. A skill, agent or plan-mode event leaves them
+    // out only when this context's epoch records a delivery. A subagent is
+    // its own context, keyed per agent id when the payload has one (H7).
+    const pins = pinContext(input, event)
+    const includePinned = pins.include
+    const pinEpoch = pins.contextId ? readPinMarker(pins.contextId)?.epoch ?? 0 : 0
+    // Scope routing as on the first prompt, so an event and a prompt with the
+    // same query see the same local memories.
+    const projectRemote = resolveProjectRemote(plur, dir)
+    const projectConfig = sessionSettings(policy, projectRemote.config)
+    const remoteOnly = !!plur.remoteOnlyFolder()
+    // W5: an event label is a poor query on its own — add session context.
+    const queryContext = hookQueryContext(plur, input, task, true, projectConfig.scope, dir)
+    const eventOpts = eventInjectOptions({
+      remoteOnly,
+      remoteProject: projectRemote.remoteProject,
+      scope: projectConfig.scope,
+      sessionId: eventSessionId,
+      queryContext,
+      includePinned,
+      configBudget: plur.injectionBudget(),
+    })
+    const plan = await planEventRetrieval({
+      lockPath: sessionStatePath(key, 'event-hybrid'),
+      firstPromptLockPath: sessionStatePath(key, 'injecting'),
+      storeRoot: plur.storageRoot,
+    })
+    heldInjectLock = plan.hold ?? null
+    // H14: why this leg, and what came back, in hook-runs.json — the only
+    // trace of a keyword fallback or a degraded result (nothing is printed).
+    const eventNote: HookNote = { event, reason: plan.reason, leg: plan.mode }
+    const onHybridError: InjectFallbackHooks['onHybridError'] = (message, phase) => {
+      eventNote[phase === 'late' ? 'late_hybrid_error' : 'hybrid_error'] = message
+      // After the main record (a late failure lands while the exit waits for it).
+      if (eventNote.mode !== undefined) recordHookNote('claude', 'event', eventNote, flags.path)
     }
+    let outcome: Awaited<ReturnType<typeof injectForHook<typeof eventOpts, Awaited<ReturnType<Plur['inject']>>>>>
+    try {
+      outcome = plan.mode === 'hybrid'
+        ? await injectForHook(plur, task, eventOpts, EVENT_HYBRID_DEADLINE_MS, { onHybridError })
+        : { result: await plur.inject(task, eventOpts), mode: 'bm25', hybrid: null, pending: null }
+    } finally {
+      // Kept while an abandoned hybrid search may still be running: released
+      // at exit (exitIfAbandonedHybrid) or by the watchdog.
+      if (!(outcome! && outcome.mode === 'bm25' && outcome.hybrid)) {
+        releaseInjectLock(plan.hold)
+        heldInjectLock = null
+      }
+    }
+    const { result, mode, hybrid, pending } = outcome
+    abandonedHybrid = (mode === 'bm25' && hybrid) ? hybrid : pending
+    eventNote.mode = effectiveInjectMode(outcome)
+    eventNote.degraded_reason = result.degraded_reason
+    eventNote.embedder_error = result.embedder_error
+    recordHookNote('claude', 'event', eventNote, flags.path)
+    recordInjected('claude', input.session_id, result.injected_ids) // auto-rate
+    // Remote-only folders still read the team server: surface its outcome.
+    const degradation = remoteOnly ? surfaceRemoteOutcomes(plur) : []
+    if (result.count > 0 || degradation.length > 0) {
+      const parts = [result.directives, result.constraints, result.consider].filter((t): t is string => !!t)
+      const body = [...degradation, ...parts].join('\n')
+      const delivered = await emitContextConfirmed(
+        claudeHookEventName(input, { rehydrate: false, event }),
+        `${label} ${result.count} engrams\n\n${body}`,
+      )
+      // This context now holds the pins — only when the block had any (H9).
+      if (delivered && includePinned && pins.record && pins.contextId && await resultHasPins(plur, result)) {
+        recordPinsDelivered(pins.contextId, pinEpoch)
+      }
+    }
+    await exitIfAbandonedHybrid(flags, false)
+    releaseInjectLock(plan.hold)
+    heldInjectLock = null
     return
   }
 
@@ -876,16 +1072,22 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     releaseInjectLock(lock.hold)
     heldInjectLock = null
   }
-  // The output (if any) has been flushed — emitContextConfirmed waits
-  // for it. Exit now rather than let the abandoned hybrid search keep a
-  // synchronous hook, and the user's prompt, waiting. But not while this
-  // process may be inside a store write: exiting there leaves the lock file
-  // behind, and every writer (the next hook, the MCP server) then waits on it.
-  // Checking for the lock file alone is not enough — the abandoned search's
-  // O_EXCL create can be in flight at the check and land after it — so wait
-  // for the search itself, bounded, then for any lock of ours still on disk.
+  await exitIfAbandonedHybrid(flags)
+}
+
+/**
+ * The output (if any) has been flushed — emitContextConfirmed waits
+ * for it. Exit now rather than let the abandoned hybrid search keep a
+ * synchronous hook, and the user's prompt, waiting. But not while this
+ * process may be inside a store write: exiting there leaves the lock file
+ * behind, and every writer (the next hook, the MCP server) then waits on it.
+ * Checking for the lock file alone is not enough — the abandoned search's
+ * O_EXCL create can be in flight at the check and land after it — so wait
+ * for the search itself, bounded, then for any lock of ours still on disk.
+ */
+async function exitIfAbandonedHybrid(flags: GlobalFlags, warmup = true): Promise<void> {
   if (abandonedHybrid) {
-    const left = () => Math.max(0, runStartedAt + HOOK_CEILING_MS - 1_000 - Date.now())
+    const left = () => Math.max(0, runStartedAt + runCeilingMs - 1_000 - Date.now())
     const settled = await settleWithin(abandonedHybrid, Math.min(ABANDONED_HYBRID_WAIT_MS, left()))
     // Then the general guard: no lock operation of this process in
     // flight and no lock file of ours on disk, checked in the same step as
@@ -894,7 +1096,9 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
     // when a search finishes. Build it in the background so the next
     // session's hybrid search meets the deadline.
     await exitWhenStoreIdle(Math.min(EXIT_LOCK_WAIT_MS, left()), () => {
-      if (!settled && hybridInFlight && storeRoot) startEmbeddingWarmup(storeRoot, flags)
+      // An event never starts the warm-up (H1); its lock goes with the exit.
+      if (heldInjectLock) releaseInjectLock(heldInjectLock)
+      if (warmup && !settled && hybridInFlight && storeRoot) startEmbeddingWarmup(storeRoot, flags)
       process.exit(0)
     })
   }
@@ -1031,6 +1235,12 @@ async function injectSession(
   if (!injectSessionId && marker) {
     try { injectSessionId = JSON.parse(readFileSync(marker, 'utf8')).sessionId } catch { /* fail-open */ }
   }
+  // R7: the epoch this injection delivers pins into (a compaction bumped it
+  // already, in run()); recorded as delivered only once the output is out.
+  const pinEpoch = readPinMarker(input.session_id)?.epoch ?? 0
+  // W5: a vague first prompt is extended with session context. The rehydrate
+  // task is the stored task plus the compaction summary already.
+  const queryContext = isRehydrate ? [] : hookQueryContext(plur, input, task, false, projectConfig.scope, dir)
   // The remote leg rides INSIDE injectHybrid — at most one remote call
   // per host per prompt. `.plur.yaml`'s remote_url/remote_token pass through
   // as remote_project (project config wins for the hook path; its presence
@@ -1044,9 +1254,11 @@ async function injectSession(
   const injectOpts = {
     source: 'hook' as const,
     remote_timeout_ms: REMOTE_TIMEOUT_MS,
+    include_pinned: true,
     ...(projectConfig.scope ? { scope: projectConfig.scope } : {}),
     ...(injectSessionId ? { session_id: injectSessionId } : {}),
     ...(projectRemote.remoteProject ? { remote_project: projectRemote.remoteProject } : {}),
+    ...(queryContext.length > 0 ? { query_context: queryContext } : {}),
   }
   let context: string | null = null
   let count = 0
@@ -1054,18 +1266,14 @@ async function injectSession(
   // Bounded, because the hook is sync. On a missed deadline or a
   // hybrid failure, BM25 (local-only by design — inject() never dials)
   // serves the turn.
-  const { result, mode, hybrid } = await injectForHook(plur, task, injectOpts)
+  const { result, mode, hybrid, pending } = await injectForHook(plur, task, injectOpts)
   recordInjected('claude', input.session_id, result.injected_ids) // auto-rate
   // A missed deadline leaves the hybrid search running; it must not hold
   // the process (and so the prompt) open until the watchdog.
-  abandonedHybrid = mode === 'bm25' && hybridEnabled() ? hybrid : null
+  abandonedHybrid = mode === 'bm25' && hybridEnabled() ? hybrid : pending
   storeRoot = plur.storageRoot
   if (result.count > 0) {
-    const parts: string[] = []
-    if (result.directives) parts.push(result.directives)
-    if (result.constraints) parts.push(result.constraints)
-    if (result.consider) parts.push(result.consider)
-    context = parts.join('\n')
+    context = [result.directives, result.constraints, result.consider].filter(t => !!t).join('\n')
     count = result.count
   }
 
@@ -1089,6 +1297,9 @@ async function injectSession(
     if (projectConfig.domain) parts.push(`Project domain: ${projectConfig.domain}`)
     // remote-only: the remote-only line below names the scope, escaped.
     if (projectConfig.scope && !plur.remoteOnlyFolder()) parts.push(`Project scope: ${projectConfig.scope} — use this scope for plur_learn calls`)
+    // D3: pins over their share are never dropped invisibly, and D2: pin
+    // requests waiting for the owner — at most one line each.
+    parts.push(...await sessionStartPinLines(plur))
 
     // A memory store here that was found but not added:
     // one line, once per session and folder, with the paste-safe command.
@@ -1118,6 +1329,7 @@ async function injectSession(
   // A refused project remote is reported, so the user can tell "refused,
   // here is the one command" from "quietly broken".
   if (remoteRefusedFrom) parts.push(projectRemoteRefusalNotice(remoteRefusedFrom, plur.storageRoot))
+  else if (projectRemote.withheldUrl) parts.push(projectRemoteWithheldNotice(projectRemote.withheldUrl))
   // An ignored scope/domain is reported too, naming the file and `plur trust`.
 
   if (context) {
@@ -1134,4 +1346,69 @@ async function injectSession(
   const delivered = await emitContextConfirmed(hookEventName, parts.join('\n'))
   // Fail-open: an unwritable state dir just means the next prompt re-injects.
   if (delivered && pendingMarker && marker) try { writeFileSync(marker, pendingMarker, { mode: 0o600 }) } catch { /* fail-open */ }
+  // R7: this context now holds the pins — only when the block had any (H9).
+  if (delivered && await resultHasPins(plur, result)) recordPinsDelivered(input.session_id, pinEpoch)
+}
+
+/**
+ * H9: did this injection's block hold at least one pinned engram? A delivery
+ * is recorded only then: an injection whose pins did not fit (or a store
+ * with none yet) must not make later events leave out pins they never gave.
+ * Fails toward false (the next event offers the pins again).
+ */
+async function resultHasPins(plur: Pick<Plur, 'listPinned'>, result: { injected_ids?: string[] }): Promise<boolean> {
+  const ids = result.injected_ids ?? []
+  if (ids.length === 0) return false
+  try {
+    const injected = new Set(ids)
+    return (await plur.listPinned()).some(e => injected.has(e.id))
+  } catch {
+    return false
+  }
+}
+
+/**
+ * The pin lines of the session-start header, each only when non-empty:
+ *  - D3: pins that do not fit their share, from the same fit report
+ *    `plur pin` and `plur doctor` print (`pinFitReport()`), so the CLI and
+ *    the hook agree;
+ *  - D2: pin requests waiting for the owner (`pendingPinRequests()`).
+ * Advisory: a failure leaves the line out, never the session start.
+ */
+export async function sessionStartPinLines(plur: Pick<Plur, 'pinFitReport' | 'pendingPinRequests'>): Promise<string[]> {
+  const lines: string[] = []
+  try {
+    const overflow = formatPinOverflowLine(await plur.pinFitReport())
+    if (overflow) lines.push(`[PLUR] ${overflow}`)
+  } catch { /* advisory */ }
+  try {
+    const pending = formatPendingPinRequestsLine(await plur.pendingPinRequests())
+    if (pending) lines.push(`[PLUR] ${pending}`)
+  } catch { /* advisory */ }
+  return lines
+}
+
+/**
+ * W5: the session context to extend a vague prompt or an event label with —
+ * the stored session task, the project scope label, the git branch, the last
+ * two user turns from the payload's transcript. Empty when the prompt is
+ * specific enough. Never throws.
+ */
+function hookQueryContext(plur: Plur, input: Record<string, unknown>, task: string, isEvent: boolean, scope: string | undefined, dir: string): string[] {
+  try {
+    const minTerms = plur.injectionSettings().query_min_terms
+    if (!isEvent && !isEventLabel(task) && contentWordCount(task) >= minTerms) return []
+    const q = buildHookQueryContext({
+      prompt: task,
+      isEvent,
+      sessionTask: readSessionTask(input.session_id),
+      scope,
+      branch: readGitBranch(dir),
+      turns: readLastUserTurns(input.transcript_path, 2),
+      minTerms,
+    })
+    return q.extended ? q.context : []
+  } catch {
+    return []
+  }
 }

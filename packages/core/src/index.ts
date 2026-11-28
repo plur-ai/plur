@@ -7,7 +7,7 @@ import { discoveryMethods, type DiscoveryMethods } from './plur/discovery.js'
 import { feedbackPinMethods, type FeedbackPinMethods } from './plur/feedback-pin.js'
 import { foldersPolicyMethods, type FoldersPolicyMethods } from './plur/folders-policy.js'
 import { forgetRescopeMethods, type ForgetRescopeMethods } from './plur/forget-rescope.js'
-import { isPlainObject, REMOTE_PROBE_TIMEOUT_MS } from './plur/helpers.js'
+import { isPlainObject, REMOTE_PROBE_TIMEOUT_MS, sanitizeClientRuntime, type ClientRuntime } from './plur/helpers.js'
 import { injectionMethods, type InjectionMethods } from './plur/injection.js'
 import { learnDedupMethods, type LearnDedupMethods } from './plur/learn-dedup.js'
 import { learnMethods, type LearnMethods } from './plur/learn.js'
@@ -21,6 +21,10 @@ import { scopeGuardsMethods, type ScopeGuardsMethods } from './plur/scope-guards
 import { statusReportMethods, type StatusReportMethods } from './plur/status-report.js'
 import { storeIoMethods, type StoreIoMethods } from './plur/store-io.js'
 import { tensionsMethods, type TensionsMethods } from './plur/tensions.js'
+import { consolidationMethods, type ConsolidationMethods } from './plur/consolidation.js'
+import { pinningMethods, type PinningMethods } from './plur/pinning.js'
+import { enrichmentMethods, type EnrichmentMethods } from './plur/enrichment.js'
+import type { PinActor } from './pin-policy.js'
 import { type IndexSyncError } from './plur/types.js'
 import { type RerankerAdapter } from './rerankers/index.js'
 import { ServerStoreEntrySchema } from './schemas/config.js'
@@ -31,8 +35,8 @@ import type { DegradedReason } from './types.js'
 export { engramContentFields, LEARN_CONTENT_FIELDS, LEARN_CONTEXT_FIELD_ROLES, learnContextContent } from './content-fields.js'
 export { ENTERPRISE_SETUP_COMMAND, enterpriseRecoveryHint } from './enterprise.js'
 export { gitDefaultScope, loadGitScopeSources, type GitScopeOutcome, type GitScopeSource } from './git-origin.js'
-export { AddRemoteStoreError, DEFAULT_REMOTE_WRITE_TIMEOUT_MS } from './plur/helpers.js'
-export type { CheckResult, IndexSyncError, IngestCandidate, IngestOptions, LearnDelivery, LearnRoutedOptions, MutationOutcome, OutboxReasonCode, RegisterDiscoveredResult, RemoteHealth, RemoteScopeDiscovery, RescopeOptions, RescopeResult, ServerDiscoveryOutcome, ServerStoreCheck, StatusResult, StoreSummary } from './plur/types.js'
+export { AddRemoteStoreError, BOOKKEEPING_RESERVE_MS, DEFAULT_REMOTE_WRITE_TIMEOUT_MS, sanitizeClientRuntime } from './plur/helpers.js'
+export type { CheckResult, IndexSyncError, IngestCandidate, IngestOptions, LearnDelivery, LearnRoutedOptions, MutationOutcome, OutboxReasonCode, RegisterDiscoveredResult, RemoteHealth, RemoteScopeDiscovery, RescopeOptions, RescopeResult, RescopePlan, RescopePlanItem, RescopeApplyResult, EnrichPlan, EnrichPlanItem, EnrichApplyResult, ServerDiscoveryOutcome, ServerStoreCheck, StatusResult, StoreSummary } from './plur/types.js'
 export { formatSaveDestination, formatServerSessionLine, type SaveDestinationInput, type ServerSessionState } from './save-destination.js'
 import { type BackendSelection } from './backend-selection.js'
 import { type GitScopeOutcome, type OriginRead } from './git-origin.js'
@@ -73,7 +77,7 @@ export { pendingStoreLockOps, publishLockFileSync, takeOverLockSync, EMPTY_LOCK_
 // out-of-package adapters (@plur-ai/opencode) take the capability and the gate
 // together rather than copying one without the other. See project-remote.ts.
 export {
-    projectRemoteRefusalNotice, resolveProjectRemote,
+    projectRemoteRefusalNotice, projectRemoteWithheldNotice, resolveProjectRemote,
     resolveProjectRemoteFromConfig, type ProjectRemote,
     type TrustChecker
 } from './project-remote.js'
@@ -125,7 +129,7 @@ export { PLUR_MEMORY_INSTRUCTIONS, renderMemoryBlock } from './memory-block.js'
 // implementation so @plur-ai/claw and @plur-ai/opencode derive learning
 // candidates identically instead of each vendoring a copy.
 export { EngramStoreShrinkError, EngramStoreUnreadableError } from './engrams.js'
-export { computeIdf, engramSearchText, termMatches, type CorpusStats } from './fts.js'
+export { computeIdf, engramSearchText, termMatches, SEARCH_TEXT_VERSION, SEARCH_INDEX_VERSION, type CorpusStats } from './fts.js'
 export { extractLearnings, extractSelfReportedLearnings, isCorrection, type LearnableMessage, type LearnCandidate } from './learner.js'
 export { detectCorrectionPrompt, type DetectionResult } from './correction.js'
 export { DomainCoverageSchema, EvidenceEntrySchema, FalsificationSchema, HierarchyPositionSchema, MetaConfidenceSchema, MetaFieldSchema, StructuralTemplateSchema } from './schemas/meta-engram.js'
@@ -147,6 +151,8 @@ export { bareEngramId, legacyStorePrefix, namespaceEngramId, parseNamespacedId, 
 export { freshTailBoost } from './fresh-tail.js'
 export { appendHistory, appendHistoryStamped, attestStore, canonicalEventBytes, clearChainHeadMemCache, computeEventHash, computeQueryHash, countEngramsInStore, countInjectionEvents, emitCheckpoint, findLatestInjectionFor, generateEventId, generateInjectionId, hashEngramsFile, listHistoryMonths, readChainHead, readCoInjections, readHistory, readHistoryForEngram, sortKeysDeep, tailSeekLastHash, type CheckpointData, type CheckpointSigningOptions, type CoInjectionData, type CoInjectionEvent, type CoInjectionReadResult, type HistoryEvent, type InjectionEventCounts, type InjectionSource } from './history.js'
 export { assignLayer, formatLayer1, formatLayer2, formatLayer3, formatWithLayer, type InjectionLayer } from './inject.js'
+export { selectUnified, buildUnifiedPool, buildInjectionQuery, rankForInjection, packUnified, type RelevanceSignals, type RelevanceSignalName, type UnifiedConfig, type UnifiedResult } from './inject-unified.js'
+export { estimateTokens, pinnedShareRatio, pinnedHardCap, effectivePinnedPriority } from './inject.js'
 export { scanForInversions, type InversionSuspect } from './inversion-scan.js'
 export { ALL_MIGRATIONS, CURRENT_SCHEMA_VERSION, getSchemaVersion, rollbackMigrations, runMigrations, setSchemaVersion, type Migration, type MigrationResult } from './migrations/index.js'
 export { resolveOperationTier, selectModel, selectModelForOperation, type LlmTierConfig, type ModelTier } from './model-routing.js'
@@ -266,6 +272,42 @@ export {
 } from './schemas/capsule.js'
 export type { CapsuleHeader, CapsulePreamble, ManifestSummary, PayloadDescriptor, Producer, Signer } from './schemas/capsule.js'
 export { ServerStoreEntrySchema } from './schemas/config.js'
+export {
+  resolveInjectionOverhaul, resolvePinningConfig, resolveConsolidateConfig, resolveLearnConfig, invalidOverhaulConfigKeys,
+  INJECTION_OVERHAUL_DEFAULTS, PINNING_DEFAULTS, CONSOLIDATE_DEFAULTS, LEARN_DEFAULTS,
+  type InjectionOverhaulSettings, type PinningSettings, type ConsolidateSettings, type LearnSettings,
+} from './schemas/config.js'
+export {
+  CHANGE_JOURNAL_FILE, CHANGE_JOURNAL_ROTATED_FILE, changeJournalPath, changeJournalMaxBytes, isRedactedRow, ChangeRedactedError, UNDO_BOOKKEEPING_FIELDS, CO_ACCESS_FIELD, readChangeJournal, newChangeId, canonicalRow, findUndoConflicts,
+  ChangeJournalError, ChangeJournalUnsupportedError, ChangeNotFoundError, ChangeAlreadyUndoneError, ChangeConflictError,
+  type ChangeRecord, type ChangeRowSnapshot, type ChangeTx, type PendingChange, type UndoChangeOptions, type ChangeConflictRow,
+} from './change-journal.js'
+export {
+  candidatePairs, completeLinkageClusters, blockKeyFor, polarityOf, mixedPolarity, protectedReasons, clusterProtectedReasons, mergeBase, nonBaseMembersCarryContent, structuredBodyOf,
+  nightlySeed, seededSample, seededRandom, buildConsolidationPrompt, parseConsolidationResponse,
+  mergeEngrams, retireInto, remapReferences, assertConsolidationPlan, approvalStatementHash, approvalCovers,
+  ConsolidateError, ConsolidateApplyDisabledError, ConsolidateTrialRequiredError, ConsolidatePlanInvalidError,
+  CONSOLIDATE_QUEUE_FILE, CONSOLIDATE_STATE_FILE, CONSOLIDATE_CHANGE_KIND, CONSOLIDATION_PLAN_KIND, PARAPHRASE_QUEUE_THRESHOLD,
+  type ConsolidationPlan, type PlanCluster, type PlanMember, type ConsolidationItem, type NeighbourPair, type Cluster,
+  type ClusterDecision, type ProtectedReason,
+  type ConsolidatePlanOptions, type ConsolidateApplyOptions, type ConsolidateApplyResult, type StoreHealth, type ConsolidateSkipReason,
+} from './consolidate.js'
+export {
+  ENRICH_KINDS, KIND_TO_MEMORY_CLASS, TASK_FAMILIES, OUTCOMES, ENRICHER_VERSION, MAX_STRUCTURED_BODY_CHARS,
+  validateLearnStructuredData, StructuredDataError, buildEnrichPrompt, parseEnrichReply, isEnriched, enrichRow,
+  type EngramKind, type TaskFamily, type Outcome, type LearnStructuredData, type EnrichLabel, type EnrichmentBlock,
+} from './enrich.js'
+export {
+  pinDecision, pinRequestOf, buildPinRequest, asPinRequested, withoutPinRequest, isPinTransition, isPinEscalation, pinEscalationDenied,
+  computePinFitReport, formatPinOverflowLine, formatPendingPinRequestsLine, comparePinTiebreak, isProhibition,
+  PinDeniedError,
+  type PinActor, type PinDecision, type PinRequest, type PendingPinRequest, type PinFitReport, type PinFitEntry,
+} from './pin-policy.js'
+export {
+  auditPins, buildPinAuditPrompt, parsePinAuditResponse, validatePinAuditProposal, planPinApply,
+  PIN_AUDIT_PROPOSAL_KIND, PIN_AUDIT_PROPOSAL_VERSION, PIN_AUDIT_BATCH,
+  type PinAuditProposal, type PinAuditItem, type PinAuditClass, type PinApplyOutcome,
+} from './pin-audit.js'
 export type { PlurConfig, ScopeRoutingConfig, StoreEntry } from './schemas/config.js'
 export { ExtractionProvenanceSchema, getExtractionProvenance, MeasuredUnderSchema, type ExtractionProvenance } from './schemas/engram.js'
 export type { Engram, MeasuredUnder, PreviousVersionRef } from './schemas/engram.js'
@@ -475,6 +517,36 @@ export class Plur {
   /** @internal */ _llmDisabledUntil: number | null = null
   /** Per-session default write scopes; see `session-scopes.ts`. */
   /** @internal */ _sessionScopes = new SessionScopeRegistry()
+  /**
+   * The calling client for the current request, per instance (#1470). Entered
+   * only through the static `Plur.withRuntime`, never a prototype method: every
+   * public prototype method captures the folder binding when it is called, and
+   * the MCP server opens this scope BEFORE its handler refreshes workspace
+   * roots, so a prototype method here would pin the stale binding for every
+   * write the handler makes.
+   */
+  /** @internal */ static _clientRuntime = new AsyncLocalStorage<{ plur: Plur; runtime: ClientRuntime } | undefined>()
+
+  /**
+   * Run `fn` with `runtime` recorded as `attribution.runtime` on every engram
+   * `plur` writes inside it, including nested and async writes (batches,
+   * session-end suggestions, promoted team copies). The name and version are
+   * client-controlled, so they are bounded and stripped of control, bidi and
+   * zero-width characters first; a value with nothing left records no runtime.
+   * An explicit `attribution.runtime` passed to a write is kept as given.
+   * Captures nothing else: in particular not the folder binding.
+   */
+  static withRuntime<T>(plur: Plur, runtime: { name?: unknown; version?: unknown } | undefined | null, fn: () => T): T {
+    const clean = sanitizeClientRuntime(runtime)
+    return Plur._clientRuntime.run(clean ? { plur, runtime: clean } : undefined, fn)
+  }
+
+  /** The context with the request's client runtime filled in, unless the caller named one. */
+  /** @internal */ _withRuntimeAttribution(context?: LearnContext): LearnContext | undefined {
+    const ctx = Plur._clientRuntime.getStore()
+    if (!ctx || ctx.plur !== this || context?.attribution?.runtime) return context
+    return { ...context, attribution: { ...context?.attribution, runtime: { ...ctx.runtime } } }
+  }
   /** @internal */ _gitOrigins = new Map<string, { at: number; origin: OriginRead }>()
   /**
    * Set when bound to a `remote-only` folder: writes go only to its team scope
@@ -523,6 +595,8 @@ export class Plur {
    * and remote stores (mutators call {@link _assertWritable} before routing).
    */
   /** @internal */ readonly _readonly: boolean = false
+  /** Who this instance writes for when a call names no actor. */
+  /** @internal */ _defaultActor: PinActor | undefined
   /** Unsubscribes this instance from its store's id-rename reports; see `close()`. */
   /** @internal */ _unsubscribeRenames: (() => void) | null = null
 
@@ -562,9 +636,16 @@ export class Plur {
      * stranding anyone who genuinely knows what their store does.
      */
     allowUnprotectedStore?: boolean
+    /**
+     * Who this instance writes for when a call names no actor (overhaul D2):
+     * the MCP server sets `agent`, the CLI `owner`. Absent: the pinning
+     * policy (`pinning.agents`) applies to every pin, as for an agent.
+     */
+    actor?: PinActor
   }) {
     this.paths = detectPlurStorage(options?.path)
     this._readonly = options?.readonly === true
+    if (options?.actor !== undefined) this.setDefaultActor(options.actor)
     const baseStore = options?.store ?? new YamlPrimaryStore(this.paths.engrams)
     this._basePrimaryStore = this._readonly ? new ReadonlyStoreGuard(baseStore) : baseStore
     // A store that renames a clashing id on write (Postgres `save`) reports the
@@ -775,6 +856,29 @@ export class Plur {
    * per-entry claim file does the same job (`_claimOutboxEntry`).
    */
   /** @internal */ _outboxInFlight = new Set<string>()
+  /** Write-time reinforcements, keyed by the engram object `learn` returned. */
+  /** @internal */ _reinforced = new WeakMap<object, { decision: 'REINFORCE'; existing_id: string; existing_statement: string; swallowed: string }>()
+
+  /** Who this instance writes for when a call names no actor. */
+  get defaultActor(): PinActor | undefined { return this._defaultActor }
+
+  /**
+   * The in-place half of a local rescope: rewrite `scope` and stamp
+   * `structured_data._rescoped`. Returns the new `structured_data` (also set
+   * on the row) so the caller can apply its own outbox handling. Shared by
+   * `_rescopeOne` and the journalled plan apply.
+   */
+  /** @internal */ static _rewriteScopeInPlace(t: Engram, target: string, now: string): Record<string, unknown> {
+    const from = t.scope
+    t.scope = target
+    const tsd = (t as any).structured_data
+    const nextSd: Record<string, unknown> = {
+      ...(tsd && typeof tsd === 'object' && !Array.isArray(tsd) ? tsd : {}),
+      _rescoped: { from_scope: from, at: now },
+    }
+    ;(t as any).structured_data = nextSd
+    return nextSd
+  }
 
   /**
    * Run a read-modify-write under exclusive access to the store that owns `path`.
@@ -874,6 +978,7 @@ export class Plur {
     embedding_model_missing: 'the embedding model is not downloaded yet — keyword results only. Run `plur doctor` once to download it (~133 MB).',
     semantic_deadline: 'semantic search did not finish within the recall deadline — keyword results only',
     reranker_deadline: 'the reranker did not finish within the recall deadline — results are in fusion order',
+    store_embeddings_incomplete: 'the store has not stored a vector for every memory yet — meaning search ran in process over all candidates (complete, slower); the backfill has been started',
   }
 
   /** How long past the deadline to wait for a remote leg that is already
@@ -985,9 +1090,9 @@ export class Plur {
   }
 }
 
-export interface Plur extends StoreIoMethods, RoutingMethods, ProvenanceIdentityMethods, LearnDedupMethods, ScopeGuardsMethods, LearnMethods, RecallMethods, OutboxMethods, RemoteResultsMethods, InjectionMethods, FeedbackPinMethods, ForgetRescopeMethods, MaintenanceMethods, StatusReportMethods, TensionsMethods, ConfigStoresMethods, FoldersPolicyMethods, DiscoveryMethods {}
+export interface Plur extends StoreIoMethods, RoutingMethods, ProvenanceIdentityMethods, LearnDedupMethods, ScopeGuardsMethods, LearnMethods, RecallMethods, OutboxMethods, RemoteResultsMethods, InjectionMethods, FeedbackPinMethods, ForgetRescopeMethods, MaintenanceMethods, StatusReportMethods, TensionsMethods, ConfigStoresMethods, FoldersPolicyMethods, DiscoveryMethods, ConsolidationMethods, PinningMethods, EnrichmentMethods {}
 
-for (const methods of [storeIoMethods, routingMethods, provenanceIdentityMethods, learnDedupMethods, scopeGuardsMethods, learnMethods, recallMethods, outboxMethods, remoteResultsMethods, injectionMethods, feedbackPinMethods, forgetRescopeMethods, maintenanceMethods, statusReportMethods, tensionsMethods, configStoresMethods, foldersPolicyMethods, discoveryMethods]) {
+for (const methods of [storeIoMethods, routingMethods, provenanceIdentityMethods, learnDedupMethods, scopeGuardsMethods, learnMethods, recallMethods, outboxMethods, remoteResultsMethods, injectionMethods, feedbackPinMethods, forgetRescopeMethods, maintenanceMethods, statusReportMethods, tensionsMethods, configStoresMethods, foldersPolicyMethods, discoveryMethods, consolidationMethods, pinningMethods, enrichmentMethods]) {
   for (const [name, fn] of Object.entries(methods)) {
     Object.defineProperty(Plur.prototype, name, { value: fn, writable: true, enumerable: false, configurable: true })
   }

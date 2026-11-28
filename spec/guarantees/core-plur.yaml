@@ -47,12 +47,27 @@ anchors:
       - >-
         packages/core/test/add-remote-store.test.ts::with overwriteScope but a rejected token, the existing entry is
         untouched
+  packages/core/src/plur/config-stores.ts#authority:
+    kind: guarantee
+    rule: >-
+      addStore refuses a caller the pin policy restricts before a new local store file is created; the same
+      registration would be refused by persistStores' central rule (#1946).
+    tests:
+      - packages/core/test/audit-024-f4-stores-add-pins.test.ts::an agent cannot register a path store, and its pins are not injected
+      - packages/core/test/audit-024-r6-store-additions-guard.test.ts
   packages/core/src/plur/config-stores.ts#configStoresMethods.addStore:
     kind: guarantee
     rule: >-
       One scope of a server entry cannot be replaced on its own; adding a store with a token taken from an environment
-      variable stores only the variable name; re-adding an existing store is idempotent.
+      variable stores only the variable name; re-adding an existing store is idempotent; under pinning.agents request or
+      deny a caller the pin policy restricts cannot register a new store, path or url, and nothing is written.
     tests:
+      - >-
+        packages/core/test/audit-024-f4-stores-add-pins.test.ts::an agent cannot register a path store, and its
+        pins are not injected
+      - >-
+        packages/core/test/audit-024-f4-stores-add-pins.test.ts::an agent cannot register a url store either, and
+        nothing is written
       - >-
         packages/core/test/multi-scope-store-entry.test.ts::replacing one scope of a server entry with another store is
         refused and changes nothing
@@ -75,10 +90,21 @@ anchors:
     kind: guarantee
     rule: >-
       Registering a company server refuses to replace a sign-in config.yaml already holds when asked to keep it, and a
-      credential write that cannot be made owner-only is refused without the key appearing in the error.
+      credential write that cannot be made owner-only is refused without the key appearing in the error. Under
+      pinning.agents request or deny, a write that adds a server address or a new scope on one is refused for a caller
+      the pin policy restricts, with nothing written; a new key for the same server and scopes is not (#1946).
     lean:
       - PlurSpec/Persistence.lean:every_config_writer_protected
     tests:
+      - >-
+        packages/core/test/audit-024-r6-store-additions-guard.test.ts::an agent cannot add a new server address even
+        when its scopes are already served
+      - >-
+        packages/core/test/audit-024-r4-register-server-pins.test.ts::an agent cannot add a new server entry, and
+        config.yaml is untouched
+      - >-
+        packages/core/test/audit-024-r4-register-server-pins.test.ts::the owner adds it; an agent may refresh its key
+        but not add a scope to it
       - >-
         packages/core/test/register-enterprise-server-stale.test.ts::keepSignIn: a sign-in config.yaml holds for the
         server is never replaced; nothing is written
@@ -148,7 +174,8 @@ anchors:
     kind: guarantee
     rule: >-
       A failed or degraded server answer never replaces a non-empty cached scope list, and a server can only tighten the
-      local leak guard, never loosen it with an allow list.
+      local leak guard, never loosen it with an allow list. Registering discovered scopes follows addStore's
+      store-registration pin policy.
     lean:
       - PlurSpec/RoutingDiscovery.lean:nonempty_cache_replaced_only_by_ok
       - PlurSpec/RoutingDiscovery.lean:malformed_keeps_cache
@@ -159,6 +186,9 @@ anchors:
       - >-
         packages/core/test/scope-metadata-trust.test.ts::drops a hostile remote allow; the guard still demotes sensitive
         content
+      - >-
+        packages/core/test/audit-024-r2-discovery-register-pins.test.ts::an agent's registerScope is refused, an
+        absent actor too
   packages/core/src/plur/discovery.ts#discoveryMethods.checkServerStores:
     kind: guarantee
     rule: The server check reports a malformed server entry instead of silently treating it as nothing to check.
@@ -205,10 +235,14 @@ anchors:
     kind: guarantee
     rule: >-
       Batch registration never auto-registers a personal-family scope a server lists, skips dismissed scopes, and one
-      failing scope does not abort the rest of the batch.
+      failing scope does not abort the rest of the batch; under pinning.agents request or deny a caller the pin policy
+      restricts is refused for the whole batch and no new store is written.
     tests:
       - packages/core/test/scope-discovery.test.ts::#382 refuses to auto-register personal-family scopes returned by /me
       - packages/core/test/scope-discovery.test.ts::batch register respects dismissals
+      - >-
+        packages/core/test/audit-024-r2-discovery-register-pins.test.ts::an agent's registerDiscoveredScopes is
+        refused and config.yaml is untouched
   packages/core/src/plur/discovery.ts#timeoutHandle:
     kind: guarantee
     rule: Listing stores with remote counts never hangs on an unresponsive remote; its load is cut off by a timeout.
@@ -373,12 +407,15 @@ anchors:
       - >-
         packages/core/test/folder-safety-1588.test.ts::PLUR_PATH and the working folder under HOME, no .git: ~/.plur is
         never registered
-  packages/core/src/plur/folders-policy.ts#foldersPolicyMethods.autoDiscoverStores:
+  packages/core/src/plur/folders-policy.ts#foldersPolicyMethods._decidedProjectStores:
     kind: guarantee
     rule: >-
       Store discovery reads the folder map but never performs the one-time import of a legacy trust.yaml, while still
-      honouring a legacy grant.
+      honouring a legacy grant. Under pinning.agents request or deny, discovery connects a decided folder's store only
+      for the owner named explicitly; for an agent or no one named it connects nothing (part of #1946).
     tests:
+      - packages/core/test/audit-024-r7-folder-nonce-store.test.ts
+      - packages/cli/test/audit-024-r7-folders-set-store.test.ts
       - >-
         packages/core/test/folder-safety-1588.test.ts::P17 / R3-L2: discovery never imports a legacy trust.yaml, and
         still honours it
@@ -453,7 +490,7 @@ anchors:
       - packages/core/test/rescope.test.ts::authorization denied (401) fails loud and leaves the source untouched
     promises:
       - PRV-7
-  packages/core/src/plur/forget-rescope.ts#forgetRescopeMethods.forget:
+  packages/core/src/plur/forget-rescope.ts#forgetRescopeMethods._forget:
     kind: guarantee
     rule: >-
       Forget refuses ambiguous or unverifiable targets instead of guessing, only retires a row of the store an explicit
@@ -472,6 +509,15 @@ anchors:
         stays local
     promises:
       - FGT-3
+  packages/core/src/plur/forget-rescope.ts#forgetRescopeMethods.applyRescopePlan:
+    kind: guarantee
+    rule: >-
+      Applying a rescope plan refuses any item whose from_scope is not global, so an edited plan cannot move a project
+      or private row into another scope.
+    tests:
+      - >-
+        packages/core/test/harden-rescope-plan-from-scope.test.ts::a tampered item with from_scope project:private is
+        refused and the row stays put
   packages/core/src/plur/forget-rescope.ts#forgetRescopeMethods.rescope:
     kind: guarantee
     rule: >-
@@ -566,6 +612,13 @@ anchors:
       - packages/core/test/attribution.test.ts::never takes the identity from the operating system account
       - packages/core/test/attribution.test.ts::records the two things it knows, and invents nothing else
       - packages/core/test/attribution.test.ts::always records what software wrote the memory
+  packages/core/src/plur/helpers.ts#cut:
+    kind: guarantee
+    rule: A client name or version is capped on code points, never inside a surrogate pair.
+    tests:
+      - >-
+        packages/core/test/client-runtime-attribution.test.ts::caps name and version on code points, never inside a
+        surrogate pair
   packages/core/src/plur/helpers.ts#DISCOVERY_TIMESTAMP_REFRESH_MS:
     kind: note
     why: >-
@@ -1140,6 +1193,9 @@ anchors:
       - >-
         packages/core/test/recall-deadline-1586.test.ts::hybrid recall returns within the deadline with a
         never-answering server and a store lock held in-process
+      - >-
+        packages/core/test/primary-hybrid-store-legs-1787.test.ts::a query embedding that misses the recall deadline still
+        returns the keyword match (REC-7)
     promises:
       - REC-7
   packages/core/src/plur/recall.ts#localLeg:
@@ -1243,6 +1299,18 @@ anchors:
   packages/core/src/plur/recall.ts#store:
     kind: note
     why: Explains why only the touched rows are re-read under the lock; uses "only ever" descriptively about the lookups.
+  packages/core/src/plur/recall.ts#storeLegs:
+    kind: guarantee
+    rule: In a remote-only folder, hybrid recall never asks the personal primary store's own searches.
+    tests:
+      - >-
+        packages/core/test/primary-hybrid-store-legs-1787.test.ts::in a remote-only folder, hybrid recall asks neither of
+        the personal primary store's own searches
+      - >-
+        packages/core/test/folder-remote-only-every-method.test.ts::returns no personal statement and creates or changes
+        no permanent row
+    promises:
+      - OFF-1
   packages/core/src/plur/remote-results.ts#personalScope:
     kind: guarantee
     rule: >-
@@ -1687,3 +1755,112 @@ anchors:
       - >-
         packages/core/test/rescope.test.ts::dedup on target (constraint 5): identical engram already at the target is
         idempotent success
+  packages/core/src/plur/consolidation.ts#blocks:
+    kind: guarantee
+    rule: never merges authors.
+    tests:
+      - packages/core/test/consolidate-apply.test.ts
+  packages/core/src/plur/consolidation.ts#ConsolidationMethods:
+    kind: guarantee
+    rule: >-
+      Refuses with {@link ChangeConflictError}, writing nothing, when any of those rows no longer holds what the change
+      wrote. Redact every change-journal snapshot of these rows: the journal keeps full row content for undo, so a row
+      whose content is being let go of — forgotten, compacted away, found…
+    tests:
+      - packages/core/test/change-journal.test.ts
+      - packages/core/test/consolidate-apply.test.ts
+      - packages/core/test/learn-reinforce.test.ts
+  packages/core/src/plur/consolidation.ts#consolidationMethods._applyChange:
+    kind: guarantee
+    rule: History is the audit trail, never a gate on the write.
+    tests:
+      - packages/core/test/change-journal.test.ts
+      - packages/core/test/consolidate-apply.test.ts
+      - packages/core/test/learn-reinforce.test.ts
+  packages/core/src/plur/consolidation.ts#consolidationMethods.listChanges:
+    kind: guarantee
+    rule: "The journal holds personal rows in full: never read from a remote-only folder."
+    tests:
+      - packages/core/test/change-journal.test.ts
+      - packages/core/test/folder-remote-only-every-method.test.ts
+  packages/core/src/plur/consolidation.ts#consolidationMethods.redactChangeJournal:
+    kind: guarantee
+    rule: "The journal holds personal rows in full: never touched from a remote-only folder."
+    tests:
+      - packages/core/test/change-journal.test.ts
+      - packages/core/test/folder-remote-only-every-method.test.ts
+  packages/core/src/plur/enrichment.ts#EnrichmentMethods:
+    kind: guarantee
+    rule: >-
+      Core never chooses or calls a model on its own — `llm` is the caller's. the statement and `knowledge_type` are never
+      touched.
+    tests:
+      - packages/core/test/enrich.test.ts
+  packages/core/src/plur/enrichment.ts#enrichmentMethods.planEnrichment:
+    kind: guarantee
+    rule: "Memory text goes to a model: never from a remote-only folder."
+    tests:
+      - packages/core/test/enrich.test.ts
+  packages/core/src/plur/enrichment.ts#label:
+    kind: guarantee
+    rule: row's scope may not hold is refused.
+    tests:
+      - packages/core/test/enrich.test.ts
+  packages/core/src/plur/enrichment.ts#todo:
+    kind: guarantee
+    rule: "exclusion consolidation uses: never a row queued for a team store"
+    tests:
+      - packages/core/test/enrich.test.ts
+  packages/core/src/plur/feedback-pin.ts#feedbackPinMethods._updateEngramReturning:
+    kind: guarantee
+    rule: >-
+      A restricted caller's NEW pin is refused rather than lost — and so // is one whose prior state cannot be read (a
+      404, an unreachable // may carry `pinned: true` from a restricted caller (S3, fail closed). // A pin refusal is the
+      answer, never "try the next store".
+    tests:
+      - packages/core/test/pin-policy.test.ts
+  packages/core/src/plur/feedback-pin.ts#localResult:
+    kind: guarantee
+    rule: already pinned is not a new pin and is never restricted.
+    tests:
+      - packages/core/test/pin-policy.test.ts
+  packages/core/src/plur/forget-rescope.ts#forgetRescopeMethods._rescopeRoute:
+    kind: guarantee
+    rule: >-
+      readonly entry never receives writes. Refuse rather than leave the // engram stranded somewhere it can never sync
+      from.
+    tests:
+      - packages/core/test/rescope-plan.test.ts
+  packages/core/src/plur/helpers.ts#BOOKKEEPING_RESERVE_MS:
+    kind: note
+    why: "Explains why the reserve exists: a whole-file rewrite 'cannot be interrupted'; states no rule of its own."
+  packages/core/src/plur/injection.ts#exhausted:
+    kind: note
+    why: Explains why the deeper search keeps going; the rule is the inject-unified selection's.
+  packages/core/src/plur/learn-dedup.ts#reinforce:
+    kind: guarantee
+    rule: "signal: strength and recency, never commitment) — when that engram is"
+    tests:
+      - packages/core/test/learn-reinforce.test.ts
+  packages/core/src/plur/maintenance.ts#maintenanceMethods.compact:
+    kind: guarantee
+    rule: The change journal must not keep what compaction removed.
+    tests:
+      - packages/core/test/change-journal.test.ts
+  packages/core/src/plur/pinning.ts#PinningMethods:
+    kind: guarantee
+    rule: >-
+      What `pinning.agents` decides for a pin by this caller (`owner` is always allowed). An owner action: the actor is
+      the one given, else this instance's default actor, and one the pin policy restricts is refused — pass `actor:
+      'owner'`. The actor reviewing a pin request: the one given, else this…
+    tests:
+      - packages/core/test/pin-policy.test.ts
+      - packages/core/test/pin-fit-audit.test.ts
+  packages/core/src/plur/recall.ts#pglite:
+    kind: note
+    why: Explains a performance shortcut ('never needs the vector index'); states no rule of its own.
+  packages/core/src/plur/types.ts#RescopePlanItem:
+    kind: guarantee
+    rule: "`remote`: a team server holds the target — apply refuses it."
+    tests:
+      - packages/core/test/rescope-plan.test.ts

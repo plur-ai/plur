@@ -30,13 +30,13 @@ Use a YAML mapping whose top-level `engrams` value is a sequence of records.
 | `scope` | Required string, such as `global` or `project:luma`. A namespace value alone is not an access-control guarantee. |
 | `statement` | Required nonempty string; the useful assertion. Advisory word counts are not a schema maximum. |
 | `summary` | Optional string, at most 80 characters in this baseline. Preserve critical qualifiers if this is the only injected text. |
-| `pinned` | Always-load within eligible scope. The set has a quota (`injection_budget × injection.pinned_ratio`) enforced when pinning: an over-quota pin is refused with usage and unpin candidates, rather than silently dropped at injection time. |
+| `pinned` | Always-load within eligible scope. Set it only when the owner explicitly asks for that memory to be pinned. The set has a quota (`injection_budget × injection.pinned_ratio`) enforced when pinning: an over-quota pin is refused with usage and unpin candidates, rather than silently dropped at injection time. |
 | `visibility` | `private`, `public`, or `template`; private is the baseline default. A generic-looking statement is not sufficient reason to make private knowledge public. |
 | `rationale`, `contraindications` | Optional explanation and exception list. Their presence does not prove they reach the model. |
 | `knowledge_type` | When present, provide both `memory_class` and `cognitive_level`. |
 | `commitment` | Optional decision state: `exploring`, `leaning`, `decided`, `locked`, or `draft`. Not epistemic confidence. `draft` IS enforced in core as of #1141 — stored and recalled, never injected. |
 | `created_at`, `updated_at` | Optional RFC 3339 provenance timestamps. Never defaulted — absent means genuinely unknown, and synthesising one destroys the provenance it records. `updated_at` tracks content/lifecycle change only, never reads or feedback. |
-| `structured_data` | Optional arbitrary metadata. Namespace author extensions and explain who interprets them. |
+| `structured_data` | Optional metadata. On a write (`plur_learn`, `plur learn`) exactly three keys are accepted: `body` (the structured form — When / Asks / Do / Why / Pitfalls / Anchors, at most ~300 tokens; indexed for recall, not rendered), `kind` (`rule`, `tool`, `fact`, `preference`, `experience`, `failure_lesson`; sets `memory_class` when none is given) and `outcome` (`success`, `failure`, or a short stated result). `enrichment` is written by PLUR's own labelling pass, and `_`-prefixed keys are PLUR's own bookkeeping; neither is set by hand. In a hand-built store file, namespace other extensions and explain who interprets them. |
 
 Choose the native type by the content: behavioral for preferences and behavior, terminological for entity/term meanings and simple context facts, procedural for how to perform work, architectural for system structure, purpose, or design decisions. These are practical mappings, not a mandate to turn every fact into a definition or every hypothesis into an architectural record.
 

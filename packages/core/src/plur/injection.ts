@@ -3,6 +3,7 @@ import { join } from 'path'
 import { embedderStatus, embeddingSearchWithScores, semanticModelState, type SimilarityResult } from '../embeddings.js'
 import { computeQueryHash, generateInjectionId, isRecentDuplicateInjection } from '../history.js'
 import { Plur } from '../index.js'
+import { BOOKKEEPING_RESERVE_MS } from './helpers.js'
 import { assignLayer, formatWithLayer, selectAndSpread } from '../inject.js'
 import { isEntityDomain } from '../intent/index.js'
 import { logger } from '../logger.js'
@@ -21,6 +22,13 @@ import { normalizeEndpointUrl } from '../store/remote-store.js'
 import { withLock } from '../file-lock.js'
 import type { DegradedReason, InjectionResult, InjectOptions } from '../types.js'
 
+import { type FusedHit, type RerankOptions } from '../hybrid-search.js'
+import { type LoadedPack } from '../engrams.js'
+import { UNIFIED_RECALL_LIMIT, type UnifiedPool, type UnifiedResult, buildInjectionQuery, buildUnifiedPool, orderRecallCandidates, packUnified } from '../inject-unified.js'
+import { isQueryRewriteDisabled } from '../intent/index.js'
+import { isRerankerOff } from '../rerankers/index.js'
+import { pinnedShareRatio } from '../inject.js'
+import { resolveInjectionOverhaul } from '../schemas/config.js'
 export interface InjectionMethods {
   /** Scored injection within token budget (BM25 only). Returns formatted strings. */
   inject(task: string, options?: InjectOptions): Promise<InjectionResult>
@@ -38,11 +46,45 @@ export interface InjectionMethods {
   injectHybrid(task: string, options?: InjectOptions): Promise<InjectionResult>
 
   /** @internal */
-  _formatInjection(task: string, options?: InjectOptions, embeddingBoosts?: Map<string, number>, remote?: { engrams: Engram[]; boosts: Map<string, number> }, deadlineAt?: number): Promise<InjectionResult>
+  _formatInjection(task: string, options?: InjectOptions, embeddingBoosts?: Map<string, number>, remote?: { engrams: Engram[]; boosts: Map<string, number> }, deadlineAt?: number, intentTask?: string): Promise<InjectionResult>
+
+  /** The selection mode for an injection: the per-call override, else `injection.mode` (default unified). */
+  /** @internal */
+  _injectionMode(options?: InjectOptions): 'legacy' | 'unified'
+
+  /**
+   * The injection's overhaul settings, with defaults applied (W1, W5, W8) —
+   * for adapters that build the query or report the gate (the Claude Code
+   * hook reads `query_min_terms`).
+   */
+  injectionSettings(): ReturnType<typeof resolveInjectionOverhaul>
+
+  /**
+   * Unified selection (overhaul W1): the gates over the whole visible store,
+   * then recall's own ranking — the SAME local search `recallHybridWithMeta`
+   * runs (`_localHybridRanking`: BM25 over the rewritten query and the
+   * meaning leg fused by RRF, intent routing, the reranker when configured,
+   * here under a hard time cap) over recall's candidate set — then the
+   * always-on slot, the prohibition slice and the task list packed into the
+   * budget. The task list is recall's top-K after the gates; when gates and
+   * caps leave it short, the search is asked deeper and the new candidates
+   * are appended after recall's order (never re-sorted into it).
+   *
+   * No bookkeeping here (R5): no reactivation, frequency or co_accessed
+   * writes. `_formatInjection` records the injection itself, once.
+   * `meaning` (raw cosine per id, from `injectHybrid`) feeds only the W8
+   * signals and the prohibition floor; its presence also says the meaning
+   * leg may run.
+   */
+  /** @internal */
+  _selectUnified(task: string, options: InjectOptions | undefined, engrams: Engram[], packs: LoadedPack[], budget: number, meaning: Map<string, number> | undefined, deadlineAt: number | undefined, intentTask?: string): Promise<UnifiedResult>
 }
 
 export const injectionMethods: InjectionMethods & ThisType<Plur> = {
   async inject(task: string, options?: InjectOptions): Promise<InjectionResult> {
+    // W5: the query searched with — the task, extended by the caller's
+    // session context when it passed one. Recorded on the result only then.
+    const query = buildInjectionQuery(task, options?.query_context)
     if (this._remoteOnly) {
       // remote-only: there is no local store to inject from, so even the
       // keyword path dials the folder's team server (one call, bounded by
@@ -58,12 +100,15 @@ export const injectionMethods: InjectionMethods & ThisType<Plur> = {
       }, deadlineAt)
       const { result: remoteResult, report } = await this._awaitRemote(remotePromise, deadlineAt)
       const remote = this._remoteInjectCandidates(remoteResult, options)
-      const result = await this._formatInjection(task, options, undefined, remote, deadlineAt)
+      const result = await this._formatInjection(query, options, undefined, remote, deadlineAt, task)
       result.remote = report
       result.remote_only = this._remoteOnlyStatus(remoteResult)
+      if (query !== task) result.query = query
       return result
     }
-    return await this._formatInjection(task, options)
+    const result = await this._formatInjection(query, options, undefined, undefined, undefined, task)
+    if (query !== task) result.query = query
+    return result
   },
 
   _remoteOnlyStatus(remote: RemoteRecallResult | null | undefined): RemoteOnlyStatus {
@@ -84,6 +129,10 @@ export const injectionMethods: InjectionMethods & ThisType<Plur> = {
   },
 
   async injectHybrid(task: string, options?: InjectOptions): Promise<InjectionResult> {
+    // W5: local legs search with the task extended by the caller's session
+    // context; the remote leg is sent the task alone (no extra text leaves
+    // this machine because of the extension).
+    const query = buildInjectionQuery(task, options?.query_context)
     // The remote leg starts FIRST and runs in parallel with the local
     // embedding work below, so a prompt costs at most ONE remote call per
     // host. Bounded by the same end-to-end deadline as recall.
@@ -116,6 +165,11 @@ export const injectionMethods: InjectionMethods & ThisType<Plur> = {
     const semanticAbort = new AbortController()
     /** The model is not on disk: keyword only, never a download. */
     let modelMissing = false
+    // Unified selection (overhaul W1) fuses the raw similarities with the
+    // keyword ranking itself and runs intent routing and the reranker on the
+    // FUSED list; the cosine-stage reranker and intent boosts below are the
+    // legacy selection's.
+    const unifiedSelection = this._injectionMode(options) === 'unified'
     const semanticLeg = async (): Promise<void> => {
     // remote-only: no embedder (see recallSemantic).
     if (this._remoteOnly) return
@@ -129,7 +183,7 @@ export const injectionMethods: InjectionMethods & ThisType<Plur> = {
       let results: SimilarityResult[] = []
       if (this.pgliteAdapter && !this._remoteOnly) {
         const { embed } = await import('../embeddings.js')
-        const queryVec = await embed(task, 'query')
+        const queryVec = await embed(query, 'query')
         if (queryVec) {
           try {
             // Scope-restricted in-query, same reason as the recall legs. Less
@@ -151,17 +205,17 @@ export const injectionMethods: InjectionMethods & ThisType<Plur> = {
         }
       }
       if (results.length === 0) {
-        results = await embeddingSearchWithScores(engrams, task, engrams.length, this.paths.root, { signal: semanticAbort.signal, deadlineAt })
+        results = await embeddingSearchWithScores(engrams, query, engrams.length, this.paths.root, { signal: semanticAbort.signal, deadlineAt })
       }
       // Cross-encoder rerank stage: replace the cosine boosts for the
       // top-K with the reranker's relevance, min-max normalized into [0,1] so
       // the selectAndSpread 0.5 threshold stays meaningful. Off by default.
-      const rerank = await this._resolveRerankOptions(options?.rerank)
+      const rerank = unifiedSelection ? undefined : await this._resolveRerankOptions(options?.rerank)
       if (rerank && results.length > 0) {
         const topK = Math.max(1, Math.min(results.length, rerank.topK ?? 50))
         const head = results.slice(0, topK)
         try {
-          const scores = await rerank.reranker!.scoreBatch(task, head.map(r => r.engram.statement))
+          const scores = await rerank.reranker!.scoreBatch(query, head.map(r => r.engram.statement))
           if (scores.length === head.length) {
             const min = Math.min(...scores)
             const max = Math.max(...scores)
@@ -185,7 +239,7 @@ export const injectionMethods: InjectionMethods & ThisType<Plur> = {
       }
       // Intent-aware boost: modest (<=1.5x) upweight for engrams matching
       // the query intent. Boost cap stays 1.0 so the 0.5 threshold keeps meaning.
-      const intent = this._resolveIntentProfile(task, options?.intentOverride)
+      const intent = unifiedSelection ? undefined : this._resolveIntentProfile(query, options?.intentOverride)
       if (intent && embeddingBoosts) {
         for (const e of results.map(r => r.engram)) {
           let mult = 1.0
@@ -236,7 +290,8 @@ export const injectionMethods: InjectionMethods & ThisType<Plur> = {
     // boost exists to resurrect a scope-excluded row.
     const { result: remoteResult, report } = await this._awaitRemote(remotePromise, deadlineAt)
     const remote = this._remoteInjectCandidates(remoteResult, options)
-    const result = await this._formatInjection(task, options, boosts, remote, deadlineAt)
+    const result = await this._formatInjection(query, options, boosts, remote, deadlineAt, task)
+    if (query !== task) result.query = query
     // What the server leg did on THIS call, as on recall.
     result.remote = report
     if (this._remoteOnly) result.remote_only = this._remoteOnlyStatus(remoteResult)
@@ -264,13 +319,15 @@ export const injectionMethods: InjectionMethods & ThisType<Plur> = {
         Plur._injectDegradedLogged = true
         logger.warning(`[plur] injectHybrid: embedder unavailable (${embedFailure}) — injecting by keyword match only.`)
       }
-    } else {
+    } else if (result.mode !== 'hybrid-degraded') {
+      // A degraded ranking leg (unified selection) already set
+      // `hybrid-degraded` with its reason; it is kept (H8).
       result.mode = st.disabled ? 'bm25-only' : 'hybrid'
     }
     return result
   },
 
-  async _formatInjection(task: string, options?: InjectOptions, embeddingBoosts?: Map<string, number>, remote?: { engrams: Engram[]; boosts: Map<string, number> }, deadlineAt?: number): Promise<InjectionResult> {
+  async _formatInjection(task: string, options?: InjectOptions, embeddingBoosts?: Map<string, number>, remote?: { engrams: Engram[]; boosts: Map<string, number> }, deadlineAt?: number, intentTask?: string): Promise<InjectionResult> {
     // remote-only: team store rows + packs, never the personal store.
     let allEngrams = await this._readCorpus()
     const allPacks = this._remoteOnly?.blocked ? [] : this._loadInstalledPacks()
@@ -318,10 +375,19 @@ export const injectionMethods: InjectionMethods & ThisType<Plur> = {
         .filter(p => p.engrams.length > 0)
 
     const budget = options?.budget ?? this.config.injection_budget ?? 2000
+    const selection = this._injectionMode(options)
+    const includePinned = options?.include_pinned !== false
+    let relevance: InjectionResult['relevance']
+    let taskIds: string[] | undefined
 
-    const result = selectAndSpread(
+    const unifiedResult = selection === 'unified'
+      ? await this._selectUnified(task, options, engrams, packs, budget, embeddingBoosts, deadlineAt, intentTask)
+      : null
+    if (unifiedResult) { relevance = unifiedResult.relevance; taskIds = unifiedResult.task_ids }
+    const result = unifiedResult ?? selectAndSpread(
       {
         prompt: task,
+        ...(intentTask !== undefined ? { intentPrompt: intentTask } : {}),
         scope: options?.scope,
         // Mounted-scope visibility grants: scopes from config.stores
         // pass the `scope` VISIBILITY filter inside scoreEngram like the
@@ -338,6 +404,7 @@ export const injectionMethods: InjectionMethods & ThisType<Plur> = {
         expiry: this.config.expiry,
         pinned_hard_ratio: this.config.injection?.pinned_hard_ratio,
         pinned_ratio: this.config.injection?.pinned_ratio,
+        include_pinned: includePinned,
       },
       embeddingBoosts,
     )
@@ -420,6 +487,16 @@ export const injectionMethods: InjectionMethods & ThisType<Plur> = {
       // NO_SESSION selects "no session default" for the dial
       // context; it is not a session id and is never recorded as one.
       const recordedSessionId = options?.session_id === NO_SESSION ? undefined : options?.session_id
+      // The caller's bookkeeping deadline (a racing hook) bounds the counter
+      // too, whichever is sooner. Decided BEFORE the event is written: a
+      // counter the deadline will skip is marked on the event, so the counter
+      // and the history log do not silently disagree (H7).
+      const bk = options?.bookkeeping_deadline_at
+      const counterDeadline = typeof bk === 'number' && Number.isFinite(bk)
+        ? Math.min(bk, deadlineAt ?? Number.POSITIVE_INFINITY)
+        : deadlineAt
+      const counterLeft = counterDeadline !== undefined && Number.isFinite(counterDeadline) ? counterDeadline - Date.now() : Number.POSITIVE_INFINITY
+      const counterSkipped = !this._remoteOnly && (!(counterLeft > 0) || counterLeft < BOOKKEEPING_RESERVE_MS)
       const writeCoInjection = (): void => {
         if (dedupApplies
           && isRecentDuplicateInjection(this.paths.root, queryHash, injected_ids, 5_000, options?.source, recordedSessionId)) return
@@ -445,6 +522,7 @@ export const injectionMethods: InjectionMethods & ThisType<Plur> = {
               source: options?.source ?? 'inject',
               ...(options?.scope ? { scope: options.scope } : {}),
               ...(recordedSessionId ? { session_id: recordedSessionId } : {}),
+              ...(counterSkipped ? { counter_skipped: true } : {}),
             },
           })
           // In-memory provenance is set regardless: the engrams WERE injected,
@@ -486,7 +564,7 @@ export const injectionMethods: InjectionMethods & ThisType<Plur> = {
       // `updateMany`) the pair falls back to a corpus write of the corpus
       // loaded under this lock.
       try {
-        await this._bookkeepingWithinDeadline(deadlineAt, async (tooLate) => {
+        await this._bookkeepingWithinDeadline(counterDeadline, async (tooLate) => {
           const primaryEngrams = await this._loadTargeted(injected_ids)
           const injectedSet = new Set(injected_ids)
           const touched: Engram[] = []
@@ -498,7 +576,7 @@ export const injectionMethods: InjectionMethods & ThisType<Plur> = {
           }
           if (tooLate()) return
           await this._updateEngrams(primaryEngrams, touched)
-        })
+        }, BOOKKEEPING_RESERVE_MS)
       } catch (err) {
         // Best-effort, but not SILENT. `EngramStoreShrinkError` and
         // `EngramStoreUnreadableError` are the guards telling us the store is
@@ -532,6 +610,128 @@ export const injectionMethods: InjectionMethods & ThisType<Plur> = {
       // a caller can see what it did not get.
       ...(result.omitted_pinned?.length ? { omitted_pinned: result.omitted_pinned } : {}),
       ...(warnings.length > 0 ? { warnings } : {}),
+      selection,
+      pins_included: includePinned,
+      ...(includePinned ? { pinned_share_tokens: Math.floor(budget * pinnedShareRatio(this.config.injection?.pinned_ratio)) } : {}),
+      ...(relevance ? { relevance } : {}),
+      ...(taskIds ? { task_ids: taskIds } : {}),
+      ...(unifiedResult?.ranking_degraded ? {
+        mode: 'hybrid-degraded' as const,
+        embedder_error: unifiedResult.ranking_degraded.embedder_error,
+        ...(unifiedResult.ranking_degraded.degraded_reason ? { degraded_reason: unifiedResult.ranking_degraded.degraded_reason } : {}),
+      } : {}),
+    }
+  },
+
+  _injectionMode(options?: InjectOptions): 'legacy' | 'unified' {
+    return options?.mode ?? resolveInjectionOverhaul(this.config).mode
+  },
+
+  injectionSettings(): ReturnType<typeof resolveInjectionOverhaul> {
+    return resolveInjectionOverhaul(this.config)
+  },
+
+  async _selectUnified(
+    task: string,
+    options: InjectOptions | undefined,
+    engrams: Engram[],
+    packs: LoadedPack[],
+    budget: number,
+    meaning: Map<string, number> | undefined,
+    deadlineAt: number | undefined,
+    intentTask?: string,
+  ): Promise<UnifiedResult> {
+    const s = resolveInjectionOverhaul(this.config)
+    const hook = options?.source === 'hook'
+    // D6: in the hook path the query rewrite is off unless configured.
+    const envRewrite = (process.env.PLUR_QUERY_REWRITE ?? '').toLowerCase()
+    const queryRewrite = options?.query_rewrite
+      ?? (hook ? envRewrite === 'on' || envRewrite === '1' || envRewrite === 'true' : !isQueryRewriteDisabled())
+    const config = {
+      expiry: this.config.expiry,
+      pinned_hard_ratio: this.config.injection?.pinned_hard_ratio,
+      pinned_ratio: this.config.injection?.pinned_ratio,
+      include_pinned: options?.include_pinned !== false,
+      recall_limit: s.recall_limit,
+      prohibition_ratio: s.prohibition_ratio,
+      min_relevance_signal: s.min_relevance_signal,
+      min_relevance: s.min_relevance,
+      query_rewrite: queryRewrite,
+    }
+    // Session context (W5) widens the search, not the intent: historical
+    // intent and the INJ-1 asked-word check read the user's own task.
+    const ctx = { prompt: task, ...(intentTask !== undefined ? { intentPrompt: intentTask } : {}), scope: options?.scope, grantedScopes: this._grantedScopes(), maxTokens: budget }
+    const pool: UnifiedPool = buildUnifiedPool(ctx, engrams, packs, config)
+    const limit = Math.max(0, config.recall_limit ?? UNIFIED_RECALL_LIMIT)
+    if (pool.candidates.length === 0) return packUnified(ctx, pool, [], config)
+
+    // Recall's candidate set, so BM25's statistics and the meaning leg's
+    // centring are recall's; pool candidates recall would not load (rows the
+    // injection's remote leg brought) are ranked with them.
+    const recallCorpus = await this._hybridCandidates(task, { scope: options?.scope, scopes: options?.scopes })
+    const inCorpus = new Set(recallCorpus.map(e => e.id))
+    const corpus = [...recallCorpus, ...pool.candidates.filter(e => !inCorpus.has(e.id))]
+
+    const semantic = meaning !== undefined && !this._remoteOnly
+    const intent = this._remoteOnly ? undefined : this._resolveIntentProfile(task, options?.intentOverride)
+    // The reranker runs only when configured (PLUR_RERANKER or rerank: true),
+    // as recall runs it, but under a hard time cap; past it the fused order stands.
+    const rerankOpts = this._remoteOnly ? undefined : await this._resolveRerankOptions(options?.rerank)
+    const rerankByText = new Map<string, number>()
+    let rerank: RerankOptions | undefined
+    if (rerankOpts?.reranker && !isRerankerOff(rerankOpts.reranker)) {
+      const inner = rerankOpts.reranker
+      const capMs = parseInt(process.env.PLUR_INJECT_RERANK_CAP_MS ?? '', 10) || (hook ? 1500 : 10_000)
+      const capped = Object.create(inner) as typeof inner & { scoreBatch: typeof inner.scoreBatch }
+      capped.scoreBatch = async (q: string, docs: string[]) => {
+        const capAt = Math.min(deadlineAt ?? Number.POSITIVE_INFINITY, Date.now() + capMs)
+        const res = await settleBy(inner.scoreBatch(q, docs), capAt)
+        if (!res.done) throw new Error(`reranker did not answer within the ${capMs} ms injection cap`)
+        if (res.error !== undefined) throw res.error
+        const scores = res.value!
+        docs.forEach((d, i) => rerankByText.set(d, scores[i]))
+        return scores
+      }
+      rerank = { ...rerankOpts, reranker: capped }
+    }
+
+    let depth = Math.max(1, limit)
+    const order: string[] = []
+    const fusedById = new Map<string, FusedHit>()
+    // The first degradation any ranking call reports is carried to the
+    // result, not dropped (H8).
+    let rankingDegraded: UnifiedResult['ranking_degraded']
+    for (;;) {
+      let fusedAll: FusedHit[] = []
+      const res = await this._localHybridRanking(task, corpus, depth, {
+        rerank, intent, restrict: { scope: options?.scope, scopes: options?.scopes },
+        searchOpts: { semantic, queryRewrite, deadlineAt, onRanking: f => { fusedAll = f } },
+      })
+      if (res.mode === 'hybrid-degraded' && !rankingDegraded) {
+        rankingDegraded = {
+          embedder_error: res.embedderError ?? 'the ranking ran on keyword matching only',
+          ...(res.degraded_reason ? { degraded_reason: res.degraded_reason } : {}),
+        }
+      }
+      const grewFrom = order.length
+      const seen = new Set(order)
+      for (const f of fusedAll) if (!fusedById.has(f.engram.id)) fusedById.set(f.engram.id, f)
+      for (const id of [...res.engrams.map(e => e.id), ...fusedAll.map(f => f.engram.id)]) {
+        if (!seen.has(id)) { seen.add(id); order.push(id) }
+      }
+      const ranked = orderRecallCandidates(order, pool, fusedById, meaning)
+      const scores = rerankByText.size > 0
+        ? new Map(ranked.filter(c => rerankByText.has(c.engram.statement)).map(c => [c.engram.id, rerankByText.get(c.engram.statement)!]))
+        : undefined
+      const out = packUnified(ctx, pool, ranked, config, scores)
+      // Stop when the task list is full, gated, nothing new came back, or both
+      // legs have offered every candidate (the meaning leg fetches 2× the
+      // depth, the keyword leg 3×), so meaning-only candidates are never cut.
+      const exhausted = (semantic ? depth * 2 : depth * 3) >= corpus.length
+      if (out.task_count >= limit || out.relevance.gated || order.length === grewFrom || exhausted) {
+        return rankingDegraded ? { ...out, ranking_degraded: rankingDegraded } : out
+      }
+      depth *= 4
     }
   },
 }

@@ -123,3 +123,25 @@ it('cleans up a link to the registered server even when the paths differ', () =>
   writeFileSync(join(root, 'config.yaml'), JSON.stringify({ stores: [{ url: 'https://memory.example.test/sse', scope: 'user:example:fixture', enterprise: {} }] }))
   expect(cleanupLegacyProjectAtSessionStart(repo, root)).toEqual([]); expect(existsSync(file)).toBe(false)
 })
+// 0.24 review round 3: the clean-up only needs to know whether the file is
+// committed, so an untracked .plur.yaml in a subfolder of the user's own
+// repository (a monorepo package) is still cleaned up.
+it('cleans up an untracked token file in a subfolder of the repository', () => {
+  rmSync(file)
+  const pkg = join(repo, 'packages', 'app'); mkdirSync(pkg, { recursive: true })
+  const nested = join(pkg, '.plur.yaml'); writeFileSync(nested, old)
+  writeFileSync(join(root, 'config.yaml'), JSON.stringify({ stores: [{ url: 'https://memory.example.test', scope: 'user:example:fixture', enterprise: {} }] }))
+  expect(cleanupLegacyProjectAtSessionStart(pkg, root)).toEqual([]); expect(existsSync(nested)).toBe(false)
+})
+it('warns, without the token, when it cannot tell whether a token file is committed', () => {
+  const plain = join(root, 'plain'); mkdirSync(plain)
+  const loose = join(plain, '.plur.yaml'); writeFileSync(loose, old)
+  writeFileSync(join(root, 'config.yaml'), JSON.stringify({ stores: [{ url: 'https://memory.example.test', scope: 'user:example:fixture', enterprise: {} }] }))
+  const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+  const lines = cleanupLegacyProjectAtSessionStart(plain, root)
+  const printed = stderr.mock.calls.flat().join('')
+  expect(printed).toContain('server token')
+  expect(printed.trim().split('\n')).toHaveLength(1)
+  expect(printed + lines.join('\n')).not.toContain('fixture-private-key')
+  expect(readFileSync(loose, 'utf8')).toBe(old)
+})

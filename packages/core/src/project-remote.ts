@@ -10,10 +10,15 @@
 import { dirname } from 'path'
 import { findProjectConfigPath, readProjectConfigFromPath, type ProjectConfig } from './project-config.js'
 import type { RemoteProjectConfig } from './types.js'
+import { storeSourceOf } from './store-additions.js'
 
 /** Just the bit of Plur this needs — keeps the helper testable without a store. */
 export interface TrustChecker {
   isDirectoryTrusted(dir: string): boolean
+  /** The pin policy for an actor; absent counts as restricted (request). */
+  pinPolicyFor?(actor?: 'owner' | 'agent'): string
+  /** The loaded config, for the servers the owner registered. */
+  config?: { stores?: ReadonlyArray<{ url?: string }> }
 }
 
 export interface ProjectRemote {
@@ -32,6 +37,13 @@ export interface ProjectRemote {
    * explanation is indistinguishable from one that is broken.
    */
   refusedFrom: string | null
+  /**
+   * Set when the directory is trusted but, under pinning.agents request or
+   * deny, the server the file names is not one config.yaml lists: it is not
+   * used until the owner adds it at a terminal (0.24 review round 9, part of
+   * #1947). Callers surface it with {@link projectRemoteWithheldNotice}.
+   */
+  withheldUrl?: string
 }
 
 /**
@@ -61,6 +73,14 @@ export function resolveProjectRemoteFromConfig(
     return { config, configDir, remoteProject: null, refusedFrom: configDir ?? '(unknown directory)' }
   }
 
+  // Under pinning.agents request or deny, trust alone (which an agent can
+  // relay through the folder question's one-time code) does not choose a
+  // server: the file's server is used only when config.yaml already lists it,
+  // which only the owner can add (the store-registration rule, #1946).
+  if (!registeredWhenRestricted(plur, config.remote_url)) {
+    return { config, configDir, remoteProject: null, refusedFrom: null, withheldUrl: config.remote_url }
+  }
+
   return {
     config,
     configDir,
@@ -74,6 +94,19 @@ export function resolveProjectRemoteFromConfig(
 }
 
 /**
+ * True unless pinning.agents restricts agents and `url` is not a server
+ * config.yaml lists. A policy that cannot be read, or a checker that cannot
+ * tell it (no pinPolicyFor), counts as restricted (0.24 review round 10).
+ */
+function registeredWhenRestricted(plur: TrustChecker, url: string): boolean {
+  let policy: string
+  try { policy = typeof plur.pinPolicyFor === 'function' ? plur.pinPolicyFor('agent') : 'request' } catch { policy = 'request' }
+  if (policy === 'allow') return true
+  const wanted = storeSourceOf({ url })
+  return (plur.config?.stores ?? []).some(s => typeof s.url === 'string' && storeSourceOf({ url: s.url }) === wanted)
+}
+
+/**
  * Resolve the project config and decide whether its remote settings may be used.
  *
  * The path is resolved ONCE and read from, rather than walking twice — two
@@ -84,6 +117,14 @@ export function resolveProjectRemote(plur: TrustChecker, startDir?: string): Pro
   const configPath = startDir ? findProjectConfigPath(startDir) : findProjectConfigPath()
   const config = readProjectConfigFromPath(configPath)
   return resolveProjectRemoteFromConfig(plur, config, configPath)
+}
+
+/** The line an adapter shows when a trusted project's server was not used (round 9). */
+export function projectRemoteWithheldNotice(url: string): string {
+  let origin = url
+  try { origin = new URL(url).origin } catch { /* shown as written */ }
+  return `[PLUR] Not using the server this project's .plur.yaml names (${origin}): under pinning.agents request or deny ` +
+    `only the owner adds a server. The owner can add it in a terminal: plur trust <this folder>, or plur login ${origin}.`
 }
 
 /**

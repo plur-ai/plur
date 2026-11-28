@@ -27,6 +27,7 @@ function pushedContentSignature(engram: Engram): string {
   ])
 }
 
+import { type PinActor, PinDeniedError, asPinRequested, buildPinRequest, isPinEscalation, isPinTransition, pinEscalationDenied, withoutPinRequest } from '../pin-policy.js'
 export interface FeedbackPinMethods {
   /**
    * Update feedback_signals and adjust retrieval_strength. Searches primary, stores, then packs.
@@ -65,17 +66,17 @@ export interface FeedbackPinMethods {
    * means the write happened. {@link updateEngramAsync} is the same operation
    * returning the written engram.
    */
-  updateEngram(updated: Engram): Promise<boolean>
+  updateEngram(updated: Engram, options?: { actor?: PinActor }): Promise<boolean>
 
   /**
    * @deprecated Use {@link updateEngram}, which also awaits the remote PATCH.
    * This differs only in returning the written engram (the server-authoritative
    * view for a remote hit) instead of a boolean.
    */
-  updateEngramAsync(updated: Engram): Promise<Engram | null>
+  updateEngramAsync(updated: Engram, options?: { actor?: PinActor }): Promise<Engram | null>
 
   /** @internal */
-  _updateEngramReturning(updated: Engram): Promise<Engram | null>
+  _updateEngramReturning(updated: Engram, options?: { actor?: PinActor }): Promise<Engram | null>
 
   /**
    * When an update changes the scope of a row still queued for a remote (`_outbox`):
@@ -96,13 +97,13 @@ export interface FeedbackPinMethods {
    * local primary store or in any writable remote. The remote PATCH is awaited
    * and the real engram returned — {@link setPinnedAsync} is the same call.
    */
-  setPinned(id: string, pinned: boolean, options?: { scope?: string }): Promise<Engram | null>
+  setPinned(id: string, pinned: boolean, options?: { scope?: string; actor?: PinActor; reason?: string }): Promise<Engram | null>
 
   /**
    * @deprecated Use {@link setPinned}, which also awaits the remote PATCH.
    * This is an alias of it.
    */
-  setPinnedAsync(id: string, pinned: boolean, options?: { scope?: string }): Promise<Engram | null>
+  setPinnedAsync(id: string, pinned: boolean, options?: { scope?: string; actor?: PinActor; reason?: string }): Promise<Engram | null>
 
   /** List engrams that have pinned: true. */
   listPinned(): Promise<Engram[]>
@@ -509,15 +510,15 @@ export const feedbackPinMethods: FeedbackPinMethods & ThisType<Plur> = {
     })
   },
 
-  async updateEngram(updated: Engram): Promise<boolean> {
-    return (await this._updateEngramReturning(updated)) !== null
+  async updateEngram(updated: Engram, options?: { actor?: PinActor }): Promise<boolean> {
+    return (await this._updateEngramReturning(updated, options)) !== null
   },
 
-  async updateEngramAsync(updated: Engram): Promise<Engram | null> {
-    return await this._updateEngramReturning(updated)
+  async updateEngramAsync(updated: Engram, options?: { actor?: PinActor }): Promise<Engram | null> {
+    return await this._updateEngramReturning(updated, options)
   },
 
-  async _updateEngramReturning(updated: Engram): Promise<Engram | null> {
+  async _updateEngramReturning(updated: Engram, options?: { actor?: PinActor }): Promise<Engram | null> {
     this._assertWritable()
     await this._remoteOnlyRefuseLocalRow(updated.id, 'Updating')
     // Guards and routing below read the current config.
@@ -588,7 +589,27 @@ export const feedbackPinMethods: FeedbackPinMethods & ThisType<Plur> = {
       // Stamp `updated_at` on the mutation path, not only on creation and
       // retirement; otherwise it equals `created_at` for edited engrams and reads
       // as authoritative.
-      const toWrite = { ...(demote ? { ...updated, ...demote } : updated), updated_at: new Date().toISOString() }
+      let toWrite = { ...(demote ? { ...updated, ...demote } : updated), updated_at: new Date().toISOString() }
+      // Agent pinning (overhaul D2): an update that turns the row into a pin
+      // follows `pinning.agents` like learn does. Re-writing a row that is
+      // already pinned is not a new pin and is never restricted.
+      // A stronger pin on a row that is already pinned (higher priority,
+      // hard tier) follows the same policy (H5); a pin request cannot carry
+      // it, so a restricted caller is refused.
+      if (isPinEscalation(engrams[idx], toWrite)) {
+        const decision = this._pinDecisionFor(options?.actor)
+        if (decision !== 'allow') throw pinEscalationDenied(toWrite.id, 'update', decision)
+      }
+      if (isPinTransition(engrams[idx], toWrite)) {
+        const decision = this._pinDecisionFor(options?.actor)
+        if (decision === 'deny') throw new PinDeniedError(toWrite.id, 'update')
+        if (decision === 'request') {
+          toWrite = asPinRequested(toWrite, buildPinRequest(options?.actor ?? this._defaultActor, 'update', {
+            tier: (toWrite as { pinned_tier?: 'hard' | 'soft' }).pinned_tier,
+            priority: (toWrite as { pinned_priority?: number }).pinned_priority,
+          }))
+        }
+      }
       // A whole-engram update can set `pinned` and `pinned_tier` — a write path
       // that can produce a hard-tier engram, so it passes the same cap. Checked
       // before the queued-scope reconcile so a refused update has no side effects.
@@ -686,6 +707,16 @@ export const feedbackPinMethods: FeedbackPinMethods & ThisType<Plur> = {
         // records a real transition only. `getById` answers null for both a
         // 404 and an unreachable store, so null or a throw is "unknown" — then
         // the event is still written, flagged, rather than dropped.
+        // Agent pinning (overhaul D2) on a team-store row: the PATCH carries
+        // only pinned/status/statement, so a pin request cannot ride along.
+        // A restricted caller's NEW pin is refused rather than lost — and so
+        // is one whose prior state cannot be read (a 404, an unreachable
+        // store or an error): only a row the server says is already pinned
+        // may carry `pinned: true` from a restricted caller (S3, fail closed).
+        if (updated.pinned === true && this._pinDecisionFor(options?.actor) !== 'allow') {
+          const prior = await driver.getById(serverId).catch(() => null)
+          if (!prior || (prior as { pinned?: unknown }).pinned !== true) throw this._remotePinRefusal(updated.id, 'update')
+        }
         let previous: { status?: string } | null | undefined
         if (updated.status === 'retired') {
           try { previous = await driver.getById(serverId) } catch { previous = null }
@@ -713,7 +744,8 @@ export const feedbackPinMethods: FeedbackPinMethods & ThisType<Plur> = {
           return patched
         }
       } catch (err) {
-        if (serverId !== updated.id) throw err
+        // A pin refusal is the answer, never "try the next store" (S3).
+        if (serverId !== updated.id || err instanceof PinDeniedError) throw err
         continue
       }
     }
@@ -789,8 +821,9 @@ export const feedbackPinMethods: FeedbackPinMethods & ThisType<Plur> = {
     if (changed) (toWrite as any).structured_data = Object.keys(sd).length > 0 ? sd : undefined
   },
 
-  async setPinned(id: string, pinned: boolean, options?: { scope?: string }): Promise<Engram | null> {
+  async setPinned(id: string, pinned: boolean, options?: { scope?: string; actor?: PinActor; reason?: string }): Promise<Engram | null> {
     this._assertWritable()
+    const pinPolicy = pinned === true ? this._pinDecisionFor(options?.actor) : 'allow'
     await this._remoteOnlyRefuseLocalRow(id, 'Pinning', options?.scope)
     // Which store holds it. Ids are minted per store, so a bare id can name
     // a local engram AND an unrelated remote one; pinning local-first without a
@@ -844,9 +877,21 @@ export const feedbackPinMethods: FeedbackPinMethods & ThisType<Plur> = {
       const idx = engrams.findIndex(e => e.id === id)
       if (idx === -1) return null
       const e = engrams[idx]
+      // Agent pinning (overhaul D2): a NEW pin by a restricted caller is
+      // refused (deny) or recorded as a request for the owner (request).
+      if (pinned === true && e.pinned !== true && pinPolicy !== 'allow') {
+        if (pinPolicy === 'deny') throw new PinDeniedError(e.id, 'pin')
+        const asked = asPinRequested({ ...e, updated_at: new Date().toISOString() } as Engram,
+          buildPinRequest(options?.actor ?? this._defaultActor, 'pin', { reason: options?.reason }))
+        engrams[idx] = asked
+        await this._updateEngrams(engrams, [asked])
+        await this._syncIndex()
+        return asked
+      }
       // Pinning is a mutation, so it moves `updated_at`.
+      // A pin (or unpin) settles any pending request for it.
       const updated: Engram = {
-        ...e,
+        ...(e.pinned !== true ? withoutPinRequest(e as unknown as Record<string, unknown>) as unknown as Engram : e),
         pinned: pinned === true ? true : undefined,
         updated_at: new Date().toISOString(),
       }
@@ -869,6 +914,9 @@ export const feedbackPinMethods: FeedbackPinMethods & ThisType<Plur> = {
     })
     if (localResult) return localResult
     if (targetScope === 'primary') return null
+    // A team-store row cannot carry a pin request (the PATCH sends `pinned`
+    // only), so a restricted caller's pin there is refused, not lost (D2).
+    if (pinPolicy !== 'allow') throw this._remotePinRefusal(id, 'pin')
 
     let remotePatched: {
       patched: Engram; driver: RemoteStore; serverId: string; scope: string
@@ -957,7 +1005,7 @@ export const feedbackPinMethods: FeedbackPinMethods & ThisType<Plur> = {
     return patched
   },
 
-  async setPinnedAsync(id: string, pinned: boolean, options?: { scope?: string }): Promise<Engram | null> {
+  async setPinnedAsync(id: string, pinned: boolean, options?: { scope?: string; actor?: PinActor; reason?: string }): Promise<Engram | null> {
     return await this.setPinned(id, pinned, options)
   },
 

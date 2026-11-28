@@ -20,6 +20,8 @@ export interface HistoryEvent {
     | 'store_synced'
     /** compact() removed retired rows. `data.engram_ids` names them. */
     | 'store_compacted'
+    /** Store consolidation merged this engram into another (overhaul W6, R2). `data.into`, `data.change_id`, `data.plan_id`, `data.cluster_id`. */
+    | 'consolidated_into'
   /**
    * Engram this event belongs to. Session-level events
    * (`session_scope_changed`) carry no engram — they use `''`, which by
@@ -1346,6 +1348,8 @@ export interface CoInjectionData {
   source?: InjectionSource
   scope?: string
   session_id?: string
+  /** True when the injection counter was skipped for lack of time before the bookkeeping deadline (H7). */
+  counter_skipped?: boolean
 }
 
 export interface CoInjectionEvent {
@@ -1403,6 +1407,7 @@ export function readCoInjections(root: string, months?: string[]): CoInjectionRe
       }
       if (typeof raw.scope === 'string') data.scope = raw.scope
       if (typeof raw.session_id === 'string') data.session_id = raw.session_id
+      if (raw.counter_skipped === true) data.counter_skipped = true
 
       events.push({ injection_id: event.engram_id, timestamp: event.timestamp, data })
     }

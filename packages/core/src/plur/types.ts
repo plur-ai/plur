@@ -5,6 +5,8 @@ import type { PlurConfig } from '../schemas/config.js'
 import { type ScopeMetadata } from '../schemas/scope-metadata.js'
 import { type DiscoveryStatus, type ScopeRejection } from '../server-discovery.js'
 import { DEFAULT_REMOTE_WRITE_TIMEOUT_MS } from './helpers.js'
+import type { ChangeRecord } from '../change-journal.js'
+import type { EngramKind, TaskFamily, Outcome } from '../enrich.js'
 
 
 export interface IngestOptions {
@@ -251,6 +253,66 @@ export interface RescopeOptions {
   dry_run?: boolean
 }
 
+
+/** One proposed move in a rescope plan. */
+export interface RescopePlanItem {
+  id: string
+  from_scope: 'global'
+  to_scope: string
+  /** `local`: applied through the journal. `remote`: a team server holds the target — apply refuses it. `invalid`: the target is not a valid rescope target now. */
+  route: 'local' | 'remote' | 'invalid'
+  confidence: number
+  reason: string
+  domain?: string
+  /** Preview for the reader, at most 120 characters. */
+  statement: string
+}
+
+/** A rescope plan: `plur rescope --plan` writes it, `--apply` reads it. */
+export interface RescopePlan {
+  version: 1
+  kind: 'plur.rescope-plan'
+  created_at: string
+  /** Active global engrams in the local primary store that were routed. */
+  considered: number
+  items: RescopePlanItem[]
+  /** Engrams the router could not place: they stay global. */
+  unmapped: { count: number; ids: string[] }
+}
+
+export interface RescopeApplyResult {
+  /** The journalled change, or null when nothing applied. */
+  change: ChangeRecord | null
+  applied: Array<{ id: string; from_scope: string; to_scope: string }>
+  refused: Array<{ id: string; to_scope: string; reason: string }>
+}
+
+/** One labelled engram in an enrichment plan. */
+export interface EnrichPlanItem {
+  id: string
+  /** Hash of the statement at plan time; apply skips the row if it changed. */
+  statement_hash: string
+  kind: EngramKind
+  task_family: TaskFamily
+  outcome: Outcome | null
+  applies_when: string | null
+  statement: string
+}
+
+export interface EnrichPlan {
+  version: 1
+  kind: 'plur.enrich-plan'
+  created_at: string
+  enricher: { model: string; version: string }
+  items: EnrichPlanItem[]
+  skipped: { already_enriched: number; unlabelled: number }
+}
+
+export interface EnrichApplyResult {
+  change: ChangeRecord | null
+  applied: Array<{ id: string; kind: string }>
+  skipped: Array<{ id: string; reason: string }>
+}
 
 /** Per-engram outcome of {@link Plur.rescope}. */
 export interface RescopeResult {

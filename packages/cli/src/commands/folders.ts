@@ -6,6 +6,8 @@ import {
   type FolderChange, type FolderEntry, type FolderMapIssue, type FolderMapProblem,
 } from '@plur-ai/core'
 import { plurRoot } from '../lib/folder-gate.js'
+import { askPinPolicyConfirmation } from '../lib/pin-confirm.js'
+import { resolveProjectRemote } from '../lib/project-remote.js'
 
 const USAGE =
   'Usage: plur folders list\n' +
@@ -14,7 +16,8 @@ const USAGE =
   '       plur folders set <folder> --not-now --nonce <n> [--session <id>]\n' +
   '       plur folders rm <folder> [--nonce <n>]\n' +
   'Without --nonce, set and rm work only from an interactive terminal.\n' +
-  '--trusted covers the .plur.yaml files in every folder below it. A repository\'s own memory store is still added only after plur folders set <repo> --on, or plur trust <repo>.'
+  '--trusted covers the .plur.yaml files in every folder below it. A repository\'s own memory store is still added only after plur folders set <repo> --on, or plur trust <repo>.\n' +
+  'Under pinning.agents request or deny, a repository\'s own store and the server its .plur.yaml names are connected only by the owner at a terminal (without --nonce), after a typed yes.'
 
 /**
  * Whether a `folders set`/`rm` or `trust` must carry a `--nonce`: unless both
@@ -138,13 +141,107 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   refuseWithoutNonce(nonce, json)
 
   const plur = createPlur(flags)
+  let entry: FolderEntry
   try {
-    const entry = plur.setFolder(folder, change, nonce !== undefined ? { nonce, ...nonceSession(session, json) } : undefined)
-    if (json) return outputJson({ success: true, entry })
-    outputInfo(`Recorded: ${describe(entry)}`, flags)
+    entry = plur.setFolder(folder, change, nonce !== undefined ? { nonce, ...nonceSession(session, json) } : undefined)
   } catch (err) {
-    fail(err, json)
+    return fail(err, json)
   }
+  const connected = await connectRepository(plur, folder, nonce === undefined)
+  if (json) return outputJson({ success: true, entry, ...connected.json })
+  outputInfo(`Recorded: ${describe(entry)}`, flags)
+  for (const l of connected.lines) outputInfo(l, flags)
+  for (const n of connected.notes) outputText(n)
+}
+
+/**
+ * What a folder decision connects under pinning.agents request or deny: the
+ * folder's own store and the server its trusted `.plur.yaml` names, each only
+ * for the owner at a terminal after a typed yes (0.24 review rounds 7 and 9,
+ * part of #1946 and #1947). Returns the lines to print and the JSON fields;
+ * `notes` say what was not connected and the command that connects it.
+ */
+export async function connectRepository(
+  plur: ReturnType<typeof createPlur>, folder: string, atTerminal: boolean,
+): Promise<{ lines: string[]; notes: string[]; json: Record<string, unknown> }> {
+  const stores = await connectFolderStores(plur, folder, atTerminal)
+  const remote = await connectProjectRemote(plur, folder, atTerminal)
+  let policy = 'request'
+  try { policy = plur.pinPolicyFor('agent') } catch { /* fail-safe wording */ }
+  const notes = [
+    ...stores.withheld.map(s => `This folder's store was not connected: ${s.path}. Under pinning.agents ${policy} only the owner adds a store; `
+      + `the owner can connect it in a terminal with: plur stores add ${s.path} ${s.scope}`),
+    ...(remote.withheld ? [`The server this folder's .plur.yaml names was not connected: ${remote.withheld}. Under pinning.agents ${policy} only the owner adds a server; `
+      + `the owner can connect it in a terminal with: plur trust ${folder}, or plur login ${remote.withheld}`] : []),
+  ]
+  const lines = [
+    ...stores.connected.map(s => `Connected this folder's store: ${s.path} (${s.scope})`),
+    ...remote.connected.map(sc => `Connected the server this folder's .plur.yaml names for ${sc}`),
+  ]
+  return {
+    lines, notes,
+    json: {
+      ...(stores.connected.length ? { connected_stores: stores.connected } : {}),
+      ...(stores.withheld.length ? { stores_not_connected: stores.withheld } : {}),
+      ...(remote.connected.length ? { connected_server_scopes: remote.connected } : {}),
+      ...(remote.withheld ? { server_not_connected: remote.withheld } : {}),
+      ...(notes.length ? { note: notes.join(' ') } : {}),
+    },
+  }
+}
+
+/**
+ * The server a trusted `.plur.yaml` names, under request or deny: used only
+ * once config.yaml lists it (core withholds it otherwise). The owner at a
+ * terminal is asked to add it, for each scope the file lists, through
+ * addRemoteStore (the server checks the key and scope first). Returns the
+ * scopes added, or the origin that stays unconnected.
+ */
+async function connectProjectRemote(
+  plur: ReturnType<typeof createPlur>, folder: string, atTerminal: boolean,
+): Promise<{ connected: string[]; withheld?: string }> {
+  let r: ReturnType<typeof resolveProjectRemote>
+  try { r = resolveProjectRemote(plur, folder) } catch { return { connected: [] } }
+  if (!r.withheldUrl) return { connected: [] }
+  let origin = r.withheldUrl
+  try { origin = new URL(r.withheldUrl).origin } catch { /* as written */ }
+  const scopes = r.config.remote_scopes ?? []
+  if (!atTerminal || plur.defaultActor !== 'owner' || scopes.length === 0 || !r.config.remote_token) return { connected: [], withheld: origin }
+  const answer = await askPinPolicyConfirmation(plur, `Connect the server this folder's .plur.yaml names (${origin}) for ${scopes.join(', ')}; its pinned engrams load into every session`)
+  if (!answer.confirmed) return { connected: [], withheld: origin }
+  const connected: string[] = []
+  for (const scope of scopes) {
+    try {
+      await plur.addRemoteStore({ url: r.withheldUrl, token: r.config.remote_token, scope, actor: 'owner' })
+      connected.push(scope)
+    } catch (err) {
+      outputText(`Could not connect ${origin} for ${scope}: ${(err as Error).message}`)
+    }
+  }
+  return connected.length ? { connected } : { connected, withheld: origin }
+}
+
+/**
+ * Under pinning.agents request or deny, a folder decision turns memory on but
+ * connects the folder's own store only when the owner made the decision at a
+ * terminal (no --nonce) and confirms it; a decision relayed with the folder
+ * question's one-time code connects nothing (0.24 review round 7, part of
+ * #1946). Under allow the next session connects it, as before.
+ */
+async function connectFolderStores(
+  plur: ReturnType<typeof createPlur>, folder: string, atTerminal: boolean,
+): Promise<{ connected: Array<{ path: string; scope: string }>; withheld: Array<{ path: string; scope: string }> }> {
+  const none = { connected: [], withheld: [] }
+  let pending: Array<{ path: string; scope: string }>
+  try {
+    if (plur.pinPolicyFor('agent') === 'allow') return none
+    pending = plur.pendingProjectStores(folder)
+  } catch { return none }
+  if (pending.length === 0) return none
+  if (!atTerminal || plur.defaultActor !== 'owner') return { connected: [], withheld: pending }
+  const answer = await askPinPolicyConfirmation(plur, `Connect this folder's store${pending.length === 1 ? '' : 's'} (${pending.map(p => p.path).join(', ')}), whose pinned engrams load into every session`)
+  if (!answer.confirmed) return { connected: [], withheld: pending }
+  return { connected: plur.autoDiscoverStores(folder, { actor: 'owner' }), withheld: [] }
 }
 
 /**

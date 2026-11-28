@@ -15,7 +15,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { PostgresAdapter } from '../src/storage-postgres.js'
-import { searchEngrams, ftsTokenize, computeIdf, termMatches, engramSearchText, TOKENIZER_VERSION } from '../src/fts.js'
+import { searchEngrams, ftsTokenize, computeIdf, termMatches, engramSearchText, SEARCH_INDEX_VERSION } from '../src/fts.js'
 import type { Engram } from '../src/schemas/engram.js'
 
 const PG_URL = process.env.PLUR_TEST_POSTGRES_URL
@@ -492,7 +492,7 @@ describe.skipIf(!PG_URL)('CJK pushdown parity and tokenizer staleness (#834)', (
     } finally {
       await pool.query(
         `UPDATE "${CJK_SCHEMA}".engrams SET tokens_version = $1 WHERE id = $2`,
-        [TOKENIZER_VERSION, 'ENG-2026-0804-001'],
+        [SEARCH_INDEX_VERSION, 'ENG-2026-0804-001'],
       )
     }
   }, TIMEOUT)
@@ -554,7 +554,7 @@ describe.skipIf(!PG_URL)('CJK pushdown parity and tokenizer staleness (#834)', (
     for (let i = 0; i < 100; i++) {
       const { rows } = await pool.query(
         `SELECT 1 FROM "${CJK_SCHEMA}".engrams WHERE tokens_version IS DISTINCT FROM $1 LIMIT 1`,
-        [TOKENIZER_VERSION],
+        [SEARCH_INDEX_VERSION],
       )
       if (rows.length === 0) break
       await new Promise(r => setTimeout(r, 50))

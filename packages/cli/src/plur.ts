@@ -1,4 +1,5 @@
-import { Plur, isDirectoryTrusted, folderMapProblem, type ProjectConfig } from '@plur-ai/core'
+import { isatty } from 'tty'
+import { Plur, folderMapProblem, type ProjectConfig } from '@plur-ai/core'
 import { join, resolve } from 'path'
 import { homedir } from 'os'
 import type { OutputOptions } from './output.js'
@@ -120,11 +121,54 @@ export function getLastPlurInstance(): Plur | null {
  * `autoDiscover: false` skips registering a `<cwd>/.plur` store in config.yaml;
  * the folder question passes it so asking changes nothing.
  */
+/**
+ * Who the CLI writes for (overhaul D2, audit S1). The pinning policy
+ * (`pinning.agents`) restricts an agent, never the owner. A person at a
+ * terminal is the owner. The CLI is an agent when:
+ *   - it runs a `hook-*` command (an editor runs those inside an agent
+ *     session — set by the entry point through {@link setCliActor});
+ *   - `PLUR_ACTOR=agent` is set (a wrapper driving the CLI for an agent);
+ *   - an agent environment is detected ({@link agentEnvironmentMarker}) —
+ *     an agent's shell tool runs the CLI with its harness's variables;
+ *   - stdin is not a terminal — an agent's shell tool, a pipe, a script.
+ * `PLUR_ACTOR=owner` overrides the last two. An agent can set it too, so the
+ * commands that grant pins or apply journalled changes under a restrictive
+ * policy also need a confirmation typed at a terminal (lib/pin-confirm.ts).
+ */
+let cliActor: 'owner' | 'agent' = 'owner'
+export function setCliActor(actor: 'owner' | 'agent'): void { cliActor = actor }
+
+/**
+ * Environment variables agent harnesses set in the shells they run commands
+ * in: Claude Code (CLAUDECODE), Codex (CODEX_SANDBOX, CODEX_THREAD_ID), the
+ * Cursor agent (CURSOR_AGENT), Gemini CLI / Antigravity (GEMINI_CLI,
+ * ANTIGRAVITY_AGENT), opencode (OPENCODE). Best effort: a harness that sets
+ * none still runs commands without a terminal, which the stdin check catches.
+ */
+export const AGENT_ENV_MARKERS = ['CLAUDECODE', 'CODEX_SANDBOX', 'CODEX_THREAD_ID', 'CURSOR_AGENT', 'GEMINI_CLI', 'ANTIGRAVITY_AGENT', 'OPENCODE'] as const
+
+/** The first agent marker set (non-empty, not "0") in `env`, or null. */
+export function agentEnvironmentMarker(env: NodeJS.ProcessEnv = process.env): string | null {
+  for (const k of AGENT_ENV_MARKERS) {
+    const v = env[k]
+    if (v !== undefined && v !== '' && v !== '0') return k
+  }
+  return null
+}
+
+export function resolveCliActor(env: NodeJS.ProcessEnv = process.env, stdinIsTTY: boolean = isatty(0)): 'owner' | 'agent' {
+  if (env.PLUR_ACTOR === 'agent' || cliActor === 'agent') return 'agent'
+  if (env.PLUR_ACTOR === 'owner') return 'owner'
+  if (agentEnvironmentMarker(env)) return 'agent'
+  return stdinIsTTY ? 'owner' : 'agent'
+}
+
 export function createPlur(flags: GlobalFlags, options?: { readonly?: boolean; autoDiscover?: boolean }): Plur {
   const path = flags.path || process.env.PLUR_PATH || undefined
   lastInstance = new Plur({
     path,
     readonly: options?.readonly,
+    actor: resolveCliActor(),
     ...(options?.autoDiscover !== undefined ? { autoDiscover: options.autoDiscover } : {}),
   })
   // Every command is bound to the folder it runs in, so
@@ -147,16 +191,6 @@ export function createPlur(flags: GlobalFlags, options?: { readonly?: boolean; a
   return lastInstance
 }
 
-
-/**
- * The one question the scope gate asks — `Plur` answers it (`plur trust`).
- * `storageRoot` (a `Plur` has it) is the store whose `trust.yaml` answers, so
- * the notice can name a command that writes to THAT store.
- */
-export interface ScopeTrustCheck {
-  isDirectoryTrusted(dir: string): boolean
-  readonly storageRoot?: string
-}
 
 /**
  * One argument of a command printed for the user or the agent to run, or null
@@ -191,14 +225,4 @@ export function trustCommand(dir: string | null, storageRoot?: string, platform:
   if (!storageRoot || resolve(storageRoot) === resolve(join(homedir(), '.plur'))) return `plur trust ${target}`
   const store = shellWord(resolve(storageRoot), platform)
   return store === null ? null : `plur --path ${store} trust ${target}`
-}
-
-/**
- * A trust check against the store `flags` select, without constructing a Plur
- * (the hook reminder path runs on every prompt and builds none). Same answer
- * as `Plur.isDirectoryTrusted`: the trust file lives in the store root.
- */
-export function storeTrustCheck(flags: GlobalFlags): ScopeTrustCheck {
-  const root = flags.path || process.env.PLUR_PATH || join(homedir(), '.plur')
-  return { isDirectoryTrusted: (dir: string) => isDirectoryTrusted(dir, root), storageRoot: root }
 }

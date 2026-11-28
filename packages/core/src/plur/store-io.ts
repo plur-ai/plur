@@ -287,6 +287,9 @@ export interface StoreIoMethods {
    */
   /** @internal */
   _idsInUse(): Promise<string[]>
+
+  /** config.yaml `injection_budget` (default 2,000). */
+  injectionBudget(): number
 }
 
 export const storeIoMethods: StoreIoMethods & ThisType<Plur> = {
@@ -785,5 +788,9 @@ export const storeIoMethods: StoreIoMethods & ThisType<Plur> = {
     const minted = this._mintedTodayIds()
     if (!this._remoteOnly) return minted
     return [...minted, ...(await this._basePrimaryStore.loadCached()).map(e => e.id)]
+  },
+
+  injectionBudget(): number {
+    return this.config.injection_budget ?? 2000
   },
 }

@@ -52,6 +52,9 @@ describe('project remote settings (#1207)', () => {
       injectHybrid: vi.fn().mockResolvedValue({ count: 0, directives: '', constraints: '', consider: '', injected_ids: [], tokens_used: 0 }),
       learnRouted: vi.fn().mockResolvedValue(undefined),
       isDirectoryTrusted: vi.fn().mockReturnValue(true),
+      // A real Plur reports its pin policy; the default is allow (0.24
+      // review round 10: a checker that cannot tell it is held to request).
+      pinPolicyFor: () => 'allow',
     }
     // #1347: the same trust, as the folder map holds it.
     withFolderMap(mockPlur, [{ path: tempDir, trusted: true }])

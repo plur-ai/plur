@@ -1,10 +1,9 @@
 diff --git a/packages/core/src/migrations/runner.ts b/packages/core/src/migrations/runner.ts
-index 7a416b6b..21ff3f12 100644
 --- a/packages/core/src/migrations/runner.ts
 +++ b/packages/core/src/migrations/runner.ts
-@@ -280,7 +280,7 @@ export function runMigrations(
+@@ -249,7 +249,7 @@
  
-     // Load engrams as raw objects (passthrough mode — we use the passthrough schema)
+     // Load engrams as raw objects (passthrough schema)
      let engrams = loadEngrams(engramsPath)
 -    backupPath = options?.dryRun ? null : createBackup(engramsPath, currentVersion)
 +    backupPath = null // MUTANT: no backup before upgrading

@@ -28,7 +28,8 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   const plur = createPlur(flags)
 
   let task = ''
-  let budget = 2000
+  // Unset: core uses config.yaml `injection_budget` (default 2,000).
+  let budget: number | undefined
   let scope: string | undefined
   let withProtocol = true
 
@@ -80,6 +81,8 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
       remote: result.remote ?? { state: 'not_dialed', hosts: [] },
       results_complete: result.results_complete ?? true,
       ...(result.mode ? { mode: result.mode } : {}),
+      // W8: per-injection relevance signals (unified mode only), for the gate study.
+      ...(result.relevance ? { relevance: result.relevance } : {}),
       ...(result.degraded_reason ? { degraded_reason: result.degraded_reason } : {}),
       ...((result.mode === 'hybrid-degraded' || result.degraded_reason) && result.embedder_error ? { embedder_error: result.embedder_error } : {}),
     })

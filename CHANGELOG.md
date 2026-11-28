@@ -1,5 +1,220 @@
 # Changelog
 
+## 0.24.0
+
+Agents get the memories recall finds.
+
+- Injection follows recall's ranking
+- Feedback reorders recall
+- Pins from other projects and spaces stay out
+- `plur pin` manages pins
+
+What an agent is given at the start of a prompt is now recall's own ranking,
+so the memory you would find with `plur recall` is the memory the agent sees.
+On a 14,000-memory test store the right memory is injected for about 89 of 100
+questions on two test sets (0.23: 1 and 15). Full notes:
+`docs/release-notes/0.24.0.md`.
+
+### Changes
+
+- **Injection uses recall's ranking (unified injection), now the default.**
+  The task section of the injected block is recall's top results in recall's
+  order, after pinned memories. Up to 20 task memories per injection (was 10);
+  `plur inject` and the event hooks honour the configured token budget. The
+  previous selection stays for this release as the rollback:
+  `injection.mode: legacy` in `config.yaml`. A relevance cut-off exists
+  (`injection.min_relevance_signal`) but ships off: no signal emptied the task
+  section on unrelated prompts without losing right answers.
+- **Nearby rules that do not apply are left out.** When two memories are
+  near-copies (for example "write review summaries as bullets" and "write
+  incident summaries as paragraphs") and the task's words point to one of
+  them, the other is not given beside it. Equally relevant variants whose
+  differences the task does not mention are all given.
+- **Event injections (skills, agents, plans, subagents) use the same
+  pipeline,** keyword-first, single-flight, and never download the model or
+  contact a team server. The right memory at those moments went from 1 in 30
+  to about 14 in 30 on the test set. `plur init` registers event hooks with
+  20 s; older installs keep 10 s and keep working, and `plur doctor` names them.
+- **The injection query is built from the session's context** (stored task,
+  project scope, git branch, the last two user turns), not only the last prompt.
+- **Feedback is part of recall's ranking.** Rating a memory up or down moves
+  it in hybrid recall (the default for `plur recall` and MCP `plur_recall`,
+  including a store's own searches) and in injection alike. Keyword-only
+  recall (`plur recall --fast`, `plur_recall` with `mode: keyword`, the
+  library's `plur.recall()`) and semantic-only recall do not apply it yet.
+- **Recall on small stores and among equal matches.** A word found in most
+  memories still counts a little (keyword weight is always positive), so
+  small stores no longer come back nearly empty. Among equally good matches in
+  hybrid recall, a memory left unused ranks below a fresh one; locked and pack
+  memories do not fade.
+- **A corrected memory is delivered even when found by its old wording:** the
+  replacement takes the old memory's place in the ranking.
+- **Pins load where they belong.** A global pin loads in every session. In a
+  session with a scope, a pin loads whenever the session can see it: one
+  within the session's scope, in a personal scope (`user:*`, `agent:*`,
+  `local`, or any scope without a shared prefix) or in a team scope mounted
+  under `stores:`; a pin in another project or space scope no longer loads.
+  In a session with no scope, a scoped pin is used only when recall finds it
+  relevant; under `injection.mode: legacy` every pin the session can see loads
+  unconditionally, with or without a session scope. The Claude Code hooks send pins once per context (first prompt,
+  after a compaction or resume, once per subagent), not on every event; the
+  Codex, Cursor and Antigravity hooks send them with every injection.
+- **Agent pinning policy** (`pinning.agents`: `allow`, `request` or `deny`;
+  unset keeps today's `allow`): under `request` an agent's pin becomes a
+  request the owner approves;
+  raising a pin's priority follows the same policy; an invalid setting fails
+  safe to `request`. Session start shows pin overflow and pending requests.
+- **`plur pin` manages the pinned set.** `plur pin` alone lists pins with
+  priority, cost and what does not fit the pin share; `plur pin priority`,
+  `plur pin review approve|reject`, `plur pin audit` (a host model proposes
+  shorter or merged pins; changes nothing), `plur pin apply` and
+  `plur pin undo`. `plur pins` works the same for this release.
+- **`plur rescope --plan`** proposes team or project scopes for global
+  memories from a scope map, with preview, apply and undo.
+- **Structured memory bodies are searchable** (When / Asks / Do / Why /
+  Pitfalls / Anchors; `plur learn --body`, `--kind`, `--outcome`, the same
+  fields on `plur_learn`). The engram-creation skill teaches what measured
+  best: an "Asks" line helps findability most.
+- **Exact restatements reinforce** the existing memory instead of creating a
+  copy when saved through the MCP server (`plur_learn`, `plur_learn_batch`,
+  session end); a restatement with a new body, kind or rationale is still
+  written. `learn.reinforce_exact` decides when set.
+- **A shared change journal** sits behind every undoable store operation and
+  redacts rows of forgotten memories.
+- `plur status` shows store health, including the share of near-copies.
+  Merging near-copies and labelling memories are built but not listed in the
+  help for this release; they become one `plur review` queue (with
+  contradictions and approvals) in the next release.
+- Hybrid recall on a store that searches by meaning and by keyword itself (a
+  database store such as Postgres with pgvector) asks the store for both
+  searches and combines the answers instead of ranking every memory in
+  process. While vectors are missing, recall ranks in process, starts the
+  backfill and reports `degraded_reason: store_embeddings_incomplete`; on a
+  missed query-embedding deadline it returns the keyword match with
+  `degraded_reason: semantic_deadline`. The default YAML store and PGlite are
+  unchanged. (#1787, #1898)
+- Memories saved through the MCP server record which app saved them:
+  `attribution.runtime` holds the client's name and version (Claude Code,
+  Cursor, Codex and so on); core itself is recorded as
+  `attribution.tool: plur-core`. **Migration note:** engrams saved before keep
+  `runtime: plur-core`, read as "written by core, app not recorded"; the
+  provenance export treats both shapes the same. Client names are cleaned of
+  control and invisible characters and cut to 128 characters. See
+  `docs/provenance.md`. (#1470)
+- A binary sidecar for the embedding cache, and keyword search tokenises each
+  memory once per process. Hooks hand core their deadline and keep a late
+  hybrid result instead of injecting nothing.
+
+### Fixes
+
+- `plur doctor` stops the whole MCP server tree after its check, not only the
+  first process. (#1911)
+- `plur init` (Claude Code, Codex and Cursor legs) and `plur doctor` no longer
+  crash on, or merge into, a hand-edited hooks section they cannot read: the
+  hooks step is skipped, the file is named and left as it was. (#1897)
+- The MCP server skips the hooks step instead of crashing on a malformed or
+  null hooks section. (#1352)
+- Releases stage npm packages for passkey approval instead of publishing
+  directly. (#1904)
+- Test isolation and cleanup fixes for Codex and doctor tests, and planted-bug
+  evals re-anchored to the new file layout. (#1901, #1902, #1905)
+
+### Security
+
+From an independent security and silent-failure review of the overhaul, each
+fixed with a test seen failing first:
+
+- Forgotten memories are redacted from the change journal, including torn
+  lines and temporary files. The redaction covers the change journal only:
+  plan and proposal files (rescope, enrich, consolidation, pin audit) keep the
+  text they quote, and a memory retired by resolving a tension is not
+  redacted.
+- Answers from a host model (store maintenance, pin audit) are parsed safely,
+  fenced as data and scanned for secrets; store maintenance reads at most a
+  fixed length of each answer. The command bridge (`--llm-cmd`,
+  `PLUR_LLM_CMD`) caps an answer at 4 MB, has a timeout and stops the whole
+  command tree. The HTTP bridge (`--llm-base-url`) does not yet bound the
+  size or the time of an answer.
+- Rescope plans cannot move non-global memories; imports, undos and
+  `plur restore --yes` that would restore pins need the pin-policy
+  confirmation. The confirmation must be typed
+  at an interactive terminal, which stops an agent acting through the MCP
+  server or a non-interactive shell. It is friction, not a security boundary,
+  against an agent with a shell: a pseudo-terminal passes it, and such an
+  agent can also edit `config.yaml` or the engram files directly.
+- Team-store rows are never sent to a host model for labelling.
+- `plur doctor` says when it could not read `config.yaml` or the pin report,
+  and `plur status` when it could not read store health; degraded rankings, skipped counters and event
+  retrieval plans are recorded instead of silently dropped.
+
+A scoped re-audit of the 0.24 changes found eight more, all fixed with a test
+seen failing first:
+
+- `plur doctor` and `plur init` trust a project settings file only when git
+  positively reports it untracked in the folder's own work tree; a folder that
+  is not a git checkout, or sits inside another repository (for example under
+  a directory that repository ignores), no longer approves itself or counts as
+  your decision.
+- Under `pinning.agents: request` or `deny`, only the owner can add a new
+  server address, a new local store file, or a new scope on a store already
+  in the list. One check, where config.yaml's list of stores is written,
+  covers `plur stores add`, `plur remote`, `plur login`,
+  `plur scopes register`, `plur stores discover --register`, MCP
+  `plur_stores_add` and `plur_scopes_discover` with `register`, and
+  connecting a folder's own store; a second server is a new address even
+  when its scopes are already served, and turning a per-scope entry into a
+  server entry counts as adding (#1946). A folder switched on through the
+  folder question (with its one-time code) turns memory on but does not
+  connect the repository's own store; the owner does that in a terminal
+  (`plur folders set <folder> --on` asks to connect it, or
+  `plur stores add`). Likewise the server a repository's `.plur.yaml` names
+  is used only after the owner adds it at a terminal (`plur trust <folder>`
+  or `plur folders set <folder> --trusted` asks to connect it); trust given through the folder question's code does
+  not make hooks dial it (#1947). Replacing a key, removing an entry or
+  saving one again is not checked. A
+  server's own scope refresh on an entry already in the list (after
+  `plur login`, background discovery) still adds the scopes it grants
+  without asking (#1940). Run as the owner, the
+  CLI asks the confirmation on every `plur stores add`, `plur login <url>`,
+  `plur remote` and `plur scopes register`, even when nothing new is added,
+  so a non-interactive token-rotation script needs a terminal; core refuses
+  only additions. The one-time move of an old `~/.plur/config.json` sign-in
+  waits for that confirmation: `plur login --status`, or a run without a
+  terminal, leaves the file in place and says so. An error elsewhere in `config.yaml` never turns the setting
+  into `allow`; at worst (a duplicate top-level `pinning:` key, or flow-style
+  YAML with a syntax error) a `deny` reads as `request`, which still refuses
+  agents' pins and registrations. `plur pin priority`
+  asks the same typed confirmation as `plur pin` before raising a pin.
+- An owner's approval of a merge is cleared whenever the model pass writes a
+  new decision into the cluster, and a cluster that carries
+  `approved_statement_hash` is applied only with the statement of that hash.
+  Nothing writes that hash yet, so a hand-set `approved: true` without it
+  covers whatever merged statement the plan holds when it is applied.
+  Forgetting a memory also removes rows derived from it from the change
+  journal.
+- A malformed row from a team store no longer makes recall and injection fail
+  for everyone in that scope: bad nested items are dropped where rows enter.
+
+### Behaviour changes to check after upgrading
+
+- Under `pinning.agents: request` or `deny`, registering a store from an agent
+  is refused, and from a terminal it asks for confirmation; a token piped into
+  `plur stores add --token -` counts as an agent (use `--token-env`).
+
+- The injected block is shorter on unrelated prompts and longer on related
+  ones (up to 20 task memories). To go back: `injection.mode: legacy`.
+- Spreading activation (pulling in neighbours of selected memories) belongs to
+  the legacy selection only.
+- A pin in another project or space scope no longer loads. Pins in personal
+  scopes and in mounted team scopes still load in every session that has a
+  scope.
+- Integrations that call `resolveProjectRemote` or
+  `resolveProjectRemoteFromConfig` (exported from `@plur-ai/core`) with their
+  own trust checker must now pass `pinPolicyFor` and `config` as well; a
+  `Plur` instance has both. A checker without them is treated as
+  `pinning.agents: request`, so the repository's `.plur.yaml` server is
+  withheld even when the install's policy is `allow` (#1947).
+
 ## 0.23.1
 
 ### Security

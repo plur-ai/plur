@@ -2,7 +2,7 @@ import { skippedStoreNotice } from '@plur-ai/core'
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { hookFolderPolicy, payloadDir, sessionSettings, folderAskOnce, untrustedPlurYamlAsk, createAskPlur, bindHookFolder, remoteOnlyLines } from '../lib/folder-gate.js'
 import { readStdinJson, runCodexHook, codexSessionId, markSessionStarted, isSessionStarted, emitContext, injectWithFallback } from '../lib/codex-hook-io.js'
-import { resolveProjectRemote, projectRemoteRefusalNotice } from '../lib/project-remote.js'
+import { resolveProjectRemote, projectRemoteRefusalNotice, projectRemoteWithheldNotice } from '../lib/project-remote.js'
 import { recordInjected } from '../lib/auto-rate.js'
 
 /**
@@ -52,8 +52,12 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
       // file cannot point recall at a remote store.
       const projectRemote = resolveProjectRemote(plur, dir)
       const { scope } = sessionSettings(policy, projectRemote.config)
+      // Pins once per context (overhaul R7) applies to Claude Code's skill,
+      // agent and plan-mode events. Codex has no such event and no signal for
+      // a compacted context, so every injection offers the pins (fail open).
       const injectOpts = {
         budget: 2000,
+        include_pinned: true,
         ...(scope ? { scope } : {}),
         ...(projectRemote.remoteProject ? { remote_project: projectRemote.remoteProject } : {}),
       }
@@ -65,7 +69,8 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
       // A refusal is emitted even with nothing recalled: silence is exactly the
       // failure mode this is meant to end — once per session, not per prompt.
       const notices = [
-        firstForSession && projectRemote.refusedFrom ? projectRemoteRefusalNotice(projectRemote.refusedFrom, plur.storageRoot) : null,
+        firstForSession && projectRemote.refusedFrom ? projectRemoteRefusalNotice(projectRemote.refusedFrom, plur.storageRoot)
+          : firstForSession && projectRemote.withheldUrl ? projectRemoteWithheldNotice(projectRemote.withheldUrl) : null,
         // A store here that was found but not added: once per session and folder.
         sessionId ? skippedStoreNotice(plur, sessionId, dir) : null,
         // remote-only: where memory goes, and that the team server did not answer

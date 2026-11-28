@@ -5,7 +5,9 @@
 
 /**
  * Claude Code timeout (seconds) for the synchronous `hook-inject` registrations (UserPromptSubmit, SessionStart
- * "compact"), sync so first replies see memory. hook-inject stays below it: hybrid search on an 8s soft deadline,
+ * "compact"), sync so first replies see memory. Since the retrieval and injection overhaul the event registrations
+ * (plan mode, skill, agent, subagent) use it too; an event run still bounds itself inside the old 10s
+ * (`EVENT_CEILING_DEFAULT_MS` in @plur-ai/cli's hook-inject.ts). hook-inject stays below it: hybrid search on an 8s soft deadline,
  * then BM25, and a 15s self-watchdog (`HOOK_CEILING_DEFAULT_MS`) that exits 0 first. A cold 10,000-engram store
  * takes ~9s; 20s leaves room, matches Antigravity and stays below Codex's 25s. See docs/runbooks/hook-timeouts.md.
  */
@@ -140,26 +142,30 @@ export function buildInjectionHooks(launch: HookLaunch | string): Record<string,
       },
     ],
 
+    // Event injections run the same pipeline as the first prompt — hybrid on
+    // a soft deadline, keyword fallback — so they get the same timeout.
+    // hook-inject still bounds an event run inside the old 10s, so an install
+    // made before this keeps working; `plur doctor` names it.
     PreToolUse: [
       // Full injection when entering plan mode — planning needs broad context
       {
         matcher: 'EnterPlanMode',
         hooks: [
-          { type: 'command', ...mk('hook-inject', '--event', 'plan_mode'), timeout: 10 },
+          { type: 'command', ...mk('hook-inject', '--event', 'plan_mode'), timeout: CLAUDE_INJECT_TIMEOUT_S },
         ],
       },
       // Domain-specific engrams when a skill is invoked
       {
         matcher: 'Skill',
         hooks: [
-          { type: 'command', ...mk('hook-inject', '--event', 'skill'), timeout: 10 },
+          { type: 'command', ...mk('hook-inject', '--event', 'skill'), timeout: CLAUDE_INJECT_TIMEOUT_S },
         ],
       },
       // Agent-scoped engrams when spawning an agent
       {
         matcher: 'Agent',
         hooks: [
-          { type: 'command', ...mk('hook-inject', '--event', 'agent'), timeout: 10 },
+          { type: 'command', ...mk('hook-inject', '--event', 'agent'), timeout: CLAUDE_INJECT_TIMEOUT_S },
         ],
       },
       // Observation capture — log tool calls for offline pattern extraction
@@ -185,7 +191,7 @@ export function buildInjectionHooks(launch: HookLaunch | string): Record<string,
       {
         matcher: '.*',
         hooks: [
-          { type: 'command', ...mk('hook-inject', '--event', 'subagent'), timeout: 10 },
+          { type: 'command', ...mk('hook-inject', '--event', 'subagent'), timeout: CLAUDE_INJECT_TIMEOUT_S },
         ],
       },
     ],

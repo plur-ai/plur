@@ -1,4 +1,5 @@
-import { openSync, readSync, fstatSync, statSync, closeSync, writeSync, constants } from 'fs'
+import { openSync, closeSync, writeSync, constants } from 'fs'
+import { readRegularSlice } from './hook-query.js'
 
 /**
  * Signal detection for the Stop-hook memory check (hook-learn-check), which
@@ -289,25 +290,6 @@ function failedToolIds(content: unknown, into: Set<string>): void {
   }
 }
 
-function readTail(path: string): string | null {
-  // A FIFO, socket or device would block the open or the read: regular files only.
-  const st = statSync(path)
-  if (!st.isFile()) return null
-  const fd = openSync(path, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0))
-  try {
-    const fst = fstatSync(fd)
-    if (!fst.isFile()) return null // swapped between stat and open
-    const size = fst.size
-    const len = Math.min(size, TRANSCRIPT_TAIL_BYTES)
-    if (len <= 0) return null
-    const buf = Buffer.alloc(len)
-    const n = readSync(fd, buf, 0, len, size - len)
-    return buf.subarray(0, n).toString('utf8')
-  } finally {
-    closeSync(fd)
-  }
-}
-
 /**
  * The last human-typed message in a Claude Code transcript (JSONL, the Stop
  * payload's `transcript_path`) and whether plur_learn was called after it.
@@ -319,12 +301,7 @@ function readTail(path: string): string | null {
  */
 export function lastUserMessage(transcriptPath: unknown): UserMessage | null {
   if (typeof transcriptPath !== 'string' || !transcriptPath) return null
-  let raw: string | null
-  try {
-    raw = readTail(transcriptPath)
-  } catch {
-    return null
-  }
+  const raw = readRegularSlice(transcriptPath, TRANSCRIPT_TAIL_BYTES, true)?.text || null
   if (!raw) return null
   const lines = raw.split('\n')
   let learned = false

@@ -359,11 +359,30 @@ export interface InjectOutcome<R> {
   mode: 'hybrid' | 'bm25'
 }
 
+/**
+ * H14: the mode the turn really got. `InjectOutcome.mode` names the leg that
+ * won the race; a hybrid leg can still come back degraded (core's result
+ * `mode: 'hybrid-degraded'`, keyword matching only), which this reports.
+ */
+export function effectiveInjectMode(outcome: { mode: 'hybrid' | 'bm25'; result: unknown }): string {
+  const resultMode = (outcome.result as { mode?: unknown } | null)?.mode
+  if (outcome.mode === 'hybrid' && typeof resultMode === 'string' && resultMode !== 'hybrid') return resultMode
+  return outcome.mode
+}
+
+/** H14: told when the hybrid leg fails — at once (`failed`) or after losing the race to the fallback (`late`). */
+export interface InjectFallbackHooks {
+  onHybridError?: (message: string, phase: 'failed' | 'late') => void
+}
+
 /** The two inject entry points this helper races, structurally typed so `Plur` satisfies it. */
 export interface Injectable<O, R> {
   inject: (task: string, opts: O) => Promise<R>
   injectHybrid: (task: string, opts: O) => Promise<R>
 }
+
+/** How much earlier than the race deadline core is told to finish. */
+export const CORE_DEADLINE_MARGIN_MS = 750
 
 /**
  * Inject with hybrid search, falling back to BM25 if hybrid misses a soft deadline.
@@ -377,12 +396,39 @@ export async function injectWithFallback<O, R>(
   task: string,
   opts: O,
   deadlineMs: number = HYBRID_DEADLINE_MS,
+  hooks: InjectFallbackHooks = {},
 ): Promise<InjectOutcome<R>> {
   if (!hybridEnabled()) return { result: await plur.inject(task, opts), mode: 'bm25' }
 
+  // The hybrid search is not cancelled when it misses the deadline: it keeps
+  // running on the same thread as the BM25 fallback. Past the deadline the
+  // two race, so a hybrid ranking that is nearly done is not thrown away for
+  // a fallback that competes with it for the thread and may not finish
+  // before the hook's own limit.
+  let late: Promise<InjectOutcome<R>> | null = null
   try {
-    const raced = await withDeadline(plur.injectHybrid(task, opts), deadlineMs)
+    // Core is told when the race needs its answer, for the best-effort
+    // injection counter only (a whole-file write on YAML stores): it is then
+    // not started too close to the deadline, so a finished ranking is not lost
+    // to it. The search itself is NOT bounded — a hybrid search that misses
+    // the race keeps running, which the background cache build relies on.
+    // A race shorter than the margin has no meaningful earlier point to share.
+    const coreOpts = (deadlineMs > CORE_DEADLINE_MARGIN_MS && opts && typeof opts === 'object'
+      && !('bookkeeping_deadline_at' in (opts as object)))
+      ? { ...(opts as object), bookkeeping_deadline_at: Date.now() + deadlineMs - CORE_DEADLINE_MARGIN_MS } as O
+      : opts
+    const hybridSearch = plur.injectHybrid(task, coreOpts)
+    const raced = await withDeadline(hybridSearch, deadlineMs)
     if (raced !== DEADLINE_MISSED) return { result: raced, mode: 'hybrid' }
+    // A late failure must not win the race: it yields to the fallback. Its
+    // message still goes to the caller (H14), so it is not lost.
+    late = hybridSearch.then(
+      (result): InjectOutcome<R> => ({ result, mode: 'hybrid' }),
+      (err: unknown) => {
+        try { hooks.onHybridError?.((err as Error)?.message ?? String(err), 'late') } catch { /* diagnostics only */ }
+        return new Promise<never>(() => { /* yield to BM25 */ })
+      },
+    )
     process.stderr.write(
       `[plur] hybrid injection exceeded ${deadlineMs}ms — falling back to BM25 for this turn. ` +
       'If this is routine, raise PLUR_HOOK_HYBRID_DEADLINE_MS — and keep it below your ' +
@@ -391,9 +437,18 @@ export async function injectWithFallback<O, R>(
   } catch (err: unknown) {
     // A hybrid-specific failure (embedder unavailable, index mid-rebuild) must
     // not cost the turn its memory — BM25 needs neither.
+    try { hooks.onHybridError?.((err as Error)?.message ?? String(err), 'failed') } catch { /* diagnostics only */ }
     process.stderr.write(
       `[plur] hybrid injection failed (${(err as Error)?.message ?? 'unknown'}) — using BM25.\n`,
     )
   }
-  return { result: await plur.inject(task, opts), mode: 'bm25' }
+  // Racing a still-running hybrid search, the fallback writes nothing: its
+  // best-effort injection counter is skipped (a deadline already reached), so
+  // whichever result the hook keeps, no store write of the loser can be cut
+  // off at exit and leave a stale lock behind.
+  const fallbackOpts = (late && opts && typeof opts === 'object')
+    ? { ...(opts as object), bookkeeping_deadline_at: Date.now() } as O
+    : opts
+  const fallback = plur.inject(task, fallbackOpts).then((result): InjectOutcome<R> => ({ result, mode: 'bm25' }))
+  return late ? Promise.race([late, fallback]) : fallback
 }

@@ -15,6 +15,7 @@ import { isRerankerOff } from './rerankers/index.js'
 import type { RerankerAdapter } from './rerankers/types.js'
 import { atomicWrite } from './atomic-write.js'
 import { logger } from './logger.js'
+import { hashSeed, mulberry32 } from './consolidate.js'
 
 // ─── Tunables ────────────────────────────────────────────────────────
 
@@ -117,28 +118,6 @@ const STOPWORDS = new Set([
   'one', 'two', 'via', 'per', 'vs', 'etc', 'what', 'which', 'who', 'how', 'why', 'where',
 ])
 
-/** FNV-1a 32-bit hash — mixes the statement into the seed so two identical-length statements sample differently. */
-function fnv1a(text: string): number {
-  let h = 0x811c9dc5
-  for (let i = 0; i < text.length; i++) {
-    h ^= text.charCodeAt(i)
-    h = Math.imul(h, 0x01000193)
-  }
-  return h >>> 0
-}
-
-/** mulberry32 — tiny deterministic PRNG. */
-function mulberry32(seed: number): () => number {
-  let a = seed >>> 0
-  return () => {
-    a |= 0
-    a = (a + 0x6d2b79f5) | 0
-    let t = Math.imul(a ^ (a >>> 15), 1 | a)
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
-  }
-}
-
 /** Seeded Fisher–Yates shuffle (returns a new array). */
 function seededShuffle<T>(items: T[], rand: () => number): T[] {
   const out = items.slice()
@@ -175,7 +154,7 @@ export function synthesizeProbeQuery(statement: string, seed: number): string | 
   }
   if (unique.length < MIN_CONTENT_TOKENS) return null
   if (unique.length <= MAX_QUERY_TOKENS) return unique.join(' ')
-  const rand = mulberry32((seed ^ fnv1a(statement)) >>> 0)
+  const rand = mulberry32((seed ^ hashSeed(statement)) >>> 0)
   const indices = seededShuffle(unique.map((_t, i) => i), rand)
     .slice(0, MAX_QUERY_TOKENS)
     .sort((a, b) => a - b)

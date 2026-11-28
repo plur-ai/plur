@@ -50,13 +50,18 @@ describe('Session & store tools', () => {
     expect(result.setup_hint).toContain('npx @plur-ai/cli init')
   })
 
-  it('plur_session_start returns guide when engrams exist but none match', async () => {
+  // Changed with the owner's approval (2026-11-22) when unified injection
+  // became the default: injection takes recall's top results, and recall has
+  // no similarity cut-off, so an unrelated task can receive the nearest
+  // memories. The promise is now "at most a few", not "none"; a real
+  // relevance cut-off is a tracked follow-up.
+  it('plur_session_start on an unrelated task gets at most a few memories', async () => {
     await plur.learn('Always use semicolons in TypeScript', { scope: 'global' })
     const result = await callTool('plur_session_start', { task: 'cooking recipes for dinner' }) as any
     expect(result.session_id).toBeDefined()
-    expect(result.engrams).toEqual([])
+    const injected = Array.isArray(result.engrams) ? result.engrams : result.engrams.injected_ids
+    expect(injected.length).toBeLessThanOrEqual(3)
     expect(result.store_stats.engram_count).toBe(1)
-    expect(result.guide).toContain('1 engrams but none matched')
     expect(result.follow_up).toBeUndefined()
   })
 

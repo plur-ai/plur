@@ -17,6 +17,8 @@ import type {
 } from '../types.js'
 import { VALID_ENGRAM_TYPES } from './helpers.js'
 
+import { PinDeniedError } from '../pin-policy.js'
+import { validateLearnStructuredData } from '../enrich.js'
 export interface ScopeGuardsMethods {
   /**
    * Resolve self-describing metadata for a scope from the loaded config.
@@ -574,6 +576,18 @@ export const scopeGuardsMethods: ScopeGuardsMethods & ThisType<Plur> = {
       if (typeof p !== 'number' || !Number.isInteger(p) || p < 1 || p > 100) {
         throw new TypeError(`plur.${fn}: pinned_priority must be an integer from 1 to 100, got ${String(p)}`)
       }
+    }
+    // W10: body / kind / outcome only, validated before any lock or routing.
+    // `_buildEngramShape` validates again, so a direct call cannot skip it.
+    validateLearnStructuredData(context?.structured_data)
+    if (context?.actor !== undefined && context.actor !== 'owner' && context.actor !== 'agent') {
+      throw new TypeError(`plur.${fn}: actor must be "owner" or "agent", got ${String(context.actor)}`)
+    }
+    // Agent pinning (overhaul D2): `deny` refuses before anything is stored;
+    // `request` is applied where the row is built (_buildEngramShape), so
+    // every write path that builds a row records the request the same way.
+    if (context?.pinned === true && this._pinDecisionFor(context.actor) === 'deny') {
+      throw new PinDeniedError(null, 'learn')
     }
     if (!this.config.allow_secrets) {
       // Scan the statement AND every caller-supplied content field. The field

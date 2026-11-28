@@ -86,7 +86,7 @@ describe('MCP tools', () => {
       for (const id of result.ids) expect(await plur.getById(id)).toBeTruthy()
     })
 
-    it('dedupes a duplicate within the same batch to NOOP', async () => {
+    it('dedupes a duplicate within the same batch (REINFORCE by default in MCP, overhaul D8)', async () => {
       const result = await callTool('plur_learn_batch', {
         engrams: [
           { statement: 'Deploy uses git pull then restart', scope: 'global' },
@@ -94,9 +94,9 @@ describe('MCP tools', () => {
         ],
       }) as any
       expect(result.stats.added).toBe(1)
-      expect(result.stats.noops).toBe(1)
-      const noop = result.results.find((r: any) => r.decision === 'NOOP')
-      expect(noop.id).toBe(result.results[0].id)
+      expect(result.stats.reinforced).toBe(1)
+      const dup = result.results.find((r: any) => r.decision === 'REINFORCE')
+      expect(dup.id).toBe(result.results[0].id)
     })
 
     it('returns an empty result for an empty array without throwing', async () => {

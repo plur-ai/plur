@@ -30,6 +30,8 @@ export const LEARN_CONTEXT_FIELD_ROLES = {
   // Pinned two-tier model: an enum and a validated integer, not text.
   pin_tier: 'control',
   pinned_priority: 'control',
+  // Who is writing (D2): an enum, never persisted.
+  actor: 'control',
   valid_from: 'control',
   valid_until: 'control',
   session: 'control',
@@ -49,6 +51,8 @@ export const LEARN_CONTEXT_FIELD_ROLES = {
   supersedes: 'content',
   // A flag (the duplicate checker's supersede skips a locked target), not text.
   supersedes_unless_locked: 'control',
+  // Selects whether an exact restatement reinforces (D8); never persisted.
+  reinforce_exact_default: 'control',
   // Engram ids written to `relations.related` (batch never-overwrite link).
   related: 'content',
   measured_under: 'content',
@@ -57,6 +61,9 @@ export const LEARN_CONTEXT_FIELD_ROLES = {
   attribution: 'content',
   claim_class: 'content',
   license: 'content',
+  // W10: the structured body (and its kind/outcome labels) lands in
+  // `structured_data` and is indexed — caller text, so scanned.
+  structured_data: 'content',
 } as const satisfies Record<keyof LearnContext, 'content' | 'control'>
 
 /** The `LearnContext` keys the write-time hard scan reads. */

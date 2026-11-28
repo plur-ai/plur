@@ -1,13 +1,13 @@
-diff --git a/packages/core/src/index.ts b/packages/core/src/index.ts
-index d018e0d6..83d00d79 100644
---- a/packages/core/src/index.ts
-+++ b/packages/core/src/index.ts
-@@ -4430,7 +4430,7 @@ export class Plur {
-       // this is the branch a Postgres/PGLite install actually takes.
+diff --git a/packages/core/src/plur/learn.ts b/packages/core/src/plur/learn.ts
+index 73973152..b97b7a7d 100644
+--- a/packages/core/src/plur/learn.ts
++++ b/packages/core/src/plur/learn.ts
+@@ -160,7 +160,7 @@ export const learnMethods: LearnMethods & ThisType<Plur> = {
+       // this is the branch a Postgres/PGLite install takes.
        const { primaryHashMatch, hashMatch, foreign: sameScopeForeign } =
          await this._learnHashMatch(statement, scope, canDelegate, allEngrams)
--      if (hashMatch) {
-+      if (hashMatch && hashMatch.id !== hashMatch.id) {
-         // Decision A: `hashMatch` is a row the writer can persist (primary, a
+-      if (hashMatch && !this._incomingCarriesNewContent(hashMatch, context)) {
++      if (hashMatch && hashMatch.id !== hashMatch.id && !this._incomingCarriesNewContent(hashMatch, context)) {
+         // `hashMatch` is a row the writer can persist (primary, a
          // writable secondary store, or the writable remote of this very
          // scope); a pack / readonly / other-remote match never gets here.

@@ -10,7 +10,9 @@
  * the content-hash dedup gate and the secret guard apply — never raw-append.
  */
 import { readFileSync } from 'fs'
-import { importFrom, listImportSources, type FieldMapping, type MigrationReport } from '@plur-ai/core'
+import { basename } from 'path'
+import { getImportSource, runImport, listImportSources, type FieldMapping, type ImportRecord, type MigrationReport } from '@plur-ai/core'
+import { askPinPolicyConfirmation } from '../lib/pin-confirm.js'
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { shouldOutputJson, outputJson, outputText, exit } from '../output.js'
 
@@ -67,13 +69,41 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   // background index work through getLastPlurInstance() before exiting, and
   // only sees instances made by createPlur. --store is mapped onto flags.path.
   const plur = createPlur({ ...flags, path: store || flags.path })
-  const report = await importFrom(plur, { from, path: file, mapping, dryRun, scope })
+  // The importer is whoever runs the CLI (overhaul D2): the owner, unless PLUR_ACTOR=agent.
+  // Parsed here rather than through core's importFrom (same parse, same
+  // runImport) so the pinned records can be counted before anything is written.
+  let records: ImportRecord[] = getImportSource(from!).parse({ path: file!, mapping })
+  let actor = plur.defaultActor
+  let pinsNotConfirmed = 0
+  let pinOutcome: 'requested' | 'unpinned' | undefined
+  // H11: a pin from a file is a pin grant like `plur pin`. Under
+  // pinning.agents request/deny the owner confirms at a terminal (S1);
+  // PLUR_ACTOR=owner alone does not count. Unconfirmed, the records are
+  // imported without their pins: as pin requests under request, plainly
+  // unpinned under deny. An agent actor already gets that from core.
+  const pinned = records.filter(r => r.pinned).length
+  if (pinned > 0 && !dryRun && actor === 'owner') {
+    const answer = await askPinPolicyConfirmation(plur, `Import ${pinned} pinned record${pinned === 1 ? '' : 's'} from ${file} as pins`)
+    if (!answer.confirmed) {
+      pinsNotConfirmed = pinned
+      if (answer.policy === 'request') { actor = 'agent'; pinOutcome = 'requested' }
+      else { records = records.map(r => { const { pinned: _drop, ...rest } = r; return rest }); pinOutcome = 'unpinned' }
+    }
+  }
+  const report = await runImport(plur, records, {
+    from: from!, path: file, dryRun, scope, defaultSource: `import:${from}:${basename(file!)}`, actor,
+  })
+
+  const pinsNote = pinsNotConfirmed === 0 ? undefined : pinOutcome === 'requested'
+    ? `${pinsNotConfirmed} pinned record(s) were imported but NOT pinned: pinning.agents needs a confirmation typed at a terminal. They wait as pin requests; review with: plur pin review`
+    : `${pinsNotConfirmed} pinned record(s) were imported but NOT pinned: pinning.agents is "deny" and the pins were not confirmed at a terminal. Pin them with: plur pin <id>`
 
   if (shouldOutputJson(flags)) {
-    outputJson(report)
+    outputJson(pinsNote ? { ...report, pins_not_confirmed: pinsNotConfirmed, pins_outcome: pinOutcome, pins_note: pinsNote } : report)
     return
   }
   printReport(report)
+  if (pinsNote) outputText(`  ${pinsNote}`)
 }
 
 function printReport(report: MigrationReport): void {

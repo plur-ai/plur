@@ -241,6 +241,48 @@ describe('injectWithFallback', () => {
     err.mockRestore()
   })
 
+  it('past the deadline, takes a hybrid result that finishes before the BM25 fallback', async () => {
+    const err = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    const plur = {
+      injectHybrid: () => new Promise<ReturnType<typeof R>>(r => setTimeout(() => r(R(5, 'hybrid')), 60)),
+      inject: () => new Promise<ReturnType<typeof R>>(r => setTimeout(() => r(R(3, 'bm25')), 400)),
+    }
+    const t0 = Date.now()
+    const out = await injectWithFallback(plur, 'q', {}, 20)
+    expect(out.mode).toBe('hybrid')
+    expect(out.result.count).toBe(5)
+    expect(Date.now() - t0).toBeLessThan(300)
+    err.mockRestore()
+  })
+
+  it('past the deadline, the racing BM25 fallback is told to skip its store write', async () => {
+    const err = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    let seen: Record<string, unknown> | undefined
+    const plur = {
+      injectHybrid: () => new Promise<never>(() => { /* still running */ }),
+      inject: async (_t: string, o: Record<string, unknown>) => { seen = o; return R(3, 'bm25') },
+    }
+    const before = Date.now()
+    await injectWithFallback(plur, 'q', { scope: 'x' } as Record<string, unknown>, 20)
+    expect(seen?.scope).toBe('x')
+    expect(typeof seen?.bookkeeping_deadline_at).toBe('number')
+    expect(seen!.bookkeeping_deadline_at as number).toBeLessThanOrEqual(Date.now())
+    expect(seen!.bookkeeping_deadline_at as number).toBeGreaterThanOrEqual(before)
+    err.mockRestore()
+  })
+
+  it('past the deadline, a hybrid search that then fails still yields the BM25 result', async () => {
+    const err = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    const plur = {
+      injectHybrid: () => new Promise<never>((_r, rej) => setTimeout(() => rej(new Error('late failure')), 40)),
+      inject: () => new Promise<ReturnType<typeof R>>(r => setTimeout(() => r(R(3, 'bm25')), 120)),
+    }
+    const out = await injectWithFallback(plur, 'q', {}, 20)
+    expect(out.mode).toBe('bm25')
+    expect(out.result.count).toBe(3)
+    err.mockRestore()
+  })
+
   it('falls back to BM25 when hybrid throws — a dead embedder must not cost the turn', async () => {
     const err = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
     const plur = {
@@ -251,6 +293,28 @@ describe('injectWithFallback', () => {
     expect(out.mode).toBe('bm25')
     expect(String(err.mock.calls.at(-1)?.[0])).toContain('embedder unavailable')
     err.mockRestore()
+  })
+
+  it('tells core when it needs the answer, for the injection counter only', async () => {
+    let seen: Record<string, unknown> | undefined
+    const plur = { injectHybrid: async (_q: string, o: Record<string, unknown>) => { seen = o; return R(1, 'h') }, inject: async () => R(1, 'b') }
+    const t0 = Date.now()
+    await injectWithFallback(plur, 'q', { scope: 's' } as Record<string, unknown>, 8000)
+    expect(seen?.scope).toBe('s')
+    // The search deadline is untouched: a missed hybrid search keeps running.
+    expect(seen).not.toHaveProperty('deadline_at')
+    const at = seen?.bookkeeping_deadline_at as number
+    expect(at).toBeGreaterThan(t0 + 6000)
+    expect(at).toBeLessThan(t0 + 8000)
+  })
+
+  it('passes nothing extra for a race shorter than the margin, and keeps a caller value', async () => {
+    let seen: Record<string, unknown> | undefined
+    const plur = { injectHybrid: async (_q: string, o: Record<string, unknown>) => { seen = o; return R(1, 'h') }, inject: async () => R(1, 'b') }
+    await injectWithFallback(plur, 'q', {} as Record<string, unknown>, 1)
+    expect(seen).toEqual({})
+    await injectWithFallback(plur, 'q', { bookkeeping_deadline_at: 42 } as Record<string, unknown>, 8000)
+    expect(seen?.bookkeeping_deadline_at).toBe(42)
   })
 
   it('does not leave the deadline timer holding the event loop open', async () => {

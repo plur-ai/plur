@@ -5,6 +5,7 @@ import { Plur, extractMetaEngrams, validateMetaEngram, confidenceBand, generateP
 import { folderMapAdvice } from './folder-map-advice.js'
 import type { LlmFunction, MetaField, TensionStatus, RerankerEvalResult, HistoryEvent, Receipt, RemoteStoreStatusEntry, RecallRemoteReport, RemoteOnlyStatus } from '@plur-ai/core'
 import { RemoteOnlyWriteError, remoteOnlySessionLine, remoteOnlyUnservedNotice, WARM_REMOTE_RECALL_TIMEOUT_MS } from '@plur-ai/core'
+import { PinDeniedError, pinRequestOf } from '@plur-ai/core'
 import { enterpriseRecoveryHint } from '@plur-ai/core'
 import { emitCheckpoint, signWithActorKey, keysDirFor } from '@plur-ai/core'
 import { anchorManifest, notaryClaim, EXPERIMENTAL_NOTE } from '@plur-ai/gateway'
@@ -780,8 +781,43 @@ export function _resetSessionTelemetry(): void {
  * when the write was absorbed as a duplicate; a fresh engram has write_count 1
  * (or none). Mirrors plur_learn_batch's `NOOP` + `existing_id`.
  */
-function learnDecision(engram: { id: string; write_count?: number }): { decision: 'ADD' } | { decision: 'NOOP'; existing_id: string } {
+function learnDecision(engram: { id: string; write_count?: number }, plur?: { reinforcementOf?(e: object): { existing_id: string; existing_statement: string; swallowed: string } | null }):
+  | { decision: 'ADD' }
+  | { decision: 'NOOP'; existing_id: string }
+  | { decision: 'REINFORCE'; existing_id: string; reinforced: { existing_statement: string; swallowed: string } } {
+  // Overhaul D8: an exact normalised restatement that reinforced the engram
+  // it matched. The reply carries both texts so the caller sees what was
+  // swallowed and what it was folded into.
+  const r = plur?.reinforcementOf?.(engram)
+  if (r) return { decision: 'REINFORCE', existing_id: r.existing_id, reinforced: { existing_statement: r.existing_statement, swallowed: r.swallowed } }
   return (engram.write_count ?? 1) > 1 ? { decision: 'NOOP', existing_id: engram.id } : { decision: 'ADD' }
+}
+
+/**
+ * Write-time reinforcement default for MCP writes (overhaul D8). The ONE
+ * place the MCP default lives: plur_learn and plur_learn_batch pass it as
+ * `reinforce_exact_default`, which applies only when config.yaml has no
+ * `learn.reinforce_exact`. Core's own default stays off. The release default
+ * is an owner decision; change it here.
+ */
+export const MCP_REINFORCE_EXACT_DEFAULT = true
+
+/**
+ * Overhaul D2: what an agent's pin turned into. MCP tools write as `agent`;
+ * with `pinning.agents: request` the engram is stored unpinned and carries a
+ * pin request, and the reply must say so — an agent told nothing would report
+ * a pin that does not exist, or retry it.
+ */
+const PIN_REQUEST_NOTE =
+  'Stored UNPINNED: on this install pinning is reserved for the owner (pinning.agents: request). '
+  + 'A pin request was recorded; the owner reviews it with `plur pin review`. Do not retry the pin, '
+  + 'and tell the user it is waiting for their approval.'
+function pinRequestReply(engram: unknown): Record<string, unknown> {
+  const request = pinRequestOf(engram as never)
+  return request ? { pinned: false, pin_request: request, pin_note: PIN_REQUEST_NOTE } : {}
+}
+function pinDeniedReply(err: PinDeniedError): Record<string, unknown> {
+  return { success: false, error: 'pin_denied', note: err.message }
 }
 
 /**
@@ -1451,7 +1487,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
       name: 'plur_learn',
       description:
         'Create an engram — record a reusable learning, preference, or correction. ' +
-        'A write is never suppressed by similarity: exact content-hash duplicates NOOP, and anything merely SIMILAR ' +
+        'A write is never suppressed by similarity: an exact restatement (same text after normalising case, whitespace and punctuation, same scope) REINFORCEs the existing engram (decision REINFORCE with existing_id; NOOP when learn.reinforce_exact is false), and anything merely SIMILAR ' +
         'is written and reported back in `dedup.near_duplicates` (closest existing engrams, their cosine scores, and ' +
         'a preview of each neighbour\'s own statement — read them before moving on; that is what they are for) ' +
         'so you can supersede or merge deliberately. High similarity is a reason to look, not a decision — cosine ' +
@@ -1474,7 +1510,17 @@ function getAllToolDefinitions(): ToolDefinition[] {
           tags: { type: 'array', items: { type: 'string' }, description: 'Searchable keyword tags — contribute to BM25/embedding recall, so concrete keywords pay off' },
           rationale: { type: 'string', description: 'The mechanism that makes the statement true, and therefore the condition under which it would STOP being true. One sentence. "Because the user said so on <date>" is a citation, not a mechanism: that belongs in `source`. This text is indexed, so a real mechanism also carries concrete nouns a future query can match. NOTE: constraints render without rationale, so a mechanism a prohibition needs the model to weigh must stay in the statement.' },
           source: { type: 'string', description: 'Origin of this knowledge (URL, conversation ref, etc.)' },
-          pinned: { type: 'boolean', description: 'Always-load flag. If true, this engram bypasses the keyword-relevance gate at injection time. Use sparingly: meta-rules, safety conventions, core operating principles only.' },
+          structured_data: {
+            type: 'object',
+            description: 'The structured form of the memory (optional). `body`: when to apply, what to do, why, pitfalls, anchors — about 300 tokens at most; it is indexed for recall, so write the words a future task will contain. `kind`: what sort of memory this is (sets memory_class when none is given). `outcome`: only when the source states one. No other keys are accepted.',
+            properties: {
+              body: { type: 'string', description: 'Structured body: "When: … Asks: … Do: … Why: … Pitfalls: … Anchors: …". At most ~300 tokens (2,000 characters).' },
+              kind: { type: 'string', enum: ['rule', 'tool', 'fact', 'preference', 'experience', 'failure_lesson'], description: 'rule = convention to follow; tool = pointer to a command/script/endpoint/file; fact = how something is; preference = a taste or style choice; experience = what happened in a past attempt; failure_lesson = what went wrong and what to avoid next time.' },
+              outcome: { type: 'string', description: '"success" or "failure", or a short stated result. Only when the source says so — never guess.' },
+            },
+            additionalProperties: false,
+          },
+          pinned: { type: 'boolean', description: 'Always-load flag. If true, this engram bypasses the keyword-relevance gate at injection time. Use sparingly: meta-rules, safety conventions, core operating principles only. Pin only on the user\'s word. Where the owner reserved pinning (pinning.agents: request) the engram is stored unpinned with a pin request the owner reviews (the reply says so); with pinning.agents: deny the write is refused.' },
           commitment: { type: 'string', enum: ['exploring', 'leaning', 'decided', 'locked', 'draft'], description: 'How firmly the user has committed to this belief (default: leaning). `draft` marks the engram as pending human approval: core stores and RECALLS it normally but NEVER injects it, so an unapproved rule cannot shape agent behaviour. Retrieval stays open because reviewing something requires reading it.' },
           locked_reason: { type: 'string', description: 'Why this engram is locked (only meaningful when commitment=locked)' },
           valid_from: { type: 'string', description: 'ISO date (YYYY-MM-DD) the knowledge becomes valid — inject/recall skip the engram before this date' },
@@ -1500,7 +1546,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
               asserted_by: { type: 'string', description: 'Who or what asserted it. Any address: a local name, a Decentralized Identifier, or "unidentified".' },
               runtime: {
                 type: 'object',
-                description: 'The software writing this. Usually known, so usually worth setting.',
+                description: 'The calling app, with its version. Leave it out: it is filled from the MCP initialize clientInfo. A value given here is kept as given instead.',
                 properties: { name: { type: 'string' }, version: { type: 'string' } },
               },
               model: {
@@ -1515,7 +1561,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
               },
               tool: {
                 type: 'object',
-                description: 'An extractor or importer, with its version.',
+                description: 'The writing tool. Defaults to plur-core.',
                 properties: { name: { type: 'string' }, version: { type: 'string' } },
               },
               on_behalf_of: { type: 'string', description: 'The party the runtime acted for.' },
@@ -1572,11 +1618,15 @@ function getAllToolDefinitions(): ToolDefinition[] {
           source: args.source as string | undefined,
           tags: args.tags as string[] | undefined,
           rationale: args.rationale as string | undefined,
+          // W10: validated in core (body/kind/outcome only, body ≤ ~300 tokens).
+          structured_data: args.structured_data as LearnContext['structured_data'],
           commitment: args.commitment as any,
           locked_reason: args.locked_reason as string | undefined,
           // Quota-gated below, before the write — writing a NEW pinned engram
           // is the other normal way to create a pin besides `plur_pin`.
           pinned: args.pinned as boolean | undefined,
+          // Overhaul D2: an MCP caller is an agent; core applies pinning.agents.
+          actor: 'agent' as const,
           valid_from: args.valid_from as string | undefined,
           valid_until: args.valid_until as string | undefined,
           supersedes: args.supersedes as string[] | undefined,
@@ -1599,6 +1649,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
           // NO_SESSION and only selects the default scope.
           session_id: _resolveInjectionSession(args),
           llm,
+          reinforce_exact_default: MCP_REINFORCE_EXACT_DEFAULT,
         }
         // learnRouted is PRIMARY so remote writes return the server-assigned id (a local placeholder breaks later
         // forget/feedback); sync learn() is the defense-in-depth FALLBACK; learnAsync is not used here.
@@ -1676,7 +1727,11 @@ function getAllToolDefinitions(): ToolDefinition[] {
         // say "it would exceed by N". What it CAN say without guessing is that
         // there is no room at all. An exact pre-check would mean predicting
         // the cost of a record that has not been built.
-        if (context.pinned === true) {
+        // Overhaul D2: a pin this caller may not make is refused (deny) or
+        // becomes a request (request) in core; neither costs quota.
+        const pinPolicy = context.pinned === true ? plur.pinPolicyFor('agent') : 'allow'
+        if (pinPolicy === 'deny') return pinDeniedReply(new PinDeniedError(null, 'learn'))
+        if (context.pinned === true && pinPolicy === 'allow') {
           const q = await plur.pinnedQuota()
           if (q.free <= 0) {
             return {
@@ -1758,7 +1813,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
             // hands back the EXISTING engram with write_count bumped; reporting
             // it as 'ADD' would claim a new memory exists when none was
             // written. Same vocabulary as plur_learn_batch.
-            ...learnDecision(engram),
+            ...learnDecision(engram, plur),
             // Always present. The warning sits BEFORE the others so a
             // more specific `warning` below (outbox, demotion, refusal) still
             // wins that key; `delivery_warning` keeps this one either way.
@@ -1772,6 +1827,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
             ...(delivered.warning ? { delivery_warning: delivered.warning, warning: delivered.warning } : {}),
             ...(dedup?.near_duplicates?.length ? { dedup } : {}),
             ...(redraft ? { redraft } : {}),
+            ...(context.pinned === true ? pinRequestReply(engram) : {}),
             ...(() => { const c = composeHints(statement, context?.rationale, context?.source); return c ? { composition: c } : {} })(),
             ...temporalEcho(engram),
             ...scopeHint(engram.scope, !!routed, delivered.delivery),
@@ -1792,6 +1848,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
           // A remote-only folder's refusal is the answer, not a failure to
           // retry locally: nothing may be kept on this machine there.
           if (err instanceof RemoteOnlyWriteError) throw err
+          if (err instanceof PinDeniedError) return pinDeniedReply(err)
           // learnRouted saves to outbox on remote failure, so this
           // path should rarely be reached. Keep as defense-in-depth.
           const engram = await plur.learn(statement, context)
@@ -1806,7 +1863,8 @@ function getAllToolDefinitions(): ToolDefinition[] {
             // holding this id can pass it to plur_forget / plur_feedback.
             // Outbox engrams stay local-form (same rule as the happy path).
             id: isOutbox ? engram.id : plur.readIdFor(engram), statement: engram.statement,
-            scope: engram.scope, type: engram.type, ...learnDecision(engram),
+            scope: engram.scope, type: engram.type, ...learnDecision(engram, plur),
+            ...(context.pinned === true ? pinRequestReply(engram) : {}),
             delivery: delivered.delivery,
             destination: delivered.destination,
             ...(delivered.host ? { delivered_to: delivered.host } : {}),
@@ -1921,12 +1979,15 @@ function getAllToolDefinitions(): ToolDefinition[] {
             rationale: e.rationale as string | undefined,
             commitment: e.commitment,
             pinned: e.pinned as boolean | undefined,
+            // Overhaul D2: an MCP caller is an agent; core applies pinning.agents.
+            actor: 'agent' as const,
             valid_from: e.valid_from as string | undefined,
             valid_until: e.valid_until as string | undefined,
             measured_under: e.measured_under as Record<string, string> | undefined,
             // Batch writes are session writes too — without this every engram
             // from plur_learn_batch lands with sources[].session_id null.
             session_id: _resolveInjectionSession(args),
+            reinforce_exact_default: MCP_REINFORCE_EXACT_DEFAULT,
           },
         }))
         const maxLlmCalls = typeof args.max_llm_calls === 'number' ? args.max_llm_calls : undefined
@@ -1939,7 +2000,9 @@ function getAllToolDefinitions(): ToolDefinition[] {
         // failure, the rest of the batch is still written.
         const gateFailures: Array<{ index: number; statement: string; error: string }> = []
         let admitted: number[] = items.map((_, i) => i)
-        if (items.some(it => it.context.pinned === true)) {
+        // Overhaul D2: only a pin this caller may make costs quota; a denied
+        // one fails in core per item, a requested one is stored unpinned.
+        if (items.some(it => it.context.pinned === true) && plur.pinPolicyFor('agent') === 'allow') {
           const q = await plur.pinnedQuota()
           let free = q.free
           admitted = []
@@ -2055,8 +2118,13 @@ function getAllToolDefinitions(): ToolDefinition[] {
             `there, or move them with plur_rescope.`)
         }
 
+        // Overhaul D2: pinned items stored unpinned with a pin request.
+        const pinRequests = results
+          .filter(r => r.input_index !== undefined && (raw[r.input_index] as { pinned?: unknown })?.pinned === true && pinRequestOf(r.engram as never))
+          .map(r => ids[r.input_index!]!)
         return {
           ids,
+          ...(pinRequests.length > 0 ? { pin_requests: pinRequests, pin_note: PIN_REQUEST_NOTE } : {}),
           results: results.map((r) => {
             const isOutbox = !!(r.engram as any).structured_data?._outbox
             // The batch mirror of what plur_learn reports: a write that routed
@@ -2080,6 +2148,9 @@ function getAllToolDefinitions(): ToolDefinition[] {
             type: r.engram.type,
             decision: r.decision,
             ...(r.existing_id ? { existing_id: r.existing_id } : {}),
+            ...(r.decision === 'REINFORCE' && r.input_index !== undefined
+              ? { reinforced: { existing_statement: r.engram.statement, swallowed: String(raw[r.input_index]?.statement ?? '') } }
+              : {}),
             // Batch learning never overwrites: the checker's UPDATE/MERGE
             // became a linked ADD, said here in plain words.
             ...(r.likely_duplicate_of ? { likely_duplicate_of: r.likely_duplicate_of } : {}),
@@ -2339,6 +2410,11 @@ function getAllToolDefinitions(): ToolDefinition[] {
         }
         if (!args.id) throw new Error('Provide id (or list:true to list pinned)')
         const target = (args.pinned as boolean | undefined) ?? true
+        // Overhaul D2: an MCP caller is an agent. A pin it may not make is
+        // refused (deny) or recorded as a request by core (request), and
+        // neither is charged against the quota.
+        const pinPolicy = target === true ? plur.pinPolicyFor('agent') : 'allow'
+        if (pinPolicy === 'deny') return pinDeniedReply(new PinDeniedError(args.id as string, 'pin'))
 
         // Quota is enforced HERE, not at injection time. The spec calls
         // `pinned` an always-load flag; honouring that means refusing to
@@ -2346,7 +2422,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
         // the user already pinned. Pinning is a deliberate act with a human
         // present — this is the only moment where "unpin one or raise the
         // limit" is a question someone can actually answer.
-        if (target === true) {
+        if (target === true && pinPolicy === 'allow') {
           // Cost the engram this pin will change: with a scope, the one that
           // scope holds, not a local id twin.
           const q = await plur.pinnedQuota(args.id as string, args.scope ? { scope: args.scope as string } : undefined)
@@ -2388,12 +2464,19 @@ function getAllToolDefinitions(): ToolDefinition[] {
         // synthesized {id, pinned} object, so an immediate getById would see
         // stale state. The async variant awaits and returns the real server
         // response.
-        const updated = await plur.setPinnedAsync(args.id as string, target, args.scope ? { scope: args.scope as string } : undefined)
+        let updated
+        try {
+          updated = await plur.setPinnedAsync(args.id as string, target, { ...(args.scope ? { scope: args.scope as string } : {}), actor: 'agent' })
+        } catch (err) {
+          if (err instanceof PinDeniedError) return pinDeniedReply(err)
+          throw err
+        }
         if (!updated) throw new Error(`Engram not found: ${args.id}`)
         return {
           id: updated.id,
           statement: updated.statement,
           pinned: (updated as any).pinned === true,
+          ...(target === true ? pinRequestReply(updated) : {}),
         }
       },
     },
@@ -2992,7 +3075,7 @@ function getAllToolDefinitions(): ToolDefinition[] {
         const retiredNow = !wasRetired && meta.status === 'retired'
 
         // validateMetaEngram mutates domain_coverage + confidence in-place — persist changes
-        await plur.updateEngram(meta)
+        await plur.updateEngram(meta, { actor: 'agent' })
 
         return {
           ...(retiredNow ? {
@@ -4400,7 +4483,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
         const projectDomain = readTrustedProjectConfig(plur).domain ?? undefined
 
         let engrams_created = 0
-        const engram_results: Array<{ index: number; id: string; scope: string; delivery: string; destination: string }> = []
+        const engram_results: Array<{ index: number; id: string; scope: string; delivery: string; destination: string; decision?: 'REINFORCE' }> = []
         const engrams_failed: Array<{ index: number; statement: string; error: string }> = []
         const unsaved: Array<{ index: number; statement: string } & RootsDisagreeError['refusal']> = []
         for (let i = 0; i < items.length; i++) {
@@ -4427,9 +4510,11 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
               // An end-of-session summary is the model's reading of what
               // happened, not something the user stated outright.
               claim_class: 'inferred',
+              // Same write-time reinforcement as plur_learn (overhaul D8).
+              reinforce_exact_default: MCP_REINFORCE_EXACT_DEFAULT,
             })
             const delivered = plur.deliveryOf(saved)
-            engram_results.push({ index: i, id: delivered.delivery === "outbox" ? saved.id : plur.readIdFor(saved), scope: saved.scope, delivery: delivered.delivery, destination: delivered.destination })
+            engram_results.push({ index: i, id: delivered.delivery === "outbox" ? saved.id : plur.readIdFor(saved), scope: saved.scope, delivery: delivered.delivery, destination: delivered.destination, ...(plur.reinforcementOf(saved) ? { decision: 'REINFORCE' as const } : {}) })
             engrams_created++
           } catch (err) {
             if (err instanceof RootsDisagreeError) { unsaved.push({ index: i, statement, ...err.refusal }); continue }
@@ -4610,7 +4695,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
 
     {
       name: 'plur_stores_add',
-      description: 'Register an additional engram store. Either filesystem (path) or remote (url+token, e.g. PLUR Enterprise). One remote URL can host multiple scopes — call once per team scope you are authorized for; each registers independently. Returns status: "added" or "already_registered".',
+      description: 'Register an additional engram store. Either filesystem (path) or remote (url+token, e.g. PLUR Enterprise). One remote URL can host multiple scopes — call once per team scope you are authorized for; each registers independently. Returns status: "added" or "already_registered". Under pinning.agents request or deny, registering a new store is reserved for the owner (error pin_denied; the owner runs `plur stores add`).',
       annotations: { title: 'Add store', destructiveHint: false, idempotentHint: true },
       inputSchema: {
         type: 'object',
@@ -4648,6 +4733,9 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
             ? await plur.addRemoteStore({ url, token: token!, scope: requestedScope, shared: args.shared as boolean | undefined, readonly: args.readonly as boolean | undefined })
             : plur.addStore(path ?? '', requestedScope, { shared: args.shared as boolean | undefined, readonly: args.readonly as boolean | undefined })
         } catch (err) {
+          // Under pinning.agents request/deny, registering a NEW store is an
+          // owner action: a store's pinned rows load into every session.
+          if (err instanceof PinDeniedError) return pinDeniedReply(err)
           return { success: false, error: (err as Error).message }
         }
         // A local store is identified by its PATH, so registering a NEW
@@ -4763,7 +4851,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
 
     {
       name: 'plur_scopes_discover',
-      description: 'Discover which scopes your remote token is authorized for via the enterprise server (GET /api/v1/me), and which of those are not yet registered locally. Read-only by default; pass register:true to register all authorized-but-unregistered scopes in one step. Only shared-family scopes (group:/project:/space:/team:/org:/public) are auto-registered — personal-family scopes (global/local/user:*/agent:*) advertised by /me are skipped and surfaced in the result, and scopes the user has dismissed are respected (NOT registered by the batch path; register one individually via the CLI `plur scopes register <scope>` to override, which also clears the dismissal). Use this when you have access to multiple team scopes on one server.',
+      description: 'Discover which scopes your remote token is authorized for via the enterprise server (GET /api/v1/me), and which of those are not yet registered locally. Read-only by default; pass register:true to register all authorized-but-unregistered scopes in one step. Only shared-family scopes (group:/project:/space:/team:/org:/public) are auto-registered — personal-family scopes (global/local/user:*/agent:*) advertised by /me are skipped and surfaced in the result, and scopes the user has dismissed are respected (NOT registered by the batch path; register one individually via the CLI `plur scopes register <scope>` to override, which also clears the dismissal). Under pinning.agents request or deny, register:true is reserved for the owner (error pin_denied). Use this when you have access to multiple team scopes on one server.',
       annotations: { title: 'Discover scopes', readOnlyHint: false, idempotentHint: true },
       inputSchema: {
         type: 'object',
@@ -4803,7 +4891,15 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
         if (!register) {
           return { discovered }
         }
-        const registered = await plur.registerDiscoveredScopes({ url })
+        // Each new scope is a new store: under pinning.agents request/deny
+        // core turns the agent away, and the reply is plur_stores_add's.
+        let registered: Awaited<ReturnType<typeof plur.registerDiscoveredScopes>>
+        try {
+          registered = await plur.registerDiscoveredScopes({ url })
+        } catch (err) {
+          if (err instanceof PinDeniedError) return { ...pinDeniedReply(err), discovered }
+          throw err
+        }
         return { discovered, registered }
       },
     },
@@ -4839,7 +4935,7 @@ Include at least one engram_suggestion if ANYTHING was learned. An empty suggest
           // updateEngram returns whether a row was actually written; without
           // checking it, a promotion would be reported for an engram that
           // vanished, changed concurrently, or lives in a read-only store.
-          const written = await plur.updateEngram(engram)
+          const written = await plur.updateEngram(engram, { actor: 'agent' })
           if (!written) {
             errors.push({ id, error: 'Not persisted — the engram may have been removed or its store is read-only' })
             continue

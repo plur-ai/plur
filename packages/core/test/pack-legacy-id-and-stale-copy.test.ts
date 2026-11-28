@@ -100,8 +100,11 @@ describe('a public pack id from the earlier id scheme still names its pack row',
     const target = await plur.getByIds(reloaded!.relations!.related)
     expect(target.map(e => e.statement)).toEqual(['Tag the release commit before publishing'])
 
-    // Spreading activation follows the relation to the pack row.
-    const r = await plur.inject('zebra deployment checklist')
+    // Spreading activation follows the relation to the pack row. Unified
+    // injection (the default since 0.24) has no spreading activation by
+    // design, so this is checked on the legacy selection, which keeps it
+    // (changed with the owner's approval, 2026-11-22).
+    const r = await plur.inject('zebra deployment checklist', { mode: 'legacy' })
     const rendered = [r.directives, r.constraints, r.consider].join('\n')
     expect(rendered).toContain('Zebra deployment checklist')
     expect(rendered).toContain('Tag the release commit before publishing')

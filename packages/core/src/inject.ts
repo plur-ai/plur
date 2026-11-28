@@ -1,4 +1,5 @@
 import type { Engram, Association } from './schemas/engram.js'
+import { feedbackFactor } from './feedback-order.js'
 import type { PackManifest } from './schemas/pack.js'
 import { parseNamespacedId, legacyPackEngramId, type LoadedPack } from './engrams.js'
 import { decayedStrength, decayedCoAccessStrength, daysSince, confidenceDecay } from './decay.js'
@@ -38,6 +39,12 @@ export interface InjectionContext {
    */
   maxTokens?: number
   minRelevance?: number   // Default: 0.3
+  /**
+   * The user's own task, when `prompt` also carries appended session context
+   * (stored task, branch, recent turns). Historical intent and the INJ-1
+   * check of which words the task names read this; retrieval reads `prompt`.
+   */
+  intentPrompt?: string
 }
 
 export type ScoredEngram = Engram & {
@@ -76,7 +83,7 @@ export interface InternalInjectionResult {
   omitted_pinned: OmittedPinned[]
 }
 
-const DEFAULT_MAX_TOKENS = 8000
+export const DEFAULT_MAX_TOKENS = 8000
 const DEFAULT_MIN_RELEVANCE = 0.3
 /**
  * Nearby-variant suppression (needs the meaning model): an unpinned candidate is
@@ -89,15 +96,50 @@ const NEIGHBOUR_SIMILARITY = 0.2
 const NEIGHBOUR_RELEVANCE_RATIO = 0.8
 /** How many kept candidates each later candidate is compared with (bounds the cost on large stores). */
 const NEIGHBOUR_ANCHORS = 50
-const MAX_PER_PACK = 5
-const MAX_PER_DOMAIN = 10
+export const MAX_PER_PACK = 5
+/**
+ * Meaning similarity (raw cosine) above which an engram with no keyword hit
+ * still counts as relevant: legacy's embedding-only floor (raised from 0.3 in
+ * 0.9.4, a typical BGE-small threshold), and the unified prohibition slice's.
+ */
+export const EMBEDDING_RELEVANCE_FLOOR = 0.5
+/**
+ * The pack a row counts against for the per-pack cap: the `_pack` stamp the
+ * pack loops and the corpus put on pack rows, else a stored `pack` field,
+ * else personal (finding 8: the caps read `pack` alone and never saw a stamp).
+ */
+export function packKeyOf(e: { pack?: string | null; _pack?: unknown }): string {
+  return (typeof e._pack === 'string' && e._pack) || e.pack || '__personal__'
+}
+export const MAX_PER_DOMAIN = 10
+/**
+ * Per-pack (not for personal rows) and per-top-level-domain counters behind
+ * MAX_PER_PACK and MAX_PER_DOMAIN, with `seed` already counted.
+ */
+export function diversityCaps(seed: Iterable<Engram> = []) {
+  const packs = new Map<string, number>()
+  const domains = new Map<string, number>()
+  const top = (e: Engram) => (e.domain ?? '__none__').split('.')[0]
+  const count = (e: Engram) => {
+    const pack = packKeyOf(e as never)
+    packs.set(pack, (packs.get(pack) ?? 0) + 1)
+    domains.set(top(e), (domains.get(top(e)) ?? 0) + 1)
+  }
+  const capped = (e: Engram): boolean => {
+    const pack = packKeyOf(e as never)
+    if (pack !== '__personal__' && (packs.get(pack) ?? 0) >= MAX_PER_PACK) return true
+    return (domains.get(top(e)) ?? 0) >= MAX_PER_DOMAIN
+  }
+  for (const e of seed) count(e)
+  return { count, capped }
+}
 // Default share of the injection budget that may be PINNED. Configurable as
 // `injection.pinned_ratio`. The same share is the pin-time quota
 // (`pinnedQuota()`) and the ceiling on pins at injection: pins are given
 // first, up to their share, so a large pinned set cannot crowd out the
 // memories that match the task, which get the rest of the budget. Every pin
 // that did not fit its share is named in `omitted_pinned`.
-const PINNED_TOKEN_BUDGET_RATIO = 0.5
+export const PINNED_TOKEN_BUDGET_RATIO = 0.5
 /**
  * Default share of the pinned budget the HARD tier may occupy (pinned
  * two-tier model). The hard tier is a sub-cap INSIDE the pinned share, not a
@@ -181,7 +223,7 @@ export interface ExpiryConfig {
   grace_days?: number
 }
 
-const DEFAULT_GRACE_DAYS = 30
+export const DEFAULT_GRACE_DAYS = 30
 
 /**
  * True when the engram must be skipped for temporal validity. Not-yet-valid
@@ -191,7 +233,7 @@ const DEFAULT_GRACE_DAYS = 30
  * Delegates to `validity.ts`, which compares instants rather than date
  * strings, so RFC 3339 timestamps are evaluated correctly.
  */
-function skipForValidity(
+export function skipForValidity(
   engram: Engram,
   nowMs: number,
   mode: 'hard' | 'soft',
@@ -211,7 +253,7 @@ function skipForValidity(
  * injected; enforced in core so no deployment has to reimplement it. Explicit
  * retrieval (`plur_recall`) is deliberately unaffected, so drafts can be reviewed.
  */
-function skipForApproval(engram: Engram): boolean {
+export function skipForApproval(engram: Engram): boolean {
   return (engram as { commitment?: string }).commitment === 'draft'
 }
 
@@ -234,7 +276,7 @@ function expiredMarker(engram: WireEngram): string {
 
 // --- Pack metadata helper ---
 
-function getPackMetadata(manifest: PackManifest) {
+export function getPackMetadata(manifest: PackManifest) {
   const meta = manifest['x-datacore'] || manifest.metadata
   return {
     injection_policy: meta?.injection_policy ?? 'on_match',
@@ -390,12 +432,12 @@ const HISTORICAL_KEYWORD_PATTERNS = HISTORICAL_KEYWORDS.map(
   kw => new RegExp(`\\b${kw.split(/\s+/).map(escapeRegExp).join('\\s+')}\\b`),
 )
 
-function hasHistoricalIntent(prompt: string): boolean {
+export function hasHistoricalIntent(prompt: string): boolean {
   const lower = prompt.toLowerCase()
   return HISTORICAL_KEYWORD_PATTERNS.some(re => re.test(lower))
 }
 
-function isSupersededEngram(engram: ScoredEngram): boolean {
+export function isSupersededEngram(engram: Pick<Engram, 'relations'>): boolean {
   return (engram.relations?.superseded_by?.length ?? 0) > 0
 }
 
@@ -407,7 +449,7 @@ function isSupersededEngram(engram: ScoredEngram): boolean {
  * - A supersede loop (self, or A → B → A) is not a replacement; members keep the re-rank.
  * - Only DIRECT superseded_by edges count (A → B → C with only C deliverable: A stays).
  */
-function isReplacedByDeliverable(
+export function isReplacedByDeliverable(
   engram: Engram,
   deliverableIds: ReadonlySet<string>,
   supersededBy: ReadonlyMap<string, readonly string[]>,
@@ -425,10 +467,25 @@ function isReplacedByDeliverable(
  * id count: a store or pack row must never hide another store's row.
  * Primary-to-primary supersession keeps using the reverse edge.
  */
-function isPrimaryRow(e: Engram): boolean {
+export function isPrimaryRow(e: Engram): boolean {
   const m = e as { _storeScope?: unknown; _fromRemoteStore?: unknown; _pack?: unknown }
   return m._storeScope === undefined && m._fromRemoteStore === undefined && m._pack === undefined
     && parseNamespacedId(e.id) === null
+}
+
+/** Forward edges from primary rows to other stores' rows (see isPrimaryRow): target id → primary ids. */
+export function primaryReplacements(personal: readonly Engram[]): Map<string, string[]> {
+  const out = new Map<string, string[]>()
+  for (const e of personal) {
+    if (!e.relations?.supersedes?.length || !isPrimaryRow(e)) continue
+    for (const t of e.relations.supersedes) {
+      if (parseNamespacedId(t) === null) continue
+      const list = out.get(t) ?? []
+      list.push(e.id)
+      out.set(t, list)
+    }
+  }
+  return out
 }
 
 /** Does following superseded_by edges from `start` reach `target`? A self-edge reaches at once. */
@@ -451,12 +508,12 @@ function leadsBackTo(
 
 // --- Strip pipeline ---
 
-function stripAssociations(engram: ScoredEngram): AgentEngram {
+export function stripAssociations(engram: ScoredEngram): AgentEngram {
   const { associations: _, ...rest } = engram
   return rest
 }
 
-function stripScoring(engram: AgentEngram): WireEngram {
+export function stripScoring(engram: AgentEngram): WireEngram {
   const { keyword_match: _, raw_score: _r, score: _s, ...rest } = engram
   return { ...rest, confidence_score: computeConfidence(engram) }
 }
@@ -564,12 +621,7 @@ export function scoreEngram(
   let score = termHits * rs
 
   // Feedback signal boost: positive feedback increases score, negative decreases
-  const feedback = engram.feedback_signals
-  if (feedback) {
-    const netFeedback = feedback.positive - feedback.negative
-    if (netFeedback > 0) score *= 1 + Math.min(netFeedback * 0.05, 0.3)
-    else if (netFeedback < 0) score *= Math.max(1 + netFeedback * 0.1, 0.5)
-  }
+  score *= feedbackFactor(engram)
 
   // Consolidated engrams get a slight boost (survived reconsolidation)
   if (engram.consolidated) score *= 1.1
@@ -671,14 +723,7 @@ export function fillTokenBudget(
 ): { selected: ScoredEngram[]; tokens_used: number; omitted_pinned: OmittedPinned[] } {
   const result: ScoredEngram[] = []
   const omittedPinned: OmittedPinned[] = []
-  const packCounts = new Map<string, number>()
-  const domainCounts = new Map<string, number>()
-  for (const e of seed) {
-    const pack = e.pack ?? '__personal__'
-    packCounts.set(pack, (packCounts.get(pack) ?? 0) + 1)
-    const topDomain = (e.domain ?? '__none__').split('.')[0]
-    domainCounts.set(topDomain, (domainCounts.get(topDomain) ?? 0) + 1)
-  }
+  const caps = diversityCaps(seed)
   let tokensUsed = 0
 
   // Two-pass selection: pinned engrams first, then the rest. Pins ignore
@@ -754,31 +799,54 @@ export function fillTokenBudget(
     tokensUsed += cost
     pinnedLedger.spent += cost
     if (hard) pinnedLedger.hardSpent += cost
-    const pack = engram.pack ?? '__personal__'
-    packCounts.set(pack, (packCounts.get(pack) ?? 0) + 1)
-    const topDomain = (engram.domain ?? '__none__').split('.')[0]
-    domainCounts.set(topDomain, (domainCounts.get(topDomain) ?? 0) + 1)
+    caps.count(engram)
   }
 
   for (const engram of unpinned) {
     const cost = estimateTokens(engram)
     if (tokensUsed + cost > maxTokens) continue
-
-    const pack = engram.pack ?? '__personal__'
-    const packCount = packCounts.get(pack) ?? 0
-    if (packCount >= MAX_PER_PACK && pack !== '__personal__') continue
-
-    const domain = engram.domain ?? '__none__'
-    const topDomain = domain.split('.')[0]
-    const domainCount = domainCounts.get(topDomain) ?? 0
-    if (domainCount >= MAX_PER_DOMAIN) continue
-
+    if (caps.capped(engram)) continue
     result.push(engram)
     tokensUsed += cost
-    packCounts.set(pack, packCount + 1)
-    domainCounts.set(topDomain, domainCount + 1)
+    caps.count(engram)
   }
   return { selected: result, tokens_used: tokensUsed, omitted_pinned: omittedPinned }
+}
+
+/**
+ * Route selected wire engrams into the rendered sections: polarity "dont" and
+ * cognitive level apply/analyze → constraints, remember/understand → consider
+ * (`demoted`), the rest → directives. Applies the commitment multiplier to
+ * the confidence score (SP1 Idea 6) on the way. One routine for both
+ * selection modes, so the sections mean the same thing in each; it mirrors
+ * `isConstraintCandidate`.
+ */
+export function splitWireSections(wireAll: WireEngram[]): { directives: WireEngram[]; constraints: WireEngram[]; demoted: WireEngram[] } {
+  // Auto-classify polarity, apply cognitive_level routing (SP1 Idea 5) and commitment scoring (SP1 Idea 6)
+  const directives: WireEngram[] = []
+  const constraints: WireEngram[] = []
+  const demoted: WireEngram[] = []
+  for (const wire of wireAll) {
+    const polarity = wire.polarity ?? classifyPolarity(wire.statement)
+    // Idea 6: Apply commitment multiplier to confidence score
+    const commitment = (wire as any).commitment as string | undefined
+    if (commitment) {
+      const mult: Record<string, number> = { locked: 1.0, decided: 0.9, leaning: 0.7, exploring: 0.5 }
+      wire.confidence_score *= mult[commitment] ?? 1.0
+    }
+    // Idea 5: Cognitive level bucket routing
+    const cogLevel = (wire as any).knowledge_type?.cognitive_level as string | undefined
+    if (cogLevel === 'remember' || cogLevel === 'understand') {
+      demoted.push(wire)
+    } else if (polarity === 'dont') {
+      constraints.push(wire)
+    } else if (cogLevel === 'apply' || cogLevel === 'analyze') {
+      constraints.push(wire)
+    } else {
+      directives.push(wire)
+    }
+  }
+  return { directives, constraints, demoted }
 }
 
 // --- Main injection function ---
@@ -787,9 +855,20 @@ export function selectAndSpread(
   ctx: InjectionContext,
   personalEngrams: Engram[],
   packs: LoadedPack[],
-  config?: { spread_cap?: number; spread_budget?: number; expiry?: ExpiryConfig; pinned_hard_ratio?: number; pinned_ratio?: number },
+  config?: {
+    spread_cap?: number; spread_budget?: number; expiry?: ExpiryConfig; pinned_hard_ratio?: number; pinned_ratio?: number
+    /**
+     * `false` leaves every pinned engram out of this injection — not offered,
+     * not reported as omitted — because the context already holds them (the
+     * Claude Code hook's skill, agent and plan-mode events, overhaul W2+4).
+     * Default true. A pin still counts as a deliverable replacement for the
+     * engram it supersedes.
+     */
+    include_pinned?: boolean
+  },
   embeddingBoosts?: Map<string, number>,
 ): InternalInjectionResult {
+  const includePinned = config?.include_pinned !== false
   const spreadCap = config?.spread_cap ?? 3
   const spreadBudget = config?.spread_budget ?? 480
 
@@ -821,17 +900,8 @@ export function selectAndSpread(
   // superseded_by edges of every engram the loops see, for loop detection.
   const supersededBy = new Map<string, readonly string[]>()
   // Forward edges from primary rows to other stores' rows (see isPrimaryRow).
-  const replacedFromPrimary = new Map<string, string[]>()
-  for (const e of personalEngrams) {
-    if (!e.relations?.supersedes?.length || !isPrimaryRow(e)) continue
-    for (const t of e.relations.supersedes) {
-      if (parseNamespacedId(t) === null) continue
-      const list = replacedFromPrimary.get(t) ?? []
-      list.push(e.id)
-      replacedFromPrimary.set(t, list)
-    }
-  }
-  const historical = hasHistoricalIntent(ctx.prompt)
+  const replacedFromPrimary = primaryReplacements(personalEngrams)
+  const historical = hasHistoricalIntent(ctx.intentPrompt ?? ctx.prompt)
 
   // Step 1-2: Score all active engrams
   const scored: ScoredEngram[] = []
@@ -851,6 +921,9 @@ export function selectAndSpread(
     if (!isInjectVisible(engram.scope, ctx.scope, ctx.grantedScopes)) { scopeExcludedIds.add(engram.id); continue }
     if (deliverable) deliverableIds.add(engram.id)
     if (!deliverable) continue
+    // Pins already in the context (include_pinned: false): not offered, and not
+    // reachable by spreading either.
+    if (!includePinned && (engram as { pinned?: boolean }).pinned === true) { scopeExcludedIds.add(engram.id); continue }
     engramMap.set(engram.id, engram)
     let raw = scoreEngram(engram, promptLower, promptWords, [], ctx.scope, false, ctx.grantedScopes)
     relevance.set(engram.id, raw + (embeddingBoosts?.get(engram.id) ?? 0))
@@ -859,7 +932,7 @@ export function selectAndSpread(
     // surface spurious matches between unrelated short English sentences.
     // Keyword+semantic matches still get the additive bonus regardless.
     const embBoost = embeddingBoosts?.get(engram.id) ?? 0
-    if (raw === 0 && embBoost > 0.5) {
+    if (raw === 0 && embBoost > EMBEDDING_RELEVANCE_FLOOR) {
       raw = embBoost * 2 // semantic-only signal, scaled to be comparable with keyword scores
     } else if (raw > 0 && embBoost > 0) {
       raw += embBoost // additive boost for keyword+semantic match
@@ -892,11 +965,12 @@ export function selectAndSpread(
       if (!isInjectVisible(engram.scope, ctx.scope, ctx.grantedScopes)) { scopeExcludedIds.add(engram.id); continue }
       if (deliverable) deliverableIds.add(engram.id)
       if (!deliverable) continue
+      if (!includePinned && (engram as { pinned?: boolean }).pinned === true) { scopeExcludedIds.add(engram.id); continue }
       engramMap.set(engram.id, engram)
       let raw = scoreEngram(engram, promptLower, promptWords, matchTerms, ctx.scope, true, ctx.grantedScopes)
       relevance.set(engram.id, raw + (embeddingBoosts?.get(engram.id) ?? 0))
       const embBoost = embeddingBoosts?.get(engram.id) ?? 0
-      if (raw === 0 && embBoost > 0.5) {
+      if (raw === 0 && embBoost > EMBEDDING_RELEVANCE_FLOOR) {
         raw = embBoost * 2
       } else if (raw > 0 && embBoost > 0) {
         raw += embBoost
@@ -1072,13 +1146,13 @@ export function selectAndSpread(
   // Respect pack diversity: exclude packs already at their cap in directives
   const directivePackCounts = new Map<string, number>()
   for (const e of directives) {
-    const pack = e.pack ?? '__personal__'
+    const pack = packKeyOf(e as never)
     directivePackCounts.set(pack, (directivePackCounts.get(pack) ?? 0) + 1)
   }
   const dip19Remainder = filtered.filter(e => {
     if (directiveIds.has(e.id)) return false
     if (omittedPinIds.has(e.id)) return false
-    const pack = e.pack ?? '__personal__'
+    const pack = packKeyOf(e as never)
     if (pack !== '__personal__' && (directivePackCounts.get(pack) ?? 0) >= MAX_PER_PACK) return false
     return true
   })
@@ -1182,30 +1256,7 @@ export function selectAndSpread(
   const wireAll = agentDirectives.map(stripScoring)
   const wireConsider = agentConsider.map(stripScoring)
 
-  // Auto-classify polarity, apply cognitive_level routing and commitment scoring
-  const wireDirectives: WireEngram[] = []
-  const wireConstraints: WireEngram[] = []
-  const cognitiveDemoted: WireEngram[] = []
-  for (const wire of wireAll) {
-    const polarity = wire.polarity ?? classifyPolarity(wire.statement)
-    // Apply commitment multiplier to confidence score
-    const commitment = (wire as any).commitment as string | undefined
-    if (commitment) {
-      const mult: Record<string, number> = { locked: 1.0, decided: 0.9, leaning: 0.7, exploring: 0.5 }
-      wire.confidence_score *= mult[commitment] ?? 1.0
-    }
-    // Cognitive level bucket routing
-    const cogLevel = (wire as any).knowledge_type?.cognitive_level as string | undefined
-    if (cogLevel === 'remember' || cogLevel === 'understand') {
-      cognitiveDemoted.push(wire)
-    } else if (polarity === 'dont') {
-      wireConstraints.push(wire)
-    } else if (cogLevel === 'apply' || cogLevel === 'analyze') {
-      wireConstraints.push(wire)
-    } else {
-      wireDirectives.push(wire)
-    }
-  }
+  const { directives: wireDirectives, constraints: wireConstraints, demoted: cognitiveDemoted } = splitWireSections(wireAll)
 
   const allWireConsider = [...wireConsider, ...cognitiveDemoted]
   const considerTokens = dip19PoolTokens + spreadTokens
@@ -1372,21 +1423,4 @@ export function formatWithLayer(engrams: WireEngram[], layer: InjectionLayer): s
     case 2: return engrams.map(formatLayer2).join('\n')
     case 3: return engrams.map(formatLayer3).join('\n')
   }
-}
-
-// --- Public wrapper functions for Plur class ---
-
-export interface PublicScoredEngram { engram: Engram; score: number }
-
-export function scoreEngramsPublic(
-  engrams: Engram[],
-  task: string,
-  options?: { scope?: string; grantedScopes?: readonly string[] },
-): PublicScoredEngram[] {
-  const promptLower = task.toLowerCase()
-  const promptWords = new Set(promptLower.split(/\W+/).filter(w => w.length > 2))
-  return engrams.map(e => ({
-    engram: e,
-    score: scoreEngram(e, promptLower, promptWords, [], options?.scope, false, options?.grantedScopes),
-  })).sort((a, b) => b.score - a.score)
 }

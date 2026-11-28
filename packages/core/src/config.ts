@@ -19,11 +19,21 @@ import { isServerStoreEntry, expandServerEntry, serverEntryIdentities, EXPANDED_
 export function loadConfig(configPath: string): PlurConfig {
   if (!existsSync(configPath)) return PlurConfigSchema.parse({})
   let raw: Record<string, unknown>
+  let text = ''
   try {
-    raw = (yaml.load(readFileSync(configPath, 'utf8')) as Record<string, unknown>) ?? {}
+    text = readFileSync(configPath, 'utf8')
+  } catch (err) {
+    // A file that exists but cannot be read (permissions, an I/O error) may
+    // hold the owner's pin restriction: the policy is `request`, as for YAML
+    // whose pinning block cannot be read back.
+    logger.warning(`[plur:config] cannot read ${configPath}: ${(err as NodeJS.ErrnoException).code ?? (err as Error).message} — falling back to defaults, pinning.agents request`)
+    return fallbackConfig(FAIL_SAFE_PINNING)
+  }
+  try {
+    raw = (yaml.load(text) as Record<string, unknown>) ?? {}
   } catch (err) {
     logger.warning(`[plur:config] cannot parse YAML at ${configPath}: ${(err as Error).message} — falling back to defaults`)
-    return PlurConfigSchema.parse({})
+    return fallbackConfig(pinningFromBrokenYaml(text))
   }
   // Validate each store entry independently before the top-level parse so
   // a single bad entry can't take the whole file down.
@@ -67,7 +77,7 @@ export function loadConfig(configPath: string): PlurConfig {
     parsed = PlurConfigSchema.parse(raw)
   } catch (err) {
     logger.warning(`[plur:config] top-level config invalid at ${configPath}: ${(err as Error).message} — falling back to defaults`)
-    return PlurConfigSchema.parse({})
+    return fallbackConfig(readablePinning(raw))
   }
   // ScopeSensitivitySchema.forbid preprocesses unknown categories away
   // (non-fatal), but the field-level preprocess can't name the SCOPE it
@@ -85,6 +95,47 @@ export function loadConfig(configPath: string): PlurConfig {
     }
   }
   return resolveStoreTokens(parsed)
+}
+
+/**
+ * Defaults for a config.yaml that cannot be fully read, keeping the owner's
+ * pin policy (0.24 audit, finding 5): an error elsewhere in the file must
+ * never relax `pinning.agents` to the `allow` default.
+ */
+function fallbackConfig(pinning: PlurConfig['pinning'] | undefined): PlurConfig {
+  const base = PlurConfigSchema.parse({})
+  return pinning ? { ...base, pinning } : base
+}
+
+const FAIL_SAFE_PINNING = { agents: 'request' } as PlurConfig['pinning']
+
+/**
+ * The owner's `pinning` section from a parsed file whose other keys may be
+ * invalid: parsed alone (an invalid `agents` value already fails safe to
+ * `request`); a section that cannot be read at all is `request`; no section
+ * is undefined (the `allow` default stands).
+ */
+function readablePinning(raw: unknown): PlurConfig['pinning'] | undefined {
+  if (!raw || typeof raw !== 'object' || !('pinning' in raw)) return undefined
+  const parsed = PlurConfigSchema.safeParse({ pinning: (raw as { pinning: unknown }).pinning })
+  return parsed.success ? parsed.data.pinning : FAIL_SAFE_PINNING
+}
+
+/**
+ * The owner's `pinning` section from YAML that does not parse as a whole:
+ * the top-level `pinning:` block (the key line and its indented lines) is
+ * parsed on its own. A file that never mentions pinning keeps the default;
+ * one that mentions it in a form that cannot be read back is `request`.
+ */
+function pinningFromBrokenYaml(text: string): PlurConfig['pinning'] | undefined {
+  if (!/\bpinning\b/.test(text)) return undefined
+  const blocks = [...text.matchAll(/^pinning[ \t]*:.*(?:\r?\n(?:[ \t]+.*|[ \t]*))*/gm)]
+  if (blocks.length !== 1) return FAIL_SAFE_PINNING
+  try {
+    return readablePinning(yaml.load(blocks[0]![0])) ?? FAIL_SAFE_PINNING
+  } catch {
+    return FAIL_SAFE_PINNING
+  }
 }
 
 /**

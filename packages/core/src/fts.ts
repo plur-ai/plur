@@ -30,6 +30,36 @@ export const MIN_TOKEN_LENGTH = 2
  */
 export const TOKENIZER_VERSION = 4
 
+/**
+ * Version of what {@link engramSearchText} composes from an engram (overhaul
+ * D9). Bump on ANY change to which fields feed the search text, or in what
+ * form: the stored tokens (Postgres) and the embedded text were derived from
+ * the old composition and stop agreeing with the new one.
+ *
+ * History:
+ *   1 — statement, domain, tags, entities, temporal, rationale, source,
+ *       dual-coding cues, knowledge-anchor snippets.
+ *   2 — 2026-11-10 (W10). Adds `structured_data.body`, the structured form a
+ *       capture writes (when to apply, what to do, why, pitfalls, anchors).
+ */
+export const SEARCH_TEXT_VERSION = 2
+
+/**
+ * The stamp a store records beside text derived for search (`tokens_version`
+ * in Postgres). It moves when the tokenizer OR the search-text composition
+ * changes, so a row derived under either older contract reads as stale and is
+ * re-derived lazily, in the background, by the existing backfill — never on a
+ * hook's critical path. Embedding caches need no stamp: every one of them keys
+ * a vector on the hash of the exact text embedded (`embeddingContentHash`,
+ * the file cache's per-entry hash), so a changed text re-embeds only the rows
+ * whose text changed, once.
+ *
+ * Encoded so the tokenizer part stays readable: v4 tokenizer + search text v2
+ * = 4002. Never equal to a bare tokenizer version, which is what rows written
+ * before this stamp existed carry.
+ */
+export const SEARCH_INDEX_VERSION = TOKENIZER_VERSION * 1000 + SEARCH_TEXT_VERSION
+
 /** Tokenize text into searchable terms */
 /**
  * Scripts written without spaces between words, indexed as character BIGRAMS
@@ -126,6 +156,8 @@ export interface SearchTextFields {
   source?: string | null
   dual_coding?: Engram['dual_coding']
   knowledge_anchors?: Engram['knowledge_anchors']
+  /** Only `body` is read (W10). */
+  structured_data?: { body?: unknown } | Record<string, unknown> | null
 }
 
 /**
@@ -141,7 +173,45 @@ export function searchTextFrom(fields: SearchTextFields): string {
     domain: fields.domain ?? undefined,
     rationale: fields.rationale ?? undefined,
     source: fields.source ?? undefined,
+    structured_data: fields.structured_data ?? undefined,
   } as unknown as Engram)
+}
+
+/**
+ * Per-process token cache for engrams. Keyword search used to tokenise every
+ * engram three times per query (IDF, mean length, score) and again on every
+ * grow-loop pass; on a 14k-engram store that was ~4.5 s of a unified
+ * injection. Keyed on the engram object (garbage-collected with it) and
+ * checked against the current search text, so an edited engram is
+ * re-tokenised. Callers must not mutate the returned array.
+ */
+const engramTokenCache = new WeakMap<object, { text: string; tokens: string[]; set?: Set<string> }>()
+
+function tokenEntry(engram: Engram): { text: string; tokens: string[]; set?: Set<string> } {
+  const text = engramSearchText(engram)
+  const hit = engramTokenCache.get(engram)
+  if (hit && hit.text === text) return hit
+  const entry = { text, tokens: ftsTokenize(text) }
+  engramTokenCache.set(engram, entry)
+  return entry
+}
+
+/** `ftsTokenize(engramSearchText(e))`, cached per engram object (see above). */
+export function engramTokens(engram: Engram): string[] {
+  return tokenEntry(engram).tokens
+}
+
+/** The distinct tokens of {@link engramTokens}, cached with them. Callers must not mutate it. */
+export function engramTermSet(engram: Engram): Set<string> {
+  const entry = tokenEntry(engram)
+  return entry.set ??= new Set(entry.tokens)
+}
+
+/** True when a token set contains `qt` under {@link termMatches} — the df rule. */
+function termSetMatches(termSet: Set<string>, qt: string): boolean {
+  if (termSet.has(qt)) return true
+  for (const t of termSet) if (termMatches(t, qt)) return true
+  return false
 }
 
 /**
@@ -184,6 +254,13 @@ export function engramSearchText(engram: Engram): string {
       if (a.snippet) parts.push(a.snippet)
     }
   }
+  // Structured body (W10, search-text v2): the structured form a capture
+  // writes — when to apply, what to do, why, pitfalls, anchors. It is the
+  // situation text a future task will contain, which a one-line statement
+  // usually lacks (C3, 2026-11-09: +7 points top-10 recall). Strings only;
+  // the rest of `structured_data` is bookkeeping or labels, not prose.
+  const body = (engram.structured_data as { body?: unknown } | undefined)?.body
+  if (typeof body === 'string' && body.trim()) parts.push(body)
   return parts.join(' ')
 }
 
@@ -263,7 +340,7 @@ export function computeIdf(
     const idf = new Map<string, number>()
     for (const qt of queryTokens) {
       const df = stats.df.get(qt) ?? 0
-      idf.set(qt, Math.max(0, Math.log(stats.N / (1 + df))))
+      idf.set(qt, bm25Idf(stats.N, df))
     }
     return idf
   }
@@ -272,17 +349,15 @@ export function computeIdf(
   if (N === 0) return new Map()
 
   // Pre-tokenize all engrams
-  const engramTermSets = engrams.map(e => new Set(ftsTokenize(engramSearchText(e))))
+  const engramTermSets = engrams.map(e => engramTermSet(e))
 
   const idf = new Map<string, number>()
   for (const qt of queryTokens) {
     let df = 0
     for (const termSet of engramTermSets) {
-      if (termSet.has(qt) || Array.from(termSet).some(t => termMatches(t, qt))) {
-        df++
-      }
+      if (termSetMatches(termSet, qt)) df++
     }
-    idf.set(qt, Math.max(0, Math.log(N / (1 + df))))
+    idf.set(qt, bm25Idf(N, df))
   }
   return idf
 }
@@ -304,7 +379,7 @@ export function extendCorpusStats(
   const termSets: Array<Set<string>> = []
   let totalLen = 0
   for (const e of outsiders) {
-    const terms = ftsTokenize(engramSearchText(e))
+    const terms = engramTokens(e)
     totalLen += terms.length
     termSets.push(new Set(terms))
   }
@@ -312,7 +387,7 @@ export function extendCorpusStats(
   for (const qt of queryTokens) {
     let added = 0
     for (const set of termSets) {
-      if (set.has(qt) || Array.from(set).some(t => termMatches(t, qt))) added++
+      if (termSetMatches(set, qt)) added++
     }
     if (added > 0) df.set(qt, (df.get(qt) ?? 0) + added)
   }
@@ -342,7 +417,7 @@ export function ftsScore(engram: Engram, queryTokens: string[], idfWeights?: Map
 export function ftsScoreDetail(
   engram: Engram, queryTokens: string[], idfWeights?: Map<string, number>, avgDocLength?: number,
 ): { score: number; coverage: number } {
-  const allTerms = ftsTokenize(engramSearchText(engram))
+  const allTerms = engramTokens(engram)
   if (queryTokens.length === 0) return { score: 0, coverage: 0 }
 
   const docLen = allTerms.length
@@ -398,6 +473,16 @@ export function searchEngrams(
 }
 
 /** A BM25 hit with its score and query coverage (see {@link ftsScoreDetail}). */
+/**
+ * The always-positive BM25 idf, log(1 + (N − df + 0.5) / (df + 0.5)). A word
+ * found in most or all memories gets a small weight, never zero: with the
+ * earlier log(N / (1 + df)), a word in 3 of 4 memories scored nothing, so in a
+ * small store only memories with a rarer word were found at all.
+ */
+export function bm25Idf(N: number, df: number): number {
+  return Math.log(1 + (N - df + 0.5) / (df + 0.5))
+}
+
 export interface ScoredKeywordHit { engram: Engram; score: number; coverage: number }
 
 /** {@link searchEngrams}, keeping each hit's BM25 score and query coverage. Same order. */
@@ -423,7 +508,7 @@ export function searchEngramsScored(
   const avgDocLength = stats
     ? stats.avgDocLength
     : engrams.length > 0
-      ? engrams.reduce((sum, e) => sum + ftsTokenize(engramSearchText(e)).length, 0) / engrams.length
+      ? engrams.reduce((sum, e) => sum + engramTokens(e).length, 0) / engrams.length
       : 0
 
   let scored = engrams

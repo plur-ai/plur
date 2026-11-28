@@ -28,6 +28,17 @@ anchors:
   packages/core/src/index.ts#Plur._basePrimaryStore:
     kind: note
     why: Tells maintainers to reach primary engram state through the store rather than the raw file helpers.
+  packages/core/src/index.ts#Plur._clientRuntime:
+    kind: guarantee
+    rule: >-
+      The calling-client scope is entered only through the static Plur.withRuntime, never a prototype method, so
+      entering it does not capture the folder binding and a rebind inside the scope still decides where a write goes.
+    tests:
+      - packages/core/test/client-runtime-binding.test.ts::is not a method of a Plur instance
+      - packages/core/test/client-runtime-binding.test.ts::a personal write after a rebind to an ordinary folder stays local
+      - >-
+        packages/core/test/client-runtime-binding.test.ts::a write after a rebind to a remote-only folder goes to the
+        team store only
   packages/core/src/index.ts#Plur._heldBy:
     kind: note
     why: Explains why the holding server is tracked beside the row instead of on it.
@@ -918,6 +929,16 @@ anchors:
     rule: The notice for refused remote settings always names the directory and the command to trust it.
     tests:
       - packages/cli/test/formal-audit-1228c.test.ts::the remote-refusal notice keeps core
+  packages/core/src/project-remote.ts#registeredWhenRestricted:
+    kind: guarantee
+    rule: >-
+      Under pinning.agents request or deny, a trusted project's .plur.yaml server is used only when config.yaml already
+      lists that server, which only the owner can add; otherwise it is withheld and the adapter says so. A policy that
+      cannot be read, or a checker that cannot tell it, counts as restricted (part of #1947).
+    tests:
+      - packages/core/test/audit-024-r9-project-remote-gate.test.ts
+      - packages/cli/test/audit-024-r9-trust-remote.test.ts
+      - packages/cli/test/audit-024-r10-remote-status-withheld.test.ts
   packages/core/src/project-remote.ts#resolveProjectRemoteFromConfig:
     kind: guarantee
     rule: If the directory trust check fails, a project's remote settings are dropped.
@@ -938,6 +959,20 @@ anchors:
     rule: A provenance record never invents an agent; when the actor is unknown the relationship is left out.
     tests:
       - packages/core/test/provenance.test.ts::names nobody when the engram names nobody
+  packages/core/src/provenance.ts#a:
+    kind: guarantee
+    rule: >-
+      Core is never read as a calling client: a record whose runtime is plur-core (written before #1470) exports
+      plur-core as the tool, exactly as a current record with tool plur-core does. A record whose tool is already
+      plur-core is a current one, so a client that sends the name plur-core is exported as its own runtime agent.
+    tests:
+      - "packages/core/test/client-runtime-attribution.test.ts::exports an old `runtime: plur-core` exactly as a new `tool: plur-core`"
+      - >-
+        packages/core/test/client-runtime-attribution.test.ts::an old record with a tool and the core runtime exports
+        like a new one with that tool
+      - >-
+        packages/core/test/client-runtime-attribution.test.ts::a client named plur-core is exported as its own agent,
+        apart from the core tool
   packages/core/src/provenance.ts#ACTIVITY_OF:
     kind: note
     why: Describes which history events map to activities; the "never" refers to events the code does not emit.
@@ -1431,3 +1466,23 @@ anchors:
     tests:
       - packages/core/test/formal-remote-health-breaker.test.ts::an unwritable health file never breaks recall
       - packages/core/test/formal-remote-health-breaker.test.ts::health writes leave no temporary file behind
+  packages/core/src/inject.ts#packKeyOf:
+    kind: note
+    why: Explains a past defect ('never saw a stamp'); states no rule of its own.
+  packages/core/src/feedback-order.ts#applyFeedbackOrder:
+    kind: guarantee
+    rule: >-
+      Feedback is part of recall's ranking: a memory with net positive feedback moves ahead of an equal match with net
+      negative feedback, by at most a few places; with no feedback on any item, recall's order is unchanged.
+    tests:
+      - "packages/core/test/recall-feedback-order.test.ts::positive feedback ranks a memory ahead of an equal match with negative feedback"
+      - "packages/core/test/recall-feedback-order.test.ts::without feedback, recall keeps its own order"
+  packages/core/src/hybrid-search.ts#strength:
+    kind: guarantee
+    rule: >-
+      Equal fused scores are ordered by strength after fading (unused memories fade, locked and pack memories do not);
+      strength never moves a weaker match past a better one.
+    tests:
+      - "packages/core/test/recall-common-words-and-strength.test.ts::a memory unused for 14 days ranks between fresh ones at 0.55 and 0.45"
+      - "packages/core/test/recall-common-words-and-strength.test.ts::a locked memory does not fade; its unlocked twin does"
+      - "packages/core/test/recall-common-words-and-strength.test.ts::strength does not lift a weaker match past a clearly better one"

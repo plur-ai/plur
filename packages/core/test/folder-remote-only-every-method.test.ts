@@ -124,7 +124,7 @@ describe('every public Plur method in a remote-only folder', () => {
       close: null, // called last, below
       bindFolder: null, bindFolderPolicy: null, bindFolderUnresolved: null, // change the binding under test
       // Session memory manifest (#1657): ids and hashes only, history metadata only.
-      recordRecall: [{ session_id: 'ro-session', ids: [pid], query: 'dentist' }], sessionManifest: ['ro-session'], receiptsConfig: [],
+      recordRecall: [{ session_id: 'ro-session', ids: [pid], query: 'dentist' }], sessionManifest: ['ro-session'], receiptsConfig: [], injectionBudget: [],
       verifyManifest: [{ schema: 'plur/session-manifest/v1', session_id: 'ro-session', actor: 'unidentified', window: { from: null, to: null }, engrams: [{ id: pid, role: 'recalled', record_hash: '0'.repeat(64), content_hash: null }], created_at: '2026-10-27T00:00:00.000Z' }],
       backendSelection: [], provenanceFor: [pid], writeProvenance: [pid], identity: [], setIdentity: ['someone'],
       getScopeMetadata: [TEAM], listScopeMetadata: [], previewAutoRoute: [{ statement: 'x' }], suggestScope: [{ statement: 'x' }],
@@ -170,8 +170,25 @@ describe('every public Plur method in a remote-only folder', () => {
       reofferScopes: [], getDismissedScopes: [], persistScopeMetadata: [[]], setSessionScope: [null], adjustSessionScope: [null],
       getSessionScope: [], clearSessionScope: [], trackedSessionScopes: [],
       // Added on development after #1521 (merge of #1521 onto development):
-      recallWithMeta: ['dentist PERSONALZEBRA'], outboxClaimsProblem: [], skippedProjectStores: [work],
+      recallWithMeta: ['dentist PERSONALZEBRA'], outboxClaimsProblem: [], skippedProjectStores: [work], pendingProjectStores: [work],
       refreshServerScopes: [], notNowFolder: [join(base, 'elsewhere'), { nonce: 'not-a-nonce' }],
+      // Shared change journal (overhaul W0): beginChange only builds a handle; the rest touch the personal store.
+      beginChange: ['test.kind'], undoChange: ['CHG-none'], listChanges: [], getChange: ['CHG-none'], redactChangeJournal: [[pid]],
+      // Retrieval and injection overhaul (W1/W5): reads config only.
+      injectionSettings: [],
+      // Store consolidation (overhaul W6): planning and health read the personal store; apply writes it.
+      consolidatePlan: [{}], consolidateApply: [{ kind: 'plur.consolidate.plan', version: 1, plan_id: 'CPL-none', clusters: [] }],
+      storeHealth: [], reinforcementOf: [{}],
+      // Rescope plans (W7) and enrichment (W10) read and rewrite personal rows.
+      planRescope: [], applyRescopePlan: [{ version: 1, kind: 'plur.rescope-plan', created_at: '2026-11-10', considered: 0, items: [], unmapped: { count: 0, ids: [] } }],
+      planEnrichment: [{ llm: async () => '[]', model: 'm' }],
+      applyEnrichmentPlan: [{ version: 1, kind: 'plur.enrich-plan', created_at: '2026-11-10', enricher: { model: 'm', version: 'v' }, items: [], skipped: { already_enriched: 0, unlabelled: 0 } }],
+      // Agent pinning and the pinned set (overhaul D2, D3, W3): requests and the
+      // fit report read what the folder may see; approve/reject/audit/apply act
+      // on the personal store and are refused.
+      setDefaultActor: [undefined], pinPolicyFor: [], pendingPinRequests: [], pinFitReport: [],
+      setPinPriority: [pid, 60], approvePinRequest: [pid], rejectPinRequest: [pid], auditPins: [llm],
+      applyPinAudit: [{ kind: 'plur.pins.audit', version: 1, created_at: '2026-11-10T00:00:00.000Z', items: [], unanswered: [] }],
     }
     const names = Object.getOwnPropertyNames(Plur.prototype).filter(n => n !== 'constructor' && !n.startsWith('_'))
     const getters = names.filter(n => Object.getOwnPropertyDescriptor(Plur.prototype, n)!.get)
@@ -201,6 +218,14 @@ describe('every public Plur method in a remote-only folder', () => {
       'writeProvenance',
       // It runs the embedder and reranker models over the corpus (Codex round 5 on #1663).
       'rerankerSelfEval',
+      // The change journal holds personal rows in full (overhaul W0).
+      'undoChange', 'listChanges', 'getChange', 'redactChangeJournal',
+      // Consolidation reads and rewrites personal rows in full (overhaul W6).
+      'consolidatePlan', 'consolidateApply', 'storeHealth',
+      // Rescope plans and enrichment read personal rows (W7, W10); enrichment sends them to a model.
+      'planRescope', 'applyRescopePlan', 'planEnrichment', 'applyEnrichmentPlan',
+      // Pin requests, the pin audit and its apply act on the personal store (overhaul D2, W3).
+      'approvePinRequest', 'rejectPinRequest', 'auditPins', 'applyPinAudit',
     ])
     const unexpected: string[] = []
     const leaks: string[] = []

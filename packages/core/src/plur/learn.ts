@@ -31,6 +31,8 @@ import type {
 import { buildAttribution, buildProvenanceBlock, DEFAULT_REMOTE_WRITE_TIMEOUT_MS, relatedIds, TYPE_TO_COGNITIVE, TYPE_TO_MEMORY_CLASS } from './helpers.js'
 import { type LearnDelivery, type LearnRoutedOptions, type OutboxReasonCode, type SecondarySupersede } from './types.js'
 
+import { KIND_TO_MEMORY_CLASS, validateLearnStructuredData } from '../enrich.js'
+import { buildPinRequest } from '../pin-policy.js'
 export interface LearnMethods {
   learn(statement: string, context?: LearnContext): Promise<Engram>
 
@@ -118,6 +120,7 @@ export interface LearnMethods {
 export const learnMethods: LearnMethods & ThisType<Plur> = {
   async learn(statement: string, context?: LearnContext): Promise<Engram> {
     this._assertWritable()
+    context = this._withRuntimeAttribution(context)
     statement = this._validateLearnInput('learn', statement, context)
     const guarded = await this._guardSensitiveScope(statement, context)
     this._refuseScopeConflict(guarded.scope)
@@ -158,7 +161,7 @@ export const learnMethods: LearnMethods & ThisType<Plur> = {
       // this is the branch a Postgres/PGLite install takes.
       const { primaryHashMatch, hashMatch, foreign: sameScopeForeign } =
         await this._learnHashMatch(statement, scope, canDelegate, allEngrams)
-      if (hashMatch) {
+      if (hashMatch && !this._incomingCarriesNewContent(hashMatch, context)) {
         // `hashMatch` is a row the writer can persist (primary, a
         // writable secondary store, or the writable remote of this very
         // scope); a pack / readonly / other-remote match never gets here.
@@ -527,6 +530,7 @@ export const learnMethods: LearnMethods & ThisType<Plur> = {
         source: context?.source,
         dual_coding: context?.dual_coding as never,
         knowledge_anchors: context?.knowledge_anchors as never,
+        structured_data: context?.structured_data,
       })
       const { embeddingSearchWithScores } = await import('../embeddings.js')
       // Dynamic, matching how learn-async is loaded elsewhere in this class —
@@ -566,6 +570,19 @@ export const learnMethods: LearnMethods & ThisType<Plur> = {
           })
         } catch { /* observation only */ }
       }
+      // Overhaul D8: a near-paraphrase of the engram just written (same
+      // scope, cosine >= 0.92) is not merged at write time; it is queued for
+      // the next consolidation plan. Only after a write (`excludeId` names it).
+      if (excludeId && this._reinforceExactEnabled(context)) {
+        try {
+          const own = context?.scope ?? (await this.getById(excludeId))?.scope
+          if (own) {
+            this._queueParaphrases(excludeId, own, scored
+              .filter(s => s.engram.scope === own)
+              .map(s => ({ id: s.engram.id, score: s.score, scope: s.engram.scope })))
+          }
+        } catch { /* queueing is best effort */ }
+      }
       return { mode: 'cosine', near_duplicates: ranked.slice(0, 3) }
     } catch (err) {
       logger.warning(`near-duplicate reporting unavailable: ${err}`)
@@ -583,6 +600,7 @@ export const learnMethods: LearnMethods & ThisType<Plur> = {
       throw new TypeError('plur.learnRouted: remoteTimeoutMs must be a positive number of milliseconds')
     }
     this._assertWritable()
+    context = this._withRuntimeAttribution(context)
     statement = this._validateLearnInput('learnRouted', statement, context)
     const guarded = await this._guardSensitiveScope(statement, context)
     const scope = guarded.scope
@@ -637,7 +655,7 @@ export const learnMethods: LearnMethods & ThisType<Plur> = {
     const { hit: hashMatch, foreign: unpersistableHit } = await this._firstPersistableHit(
       allEngrams, this._hashDedupPredicate(statement, scope), scope,
     )
-    if (hashMatch) {
+    if (hashMatch && !this._incomingCarriesNewContent(hashMatch, context)) {
       // Mutate + persist if local; otherwise return mutated (best-effort)
       return await this._withStoreLock(this.paths.engrams, async () => {
         const engrams = await this._primaryStore.load()
@@ -939,8 +957,17 @@ export const learnMethods: LearnMethods & ThisType<Plur> = {
   _buildEngramShape(statement: string, scope: string, context: LearnContext | undefined, now: string, validity: ResolvedValidity = resolveValidity(statement, context), ancestorsOf: (id: string) => string[] = () => [], scopeSource: ScopeSource = context?.scope != null ? 'explicit' : 'default'): Engram {
     const type = context?.type ?? 'behavioral'
     const cogLevel = TYPE_TO_COGNITIVE[type] ?? 'remember'
-    const memoryClass = context?.memory_class ?? TYPE_TO_MEMORY_CLASS[type] ?? 'semantic'
+    // W10: a caller-supplied structured body / kind / outcome. A stated kind
+    // decides memory_class when the caller gave none (experience and failure
+    // lessons are episodic, rules and tool pointers procedural).
+    const structured = validateLearnStructuredData(context?.structured_data)
+    const memoryClass = context?.memory_class
+      ?? (structured?.kind ? KIND_TO_MEMORY_CLASS[structured.kind] : undefined)
+      ?? TYPE_TO_MEMORY_CLASS[type] ?? 'semantic'
     const commitment = context?.commitment ?? 'leaning'
+    // Agent pinning (overhaul D2): `request` stores the row unpinned with a
+    // pin request; `deny` was refused in _validateLearnInput.
+    const pinRequested = context?.pinned === true && this._pinDecisionFor(context.actor) === 'request'
     const shape: Engram = {
       // Placeholder id — learn() overwrites it with the id it minted and
       // learnRouted with the server's assigned id before anything observes it.
@@ -982,7 +1009,10 @@ export const learnMethods: LearnMethods & ThisType<Plur> = {
       // Who is answerable and what kind of claim this is.
       // Both absent when the caller supplied nothing: a missing agent is
       // honest, a guessed one is not.
-      attribution: buildAttribution(context, this._configuredIdentity()),
+      // The request's calling client (#1470) applies here as well as at the
+      // entry of learn()/learnRouted(), so every engram built during a request
+      // records it — a promoted team copy included.
+      attribution: buildAttribution(this._withRuntimeAttribution(context), this._configuredIdentity()),
       claim_class: context?.claim_class,
       provenance: buildProvenanceBlock(context, ancestorsOf),
       dual_coding: context?.dual_coding,
@@ -1012,9 +1042,9 @@ export const learnMethods: LearnMethods & ThisType<Plur> = {
         broader: [], narrower: [], related: relatedIds(context?.related), conflicts: [],
         supersedes: [...(context?.supersedes ?? [])], superseded_by: [],
       } : undefined,
-      pinned: context?.pinned === true ? true : undefined,
-      pinned_tier: context?.pin_tier,
-      pinned_priority: context?.pinned_priority,
+      pinned: context?.pinned === true && !pinRequested ? true : undefined,
+      pinned_tier: pinRequested ? undefined : context?.pin_tier,
+      pinned_priority: pinRequested ? undefined : context?.pinned_priority,
       // Measurement context — present only when the caller supplies it.
       measured_under: this._validatedMeasuredUnder(context),
     }
@@ -1030,10 +1060,17 @@ export const learnMethods: LearnMethods & ThisType<Plur> = {
     // as much an answer as "the router guessed it", and a field present on only
     // some writes cannot be read as an answer on the rest.
     ;(shape as any).structured_data = {
+      ...(structured ?? {}),
       ...(validity.extracted
         ? { _expiry_extracted: { valid_until: validity.extracted.valid_until, phrase: validity.extracted.phrase } }
         : {}),
       _scopeSource: scopeSource,
+      // Agent pinning (overhaul D2): stored unpinned, the request kept for the owner.
+      ...(pinRequested ? {
+        pin_request: buildPinRequest(context?.actor ?? this._defaultActor, 'learn', {
+          tier: context?.pin_tier, priority: context?.pinned_priority,
+        }),
+      } : {}),
     }
     return shape
   },
@@ -1045,7 +1082,8 @@ export const learnMethods: LearnMethods & ThisType<Plur> = {
     // remote-only: no LLM UPDATE/MERGE decisions and no
     // similarity pass. Those rewrite rows by id and record statements in the
     // local history; here every item is a hash-checked ADD sent to the team.
-    return { ...deps, isLlmAvailable: () => false, similarityScores: undefined }
+    // No write-time reinforcement there either: matches are team rows.
+    return { ...deps, isLlmAvailable: () => false, similarityScores: undefined, reinforce: undefined, queueParaphrases: undefined }
   },
 
   async _learnAsyncDepsAll(): Promise<LearnAsyncDeps> {
@@ -1108,6 +1146,21 @@ export const learnMethods: LearnMethods & ThisType<Plur> = {
       holdAsDraft: async (id: string) => {
         const e = await this.getById(id)
         if (e && e.commitment !== 'draft') await this.updateEngram({ ...e, commitment: 'draft' })
+      },
+      // Overhaul D8: an exact restatement goes through the routed write, whose
+      // duplicate path reinforces (the same code learn() and plur_learn use).
+      reinforce: async (hit: Engram, statement: string, context?: LearnContext) => {
+        if (!this._reinforceExactEnabled(context)) return null
+        if (!this._reinforceEligible(hit, context?.scope ?? hit.scope)) return null
+        const engram = await this.learnRouted(statement, context)
+        const decision: 'REINFORCE' | 'NOOP' | 'ADD' = this.reinforcementOf(engram)
+          ? 'REINFORCE'
+          : (engram.write_count ?? 1) > 1 ? 'NOOP' : 'ADD'
+        return { engram, decision }
+      },
+      queueParaphrases: (engram: Engram, neighbours: Array<{ id: string; score: number; scope?: string }>, context?: LearnContext) => {
+        if (!this._reinforceExactEnabled(context)) return
+        this._queueParaphrases(engram.id, engram.scope, neighbours)
       },
     }
   },

@@ -76,14 +76,18 @@ describe('computeIdf', () => {
     expect(idf.get('deploy')!).toBeGreaterThan(idf.get('always')!)
   })
 
-  it('clamps IDF to zero for universal terms (no negative weights)', () => {
+  // Changed 2026-11-22 with the owner's approval (recall keeps common words in
+  // the keyword score): a universal term now gets a small positive weight,
+  // still never a negative one.
+  it('gives a universal term a small positive IDF (no negative weights)', () => {
     const engrams = [
       makeEngram({ id: 'ENG-2026-0330-001', statement: 'always deploy carefully' }),
       makeEngram({ id: 'ENG-2026-0330-002', statement: 'always test carefully' }),
     ]
     const tokens = ftsTokenize('always')
     const idf = computeIdf(engrams, tokens)
-    expect(idf.get('always')).toBe(0)
+    expect(idf.get('always')).toBeGreaterThan(0)
+    expect(idf.get('always')).toBeLessThan(computeIdf(engrams, ftsTokenize('deploy')).get('deploy')!)
   })
 
   it('returns empty map for empty engram list', () => {

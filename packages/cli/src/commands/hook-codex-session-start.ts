@@ -1,7 +1,7 @@
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { hookFolderPolicy, payloadDir, sessionSettings, clearFolderAsk, isResumeStart, bindHookFolder, remoteOnlyLines } from '../lib/folder-gate.js'
 import { readStdinJson, runCodexHook, codexSessionId, markSessionStarted, emitContext, injectWithFallback } from '../lib/codex-hook-io.js'
-import { resolveProjectRemote, projectRemoteRefusalNotice } from '../lib/project-remote.js'
+import { resolveProjectRemote, projectRemoteRefusalNotice, projectRemoteWithheldNotice } from '../lib/project-remote.js'
 import { recordInjected } from '../lib/auto-rate.js'
 import { recordHookRun } from '../lib/hook-runs.js'
 import { cachedServerLines } from '../lib/server-session.js'
@@ -47,8 +47,12 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
       // untrusted project cannot redirect memory to its own server.
       const projectRemote = resolveProjectRemote(plur, dir)
       const projectConfig = sessionSettings(policy, projectRemote.config)
+      // Pins once per context (overhaul R7) applies to Claude Code's skill,
+      // agent and plan-mode events. Codex has no such event and no signal for
+      // a compacted context, so every injection offers the pins (fail open).
       const injectOpts = {
         budget: 3000,
+        include_pinned: true,
         ...(projectConfig.scope ? { scope: projectConfig.scope } : {}),
         ...(projectRemote.remoteProject ? { remote_project: projectRemote.remoteProject } : {}),
       }
@@ -66,7 +70,7 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
       // refused, say so here — this is the only model-visible surface.
       const refusal = projectRemote.refusedFrom
         ? `${projectRemoteRefusalNotice(projectRemote.refusedFrom, plur.storageRoot)}\n\n`
-        : ''
+        : projectRemote.withheldUrl ? `${projectRemoteWithheldNotice(projectRemote.withheldUrl)}\n\n` : ''
       // remote-only: where memory goes, and that the team server did not answer.
       const serverLines = input.source === 'compact' ? [] : await cachedServerLines(plur, dir, policy)
       const fullHeader = [header, ...serverLines, ...legacyLines, ...remoteOnlyLines(plur, result, true)].join('\n')

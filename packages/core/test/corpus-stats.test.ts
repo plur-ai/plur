@@ -209,12 +209,14 @@ describe('CorpusStats — BM25 under a narrowed candidate set (#711)', () => {
   })
 
   it('a token the store never reports is treated as maximally rare, not as an error', () => {
-    // df absent means "seen in no document". log(N/1) is the correct weight for
-    // that, and it must not throw or silently become NaN — a store may legally
-    // omit a token it found no rows for.
+    // df absent means "seen in no document": the largest weight the idf gives
+    // (with the always-positive BM25 idf since 2026-11-22, owner-approved:
+    // log(1 + (N + 0.5) / 0.5)), and it must not throw or silently become NaN
+    // — a store may legally omit a token it found no rows for.
     const tokens = ftsTokenize('kubernetes')
-    const idf = computeIdf([], tokens, { N: 40, df: new Map(), avgDocLength: 7 })
-    expect(idf.get('kubernetes')).toBeCloseTo(Math.log(40), 12)
+    const idf = computeIdf([], tokens, { N: 40, df: new Map([['other', 1]]), avgDocLength: 7 })
+    expect(idf.get('kubernetes')).toBeCloseTo(Math.log(1 + 40.5 / 0.5), 12)
+    expect(idf.get('kubernetes')!).toBeGreaterThan(computeIdf([], ftsTokenize('other'), { N: 40, df: new Map([['other', 1]]), avgDocLength: 7 }).get('other')!)
   })
 })
 
