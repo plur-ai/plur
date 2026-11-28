@@ -96,6 +96,9 @@ export const pinningMethods: PinningMethods & ThisType<Plur> = {
   },
 
   _pinDecisionFor(actor: PinActor | undefined): PinDecision {
+    // The owner may set pinning.agents while this process runs (a long-lived
+    // MCP server): decide from the file as it is now, not as it was loaded.
+    this.reloadConfigIfChanged()
     return pinDecision(this.config, actor ?? this._defaultActor)
   },
 
