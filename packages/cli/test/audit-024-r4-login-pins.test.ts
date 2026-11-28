@@ -103,6 +103,23 @@ describe('round 4: plur login under pinning.agents', () => {
     }, 40_000)
   }
 
+  // 0.24 review round 6: a second server for a personal scope another,
+  // owner-registered server already serves is still a new server address.
+  for (const agents of ['request', 'deny'] as const) {
+    it(`${agents}: from an agent shell, signing in to a new server for an already-served personal scope writes nothing`, async () => {
+      writeFileSync(cfg(), yaml.dump({
+        embeddings: { enabled: false }, index: false, pinning: { agents },
+        stores: [{ url: 'https://a.example.test', token: 'owner-key', scope: 'user:acme:alice', scopes: ['user:acme:alice'], enterprise: {} }],
+      }, { lineWidth: 120, noRefs: true }))
+      const before = readFileSync(cfg(), 'utf8')
+      const r = await login()
+      expect(r.status, r.out).toBe(1)
+      expect(r.out).toMatch(/reserved for the owner/)
+      expect(r.out).not.toContain(KEY)
+      expect(readFileSync(cfg(), 'utf8')).toBe(before)
+    }, 40_000)
+  }
+
   it('allow (default): plur login from a shell writes the server entry as before', async () => {
     config('allow')
     const r = await login()

@@ -17,6 +17,7 @@ import { isSafeScopeName, safeOrigin, withCompatScope } from '../store-expand.js
 import type { MeResponse } from '../store/remote-store.js'
 import { normalizeEndpointUrl, RemoteHttpError, RemoteStore, tokenEnvUnsetMessage } from '../store/remote-store.js'
 import { withLock } from '../file-lock.js'
+import { checkStoreWrite, type StoreWriteAuthority } from '../store-additions.js'
 import { type PinActor, PinDeniedError } from '../pin-policy.js'
 import { DISCOVERY_SNAPSHOT_KEYS, discoveryChanged, isEnterpriseServerEntry, isPlainObject, sanitizeForbidCategories, scopesServedElsewhere, serverCredential, stableJson, stringList } from './helpers.js'
 import { type CheckResult, type RegisterDiscoveredResult, type RemoteHealth, type RemoteScopeDiscovery, type ServerDiscoveryOutcome, type ServerStoreCheck, type StoreSummary } from './types.js'
@@ -127,7 +128,7 @@ export interface DiscoveryMethods {
    * {@link persistDismissedScopes}: a read error other than ENOENT aborts.
    */
   /** @internal */
-  _updateRawStores(mutate: (rawStores: unknown[]) => boolean, onConfigWrite?: (before: string | null, after: string) => void): void
+  _updateRawStores(mutate: (rawStores: unknown[]) => boolean, authority: StoreWriteAuthority, onConfigWrite?: (before: string | null, after: string) => void): void
 
   /** Observational diagnostics: never refresh grants, change permissions or flush saves. */
   checkServerStores(opts?: { timeoutMs?: number }): Promise<ServerStoreCheck[]>
@@ -608,7 +609,9 @@ export const discoveryMethods: DiscoveryMethods & ThisType<Plur> = {
         })
       }
       return changed
-    }, opts?.onConfigWrite)
+      // A server's own refresh may add the scopes it grants to an entry
+      // already listed (#1940), never a new store.
+    }, { kind: 'server-refresh' }, opts?.onConfigWrite)
 
     // Server metadata lands in scope_settings through the existing sync, once
     // the new scopes are expanded in memory.
@@ -638,7 +641,7 @@ export const discoveryMethods: DiscoveryMethods & ThisType<Plur> = {
     }
   },
 
-  _updateRawStores(mutate: (rawStores: unknown[]) => boolean, onConfigWrite?: (before: string | null, after: string) => void): void {
+  _updateRawStores(mutate: (rawStores: unknown[]) => boolean, authority: StoreWriteAuthority, onConfigWrite?: (before: string | null, after: string) => void): void {
     let wrote = false
     withLock(this.paths.config, () => {
       let configData: Record<string, unknown> = {}
@@ -650,8 +653,13 @@ export const discoveryMethods: DiscoveryMethods & ThisType<Plur> = {
       } catch (err) {
         if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') throw err
       }
-      const rawStores = Array.isArray(configData.stores) ? [...(configData.stores as unknown[])] : []
+      const onDisk = Array.isArray(configData.stores) ? (configData.stores as unknown[]) : []
+      // A copy for the check: `mutate` may change entries in place.
+      const beforeStores = structuredClone(onDisk)
+      const rawStores = [...onDisk]
       if (!mutate(rawStores)) return
+      // The one store-registration rule (0.24 review round 6).
+      checkStoreWrite(beforeStores, rawStores, authority, actor => this._pinDecisionFor(actor))
       configData.stores = rawStores
       const after = yaml.dump(configData, { lineWidth: 120, noRefs: true })
       writeConfigFile(this.paths.config, after)
@@ -1058,7 +1066,7 @@ export const discoveryMethods: DiscoveryMethods & ThisType<Plur> = {
       }
     })
 
-    if (changed) this.persistStores(updated, { serverSensitivityScopes, onConfigWrite })
+    if (changed) this.persistStores(updated, { authority: { kind: 'metadata' }, serverSensitivityScopes, onConfigWrite })
   },
 
   setSessionScope(scope: string | null, opts?: { session?: string }): void {

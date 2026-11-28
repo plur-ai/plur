@@ -47,6 +47,14 @@ anchors:
       - >-
         packages/core/test/add-remote-store.test.ts::with overwriteScope but a rejected token, the existing entry is
         untouched
+  packages/core/src/plur/config-stores.ts#authority:
+    kind: guarantee
+    rule: >-
+      addStore refuses a caller the pin policy restricts before a new local store file is created; the same
+      registration would be refused by persistStores' central rule (#1946).
+    tests:
+      - packages/core/test/audit-024-f4-stores-add-pins.test.ts::an agent cannot register a path store, and its pins are not injected
+      - packages/core/test/audit-024-r6-store-additions-guard.test.ts
   packages/core/src/plur/config-stores.ts#configStoresMethods.addStore:
     kind: guarantee
     rule: >-
@@ -83,11 +91,14 @@ anchors:
     rule: >-
       Registering a company server refuses to replace a sign-in config.yaml already holds when asked to keep it, and a
       credential write that cannot be made owner-only is refused without the key appearing in the error. Under
-      pinning.agents request or deny, a write that adds a scope no entry served before is refused for a caller the pin
-      policy restricts, with nothing written; a new key for the same scopes is not.
+      pinning.agents request or deny, a write that adds a server address or a new scope on one is refused for a caller
+      the pin policy restricts, with nothing written; a new key for the same server and scopes is not (#1946).
     lean:
       - PlurSpec/Persistence.lean:every_config_writer_protected
     tests:
+      - >-
+        packages/core/test/audit-024-r6-store-additions-guard.test.ts::an agent cannot add a new server address even
+        when its scopes are already served
       - >-
         packages/core/test/audit-024-r4-register-server-pins.test.ts::an agent cannot add a new server entry, and
         config.yaml is untouched

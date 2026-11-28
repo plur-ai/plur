@@ -309,6 +309,19 @@ anchors:
       - >-
         packages/core/test/server-entry-writeback-identity.test.ts::an authoritative server update lands in forbid inside
         scope_settings, as a union
+  packages/core/src/store-additions.ts#checkStoreWrite:
+    kind: guarantee
+    rule: >-
+      The one store-registration rule, applied by both writers of config.yaml's stores list under the config lock:
+      under pinning.agents request or deny, a write that adds a store source (a server address or a local store file)
+      or a new scope on an existing source is refused for a caller the pin policy restricts and nothing is written; a
+      server's own scope refresh may add scopes to a listed server, never a new source; a metadata write adds nothing.
+      Replacing a key, removing, reordering, re-saving and folding are not additions (#1946).
+    tests:
+      - packages/core/test/store-additions.test.ts
+      - packages/core/test/audit-024-r6-store-additions-guard.test.ts
+      - packages/core/test/audit-024-r6-config-writers.test.ts
+      - packages/cli/test/audit-024-r4-login-pins.test.ts
   packages/core/src/server-discovery.ts#(module):
     kind: guarantee
     rule: a failed, unauthorised or malformed scope answer from the server never replaces a non-empty cached scope list
