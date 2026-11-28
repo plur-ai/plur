@@ -16,4 +16,10 @@ describe('round 3: an empty STATEMENT line is not a merge', () => {
     const reply = 'CLUSTER_1:\nDECISION: MERGE\nSTATEMENT: Use tabs for indentation\nREASON: same rule\n'
     expect(parseConsolidationResponse(reply, 1)).toEqual([{ decision: 'merge', statement: 'Use tabs for indentation', reason: 'same rule' }])
   })
+
+  // Leftover from round 4: the REASON line reads only its own line too.
+  it('an empty REASON line does not take the next line as the reason', () => {
+    const reply = 'CLUSTER_1:\nDECISION: SPLIT\nREASON:\nthese are different rules\n'
+    expect(parseConsolidationResponse(reply, 1)).toEqual([{ decision: 'split', reason: '' }])
+  })
 })

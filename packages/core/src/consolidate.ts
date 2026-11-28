@@ -497,7 +497,7 @@ export function parseConsolidationResponse(response: string, count: number): Clu
     const block = byNumber.get(i)
     if (!block) { out.push({ decision: 'pending' }); continue }
     const decision = /DECISION:[ \t]*(?:\*+[ \t]*)?(MERGE|SPLIT)/i.exec(block)?.[1]?.toUpperCase()
-    const reason = (/REASON:\s*([^\n]*)/i.exec(block)?.[1] ?? '').trim()
+    const reason = (/REASON:[ \t]*([^\n]*)/i.exec(block)?.[1] ?? '').trim()
     if (decision === 'SPLIT') { out.push({ decision: 'split', reason }); continue }
     if (decision === 'MERGE') {
       let statement = (/STATEMENT:[ \t]*([^\n]*)/i.exec(block)?.[1] ?? '').trim()
