@@ -401,12 +401,17 @@ anchors:
     tests:
       - packages/cli/test/legacy-plur-yaml.test.ts::warns about tracked tokens without exposing the token
       - packages/cli/test/legacy-plur-yaml.test.ts::emits a safe tracked-token warning before later injection can fail
+      - >-
+        packages/cli/test/legacy-plur-yaml.test.ts::warns, without the token, when it cannot tell whether a token file
+        is committed
+      - packages/cli/test/legacy-plur-yaml.test.ts::cleans up an untracked token file in a subfolder of the repository
   packages/cli/src/lib/git-tracked.ts#gitFileTracked:
     kind: guarantee
     rule: >-
-      A file is reported untracked only when git positively says so inside a real work tree whose top level is the
-      folder itself; no git, a folder that is not a repository, a folder nested in another repository's work tree, a
-      refused repository or a timeout give "cannot tell", and GIT_* variables of the launching process are ignored.
+      A file is reported untracked only when git positively says so inside a real work tree, by default one whose top
+      level is the folder itself; no git, a folder that is not a repository, a folder nested in another repository's
+      work tree (unless the caller asks only whether the file is committed), a refused repository or a timeout give
+      "cannot tell", and GIT_* variables of the launching process are ignored.
     tests:
       - >-
         packages/cli/test/audit-024-f6-init-nongit.test.ts::nested in another repository under an ignored directory:

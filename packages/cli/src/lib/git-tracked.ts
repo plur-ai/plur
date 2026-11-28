@@ -3,16 +3,20 @@ import { realpathSync } from 'fs'
 
 /**
  * Does git track `file` (relative to `folder`)? `true` tracked, `false` only
- * when git positively reports it untracked inside a real work tree whose top
- * level is `folder` itself, and `null` when that cannot be told: no git, a
- * folder that is not a repository (an archive or copied tree, or a `.git`
- * that is not a valid repository), a folder nested inside another
- * repository's work tree (for example under a directory that repository
- * ignores), git refusing the repository, a path beyond a symlink, or a
- * timeout. Callers that trust a file only because git does not track it must
- * require `false`.
+ * when git positively reports it untracked inside a real work tree, and
+ * `null` when that cannot be told: no git, a folder that is not a repository
+ * (an archive or copied tree, or a `.git` that is not a valid repository),
+ * git refusing the repository, a path beyond a symlink, or a timeout. Callers
+ * that trust a file only because git does not track it must require `false`.
+ *
+ * `requireOwnTopLevel` (default true) also requires the work tree's top
+ * level to be `folder` itself: a folder nested inside another repository's
+ * work tree (for example under a directory that repository ignores) is then
+ * `null`. Callers that treat an untracked file as the user's own approval
+ * need that; a caller that only asks whether the file is committed passes
+ * false.
  */
-export function gitFileTracked(folder: string, file: string, timeout = 5000): boolean | null {
+export function gitFileTracked(folder: string, file: string, timeout = 5000, opts: { requireOwnTopLevel?: boolean } = {}): boolean | null {
   // Git index/worktree/config overrides belong to the launching process,
   // not necessarily the project whose file is being inspected.
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith('GIT_')))
@@ -24,6 +28,7 @@ export function gitFileTracked(folder: string, file: string, timeout = 5000): bo
   const result = git(['ls-files', '--error-unmatch', '--', file])
   if (result.status === 0) return true
   if (result.status !== 1) return null
+  if (opts.requireOwnTopLevel === false) return false
   // Untracked counts only in the folder's own work tree: in an enclosing
   // repository the file is untracked because that repository is not this
   // project, which says nothing about who wrote it.

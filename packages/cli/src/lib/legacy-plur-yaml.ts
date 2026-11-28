@@ -20,7 +20,7 @@ export function cleanupLegacyPlurYaml(dir: string, deps: {
   /** Origins of the registered servers. When given, only a link to one of
    * them is removed; a link to any other server is this project's own. */
   servedOrigins?: ReadonlySet<string>
-}): { path: string | null; outcome: Outcome } {
+}): { path: string | null; outcome: Outcome; holdsToken?: true } {
   const path = findProjectConfigPath(dir)
   if (!path) return { path, outcome: 'none' }
   const stat = lstatSync(path)
@@ -32,7 +32,7 @@ export function cleanupLegacyPlurYaml(dir: string, deps: {
   const record = parsed as Record<string, unknown>
   if (!fields.some(key => Object.hasOwn(record, key))) return { path, outcome: 'none' }
   const tracked = deps.isTracked(path)
-  if (tracked === null) return { path, outcome: 'unknown-tracking' }
+  if (tracked === null) return { path, outcome: 'unknown-tracking', ...(Object.hasOwn(record, 'remote_token') ? { holdsToken: true as const } : {}) }
   if (tracked) return { path, outcome: Object.hasOwn(record, 'remote_token') ? 'tracked-token' : 'none' }
   if (deps.servedOrigins && !deps.servedOrigins.has(originOf(record.remote_url) ?? '')) return { path, outcome: 'none' }
   // Old installers wrote plain top-level keys. Preserve all other bytes;
@@ -64,8 +64,10 @@ export function cleanupLegacyPlurYaml(dir: string, deps: {
   return { path, outcome: 'stripped' }
 }
 
+// Only whether the file is committed matters here, so a .plur.yaml in a
+// subfolder of the repository (a monorepo package) gets an answer too.
 function gitTracked(path: string): boolean | null {
-  return gitFileTracked(dirname(path), basename(path), 2000)
+  return gitFileTracked(dirname(path), basename(path), 2000, { requireOwnTopLevel: false })
 }
 
 /** Advisory only. Never print file contents or an exception carrying a token. */
@@ -81,6 +83,11 @@ export function cleanupLegacyProjectAtSessionStart(dir: string, storageRoot: str
     if (registered.length === 0) return []
     const servedOrigins = new Set(registered.map(store => originOf(store.url)).filter((o): o is string => o !== null))
     const result = cleanupLegacyPlurYaml(dir, { isTracked: gitTracked, now: () => new Date(), backupRoot: join(storageRoot, 'backups'), servedOrigins })
+    if (result.outcome === 'unknown-tracking' && result.holdsToken) {
+      const unsure = 'A .plur.yaml here contains a server token and git cannot tell whether it is committed, so it was left in place — remove remote_token from it, and ask your PLUR admin to revoke the token if the file was shared.'
+      process.stderr.write(`[plur] ${unsure}\n`)
+      return [unsure]
+    }
     if (result.outcome !== 'tracked-token') return []
     const warning = 'A tracked .plur.yaml in this repo contains a server token — ask your PLUR admin to revoke it.'
     // Emit before injection as well: a later injection failure must not hide
