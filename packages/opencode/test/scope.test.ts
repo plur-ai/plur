@@ -38,6 +38,9 @@ describe('PlurPlugin project config integration', () => {
       // about scope/domain PROPAGATION once adopted; the untrusted-gate
       // behaviour itself is covered by its own describe block below.
       isDirectoryTrusted: vi.fn().mockReturnValue(true),
+      // A real Plur reports its pin policy; the default is allow (0.24
+      // review round 10: a checker that cannot tell it is held to request).
+      pinPolicyFor: () => 'allow',
     }
     // #1347: the same trust, as the folder map holds it.
     mockPlur = withFolderMap(mockPlur, [{ path: tempDir, trusted: true }])
@@ -293,6 +296,7 @@ describe('PlurPlugin — directory-trust gate on .plur.yaml scope (D2)', () => {
         injectHybrid: vi.fn().mockResolvedValue({ count: 0 }),
         learnRouted: vi.fn().mockResolvedValue(undefined),
         isDirectoryTrusted: vi.fn().mockReturnValue(trusted),
+        pinPolicyFor: () => 'allow',
       }
       withFolderMap(plur, [trusted ? { path: tempDir, trusted: true } : { path: tempDir, plur: 'on' }])
       const plugin = await PlurPlugin({ directory: tempDir, _plur: plur } as any)

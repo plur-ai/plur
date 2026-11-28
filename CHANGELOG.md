@@ -169,7 +169,7 @@ seen failing first:
   (`plur folders set <folder> --on` asks to connect it, or
   `plur stores add`). Likewise the server a repository's `.plur.yaml` names
   is used only after the owner adds it at a terminal (`plur trust <folder>`
-  asks to connect it); trust given through the folder question's code does
+  or `plur folders set <folder> --trusted` asks to connect it); trust given through the folder question's code does
   not make hooks dial it (#1947). Replacing a key, removing an entry or
   saving one again is not checked. A
   server's own scope refresh on an entry already in the list (after

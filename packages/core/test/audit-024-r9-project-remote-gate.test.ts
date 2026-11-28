@@ -2,8 +2,8 @@
  * 0.24 review round 9 (part of #1947): under `pinning.agents: request` or
  * `deny`, a trusted project's `.plur.yaml` server is used only when
  * config.yaml lists it; otherwise it is withheld (not refused) and the
- * adapter says so. Under `allow`, or without a policy to read, trust is
- * enough, as before.
+ * adapter says so. Under `allow` trust is enough, as before; a checker that
+ * cannot tell the policy counts as restricted (round 10).
  */
 import { describe, it, expect } from 'vitest'
 import { resolveProjectRemoteFromConfig, projectRemoteWithheldNotice } from '../src/project-remote.js'
@@ -34,8 +34,13 @@ describe('round 9: a trusted .plur.yaml server under pinning.agents', () => {
     const c = { isDirectoryTrusted: () => true, pinPolicyFor: () => { throw new Error('unreadable') }, config: { stores: [] } }
     expect(resolveProjectRemoteFromConfig(c, cfg, '/repo/.plur.yaml').remoteProject).toBeNull()
   })
-  it('allow, or no policy known: trust is enough, as before', () => {
+  it('allow: trust is enough, as before', () => {
     expect(resolveProjectRemoteFromConfig(checker('allow'), cfg, '/repo/.plur.yaml').remoteProject?.url).toBe(URL_)
-    expect(resolveProjectRemoteFromConfig(checker(undefined), cfg, '/repo/.plur.yaml').remoteProject?.url).toBe(URL_)
+  })
+  // Round 10: a checker that cannot tell the policy fails closed.
+  it('no policy known: withheld, as under request', () => {
+    const r = resolveProjectRemoteFromConfig(checker(undefined), cfg, '/repo/.plur.yaml')
+    expect(r.remoteProject).toBeNull()
+    expect(r.withheldUrl).toBe(URL_)
   })
 })

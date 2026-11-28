@@ -15,7 +15,7 @@ import { storeSourceOf } from './store-additions.js'
 /** Just the bit of Plur this needs — keeps the helper testable without a store. */
 export interface TrustChecker {
   isDirectoryTrusted(dir: string): boolean
-  /** The pin policy for an actor; absent means no restriction is known. */
+  /** The pin policy for an actor; absent counts as restricted (request). */
   pinPolicyFor?(actor?: 'owner' | 'agent'): string
   /** The loaded config, for the servers the owner registered. */
   config?: { stores?: ReadonlyArray<{ url?: string }> }
@@ -95,12 +95,12 @@ export function resolveProjectRemoteFromConfig(
 
 /**
  * True unless pinning.agents restricts agents and `url` is not a server
- * config.yaml lists. A policy that cannot be read counts as restricted.
+ * config.yaml lists. A policy that cannot be read, or a checker that cannot
+ * tell it (no pinPolicyFor), counts as restricted (0.24 review round 10).
  */
 function registeredWhenRestricted(plur: TrustChecker, url: string): boolean {
-  if (typeof plur.pinPolicyFor !== 'function') return true
   let policy: string
-  try { policy = plur.pinPolicyFor('agent') } catch { policy = 'request' }
+  try { policy = typeof plur.pinPolicyFor === 'function' ? plur.pinPolicyFor('agent') : 'request' } catch { policy = 'request' }
   if (policy === 'allow') return true
   const wanted = storeSourceOf({ url })
   return (plur.config?.stores ?? []).some(s => typeof s.url === 'string' && storeSourceOf({ url: s.url }) === wanted)

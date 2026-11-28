@@ -5,6 +5,7 @@ import { homedir } from 'os'
 import { createPlur, type GlobalFlags } from '../plur.js'
 import { shouldOutputJson, outputJson, outputText, outputInfo, exit } from '../output.js'
 import { requirePinPolicyConfirmation } from '../lib/pin-confirm.js'
+import { resolveProjectRemote, projectRemoteWithheldNotice } from '../lib/project-remote.js'
 import {
   AddRemoteStoreError, FolderMapError, canonicalize, coversHomeOrRoot, findProjectConfigPath, readProjectConfigFromPath,
   normalizeEndpointUrl, redactToken, redactTokenDeep, type FolderPolicy,
@@ -401,6 +402,16 @@ async function show(flags: GlobalFlags): Promise<void> {
       served.push({ url: legacy.remote_url, source: 'plur-yaml', ...(await probeLegacy(legacy.remote_url, legacy.remote_token)) })
     }
   }
+  // A trusted .plur.yaml server the hooks do not dial (under pinning.agents
+  // request or deny, one config.yaml does not list) is shown as withheld and
+  // is not contacted (0.24 review round 10, part of #1947).
+  let withheld: { url: string; note: string } | undefined
+  if (policy.mode !== 'off' && !policy.remoteAllowed && legacy?.remote_url) {
+    try {
+      const r = resolveProjectRemote(plur, folder)
+      if (r.withheldUrl) withheld = { url: r.withheldUrl, note: projectRemoteWithheldNotice(r.withheldUrl) }
+    } catch { /* no note */ }
+  }
 
   // A legacy .plur.yaml remote that the user config now also serves can lose
   // its token; one that it does not is pointed at `plur remote`.
@@ -418,6 +429,7 @@ async function show(flags: GlobalFlags): Promise<void> {
   if (json) {
     outputJson(scrubDeep({
       success: code === 0, folder, policy: shownPolicy(policy), stores: served,
+      ...(withheld ? { withheld_server: withheld } : {}),
       ...(legacy ? { legacy_plur_yaml: { path: legacy.path, message: legacyNote } } : {}),
     }, tokens))
     if (code !== 0) process.exit(code)
@@ -445,6 +457,7 @@ async function show(flags: GlobalFlags): Promise<void> {
       else lines.push(`  ✗ ${where} — unreachable${s.reason ? `: ${s.reason}` : ''}`)
     }
   }
+  if (withheld) lines.push(withheld.note)
   if (legacyNote) lines.push(legacyNote)
   for (const l of lines) outputText(scrubAll(l, tokens))
   if (code !== 0) process.exit(code)

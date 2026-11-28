@@ -15,7 +15,7 @@ import { renderFolderMapText, surgicalFolderMapText } from './folder-map-text.js
 import { escapedPath, folderCommandOfferable, quoted } from './folder-ask.js'
 import { resolveScopeTarget } from './store-resolver.js'
 import { loadConfig } from './config.js'
-import type { StoreEntry } from './schemas/config.js'
+import { resolvePinningConfig, type StoreEntry } from './schemas/config.js'
 import { findGitRoot, gitDefaultScope, type GitScopeSource, type GitScopeOutcome, type OriginRead } from './git-origin.js'
 
 /**
@@ -944,9 +944,16 @@ function resolveExplicitFolderPolicy(dir: string, opts: FolderPolicyOptions): Fo
     }
   }
   if (marker && !untrustedRequest) {
-    const remote = resolveProjectRemoteFromConfig(
-      { isDirectoryTrusted: d => isTrustedInMap(entries, d, home) }, config, configPath,
-    )
+    // The pin policy and the registered servers come from config.yaml, so a
+    // trusted repository's server counts as allowed here exactly when the
+    // hooks would dial it (0.24 review round 10, part of #1947).
+    let plurConfig: ReturnType<typeof loadConfig> | undefined
+    try { plurConfig = loadConfig(join(opts.root, 'config.yaml')) } catch { plurConfig = undefined }
+    const remote = resolveProjectRemoteFromConfig({
+      isDirectoryTrusted: d => isTrustedInMap(entries, d, home),
+      pinPolicyFor: () => (plurConfig ? resolvePinningConfig(plurConfig).agents : 'request'),
+      config: plurConfig,
+    }, config, configPath)
     const scope = mapScope ?? config.scope
     return {
       mode: 'on',

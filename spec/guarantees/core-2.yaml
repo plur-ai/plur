@@ -934,10 +934,11 @@ anchors:
     rule: >-
       Under pinning.agents request or deny, a trusted project's .plur.yaml server is used only when config.yaml already
       lists that server, which only the owner can add; otherwise it is withheld and the adapter says so. A policy that
-      cannot be read counts as restricted (part of #1947).
+      cannot be read, or a checker that cannot tell it, counts as restricted (part of #1947).
     tests:
       - packages/core/test/audit-024-r9-project-remote-gate.test.ts
       - packages/cli/test/audit-024-r9-trust-remote.test.ts
+      - packages/cli/test/audit-024-r10-remote-status-withheld.test.ts
   packages/core/src/project-remote.ts#resolveProjectRemoteFromConfig:
     kind: guarantee
     rule: If the directory trust check fails, a project's remote settings are dropped.
