@@ -55,7 +55,8 @@ questions on two test sets (0.23: 1 and 15). Full notes:
   `local`, or any scope without a shared prefix) or in a team scope mounted
   under `stores:`; a pin in another project or space scope no longer loads.
   In a session with no scope, a scoped pin is used only when recall finds it
-  relevant. The Claude Code hooks send pins once per context (first prompt,
+  relevant; under `injection.mode: legacy` every pin the session can see loads
+  unconditionally, with or without a session scope. The Claude Code hooks send pins once per context (first prompt,
   after a compaction or resume, once per subagent), not on every event; the
   Codex, Cursor and Antigravity hooks send them with every injection.
 - **Agent pinning policy** (`pinning.agents`: `allow`, `request` or `deny`;
@@ -124,22 +125,26 @@ From an independent security and silent-failure review of the overhaul, each
 fixed with a test seen failing first:
 
 - Forgotten memories are redacted from the change journal, including torn
-  lines and temporary files.
+  lines and temporary files. The redaction covers the change journal only:
+  plan and proposal files (rescope, enrich, consolidation, pin audit) keep the
+  text they quote, and a memory retired by resolving a tension is not
+  redacted.
 - Answers from a host model (store maintenance, pin audit) are parsed safely,
   fenced as data and scanned for secrets; store maintenance reads at most a
   fixed length of each answer. The command bridge (`--llm-cmd`,
   `PLUR_LLM_CMD`) caps an answer at 4 MB, has a timeout and stops the whole
   command tree. The HTTP bridge (`--llm-base-url`) does not yet bound the
   size or the time of an answer.
-- Rescope plans cannot move non-global memories; imports and undos that would
-  restore pins need the pin-policy confirmation. The confirmation must be typed
+- Rescope plans cannot move non-global memories; imports, undos and
+  `plur restore --yes` that would restore pins need the pin-policy
+  confirmation. The confirmation must be typed
   at an interactive terminal, which stops an agent acting through the MCP
   server or a non-interactive shell. It is friction, not a security boundary,
   against an agent with a shell: a pseudo-terminal passes it, and such an
   agent can also edit `config.yaml` or the engram files directly.
 - Team-store rows are never sent to a host model for labelling.
-- `plur doctor` and `plur status` say when they could not read the config, the
-  pin report or store health; degraded rankings, skipped counters and event
+- `plur doctor` says when it could not read `config.yaml` or the pin report,
+  and `plur status` when it could not read store health; degraded rankings, skipped counters and event
   retrieval plans are recorded instead of silently dropped.
 
 A scoped re-audit of the 0.24 changes found eight more, all fixed with a test
@@ -151,7 +156,7 @@ seen failing first:
   a directory that repository ignores), no longer approves itself or counts as
   your decision.
 - Under `pinning.agents: request` or `deny`, only the owner registers a new
-  store (`plur stores add`, `plur remote`, `plur scopes register`,
+  store (`plur stores add`, `plur remote`, `plur login`, `plur scopes register`,
   `plur stores discover --register`, MCP `plur_stores_add` and
   `plur_scopes_discover` with `register`); an error
   elsewhere in `config.yaml` never relaxes the setting; `plur pin priority`
