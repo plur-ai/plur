@@ -158,7 +158,9 @@ seen failing first:
 - Under `pinning.agents: request` or `deny`, only the owner registers a new
   store (`plur stores add`, `plur remote`, `plur login`, `plur scopes register`,
   `plur stores discover --register`, MCP `plur_stores_add` and
-  `plur_scopes_discover` with `register`); an error
+  `plur_scopes_discover` with `register`). Scopes a server newly grants to
+  an entry the owner registered are still added without asking (the scope
+  refresh after `plur login`, background discovery); an error
   elsewhere in `config.yaml` never relaxes the setting; `plur pin priority`
   asks the same typed confirmation as `plur pin` before raising a pin.
 - An owner's approval of a merge is cleared whenever the model pass writes a
