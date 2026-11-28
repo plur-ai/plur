@@ -11,7 +11,11 @@ import { renderedText } from '../helpers/corrections-inject-feedback-util.js'
 const CHARS_PER_TOKEN = 4
 const measuredTokens = (text: string) => Math.ceil(text.length / CHARS_PER_TOKEN)
 
-const TASK = 'deploy the billing service to production'
+// The task names no single service: under INJ-1 a near-copy written for another
+// service than the one a task names is a nearby rule that does not apply, so a
+// task naming one service would be given only that service's practices. (Setup
+// restated 2026-11-28 with the owner's approval; the promise and checks are unchanged.)
+const TASK = 'deploy our finance services to production'
 const SERVICES = ['billing', 'invoicing', 'ledger', 'payments', 'refunds', 'payouts', 'tax', 'pricing']
 // Each practice is long enough that the 20 memories unified injection hands
 // over at most (its recall limit) still need far more than 900 tokens, so the
