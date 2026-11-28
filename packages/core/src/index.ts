@@ -77,7 +77,7 @@ export { pendingStoreLockOps, publishLockFileSync, takeOverLockSync, EMPTY_LOCK_
 // out-of-package adapters (@plur-ai/opencode) take the capability and the gate
 // together rather than copying one without the other. See project-remote.ts.
 export {
-    projectRemoteRefusalNotice, resolveProjectRemote,
+    projectRemoteRefusalNotice, projectRemoteWithheldNotice, resolveProjectRemote,
     resolveProjectRemoteFromConfig, type ProjectRemote,
     type TrustChecker
 } from './project-remote.js'

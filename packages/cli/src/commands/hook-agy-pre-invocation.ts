@@ -16,7 +16,7 @@ import {
   lastUserInput,
   emitInjectSteps,
 } from '../lib/agy-hook-io.js'
-import { resolveProjectRemote, projectRemoteRefusalNotice } from '../lib/project-remote.js'
+import { resolveProjectRemote, projectRemoteRefusalNotice, projectRemoteWithheldNotice } from '../lib/project-remote.js'
 import { recordInjected } from '../lib/auto-rate.js'
 
 /**
@@ -153,7 +153,8 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
         : `[PLUR Memory — ${result.count} engrams recalled for this prompt via ${mode}]`
       const refusal = isFirst
         ? [
-          projectRemote.refusedFrom ? projectRemoteRefusalNotice(projectRemote.refusedFrom, plur.storageRoot) : null,
+          projectRemote.refusedFrom ? projectRemoteRefusalNotice(projectRemote.refusedFrom, plur.storageRoot)
+            : projectRemote.withheldUrl ? projectRemoteWithheldNotice(projectRemote.withheldUrl) : null,
         ].filter(Boolean).map(n => `${n}\n\n`).join('')
         : ''
       // Only on the FIRST turn: the refusal persists until the user acts on it,

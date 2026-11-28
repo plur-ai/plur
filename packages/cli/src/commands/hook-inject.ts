@@ -160,7 +160,7 @@ function emitContextConfirmed(hookEventName: string, additionalContext: string):
 const REMINDER_INTERVAL_MS = 10 * 60 * 1000 // 10 minutes
 
 import { claimHookDegradationLines, type Plur } from '@plur-ai/core'
-import { resolveProjectRemote, projectRemoteRefusalNotice, type ProjectRemote } from '../lib/project-remote.js'
+import { resolveProjectRemote, projectRemoteRefusalNotice, projectRemoteWithheldNotice, type ProjectRemote } from '../lib/project-remote.js'
 import { hookSessionKey } from '../lib/session-key.js'
 
 /**
@@ -1329,6 +1329,7 @@ async function injectSession(
   // A refused project remote is reported, so the user can tell "refused,
   // here is the one command" from "quietly broken".
   if (remoteRefusedFrom) parts.push(projectRemoteRefusalNotice(remoteRefusedFrom, plur.storageRoot))
+  else if (projectRemote.withheldUrl) parts.push(projectRemoteWithheldNotice(projectRemote.withheldUrl))
   // An ignored scope/domain is reported too, naming the file and `plur trust`.
 
   if (context) {

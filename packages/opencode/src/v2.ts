@@ -2,7 +2,7 @@ import type { Plugin } from '@opencode/plugin'
 import { resolve } from 'node:path'
 import {
   Plur, allowBackgroundModelLoad, renderMemoryBlock, folderAskOnce,
-  findProjectConfigPath, readProjectConfigFromPath, resolveProjectRemoteFromConfig,
+  findProjectConfigPath, readProjectConfigFromPath, resolveProjectRemoteFromConfig, projectRemoteWithheldNotice,
   sessionSettings, skippedStoreNotice, loadConfig, withDeadline, DEADLINE_MISSED,
 } from '@plur-ai/core'
 import { folderPolicy, resolveTrustedScope, projectRemoteRefusalNotice } from './scope.js'
@@ -63,6 +63,7 @@ export const setupV2: Plugin.Plugin['setup'] = async ctx => {
       settings = sessionSettings(decision, resolveTrustedScope(s.plur, raw, path, warn))
       remote = resolveProjectRemoteFromConfig(s.plur, raw, path)
       if (remote.refusedFrom) warn(projectRemoteRefusalNotice(remote.refusedFrom, s.plur.storageRoot))
+      else if (remote.withheldUrl) warn(projectRemoteWithheldNotice(remote.withheldUrl))
     }
     const autoLearn = loadConfig(resolve(s.plur.storageRoot, 'config.yaml')).auto_learn
     return { decision, settings, remote, autoLearn,

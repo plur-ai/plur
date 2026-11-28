@@ -10,6 +10,7 @@ import { trustCommand } from '../plur.js'
 export {
   resolveProjectRemote,
   resolveProjectRemoteFromConfig,
+  projectRemoteWithheldNotice,
   type ProjectRemote,
 } from '@plur-ai/core'
 

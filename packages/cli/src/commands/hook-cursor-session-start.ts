@@ -4,7 +4,7 @@ import { existsSync, readFileSync, unlinkSync } from 'fs'
 import { cursorHookFolder, sessionSettings, folderAskOnce, untrustedPlurYamlAsk, isFolderAskText, createAskPlur, bindHookFolder, remoteOnlyLines } from '../lib/folder-gate.js'
 import { cursorContextRulePath } from '../mcp-config.js'
 import { readStdinJson, cursorConversationId, markSessionStarted, writeContextRule, removeGeneratedContextRules } from '../lib/cursor-hook-io.js'
-import { resolveProjectRemote, projectRemoteRefusalNotice } from '../lib/project-remote.js'
+import { resolveProjectRemote, projectRemoteRefusalNotice, projectRemoteWithheldNotice } from '../lib/project-remote.js'
 import { recordInjected } from '../lib/auto-rate.js'
 import { recordHookRun } from '../lib/hook-runs.js'
 import { cachedServerLines } from '../lib/server-session.js'
@@ -120,7 +120,8 @@ export async function run(_args: string[], flags: GlobalFlags): Promise<void> {
     // for the trust reason here, and because remote memory does not reach
     // this hook regardless.
     const refusal = [
-      projectRemote.refusedFrom ? projectRemoteRefusalNotice(projectRemote.refusedFrom, plur.storageRoot) : null,
+      projectRemote.refusedFrom ? projectRemoteRefusalNotice(projectRemote.refusedFrom, plur.storageRoot)
+        : projectRemote.withheldUrl ? projectRemoteWithheldNotice(projectRemote.withheldUrl) : null,
     ].filter(Boolean).map(n => `${n}\n\n`).join('')
     // An untrusted .plur.yaml: memories load without its settings, and the
     // trust question rides along once per conversation (owner, 2026-11-14).

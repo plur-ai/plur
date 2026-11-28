@@ -5,6 +5,7 @@ import {
   readProjectConfigFromPath,
   findProjectConfigPath,
   resolveProjectRemoteFromConfig,
+  projectRemoteWithheldNotice,
   folderAskOnce,
   sessionSettings,
   skippedStoreNotice,
@@ -109,6 +110,7 @@ export const PlurPlugin: Plugin = async (ctx) => {
     // Refusal is unconditional like the scope one: team memory that silently
     // never arrives is indistinguishable from a broken remote leg.
     if (remote.refusedFrom) warnOnce(projectRemoteRefusalNotice(remote.refusedFrom, plur.storageRoot))
+    else if (remote.withheldUrl) warnOnce(projectRemoteWithheldNotice(remote.withheldUrl))
     // Host only, never the token.
     if (remote.remoteProject) log(`project remote: ${remote.remoteProject.url}`)
     if (settings.scope) log(`session scope: ${settings.scope}`)
