@@ -16,10 +16,11 @@ import { exit } from '../output.js'
  * pty library) passes it, and such an agent can also edit config.yaml or the
  * engram files directly. Under `allow` (the default) nothing is asked. Exits
  * 1 when refused; returns when confirmed.
- * H11/H12: `plur import` of pinned records and an undo that puts a pin back
- * ask the same question. 0.24 audit: so do `plur pin priority` when it raises
- * a pin, and registering a store (`plur stores add`, `plur remote`,
- * `plur scopes register`, `plur stores discover --register`), whose
+ * H11/H12: `plur import` of pinned records, and an undo or `plur restore
+ * --yes` that puts a pin back, ask the same question. 0.24 audit: so do
+ * `plur pin priority` when it raises a pin, and registering a store
+ * (`plur stores add`, `plur remote`, `plur login`, `plur scopes register`,
+ * `plur stores discover --register`), whose
  * pinned engrams load into every session.
  */
 export async function requirePinPolicyConfirmation(
