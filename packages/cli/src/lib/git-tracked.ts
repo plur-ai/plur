@@ -1,5 +1,6 @@
 import { spawnSync } from 'child_process'
-import { realpathSync } from 'fs'
+import { lstatSync, realpathSync } from 'fs'
+import { isAbsolute, join, relative } from 'path'
 
 /**
  * Does git track `file` (relative to `folder`)? `true` tracked, `false` only
@@ -17,6 +18,10 @@ import { realpathSync } from 'fs'
  * false.
  */
 export function gitFileTracked(folder: string, file: string, timeout = 5000, opts: { requireOwnTopLevel?: boolean } = {}): boolean | null {
+  // git answers "untracked" for a path behind a symlinked directory (one the
+  // repository may itself commit), so a symlink on the way, or a path that
+  // leaves the folder, gives no answer.
+  if (!plainPathUnder(folder, file)) return null
   // Git index/worktree/config overrides belong to the launching process,
   // not necessarily the project whose file is being inspected.
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith('GIT_')))
@@ -39,4 +44,28 @@ export function gitFileTracked(folder: string, file: string, timeout = 5000, opt
   } catch {
     return null
   }
+}
+
+/**
+ * `file` (relative to `folder`, or absolute) lies inside `folder` and its
+ * existing components are not symbolic links. A component that does not
+ * exist ends the walk (the file is then absent); any other lstat error gives
+ * false.
+ */
+function plainPathUnder(folder: string, file: string): boolean {
+  const rel = isAbsolute(file) ? relative(folder, file) : file
+  if (isAbsolute(rel)) return false
+  const parts = rel.split(/[\\/]+/).filter(p => p !== '' && p !== '.')
+  if (parts.length === 0 || parts.includes('..')) return false
+  let at = folder
+  for (const part of parts) {
+    at = join(at, part)
+    try {
+      if (lstatSync(at).isSymbolicLink()) return false
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return true
+      return false
+    }
+  }
+  return true
 }

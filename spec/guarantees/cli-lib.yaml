@@ -410,9 +410,16 @@ anchors:
     rule: >-
       A file is reported untracked only when git positively says so inside a real work tree, by default one whose top
       level is the folder itself; no git, a folder that is not a repository, a folder nested in another repository's
-      work tree (unless the caller asks only whether the file is committed), a refused repository or a timeout give
-      "cannot tell", and GIT_* variables of the launching process are ignored.
+      work tree (unless the caller asks only whether the file is committed), a path through a symbolic link or outside
+      the folder, a refused repository or a timeout give "cannot tell", and GIT_* variables of the launching process
+      are ignored.
     tests:
+      - >-
+        packages/cli/test/audit-024-f1-doctor-nongit.test.ts::a settings.local.json behind a committed .claude symlink
+        does not approve
+      - >-
+        packages/cli/test/audit-024-f6-init-nongit.test.ts::a settings file behind a committed .claude symlink: no
+        folder-map entry and no adopted store
       - >-
         packages/cli/test/audit-024-f6-init-nongit.test.ts::nested in another repository under an ignored directory:
         no folder-map entry and no adopted store

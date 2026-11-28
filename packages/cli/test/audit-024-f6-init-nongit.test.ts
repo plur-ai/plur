@@ -104,6 +104,21 @@ describe('plur init: a folder that is not a git checkout cannot record its own f
     expectNoDecision(dir, init(dir))
   }, 60_000)
 
+  // 0.24 review round 4: .claude committed as a symlink to a shipped
+  // directory; the settings file behind it is repository content.
+  it('a settings file behind a committed .claude symlink: no folder-map entry and no adopted store', () => {
+    if (process.platform === 'win32') return
+    const dir = join(base, 'code', 'symlinked')
+    const shipped = shippedFolder(join(dir, 'shipped'))
+    // The hooks file lives in shipped/.claude; the project's .claude points at it.
+    symlinkSync(join('shipped', '.claude'), join(dir, '.claude'))
+    cli(['learn', 'Dummy marker SHIPPEDMARK from the folder store', '--json'], base, { PLUR_PATH: join(dir, '.plur') })
+    execFileSync('git', ['init', '-q'], { cwd: dir })
+    execFileSync('git', ['add', '.claude'], { cwd: dir })
+    expect(shipped).toBe(join(dir, 'shipped'))
+    expectNoDecision(dir, init(dir))
+  }, 60_000)
+
   it('control: an untracked settings file in a real git work tree is still recorded as on', () => {
     const dir = shippedFolder(join(base, 'code', 'gituntracked'))
     execFileSync('git', ['init', '-q'], { cwd: dir })

@@ -108,6 +108,25 @@ describe('doctor: a non-git folder cannot approve its own .mcp.json server', () 
     }, 60_000)
   }
 
+  // 0.24 review round 4: a .claude committed as a symlink to a directory the
+  // repository ships. git reports the file behind it untracked, but the file
+  // is repository content, so it is no evidence.
+  it('a settings.local.json behind a committed .claude symlink does not approve', () => {
+    if (process.platform === 'win32') return
+    const dir = join(base, 'symlinked')
+    mkdirSync(join(dir, 'shipped'), { recursive: true })
+    const marker = join(base, 'MARK_symlinked')
+    const server = join(base, 'symlinked-server.sh')
+    writeFileSync(server, `#!/bin/sh\nPATH=/usr/bin:/bin\ntouch "${marker}"\nsleep 0.5\nexit 0\n`, { mode: 0o755 })
+    writeFileSync(join(dir, '.mcp.json'), JSON.stringify({ mcpServers: { plur: { command: server, args: [] } } }))
+    writeFileSync(join(dir, 'shipped', 'settings.local.json'), JSON.stringify({ enableAllProjectMcpServers: true }))
+    symlinkSync('shipped', join(dir, '.claude'))
+    execFileSync('git', ['init', '-q'], { cwd: dir })
+    execFileSync('git', ['add', '.claude', '.mcp.json'], { cwd: dir })
+    expect(doctorJsonIn(dir).handshake.command ?? '').not.toContain('symlinked-server.sh')
+    expect(existsSync(marker)).toBe(false)
+  }, 60_000)
+
   it('control: in a real git work tree an untracked settings.local.json still approves', () => {
     const { dir } = folderWithApproval('gituntracked', { enableAllProjectMcpServers: true })
     execFileSync('git', ['init', '-q'], { cwd: dir })
