@@ -80,6 +80,17 @@ describe('round 9: a repository .plur.yaml server under pinning.agents', () => {
     }, 90_000)
   }
 
+  it('deny: plur folders set --trusted with the one-time code does not make the hook dial it either', async () => {
+    config('deny')
+    const nonce = new Plur({ path: root, autoDiscover: false }).issueFolderNonce('session-1', repo, { trusted: true })
+    const t = await cli(['folders', 'set', repo, '--trusted', '--nonce', nonce], { CLAUDECODE: '1' })
+    expect(t.status, t.out).toBe(0)
+    expect(t.out).toMatch(/not connected/)
+    const r = await hook()
+    expect(r.status, r.out).toBe(0)
+    expect(server.recallCalls).toBe(0)
+  }, 90_000)
+
   it.skipIf(!ptyAvailable)('deny: the owner at a terminal adds the repository\'s server after typing yes, and the hook uses it', async () => {
     config('deny')
     const e = env()
