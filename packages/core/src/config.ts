@@ -22,6 +22,14 @@ export function loadConfig(configPath: string): PlurConfig {
   let text = ''
   try {
     text = readFileSync(configPath, 'utf8')
+  } catch (err) {
+    // A file that exists but cannot be read (permissions, an I/O error) may
+    // hold the owner's pin restriction: the policy is `request`, as for YAML
+    // whose pinning block cannot be read back.
+    logger.warning(`[plur:config] cannot read ${configPath}: ${(err as NodeJS.ErrnoException).code ?? (err as Error).message} — falling back to defaults, pinning.agents request`)
+    return fallbackConfig(FAIL_SAFE_PINNING)
+  }
+  try {
     raw = (yaml.load(text) as Record<string, unknown>) ?? {}
   } catch (err) {
     logger.warning(`[plur:config] cannot parse YAML at ${configPath}: ${(err as Error).message} — falling back to defaults`)

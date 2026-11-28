@@ -7,7 +7,7 @@
  * safe to `request` — the same rule as for an invalid value of the key itself.
  */
 import { describe, it, expect, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync } from 'fs'
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { Plur, loadConfig, pinDecision } from '../src/index.js'
@@ -56,6 +56,19 @@ describe('finding 5: pinning.agents survives errors elsewhere in config.yaml', (
   it('a config that never set pinning keeps the allow default, broken or not', () => {
     expect(agentDecision(cfg(BAD_KEY))).toBe('allow')
     expect(agentDecision(cfg('stores: [unclosed\n'))).toBe('allow')
+  })
+
+  // 0.24 review round 2: a config.yaml that exists but cannot be read may
+  // hold a restriction, so it fails safe as broken YAML does.
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('a config.yaml that cannot be read fails safe to request', () => {
+    const dir = cfg('pinning:\n  agents: deny\n')
+    const file = join(dir, 'config.yaml')
+    chmodSync(file, 0o000)
+    try {
+      expect(agentDecision(dir)).toBe('request')
+    } finally {
+      chmodSync(file, 0o600)
+    }
   })
 
   it('an explicit allow stays allow next to an invalid key', () => {

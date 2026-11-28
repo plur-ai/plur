@@ -306,8 +306,11 @@ anchors:
         config.yaml is unchanged
   packages/core/src/config.ts#fallbackConfig:
     kind: guarantee
-    rule: An error elsewhere in config.yaml never relaxes the owner's pinning.agents to the allow default.
+    rule: >-
+      An error elsewhere in config.yaml never relaxes the owner's pinning.agents to the allow default; a config.yaml
+      that exists but cannot be read gives request.
     tests:
+      - packages/core/test/audit-024-f5-config-pinning-failsafe.test.ts::a config.yaml that cannot be read fails safe to request
       - "packages/core/test/audit-024-f5-config-pinning-failsafe.test.ts::an invalid unrelated key: the owner's value is kept"
       - >-
         packages/core/test/audit-024-f5-config-pinning-failsafe.test.ts::invalid key: an agent pin through core is
