@@ -1153,8 +1153,14 @@ anchors:
     none: no test runs plur rerank-eval to a harmful verdict
   packages/cli/src/commands/restore.ts#run:
     kind: guarantee
-    rule: plur restore is refused in a remote-only folder and changes nothing.
+    rule: >-
+      plur restore is refused in a remote-only folder and changes nothing; under pinning.agents request or deny, a
+      restore that pins engrams again is refused without the confirmation typed at an interactive terminal, and the
+      store is unchanged.
     tests:
+      - >-
+        packages/cli/test/audit-024-r4-restore-pins.test.ts::a restore that pins an engram again is refused without a
+        terminal
       - >-
         packages/cli/test/folder-remote-only.test.ts::plur restore in a remote-only folder is refused and changes
         nothing
