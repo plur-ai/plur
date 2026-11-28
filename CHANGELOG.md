@@ -208,6 +208,12 @@ seen failing first:
 - A pin in another project or space scope no longer loads. Pins in personal
   scopes and in mounted team scopes still load in every session that has a
   scope.
+- Integrations that call `resolveProjectRemote` or
+  `resolveProjectRemoteFromConfig` (exported from `@plur-ai/core`) with their
+  own trust checker must now pass `pinPolicyFor` and `config` as well; a
+  `Plur` instance has both. A checker without them is treated as
+  `pinning.agents: request`, so the repository's `.plur.yaml` server is
+  withheld even when the install's policy is `allow` (#1947).
 
 ## 0.23.1
 
