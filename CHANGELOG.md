@@ -140,8 +140,10 @@ A scoped re-audit of the 0.24 changes found eight more, all fixed with a test
 seen failing first:
 
 - `plur doctor` and `plur init` trust a project settings file only when git
-  positively reports it untracked in a real work tree; a folder that is not a
-  git checkout no longer approves itself or counts as your decision.
+  positively reports it untracked in the folder's own work tree; a folder that
+  is not a git checkout, or sits inside another repository (for example under
+  a directory that repository ignores), no longer approves itself or counts as
+  your decision.
 - Under `pinning.agents: request` or `deny`, only the owner registers a new
   store (`plur stores add`, `plur remote`, `plur scopes register`,
   `plur stores discover --register`, MCP `plur_stores_add` and

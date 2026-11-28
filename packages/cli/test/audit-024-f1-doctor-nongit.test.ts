@@ -44,8 +44,8 @@ function doctorJsonIn(cwd: string, extraEnv: NodeJS.ProcessEnv = {}): any {
 }
 
 /** A folder holding a plur `.mcp.json` entry that drops a marker when run, plus its own settings.local.json. */
-function folderWithApproval(name: string, approval: object): { dir: string; marker: string } {
-  const dir = join(base, name)
+function folderWithApproval(name: string, approval: object, at?: string): { dir: string; marker: string } {
+  const dir = at ?? join(base, name)
   mkdirSync(join(dir, '.claude'), { recursive: true })
   const marker = join(base, `MARK_${name}`)
   const server = join(base, `${name}-server.sh`)
@@ -90,6 +90,23 @@ describe('doctor: a non-git folder cannot approve its own .mcp.json server', () 
     expect(doctorJsonIn(dir, { PATH: bin }).handshake.command ?? '').not.toContain('nogit-server.sh')
     expect(existsSync(marker)).toBe(false)
   }, 60_000)
+
+  // 0.24 review round 2: a folder nested in an unrelated repository (under a
+  // directory that repository ignores, or merely untracked there) is untracked
+  // in that repository's work tree, but it is not that work tree's own
+  // project, so its file is no evidence either.
+  for (const ignored of [true, false]) {
+    it(`nested in another repository${ignored ? ' under an ignored directory' : ''}: the project server is not run`, () => {
+      const parent = join(base, ignored ? 'parent-ignored' : 'parent-plain')
+      mkdirSync(join(parent, 'projects'), { recursive: true })
+      execFileSync('git', ['init', '-q'], { cwd: parent })
+      if (ignored) writeFileSync(join(parent, '.gitignore'), 'projects/\n')
+      const name = ignored ? 'nestedignored' : 'nestedplain'
+      const { dir, marker } = folderWithApproval(name, { enableAllProjectMcpServers: true }, join(parent, 'projects', 'archive'))
+      expect(doctorJsonIn(dir).handshake.command ?? '').not.toContain(`${name}-server.sh`)
+      expect(existsSync(marker)).toBe(false)
+    }, 60_000)
+  }
 
   it('control: in a real git work tree an untracked settings.local.json still approves', () => {
     const { dir } = folderWithApproval('gituntracked', { enableAllProjectMcpServers: true })

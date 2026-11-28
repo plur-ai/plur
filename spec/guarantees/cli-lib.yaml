@@ -404,10 +404,13 @@ anchors:
   packages/cli/src/lib/git-tracked.ts#gitFileTracked:
     kind: guarantee
     rule: >-
-      A file is reported untracked only when git positively says so inside a real work tree; no git, a folder that is
-      not a repository, a refused repository or a timeout give "cannot tell", and GIT_* variables of the launching
-      process are ignored.
+      A file is reported untracked only when git positively says so inside a real work tree whose top level is the
+      folder itself; no git, a folder that is not a repository, a folder nested in another repository's work tree, a
+      refused repository or a timeout give "cannot tell", and GIT_* variables of the launching process are ignored.
     tests:
+      - >-
+        packages/cli/test/audit-024-f6-init-nongit.test.ts::nested in another repository under an ignored directory:
+        no folder-map entry and no adopted store
       - "packages/cli/test/audit-024-f1-doctor-nongit.test.ts::a .git that is not a valid repository gives no evidence either"
       - "packages/cli/test/audit-024-f1-doctor-nongit.test.ts::git not available: the folder file is not approval"
       - "packages/cli/test/audit-024-f1-doctor-nongit.test.ts::control: in a real git work tree an untracked settings.local.json still approves"

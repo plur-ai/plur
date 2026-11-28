@@ -93,6 +93,17 @@ describe('plur init: a folder that is not a git checkout cannot record its own f
     expectNoDecision(dir, init(dir, { PATH: bin }))
   }, 60_000)
 
+  // 0.24 review round 2: a folder inside an unrelated repository, under a
+  // directory that repository ignores, is not that work tree's own project.
+  it('nested in another repository under an ignored directory: no folder-map entry and no adopted store', () => {
+    const parent = join(base, 'code', 'parent')
+    mkdirSync(join(parent, 'projects'), { recursive: true })
+    execFileSync('git', ['init', '-q'], { cwd: parent })
+    writeFileSync(join(parent, '.gitignore'), 'projects/\n')
+    const dir = shippedFolder(join(parent, 'projects', 'archive'))
+    expectNoDecision(dir, init(dir))
+  }, 60_000)
+
   it('control: an untracked settings file in a real git work tree is still recorded as on', () => {
     const dir = shippedFolder(join(base, 'code', 'gituntracked'))
     execFileSync('git', ['init', '-q'], { cwd: dir })
