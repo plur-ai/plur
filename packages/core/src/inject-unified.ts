@@ -142,7 +142,7 @@ export interface UnifiedPool {
  * in the same order, as the legacy loops in `selectAndSpread`.
  */
 export function buildUnifiedPool(
-  ctx: Pick<InjectionContext, 'prompt' | 'scope' | 'grantedScopes'>,
+  ctx: Pick<InjectionContext, 'prompt' | 'scope' | 'grantedScopes' | 'intentPrompt'>,
   personalEngrams: Engram[],
   packs: LoadedPack[],
   config: Pick<UnifiedConfig, 'expiry' | 'include_pinned'> = {},
@@ -151,7 +151,7 @@ export function buildUnifiedPool(
   const expiryMode = config.expiry?.mode ?? 'hard'
   const graceDays = config.expiry?.grace_days ?? DEFAULT_GRACE_DAYS
   const includePinned = config.include_pinned !== false
-  const historical = hasHistoricalIntent(ctx.prompt)
+  const historical = hasHistoricalIntent(ctx.intentPrompt ?? ctx.prompt)
 
   const deliverableIds = new Set<string>()
   const supersededBy = new Map<string, readonly string[]>()
@@ -327,7 +327,7 @@ const asScored = (e: Engram, score: number): ScoredEngram => ({ ...e, keyword_ma
  * a caller can rerank (async, time-capped) in between.
  */
 export function packUnified(
-  ctx: Pick<InjectionContext, 'maxTokens'> & Partial<Pick<InjectionContext, 'prompt'>>,
+  ctx: Pick<InjectionContext, 'maxTokens'> & Partial<Pick<InjectionContext, 'prompt' | 'intentPrompt'>>,
   pool: UnifiedPool,
   ranked: RankedCandidate[],
   config: UnifiedConfig = {},
@@ -360,7 +360,7 @@ export function packUnified(
   // INJ-1: a nearby rule that does not apply is not handed over beside the one
   // that does. Words of every memory taken from the ranking, for the check below.
   const takenWords: Set<string>[] = []
-  const promptWords = wordsOf(ctx.prompt ?? '')
+  const promptWords = wordsOf(ctx.intentPrompt ?? ctx.prompt ?? '')
   /** Skip-and-continue packing (R6). Returns tokens used. */
   const pack = (list: RankedCandidate[], cap: number, maxItems: number): number => {
     let used = 0

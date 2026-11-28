@@ -39,6 +39,12 @@ export interface InjectionContext {
    */
   maxTokens?: number
   minRelevance?: number   // Default: 0.3
+  /**
+   * The user's own task, when `prompt` also carries appended session context
+   * (stored task, branch, recent turns). Historical intent and the INJ-1
+   * check of which words the task names read this; retrieval reads `prompt`.
+   */
+  intentPrompt?: string
 }
 
 export type ScoredEngram = Engram & {
@@ -895,7 +901,7 @@ export function selectAndSpread(
   const supersededBy = new Map<string, readonly string[]>()
   // Forward edges from primary rows to other stores' rows (see isPrimaryRow).
   const replacedFromPrimary = primaryReplacements(personalEngrams)
-  const historical = hasHistoricalIntent(ctx.prompt)
+  const historical = hasHistoricalIntent(ctx.intentPrompt ?? ctx.prompt)
 
   // Step 1-2: Score all active engrams
   const scored: ScoredEngram[] = []

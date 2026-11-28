@@ -46,7 +46,7 @@ export interface InjectionMethods {
   injectHybrid(task: string, options?: InjectOptions): Promise<InjectionResult>
 
   /** @internal */
-  _formatInjection(task: string, options?: InjectOptions, embeddingBoosts?: Map<string, number>, remote?: { engrams: Engram[]; boosts: Map<string, number> }, deadlineAt?: number): Promise<InjectionResult>
+  _formatInjection(task: string, options?: InjectOptions, embeddingBoosts?: Map<string, number>, remote?: { engrams: Engram[]; boosts: Map<string, number> }, deadlineAt?: number, intentTask?: string): Promise<InjectionResult>
 
   /** The selection mode for an injection: the per-call override, else `injection.mode` (default unified). */
   /** @internal */
@@ -77,7 +77,7 @@ export interface InjectionMethods {
    * leg may run.
    */
   /** @internal */
-  _selectUnified(task: string, options: InjectOptions | undefined, engrams: Engram[], packs: LoadedPack[], budget: number, meaning: Map<string, number> | undefined, deadlineAt: number | undefined): Promise<UnifiedResult>
+  _selectUnified(task: string, options: InjectOptions | undefined, engrams: Engram[], packs: LoadedPack[], budget: number, meaning: Map<string, number> | undefined, deadlineAt: number | undefined, intentTask?: string): Promise<UnifiedResult>
 }
 
 export const injectionMethods: InjectionMethods & ThisType<Plur> = {
@@ -100,13 +100,13 @@ export const injectionMethods: InjectionMethods & ThisType<Plur> = {
       }, deadlineAt)
       const { result: remoteResult, report } = await this._awaitRemote(remotePromise, deadlineAt)
       const remote = this._remoteInjectCandidates(remoteResult, options)
-      const result = await this._formatInjection(query, options, undefined, remote, deadlineAt)
+      const result = await this._formatInjection(query, options, undefined, remote, deadlineAt, task)
       result.remote = report
       result.remote_only = this._remoteOnlyStatus(remoteResult)
       if (query !== task) result.query = query
       return result
     }
-    const result = await this._formatInjection(query, options)
+    const result = await this._formatInjection(query, options, undefined, undefined, undefined, task)
     if (query !== task) result.query = query
     return result
   },
@@ -290,7 +290,7 @@ export const injectionMethods: InjectionMethods & ThisType<Plur> = {
     // boost exists to resurrect a scope-excluded row.
     const { result: remoteResult, report } = await this._awaitRemote(remotePromise, deadlineAt)
     const remote = this._remoteInjectCandidates(remoteResult, options)
-    const result = await this._formatInjection(query, options, boosts, remote, deadlineAt)
+    const result = await this._formatInjection(query, options, boosts, remote, deadlineAt, task)
     if (query !== task) result.query = query
     // What the server leg did on THIS call, as on recall.
     result.remote = report
@@ -327,7 +327,7 @@ export const injectionMethods: InjectionMethods & ThisType<Plur> = {
     return result
   },
 
-  async _formatInjection(task: string, options?: InjectOptions, embeddingBoosts?: Map<string, number>, remote?: { engrams: Engram[]; boosts: Map<string, number> }, deadlineAt?: number): Promise<InjectionResult> {
+  async _formatInjection(task: string, options?: InjectOptions, embeddingBoosts?: Map<string, number>, remote?: { engrams: Engram[]; boosts: Map<string, number> }, deadlineAt?: number, intentTask?: string): Promise<InjectionResult> {
     // remote-only: team store rows + packs, never the personal store.
     let allEngrams = await this._readCorpus()
     const allPacks = this._remoteOnly?.blocked ? [] : this._loadInstalledPacks()
@@ -381,12 +381,13 @@ export const injectionMethods: InjectionMethods & ThisType<Plur> = {
     let taskIds: string[] | undefined
 
     const unifiedResult = selection === 'unified'
-      ? await this._selectUnified(task, options, engrams, packs, budget, embeddingBoosts, deadlineAt)
+      ? await this._selectUnified(task, options, engrams, packs, budget, embeddingBoosts, deadlineAt, intentTask)
       : null
     if (unifiedResult) { relevance = unifiedResult.relevance; taskIds = unifiedResult.task_ids }
     const result = unifiedResult ?? selectAndSpread(
       {
         prompt: task,
+        ...(intentTask !== undefined ? { intentPrompt: intentTask } : {}),
         scope: options?.scope,
         // Mounted-scope visibility grants: scopes from config.stores
         // pass the `scope` VISIBILITY filter inside scoreEngram like the
@@ -638,6 +639,7 @@ export const injectionMethods: InjectionMethods & ThisType<Plur> = {
     budget: number,
     meaning: Map<string, number> | undefined,
     deadlineAt: number | undefined,
+    intentTask?: string,
   ): Promise<UnifiedResult> {
     const s = resolveInjectionOverhaul(this.config)
     const hook = options?.source === 'hook'
@@ -656,7 +658,9 @@ export const injectionMethods: InjectionMethods & ThisType<Plur> = {
       min_relevance: s.min_relevance,
       query_rewrite: queryRewrite,
     }
-    const ctx = { prompt: task, scope: options?.scope, grantedScopes: this._grantedScopes(), maxTokens: budget }
+    // Session context (W5) widens the search, not the intent: historical
+    // intent and the INJ-1 asked-word check read the user's own task.
+    const ctx = { prompt: task, ...(intentTask !== undefined ? { intentPrompt: intentTask } : {}), scope: options?.scope, grantedScopes: this._grantedScopes(), maxTokens: budget }
     const pool: UnifiedPool = buildUnifiedPool(ctx, engrams, packs, config)
     const limit = Math.max(0, config.recall_limit ?? UNIFIED_RECALL_LIMIT)
     if (pool.candidates.length === 0) return packUnified(ctx, pool, [], config)
