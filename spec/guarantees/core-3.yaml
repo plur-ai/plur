@@ -1518,8 +1518,11 @@ anchors:
       - packages/core/test/consolidate-apply.test.ts
   packages/core/src/consolidate.ts#parseConsolidationResponse:
     kind: guarantee
-    rule: Anything unclear is `pending` — never a merge; an empty STATEMENT line is not a merge.
+    rule: >-
+      Anything unclear is `pending` — never a merge; an empty STATEMENT line is not a merge; a long run of spaces or
+      tabs is parsed in linear time.
     tests:
+      - packages/core/test/audit-024-r4-consolidate-parse-speed.test.ts
       - packages/core/test/consolidate.test.ts
       - packages/core/test/audit-024-r3-consolidate-empty-statement.test.ts
       - packages/core/test/consolidate-apply.test.ts
