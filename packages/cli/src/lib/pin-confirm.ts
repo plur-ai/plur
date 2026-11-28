@@ -9,9 +9,13 @@ import { exit } from '../output.js'
  * review approve`, `plur pin apply`, `consolidate --apply`, `enrich --apply`,
  * `rescope --apply` — need a confirmation typed at an interactive terminal.
  * PLUR_ACTOR=owner makes the CLI the owner, but an agent with a shell can set
- * that variable as easily as a person; it cannot type at the person's
- * terminal (an agent's shell tool runs without one). Under `allow` (the
- * default) nothing is asked. Exits 1 when refused; returns when confirmed.
+ * that variable as easily as a person. The check is that stdin is a terminal
+ * (`isatty(0)`): it stops an agent acting through the MCP server or a piped,
+ * non-interactive shell tool. It is friction, not a security boundary,
+ * against an agent that has a shell: a pseudo-terminal (`script`, expect, a
+ * pty library) passes it, and such an agent can also edit config.yaml or the
+ * engram files directly. Under `allow` (the default) nothing is asked. Exits
+ * 1 when refused; returns when confirmed.
  * H11/H12: `plur import` of pinned records and an undo that puts a pin back
  * ask the same question. 0.24 audit: so do `plur pin priority` when it raises
  * a pin, and registering a store (`plur stores add`, `plur remote`), whose
@@ -26,7 +30,7 @@ export async function requirePinPolicyConfirmation(
   if (answer.confirmed) return
   if (answer.reason === 'no-terminal') {
     exit(1, `${action} is refused: pinning.agents is "${answer.policy}", so it needs a confirmation typed at an interactive terminal, `
-      + 'and stdin is not a terminal. An agent cannot confirm this; run the command yourself in a terminal.')
+      + 'and stdin is not a terminal. Run the command yourself in a terminal.')
   }
   exit(1, `${action}: not confirmed, nothing changed.`)
 }

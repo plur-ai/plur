@@ -6,7 +6,7 @@ Agents get the memories recall finds.
 
 - Injection follows recall's ranking
 - Feedback reorders recall
-- Scoped pins load in scope
+- Pins from other projects and spaces stay out
 - `plur pin` manages pins
 
 What an agent is given at the start of a prompt is now recall's own ranking,
@@ -46,9 +46,13 @@ questions on two test sets (0.23: 1 and 15). Full notes:
   memory left unused ranks below a fresh one; locked and pack memories do not fade.
 - **A corrected memory is delivered even when found by its old wording:** the
   replacement takes the old memory's place in the ranking.
-- **Pins load where they belong.** A global pin loads in every session; a
-  scoped pin loads in sessions within its scope; in a session with no scope, a
-  scoped pin is used only when recall finds it relevant. Pins are sent once per
+- **Pins load where they belong.** A global pin loads in every session. In a
+  session with a scope, a pin loads whenever the session can see it: one
+  within the session's scope, in a personal scope (`user:*`, `agent:*`,
+  `local`, or any scope without a shared prefix) or in a team scope mounted
+  under `stores:`; a pin in another project or space scope no longer loads.
+  In a session with no scope, a scoped pin is used only when recall finds it
+  relevant. Pins are sent once per
   context (first prompt, after a compaction or resume, once per subagent), not
   on every event.
 - **Agent pinning policy** (`pinning.agents`: `allow`, `request` or `deny`;
@@ -122,8 +126,11 @@ fixed with a test seen failing first:
   parsed safely, fenced as data and scanned for secrets; the model bridge caps
   its output and stops the whole command tree.
 - Rescope plans cannot move non-global memories; imports and undos that would
-  restore pins need the pin-policy confirmation; an agent with a shell cannot
-  bypass the pin policy.
+  restore pins need the pin-policy confirmation. The confirmation must be typed
+  at an interactive terminal, which stops an agent acting through the MCP
+  server or a non-interactive shell. It is friction, not a security boundary,
+  against an agent with a shell: a pseudo-terminal passes it, and such an
+  agent can also edit `config.yaml` or the engram files directly.
 - Team-store rows are never sent to a host model for labelling.
 - `plur doctor` and `plur status` say when they could not read the config, the
   pin report or store health; degraded rankings, skipped counters and event
@@ -155,7 +162,9 @@ seen failing first:
   ones (up to 20 task memories). To go back: `injection.mode: legacy`.
 - Spreading activation (pulling in neighbours of selected memories) belongs to
   the legacy selection only.
-- A scoped pin no longer loads in sessions outside its scope.
+- A pin in another project or space scope no longer loads. Pins in personal
+  scopes and in mounted team scopes still load in every session that has a
+  scope.
 
 ## 0.23.1
 
