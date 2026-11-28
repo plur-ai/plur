@@ -16,6 +16,7 @@ import { tmpdir } from 'os'
 import { Plur } from '../src/index.js'
 import { _setCachedEmbedder, resetEmbedder, setEmbeddingsEnabled } from '../src/embeddings.js'
 import { MAX_PER_DOMAIN } from '../src/inject.js'
+import { isUnaskedNearCopy } from '../src/inject-unified.js'
 import { buildLargeFixture, writeFixtureStore, prng, LARGE_QUERY } from './helpers/injection-fixture.js'
 import type { Engram } from '../src/schemas/engram.js'
 
@@ -80,19 +81,24 @@ describe('unified injection ranks with recall\'s search (finding 11)', () => {
     return out
   }
 
-  /** Recall's top-K after the gates: pins out (include_pinned: false), the per-domain cap, at most `limit`. */
-  function expectedTaskList(recalled: Engram[], limit: number): string[] {
+  /**
+   * Recall's top-K after the gates: pins out (include_pinned: false), the
+   * per-domain cap, a near-copy the query did not ask for (INJ-1, owner
+   * approval 2026-11-28), at most `limit`.
+   */
+  function expectedTaskList(recalled: Engram[], limit: number, query: string): string[] {
     const domains = new Map<string, number>()
-    const out: string[] = []
+    const out: Engram[] = []
     for (const e of recalled) {
       if (out.length >= limit) break
       if ((e as { pinned?: boolean }).pinned) continue
       const top = (e.domain ?? '__none__').split('.')[0]
       if ((domains.get(top) ?? 0) >= MAX_PER_DOMAIN) continue
+      if (out.some(t => isUnaskedNearCopy(e.statement, t.statement, query))) continue
       domains.set(top, (domains.get(top) ?? 0) + 1)
-      out.push(e.id)
+      out.push(e)
     }
-    return out
+    return out.map(e => e.id)
   }
 
   it('for sampled queries, the unified task list is recall\'s top-K after the gates, in recall\'s order', async () => {
@@ -103,7 +109,7 @@ describe('unified injection ranks with recall\'s search (finding 11)', () => {
       expect(recalled.length).toBeGreaterThan(0)
       const r = await plur.injectHybrid(q, { budget: 100_000, include_pinned: false, remote: false })
       expect(r.selection).toBe('unified')
-      const expected = expectedTaskList(recalled, limit)
+      const expected = expectedTaskList(recalled, limit, q)
       const got = (r.task_ids ?? []).slice(0, expected.length)
       if (JSON.stringify(got) !== JSON.stringify(expected)) mismatches.push(`${q}\n  recall:  ${expected.join(' ')}\n  unified: ${got.join(' ')}`)
     }

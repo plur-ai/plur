@@ -327,7 +327,7 @@ const asScored = (e: Engram, score: number): ScoredEngram => ({ ...e, keyword_ma
  * a caller can rerank (async, time-capped) in between.
  */
 export function packUnified(
-  ctx: Pick<InjectionContext, 'maxTokens'>,
+  ctx: Pick<InjectionContext, 'maxTokens'> & Partial<Pick<InjectionContext, 'prompt'>>,
   pool: UnifiedPool,
   ranked: RankedCandidate[],
   config: UnifiedConfig = {},
@@ -357,6 +357,10 @@ export function packUnified(
   // Diversity caps shared across the slices, seeded by the pins (as legacy).
   const caps = diversityCaps(selected)
   const taken = new Set(selected.map(e => e.id))
+  // INJ-1: a nearby rule that does not apply is not handed over beside the one
+  // that does. Words of every memory taken from the ranking, for the check below.
+  const takenWords: Set<string>[] = []
+  const promptWords = wordsOf(ctx.prompt ?? '')
   /** Skip-and-continue packing (R6). Returns tokens used. */
   const pack = (list: RankedCandidate[], cap: number, maxItems: number): number => {
     let used = 0
@@ -364,10 +368,13 @@ export function packUnified(
     for (const c of list) {
       if (items >= maxItems) break
       if (taken.has(c.engram.id) || caps.capped(c.engram)) continue
+      const words = wordsOf(c.engram.statement)
+      if (takenWords.some(t => isUnaskedTwin(words, t, promptWords))) continue
       const scored = asScored(c.engram, c.fused)
       const cost = estimateTokens(scored)
       if (used + cost > cap || spent + used + cost > maxTokens) continue
       selected.push(scored)
+      takenWords.push(words)
       taken.add(c.engram.id)
       caps.count(c.engram)
       used += cost
@@ -414,6 +421,37 @@ export function packUnified(
     task_count: taskCount,
     task_ids: taskIds,
   }
+}
+
+/** Word overlap (Jaccard) at or above which two memories count as near-copies. */
+export const NEAR_TWIN_OVERLAP = 0.4
+
+/** Lower-cased words cut to five letters, so "summary" and "summaries" match. */
+function wordsOf(text: string): Set<string> {
+  return new Set((text.toLowerCase().match(/[a-z0-9]+/g) ?? []).map(w => w.slice(0, 5)))
+}
+
+/**
+ * A candidate is an unasked twin of a memory already taken when the two are
+ * near-copies, the prompt names a word only the taken one has, and names no
+ * word only the candidate has: the task chose the other variant.
+ */
+function isUnaskedTwin(candidate: Set<string>, taken: Set<string>, prompt: Set<string>): boolean {
+  let shared = 0
+  let takenOnlyAsked = false
+  let candidateOnlyAsked = false
+  for (const w of candidate) {
+    if (taken.has(w)) shared++
+    else if (prompt.has(w)) candidateOnlyAsked = true
+  }
+  for (const w of taken) if (!candidate.has(w) && prompt.has(w)) { takenOnlyAsked = true; break }
+  const union = candidate.size + taken.size - shared
+  return union > 0 && shared / union >= NEAR_TWIN_OVERLAP && takenOnlyAsked && !candidateOnlyAsked
+}
+
+/** {@link isUnaskedTwin} on texts, for callers that check a ranking (tests, tools). */
+export function isUnaskedNearCopy(candidate: string, taken: string, prompt: string): boolean {
+  return isUnaskedTwin(wordsOf(candidate), wordsOf(taken), wordsOf(prompt))
 }
 
 function dedupe(all: OmittedPinned[], selected: ScoredEngram[]): OmittedPinned[] {
