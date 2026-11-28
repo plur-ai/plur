@@ -374,7 +374,7 @@ export const PlurConfigSchema = partialKeepAbsent(z.object({
      * path.
      */
     mode: OVERHAUL_KEY_SCHEMAS.injection.mode.optional().catch(undefined),
-    /** Unified mode: how many of recall's ranked results the task list takes, after the gates. Default 10. */
+    /** Unified mode: how many of recall's ranked results the task list takes, after the gates. Default 20. */
     recall_limit: OVERHAUL_KEY_SCHEMAS.injection.recall_limit.optional().catch(undefined),
     /**
      * Unified mode: share of the budget prohibitions in the search's top 50

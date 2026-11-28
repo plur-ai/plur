@@ -48,7 +48,7 @@ export interface InjectionMethods {
   /** @internal */
   _formatInjection(task: string, options?: InjectOptions, embeddingBoosts?: Map<string, number>, remote?: { engrams: Engram[]; boosts: Map<string, number> }, deadlineAt?: number): Promise<InjectionResult>
 
-  /** The selection mode for an injection: the per-call override, else `injection.mode` (default legacy). */
+  /** The selection mode for an injection: the per-call override, else `injection.mode` (default unified). */
   /** @internal */
   _injectionMode(options?: InjectOptions): 'legacy' | 'unified'
 

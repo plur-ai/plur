@@ -79,7 +79,7 @@ export interface UnifiedConfig {
   pinned_ratio?: number
   /** Default true. False: no always-on slot, and pins stay out of the task list. */
   include_pinned?: boolean
-  /** Task list length after the gates. Default 10. */
+  /** Task list length after the gates. Default 20 (`UNIFIED_RECALL_LIMIT`). */
   recall_limit?: number
   /** Share of the budget prohibitions in the ranked top 50 may take first. Default 0.2. */
   prohibition_ratio?: number
