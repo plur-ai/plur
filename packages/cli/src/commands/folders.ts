@@ -6,6 +6,7 @@ import {
   type FolderChange, type FolderEntry, type FolderMapIssue, type FolderMapProblem,
 } from '@plur-ai/core'
 import { plurRoot } from '../lib/folder-gate.js'
+import { askPinPolicyConfirmation } from '../lib/pin-confirm.js'
 
 const USAGE =
   'Usage: plur folders list\n' +
@@ -138,13 +139,48 @@ export async function run(args: string[], flags: GlobalFlags): Promise<void> {
   refuseWithoutNonce(nonce, json)
 
   const plur = createPlur(flags)
+  let entry: FolderEntry
   try {
-    const entry = plur.setFolder(folder, change, nonce !== undefined ? { nonce, ...nonceSession(session, json) } : undefined)
-    if (json) return outputJson({ success: true, entry })
-    outputInfo(`Recorded: ${describe(entry)}`, flags)
+    entry = plur.setFolder(folder, change, nonce !== undefined ? { nonce, ...nonceSession(session, json) } : undefined)
   } catch (err) {
-    fail(err, json)
+    return fail(err, json)
   }
+  const stores = await connectFolderStores(plur, folder, nonce === undefined)
+  const notes = stores.withheld.map(s => `This folder's store was not connected: ${s.path}. Under pinning.agents ${plur.pinPolicyFor('agent')} only the owner adds a store; `
+    + `the owner can connect it in a terminal with: plur stores add ${s.path} ${s.scope}`)
+  if (json) {
+    return outputJson({
+      success: true, entry,
+      ...(stores.connected.length ? { connected_stores: stores.connected } : {}),
+      ...(stores.withheld.length ? { stores_not_connected: stores.withheld, note: notes.join(' ') } : {}),
+    })
+  }
+  outputInfo(`Recorded: ${describe(entry)}`, flags)
+  for (const s of stores.connected) outputInfo(`Connected this folder's store: ${s.path} (${s.scope})`, flags)
+  for (const n of notes) outputText(n)
+}
+
+/**
+ * Under pinning.agents request or deny, a folder decision turns memory on but
+ * connects the folder's own store only when the owner made the decision at a
+ * terminal (no --nonce) and confirms it; a decision relayed with the folder
+ * question's one-time code connects nothing (0.24 review round 7, part of
+ * #1946). Under allow the next session connects it, as before.
+ */
+async function connectFolderStores(
+  plur: ReturnType<typeof createPlur>, folder: string, atTerminal: boolean,
+): Promise<{ connected: Array<{ path: string; scope: string }>; withheld: Array<{ path: string; scope: string }> }> {
+  const none = { connected: [], withheld: [] }
+  let pending: Array<{ path: string; scope: string }>
+  try {
+    if (plur.pinPolicyFor('agent') === 'allow') return none
+    pending = plur.pendingProjectStores(folder)
+  } catch { return none }
+  if (pending.length === 0) return none
+  if (!atTerminal || plur.defaultActor !== 'owner') return { connected: [], withheld: pending }
+  const answer = await askPinPolicyConfirmation(plur, `Connect this folder's store${pending.length === 1 ? '' : 's'} (${pending.map(p => p.path).join(', ')}), whose pinned engrams load into every session`)
+  if (!answer.confirmed) return { connected: [], withheld: pending }
+  return { connected: plur.autoDiscoverStores(folder, { actor: 'owner' }), withheld: [] }
 }
 
 /**

@@ -407,12 +407,15 @@ anchors:
       - >-
         packages/core/test/folder-safety-1588.test.ts::PLUR_PATH and the working folder under HOME, no .git: ~/.plur is
         never registered
-  packages/core/src/plur/folders-policy.ts#foldersPolicyMethods.autoDiscoverStores:
+  packages/core/src/plur/folders-policy.ts#foldersPolicyMethods._decidedProjectStores:
     kind: guarantee
     rule: >-
       Store discovery reads the folder map but never performs the one-time import of a legacy trust.yaml, while still
-      honouring a legacy grant.
+      honouring a legacy grant. Under pinning.agents request or deny, discovery connects a decided folder's store only
+      for the owner named explicitly; for an agent or no one named it connects nothing (part of #1946).
     tests:
+      - packages/core/test/audit-024-r7-folder-nonce-store.test.ts
+      - packages/cli/test/audit-024-r7-folders-set-store.test.ts
       - >-
         packages/core/test/folder-safety-1588.test.ts::P17 / R3-L2: discovery never imports a legacy trust.yaml, and
         still honours it

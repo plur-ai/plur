@@ -57,6 +57,39 @@ function scan(): { writers: string[]; storesAssignments: string[] } {
   return { writers, storesAssignments }
 }
 
+/**
+ * Direct writes of PLUR's config.yaml in another package: a write call
+ * (writeConfigFile, atomicWrite, writeFileSync, appendFileSync) whose target
+ * names config.yaml, `.config` of the storage paths, or a variable set from
+ * one of those. Those packages go through core's methods instead.
+ */
+function directConfigWrites(dir: string): string[] {
+  const found: string[] = []
+  const names = /config\.yaml|paths\.config\b|\)\.config\b/
+  for (const path of sources(dir)) {
+    const sf = ts.createSourceFile(path, readFileSync(path, 'utf8'), ts.ScriptTarget.Latest, true)
+    const configVars = new Set<string>()
+    const collect = (n: ts.Node) => {
+      if (ts.isVariableDeclaration(n) && n.initializer && ts.isIdentifier(n.name) && names.test(n.initializer.getText(sf))) configVars.add(n.name.text)
+      ts.forEachChild(n, collect)
+    }
+    collect(sf)
+    const visit = (n: ts.Node) => {
+      if (ts.isCallExpression(n)) {
+        const callee = n.expression.getText(sf)
+        const target = n.arguments[0]?.getText(sf) ?? ''
+        if (/(^|\.)writeConfigFile$/.test(callee)) found.push(`${relative(dir, path)}: ${callee}`)
+        else if (/(^|\.)(atomicWrite|writeFileSync|appendFileSync)$/.test(callee) && (names.test(target) || configVars.has(target))) {
+          found.push(`${relative(dir, path)}: ${callee}(${target})`)
+        }
+      }
+      ts.forEachChild(n, visit)
+    }
+    visit(sf)
+  }
+  return found
+}
+
 const dirs: string[] = []
 afterEach(() => { for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }) })
 
@@ -77,6 +110,17 @@ describe('round 6: only the guarded writers write the stores list', () => {
     expect(storesAssignments.some(a => a.endsWith('#_updateRawStores'))).toBe(true)
   })
 
+  it('the CLI and the MCP server never write config.yaml themselves', () => {
+    for (const pkg of ['cli', 'mcp']) {
+      expect(directConfigWrites(join(__dirname, '..', '..', pkg, 'src')), pkg).toEqual([])
+    }
+    // The scan sees a direct write.
+    const probe = mkdtempSync(join(tmpdir(), 'plur-r7-writers-probe-'))
+    dirs.push(probe)
+    writeFileSync(join(probe, 'x.ts'), "import { writeFileSync } from 'fs'\nconst cfg = join(root, 'config.yaml')\nwriteFileSync(cfg, 'stores: []')\n")
+    expect(directConfigWrites(probe)).toHaveLength(1)
+  })
+
   it('removing the entries that name the primary store adds nothing', () => {
     const dir = mkdtempSync(join(tmpdir(), 'plur-r6-writers-'))
     dirs.push(dir)
@@ -88,6 +132,6 @@ describe('round 6: only the guarded writers write the stores list', () => {
     removePrimaryStoreEntries(file, primary)
     const after = (yaml.load(readFileSync(file, 'utf8')) as { stores: unknown[] }).stores
     expect(after).toHaveLength(1)
-    expect(storeAdditions(stores, after)).toEqual({ newSources: [], newScopes: [] })
+    expect(storeAdditions(stores, after)).toEqual({ newSources: [], newScopes: [], newServerEntries: [] })
   })
 })

@@ -106,9 +106,6 @@ export interface ConfigStoresMethods {
        *  is refused with PinDeniedError when `pinning.agents` restricts the
        *  caller: a store's rows load with their pins. */
       actor?: PinActor
-      /** @internal A registration the owner already decided on (a folder the
-       *  owner mapped). */
-      ownerDecided?: boolean
     }): {
     status: 'added' | 'already_registered' | 'overwritten' | 'token_rotated'; scope: string
     /** On `token_rotated` for a scope of a server entry: every scope
@@ -442,9 +439,6 @@ export const configStoresMethods: ConfigStoresMethods & ThisType<Plur> = {
        *  is refused with PinDeniedError when `pinning.agents` restricts the
        *  caller: a store's rows load with their pins. */
       actor?: PinActor
-      /** @internal A registration the owner already decided on (a folder the
-       *  owner mapped). */
-      ownerDecided?: boolean
     }): {
     status: 'added' | 'already_registered' | 'overwritten' | 'token_rotated'; scope: string
     /** On `token_rotated` for a scope of a server entry: every scope
@@ -570,13 +564,9 @@ export const configStoresMethods: ConfigStoresMethods & ThisType<Plur> = {
     // copy only stops a refused registration before a local store file is
     // created. Every entry reaching here is a new source or a new scope on
     // one, which the central rule also counts as an addition.
-    const authority: StoreWriteAuthority = options?.ownerDecided === true
-      ? { kind: 'owner-decided' }
-      : { kind: 'caller', actor: options?.actor }
-    if (authority.kind === 'caller') {
-      const decision = this._pinDecisionFor(authority.actor)
-      if (decision !== 'allow') throw new PinDeniedError(null, 'stores.add', storeRegistrationRefusal(decision))
-    }
+    const authority: StoreWriteAuthority = { kind: 'caller', actor: options?.actor }
+    const decision = this._pinDecisionFor(authority.actor)
+    if (decision !== 'allow') throw new PinDeniedError(null, 'stores.add', storeRegistrationRefusal(decision))
 
     // Different endpoint, same scope: forbid by default to prevent
     // silent ambiguity ("which store does scope X belong to?"). Override

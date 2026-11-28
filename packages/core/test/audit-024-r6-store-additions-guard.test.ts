@@ -6,7 +6,7 @@
  * leaves config.yaml byte-identical. A server's own scope refresh may add
  * scopes to an entry already listed (#1940) and never a new source.
  */
-import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest'
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
@@ -63,6 +63,9 @@ const adders: Adder[] = [
   { name: 'registerEnterpriseServer (new server)', seed: () => [], run: async p => p.registerEnterpriseServer('https://srv.example.test', { token: 'k', personalScope: ME }) },
   { name: 'registerDiscoveredScopes', seed: () => [{ url, token: TOKEN, scope: TEAM }], run: async p => p.registerDiscoveredScopes() },
   { name: 'registerScope', seed: () => [{ url, token: TOKEN, scope: TEAM }], run: async p => p.registerScope(OTHER) },
+  // Round 7: folding the owner's per-scope entry into a server entry (which a
+  // later scope refresh would grow).
+  { name: 'registerEnterpriseServer (fold a per-scope entry)', seed: () => [{ url: 'https://fold.example.test', token: 't', scope: ME }], run: async p => p.registerEnterpriseServer('https://fold.example.test', { token: 't', personalScope: ME }) },
 ]
 
 describe('round 6: every method that can add a store follows the one rule', () => {
@@ -91,6 +94,36 @@ describe('round 6: every method that can add a store follows the one rule', () =
       expect(cfg(dir)).not.toBe(before)
     })
   }
+})
+
+describe('round 7: folder-map auto-discovery follows the same rule', () => {
+  // Discovery skips temp roots unless this test-only switch is set.
+  beforeEach(() => { vi.stubEnv('PLUR_TEST_DISCOVER_IN_TMP', '1') })
+  afterEach(() => { vi.unstubAllEnvs() })
+  function decidedRepo(agents: 'allow' | 'request' | 'deny'): { dir: string; repo: string } {
+    const dir = setup(agents)
+    const repo = join(tmp('plur-r6-repo-'), 'repo')
+    mkdirSync(join(repo, '.git'), { recursive: true })
+    mkdirSync(join(repo, '.plur'), { recursive: true })
+    writeFileSync(join(repo, '.plur', 'engrams.yaml'), 'engrams: []\n')
+    const p = as(dir, 'agent')
+    p.setFolder(repo, { mode: 'on' }, { nonce: p.issueFolderNonce('s', repo, { mode: 'on' }) })
+    return { dir, repo }
+  }
+  for (const agents of ['request', 'deny'] as const) {
+    it(`${agents}: discovery for an agent, or for no one named, connects nothing`, () => {
+      const { dir, repo } = decidedRepo(agents)
+      const before = cfg(dir)
+      expect(as(dir, 'agent').autoDiscoverStores(repo)).toEqual([])
+      expect(new Plur({ path: dir, autoDiscover: false }).autoDiscoverStores(repo)).toEqual([])
+      expect(cfg(dir)).toBe(before)
+      expect(as(dir, 'owner').autoDiscoverStores(repo, { actor: 'owner' })).toHaveLength(1)
+    })
+  }
+  it('allow: discovery connects the decided folder\'s store', () => {
+    const { dir, repo } = decidedRepo('allow')
+    expect(as(dir, 'agent').autoDiscoverStores(repo)).toHaveLength(1)
+  })
 })
 
 describe('round 6: not additions, and the refresh exception', () => {
@@ -127,4 +160,3 @@ describe('round 6: not additions, and the refresh exception', () => {
     expect(cfg(dir)).toBe(before)
   })
 })
-void mkdirSync

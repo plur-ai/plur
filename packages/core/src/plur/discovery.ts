@@ -17,7 +17,7 @@ import { isSafeScopeName, safeOrigin, withCompatScope } from '../store-expand.js
 import type { MeResponse } from '../store/remote-store.js'
 import { normalizeEndpointUrl, RemoteHttpError, RemoteStore, tokenEnvUnsetMessage } from '../store/remote-store.js'
 import { withLock } from '../file-lock.js'
-import { checkStoreWrite, type StoreWriteAuthority } from '../store-additions.js'
+import { checkStoreWrite, StoreWriteConflictError, type StoreWriteAuthority } from '../store-additions.js'
 import { type PinActor, PinDeniedError } from '../pin-policy.js'
 import { DISCOVERY_SNAPSHOT_KEYS, discoveryChanged, isEnterpriseServerEntry, isPlainObject, sanitizeForbidCategories, scopesServedElsewhere, serverCredential, stableJson, stringList } from './helpers.js'
 import { type CheckResult, type RegisterDiscoveredResult, type RemoteHealth, type RemoteScopeDiscovery, type ServerDiscoveryOutcome, type ServerStoreCheck, type StoreSummary } from './types.js'
@@ -1066,7 +1066,16 @@ export const discoveryMethods: DiscoveryMethods & ThisType<Plur> = {
       }
     })
 
-    if (changed) this.persistStores(updated, { authority: { kind: 'metadata' }, serverSensitivityScopes, onConfigWrite })
+    if (!changed) return
+    try {
+      this.persistStores(updated, { authority: { kind: 'metadata' }, serverSensitivityScopes, onConfigWrite })
+    } catch (err) {
+      // The list was read before the lock: another process changed it since
+      // (removed an entry this write would put back). The metadata is
+      // written again on the next discovery; the other change stands.
+      if (!(err instanceof StoreWriteConflictError)) throw err
+      logger.warning('[plur:scope-metadata] config.yaml changed while scope metadata was being saved; the metadata was not written this time')
+    }
   },
 
   setSessionScope(scope: string | null, opts?: { session?: string }): void {

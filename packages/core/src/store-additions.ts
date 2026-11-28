@@ -15,20 +15,26 @@
  *   list and did not serve in the old one: a new scope on a known server, or
  *   a scope a known server now serves that only another store served before.
  *   The scopes of a new source are not listed again; `newSources` names it.
+ * - `newServerEntries` are urls that have a server entry (url + `scopes`) in
+ *   the new list and had none in the old one. A server entry grows by its
+ *   own scope refresh (#1940), so turning a url's per-scope entries into a
+ *   server entry is an addition even when the scopes are the same (round 7).
  *
  * Not an addition: removing an entry, reordering, a new token or token_env
- * on an existing source, re-saving an entry, folding per-scope entries of one
- * url into the server entry for that url (same source, same scopes), and
- * metadata (covers, description, sensitivity, discovery, readonly, shared).
+ * on an existing source, re-saving an entry, folding per-scope entries of a
+ * url into the server entry that url already has, and metadata (covers,
+ * description, sensitivity, discovery, readonly, shared).
  */
 import { canonicalize } from './project-config.js'
 import { servedScopes } from './server-discovery.js'
 import { normalizeEndpointUrl } from './store/remote-store.js'
+import { isServerStoreEntry } from './store-expand.js'
 import { PinDeniedError, type PinActor } from './pin-policy.js'
 
 export interface StoreAdditions {
   newSources: string[]
   newScopes: string[]
+  newServerEntries: string[]
 }
 
 /** The source of one raw entry, or null for an entry that names none. */
@@ -56,6 +62,17 @@ function served(list: readonly unknown[]): Map<string, Set<string>> {
   return out
 }
 
+/** Sources (url:...) that have a server entry in `list`. */
+function serverEntryUrls(list: readonly unknown[]): Set<string> {
+  const out = new Set<string>()
+  for (const entry of list) {
+    if (!isServerStoreEntry(entry)) continue
+    const source = storeSourceOf(entry)
+    if (source !== null) out.add(source)
+  }
+  return out
+}
+
 export function storeAdditions(beforeRaw: readonly unknown[], afterRaw: readonly unknown[]): StoreAdditions {
   const before = served(beforeRaw)
   const after = served(afterRaw)
@@ -66,11 +83,14 @@ export function storeAdditions(beforeRaw: readonly unknown[], afterRaw: readonly
     if (!had) { newSources.push(source); continue }
     for (const s of scopes) if (!had.has(s)) newScopes.push(`${s}@${source}`)
   }
-  return { newSources, newScopes }
+  const hadServer = serverEntryUrls(beforeRaw)
+  // A brand-new source is already named in newSources.
+  const newServerEntries = [...serverEntryUrls(afterRaw)].filter(u => !hadServer.has(u) && before.has(u))
+  return { newSources, newScopes, newServerEntries }
 }
 
 export function hasStoreAdditions(a: StoreAdditions): boolean {
-  return a.newSources.length > 0 || a.newScopes.length > 0
+  return a.newSources.length > 0 || a.newScopes.length > 0 || a.newServerEntries.length > 0
 }
 
 /**
@@ -79,8 +99,6 @@ export function hasStoreAdditions(a: StoreAdditions): boolean {
  * - `caller`: a store registration on behalf of `actor` (else the instance's
  *   default actor). An addition by a caller the pin policy restricts is
  *   refused with PinDeniedError (its text from `refusal`), and nothing is written.
- * - `owner-decided`: a store the owner already decided on (a folder the owner
- *   mapped, found by folder-map auto-discovery).
  * - `server-refresh`: a server's own scope refresh. It may add scopes to a
  *   server already listed (#1940); a new source is an internal error.
  * - `metadata`: covers, descriptions, sensitivity and similar; any addition
@@ -88,9 +106,20 @@ export function hasStoreAdditions(a: StoreAdditions): boolean {
  */
 export type StoreWriteAuthority =
   | { kind: 'caller'; actor?: PinActor; refusal?: (decision: string) => string }
-  | { kind: 'owner-decided' }
   | { kind: 'server-refresh' }
   | { kind: 'metadata' }
+
+/**
+ * A write the rule stops because it would add what its authority may not
+ * (a server refresh adding a source, a metadata write adding anything):
+ * a stale read or a bug, not a policy answer to show a user.
+ */
+export class StoreWriteConflictError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'StoreWriteConflictError'
+  }
+}
 
 /** The refusal text of a store registration by a restricted caller. */
 export function storeRegistrationRefusal(decision: string, ask = '`plur stores add`'): string {
@@ -116,13 +145,12 @@ export function checkStoreWrite(
   // A writer reached without an authority (an older internal call) is held
   // to the caller rule for the instance's default actor.
   const a: StoreWriteAuthority = authority ?? { kind: 'caller' }
-  if (a.kind === 'owner-decided') return
   if (a.kind === 'server-refresh') {
-    if (additions.newSources.length === 0) return
-    throw new Error(`internal: a server scope refresh would add a new store (${additions.newSources.length} source); nothing was written`)
+    if (additions.newSources.length === 0 && additions.newServerEntries.length === 0) return
+    throw new StoreWriteConflictError(`internal: a server scope refresh would add a new store (${additions.newSources.length + additions.newServerEntries.length} source); nothing was written`)
   }
   if (a.kind === 'metadata') {
-    throw new Error(`internal: a metadata write would add ${additions.newSources.length ? 'a new store' : 'a new scope'} to config.yaml; nothing was written`)
+    throw new StoreWriteConflictError(`internal: a metadata write would add ${additions.newSources.length ? 'a new store' : 'a new scope'} to config.yaml; nothing was written`)
   }
   const decision = decide(a.actor)
   if (decision !== 'allow') {

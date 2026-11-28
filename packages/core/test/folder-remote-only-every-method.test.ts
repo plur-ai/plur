@@ -170,7 +170,7 @@ describe('every public Plur method in a remote-only folder', () => {
       reofferScopes: [], getDismissedScopes: [], persistScopeMetadata: [[]], setSessionScope: [null], adjustSessionScope: [null],
       getSessionScope: [], clearSessionScope: [], trackedSessionScopes: [],
       // Added on development after #1521 (merge of #1521 onto development):
-      recallWithMeta: ['dentist PERSONALZEBRA'], outboxClaimsProblem: [], skippedProjectStores: [work],
+      recallWithMeta: ['dentist PERSONALZEBRA'], outboxClaimsProblem: [], skippedProjectStores: [work], pendingProjectStores: [work],
       refreshServerScopes: [], notNowFolder: [join(base, 'elsewhere'), { nonce: 'not-a-nonce' }],
       // Shared change journal (overhaul W0): beginChange only builds a handle; the rest touch the personal store.
       beginChange: ['test.kind'], undoChange: ['CHG-none'], listChanges: [], getChange: ['CHG-none'], redactChangeJournal: [[pid]],

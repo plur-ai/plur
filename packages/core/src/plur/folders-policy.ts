@@ -21,6 +21,7 @@ import {
 } from '../folders.js'
 import { loadGitScopeSources, readGitOrigin, type GitScopeOutcome, type GitScopeSource } from '../git-origin.js'
 import { Plur } from '../index.js'
+import { PinDeniedError, type PinActor } from '../pin-policy.js'
 import { logger } from '../logger.js'
 import { canonicalize } from '../project-config.js'
 import {
@@ -195,7 +196,25 @@ export interface FoldersPolicyMethods {
   /** @internal */
   _startFolderOff(startDir: string): boolean
 
-  autoDiscoverStores(cwd?: string): Array<{ path: string; scope: string }>
+  /**
+   * Register the project stores of folders with a decision of their own on
+   * the walk from `cwd`. A registration acts for `opts.actor`, else for an
+   * agent: discovery runs for whatever process starts, so under
+   * pinning.agents request/deny it connects nothing unless the owner asks
+   * (0.24 review round 7, part of #1946). A store it may not connect is
+   * logged with the `plur stores add` command that connects it.
+   */
+  autoDiscoverStores(cwd?: string, opts?: { actor?: PinActor }): Array<{ path: string; scope: string }>
+
+  /**
+   * The project stores {@link autoDiscoverStores} would register from `cwd`
+   * (folders with a decision of their own, store file present, not
+   * registered yet), with the scope each would get. Read-only.
+   */
+  pendingProjectStores(cwd?: string): Array<{ path: string; scope: string }>
+
+  /** @internal The walk behind autoDiscoverStores and pendingProjectStores. */
+  _decidedProjectStores(cwd?: string): Array<{ path: string; scope: string; key: string }>
 
   /**
    * Project stores discovery found from `cwd` but did not add because their
@@ -517,8 +536,29 @@ export const foldersPolicyMethods: FoldersPolicyMethods & ThisType<Plur> = {
       _resolveFolderPolicy(canonicalize(startDir), opts).mode === 'off'
   },
 
-  autoDiscoverStores(cwd?: string): Array<{ path: string; scope: string }> {
+  autoDiscoverStores(cwd?: string, opts?: { actor?: PinActor }): Array<{ path: string; scope: string }> {
     const discovered: Array<{ path: string; scope: string }> = []
+    for (const { path: candidate, scope } of this._decidedProjectStores(cwd)) {
+      try {
+        this.addStore(candidate, scope, { shared: true, readonly: false, actor: opts?.actor ?? 'agent' })
+      } catch (err) {
+        if (!(err instanceof PinDeniedError)) throw err
+        logger.info(`[plur] Project store not connected: ${candidate}. Under pinning.agents ${this.pinPolicyFor('agent')} only the owner adds a store; `
+          + `the owner can connect it in a terminal with: plur stores add ${candidate} ${scope}`)
+        continue
+      }
+      discovered.push({ path: candidate, scope })
+      logger.info(`Auto-discovered project store: ${candidate} (${scope})`)
+    }
+    return discovered
+  },
+
+  pendingProjectStores(cwd?: string): Array<{ path: string; scope: string }> {
+    return this._decidedProjectStores(cwd).map(({ path, scope }) => ({ path, scope }))
+  },
+
+  _decidedProjectStores(cwd?: string): Array<{ path: string; scope: string; key: string }> {
+    const discovered: Array<{ path: string; scope: string; key: string }> = []
     const seen = new Set<string>()
     const startDir = cwd || process.cwd()
     // Candidates first: with no store file on the walk, the folder map is not
@@ -553,10 +593,8 @@ export const foldersPolicyMethods: FoldersPolicyMethods & ThisType<Plur> = {
         }
       } catch {}
 
-      this.addStore(candidate, scope, { shared: true, readonly: false, ownerDecided: true })
-      discovered.push({ path: candidate, scope })
+      discovered.push({ path: candidate, scope, key })
       seen.add(key)
-      logger.info(`Auto-discovered project store: ${candidate} (${scope})`)
     }
     return discovered
   },
