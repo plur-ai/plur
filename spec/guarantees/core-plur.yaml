@@ -82,10 +82,18 @@ anchors:
     kind: guarantee
     rule: >-
       Registering a company server refuses to replace a sign-in config.yaml already holds when asked to keep it, and a
-      credential write that cannot be made owner-only is refused without the key appearing in the error.
+      credential write that cannot be made owner-only is refused without the key appearing in the error. Under
+      pinning.agents request or deny, a write that adds a scope no entry served before is refused for a caller the pin
+      policy restricts, with nothing written; a new key for the same scopes is not.
     lean:
       - PlurSpec/Persistence.lean:every_config_writer_protected
     tests:
+      - >-
+        packages/core/test/audit-024-r4-register-server-pins.test.ts::an agent cannot add a new server entry, and
+        config.yaml is untouched
+      - >-
+        packages/core/test/audit-024-r4-register-server-pins.test.ts::the owner adds it; an agent may refresh its key
+        but not add a scope to it
       - >-
         packages/core/test/register-enterprise-server-stale.test.ts::keepSignIn: a sign-in config.yaml holds for the
         server is never replaced; nothing is written

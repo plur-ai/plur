@@ -177,7 +177,7 @@ function serverEntriesAt(rawStores: unknown[], key: string): number[] {
 
 /** The scopes a raw entry serves: its `scope`, and a server entry's `scopes`
  *  and `pinned_scopes`. */
-function servedScopes(r: unknown): string[] {
+export function servedScopes(r: unknown): string[] {
   if (!isPlainObj(r)) return []
   const out = typeof r.scope === 'string' ? [r.scope] : []
   for (const k of ['scopes', 'pinned_scopes'] as const) {

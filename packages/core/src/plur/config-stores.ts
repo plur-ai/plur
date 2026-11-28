@@ -10,7 +10,7 @@ import { canonicalize } from '../project-config.js'
 import { containsToken, redactToken } from '../redact-token.js'
 import type { PlurConfig, StoreEntry } from '../schemas/config.js'
 import { mergeSensitivityForWriteback } from '../sensitivity-writeback.js'
-import { PersonalScopeTakenError, registerServerEntry, SignInHeldError, type FoldReport, type ScopeHolder } from '../server-discovery.js'
+import { PersonalScopeTakenError, registerServerEntry, servedScopes, SignInHeldError, type FoldReport, type ScopeHolder } from '../server-discovery.js'
 import { IndexedStorage } from '../storage-indexed.js'
 import { classifyStoreDuplicates, removePrimaryStoreEntries } from '../store-duplicates.js'
 import { collapseExpandedStores, identityBaseOf, isSafeScopeName, isServerStoreEntry, safeOrigin, serverEntryIdentities } from '../store-expand.js'
@@ -136,6 +136,11 @@ export interface ConfigStoresMethods {
      *  that removes stale entries (the file is still as read); a throw writes
      *  nothing. `plur login --remove-stale` backs config.yaml up here. */
     beforeRemove?: (configPath: string) => void
+    /** Who registers it (else this instance's default actor). A write that
+     *  adds a scope no entry served before (a new server entry, or a new
+     *  scope on one) follows addStore's store-registration policy; a new key
+     *  for the same scopes does not. */
+    actor?: PinActor
   }): Promise<{ status: 'added' | 'updated' | 'unchanged'; fold: FoldReport; removed: ScopeHolder[]; migratedLegacy?: boolean }>
 
   /**
@@ -621,6 +626,11 @@ export const configStoresMethods: ConfigStoresMethods & ThisType<Plur> = {
      *  that removes stale entries (the file is still as read); a throw writes
      *  nothing. `plur login --remove-stale` backs config.yaml up here. */
     beforeRemove?: (configPath: string) => void
+    /** Who registers it (else this instance's default actor). A write that
+     *  adds a scope no entry served before (a new server entry, or a new
+     *  scope on one) follows addStore's store-registration policy; a new key
+     *  for the same scopes does not. */
+    actor?: PinActor
   }): Promise<{ status: 'added' | 'updated' | 'unchanged'; fold: FoldReport; removed: ScopeHolder[]; migratedLegacy?: boolean }> {
     let parsed: URL
     try { parsed = new URL(url) } catch {
@@ -647,6 +657,9 @@ export const configStoresMethods: ConfigStoresMethods & ThisType<Plur> = {
 
     // Read the outbox first: a failure here must not follow a written key.
     const outbox = await this.listOutbox()
+    // A new served scope is a new source of rows, loaded with its pins: the
+    // store-registration policy of addStore (0.24 review round 4).
+    const decision = this._pinDecisionFor(opts.actor)
     let result: ReturnType<typeof registerServerEntry> | undefined
     try {
       this._updateRawStores(rawStores => {
@@ -666,6 +679,14 @@ export const configStoresMethods: ConfigStoresMethods & ThisType<Plur> = {
           throw new Error(`registerEnterpriseServer: ${err instanceof Error ? err.message : String(err)}`)
         }
         if (result.status === 'unchanged') return false
+        if (decision !== 'allow') {
+          const before = new Set(rawStores.flatMap(servedScopes))
+          if (result.stores.flatMap(servedScopes).some(s => !before.has(s))) {
+            throw new PinDeniedError(null, 'stores.add',
+              `Signing in to a new server, or to a new scope on one, is reserved for the owner on this install (pinning.agents: ${decision}), `
+              + `because a store's pinned engrams load into every session. Nothing was registered. Ask the owner to run \`plur login\` in a terminal.`)
+          }
+        }
         if (result.removed.length && opts.beforeRemove) {
           try { opts.beforeRemove(this.paths.config) } catch (err) {
             throw new Error(`registerEnterpriseServer: the backup of config.yaml before removing the stale ${result.removed.length === 1 ? 'entry' : 'entries'} could not be made (${err instanceof Error ? err.message : String(err)}). Nothing was changed.`)
@@ -678,6 +699,7 @@ export const configStoresMethods: ConfigStoresMethods & ThisType<Plur> = {
         return true
       }, opts.onConfigWrite)
     } catch (err) {
+      if (err instanceof PinDeniedError) throw err
       const e = err as { message?: unknown; name?: unknown; mark?: { line?: unknown }; code?: unknown }
       if (typeof e?.message === 'string' && e.message.startsWith('registerEnterpriseServer: ')) throw err
       // A refused credential write (owner-only protection) keeps its cause and the
